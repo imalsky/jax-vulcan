@@ -1,0 +1,71 @@
+# Byte-compiled / optimized
+__pycache__/
+*.py[codz]
+*$py.class
+*.so
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Environments
+.env
+.venv
+venv/
+
+# IDEs and editors
+.idea/
+.vscode/
+.claude/settings.local.json
+
+# Type checkers / linters / test caches
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# VULCAN simulation outputs (binary pickle, ~10+ MB each)
+*.vul
+
+# Large scientific data formats (typically big binary arrays/tables)
+*.h5
+*.hdf5
+*.nc
+*.npy
+*.npz
+*.parquet
+*.pkl
+*.pickle
+*.feather
+
+# ML model checkpoints
+*.pt
+*.pt2
+*.pth
+*.ckpt
+*.onnx
+
+# Archives
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+
+# Logs
+*.log
+logs/
+
+# Generated plots (the plot/ dir is for generated figures)
+plot/*.png
+plot/*.pdf
+plot/*.jpg
+plot/*.jpeg
+plot/*.svg
