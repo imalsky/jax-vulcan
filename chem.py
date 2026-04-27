@@ -148,15 +148,11 @@ chem_rhs = jax.vmap(
 )
 
 
-# Per-layer Jacobian (ni x ni). Two options:
-#   - jacfwd: forward-mode AD, builds Jacobian column-by-column (ni jvps)
-#   - jacrev: reverse-mode AD, builds row-by-row (ni vjps)
-# For ni ~ 80-100 (similar input/output), they're comparable. Empirically on
-# the SNCHO network jacrev is ~25% faster because chem_rhs has a "scatter at
-# the end" pattern that reverse-mode handles natively. Keep both available.
-chem_jac_per_layer_fwd = jax.jacfwd(chem_rhs_per_layer, argnums=0)
-chem_jac_per_layer_rev = jax.jacrev(chem_rhs_per_layer, argnums=0)
-chem_jac_per_layer = chem_jac_per_layer_rev   # current best
+# Per-layer Jacobian via reverse-mode AD. Production uses
+# `chem_jac_analytical` below (Phase 11 — ~36x faster); this jacrev path
+# is kept solely as the test oracle for the analytical version. jacrev
+# beats jacfwd on this network's "scatter at the end" pattern.
+chem_jac_per_layer = jax.jacrev(chem_rhs_per_layer, argnums=0)
 chem_jac = jax.vmap(
     chem_jac_per_layer,
     in_axes=(0, 0, 1, None),

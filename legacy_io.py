@@ -18,6 +18,7 @@ import scipy
 from scipy import interpolate
 import os
 import pickle
+import time
 
 import vulcan_cfg
 import chem_funs
@@ -598,12 +599,23 @@ class ReadRate(object):
                 var.cross_scat[sp][n] = inter_scat(ld)
 
 
-class Output(object):
-    """Vendored from VULCAN-master/op.py:3131-3260, plotting methods dropped.
+def _import_plt():
+    """Lazy import of matplotlib so tests that don't plot don't pay the cost."""
+    import matplotlib
+    matplotlib.use("Agg" if os.environ.get("VULCAN_HEADLESS_PLOT") else
+                   matplotlib.get_backend())
+    import matplotlib.pyplot as plt
+    return plt
 
-    matplotlib is not imported here. If `vulcan_cfg.use_plot_evo` or
-    `use_plot_end` is set, save_out raises NotImplementedError loudly rather
-    than silently skipping. VULCAN-JAX runs with both flags False by default.
+
+class Output(object):
+    """Vendored from VULCAN-master/op.py:3131-3454.
+
+    Phase 16: matplotlib-using methods (plot_update / plot_flux_update /
+    plot_end / plot_evo / plot_evo_inter / plot_TP) are vendored back in,
+    each with a lazy plt import. Set `VULCAN_HEADLESS_PLOT=1` in the env
+    to force the Agg backend (useful in CI or for save_movie without a
+    display).
     """
 
     def __init__(self):
@@ -624,6 +636,53 @@ class Output(object):
         print ('longdy = ' + "{:.2e}".format(var.longdy) + '      || longdy/dt = ' + "{:.2e}".format(var.longdydt) + '  || dt = '+ "{:.2e}".format(var.dt) )
         print ('from nz = ' + str(int(indx_max/ni)) + ' and ' + species[indx_max%ni])
         print ('------------------------------------------------------------------------' )
+
+    def print_end_msg(self, var, para):
+        # Vendored from VULCAN-master/op.py:3160-3177.
+        print ("After ------- %s seconds -------" % ( time.time()- para.start_time ) + ' s CPU time')
+        print (vulcan_cfg.out_name[:-4] + ' has successfully run to steady-state with ' + str(para.count) + ' steps and ' + str("{:.2e}".format(var.t)) + ' s' )
+        print ('long dy = ' + f"{var.longdy:.6e}" + ' and long dy/dt = ' + f"{var.longdydt:.6e}" )
+
+        print ('total atom loss:')
+        for atom in vulcan_cfg.atom_list:
+            if atom not in getattr(vulcan_cfg, 'loss_ex', []):
+                print (atom + ': ' + f"{var.atom_loss[atom]:.4e}" + ' ')
+
+        print ('negative solution counter:')
+        print (para.nega_count)
+        print ('loss rejected counter:')
+        print (para.loss_count)
+        print ('delta rejected counter:')
+        print (para.delta_count)
+        if getattr(vulcan_cfg, 'use_shark', False) == True:
+            print ("It's a long journey to this shark planet. Don't stop bleeding.")
+        print ('------ Live long and prosper \\V/ ------')
+
+    def print_unconverged_msg(self, var, para, case):
+        # Vendored from VULCAN-master/op.py:3179-3204.
+        if case == 2:
+            print ("After ------- %s seconds -------" % ( time.time()- para.start_time ) + ' s CPU time')
+            print (vulcan_cfg.out_name[:-4] + ' did not reach steady-state:')
+            print ('long dy = ' + str(var.longdy) + ' and long dy/dt = ' + str(var.longdydt) )
+            print ('Integration stopped before converged...\nMaximal allowed runtime exceeded ('+ f"{vulcan_cfg.runtime:.1e}" + ' sec)')
+        elif case == 3:
+            print ("After ------- %s seconds -------" % ( time.time()- para.start_time ) + ' s CPU time')
+            print (vulcan_cfg.out_name[:-4] + ' did not reach steady-state:')
+            print ('long dy = ' + str(var.longdy) + ' and long dy/dt = ' + str(var.longdydt) )
+            print ('Integration stopped before converged...\nMaximal allowed steps exceeded ('+ str(vulcan_cfg.count_max) + ' steps)')
+        else:
+            raise RuntimeError(f"Unconverged case undefined (case={case})")
+
+        print ('total atom loss:')
+        for atom in vulcan_cfg.atom_list:
+            if atom not in getattr(vulcan_cfg, 'loss_ex', []):
+                print (atom + ': ' + f"{var.atom_loss[atom]:.4e}" + ' ')
+        print ('negative solution counter:')
+        print (para.nega_count)
+        print ('loss rejected counter:')
+        print (para.loss_count)
+        print ('delta rejected counter:')
+        print (para.delta_count)
 
     def save_cfg(self, dname):
         output_dir, out_name = vulcan_cfg.output_dir, vulcan_cfg.out_name
@@ -651,26 +710,17 @@ class Output(object):
             as_nparray = np.array(getattr(var, key))
             setattr(var, key, as_nparray)
 
-        # plotting paths from VULCAN-master are not implemented in legacy_io.
-        # If a config flips these on, fail loudly rather than silently skip.
-        if vulcan_cfg.use_plot_evo == True or vulcan_cfg.use_plot_end == True:
-            raise NotImplementedError(
-                "use_plot_evo / use_plot_end are not implemented in VULCAN-JAX's "
-                "legacy_io.Output. Set both to False, or wire matplotlib plotting "
-                "back in if needed."
-            )
-
         # making the save dict
         var_save = {'species':species, 'nr':nr}
 
         for key in var.var_save:
             var_save[key] = getattr(var, key)
         if vulcan_cfg.save_evolution == True:
-            # slicing time-sequential data to reduce ouput filesize
-            fq = vulcan_cfg.save_evo_frq
+            # The JAX OuterLoop already captures (y, t) at the configured
+            # `save_evo_frq` cadence into var.y_time / var.t_time during
+            # the run, so the master-style `[::fq]` re-slice would be a
+            # double-slice. Just publish what the runner produced.
             for key in var.var_evol_save:
-                as_nparray = getattr(var, key)[::fq]
-                setattr(var, key, as_nparray)
                 var_save[key] = getattr(var, key)
 
         with open(output_file, 'wb') as outfile:
@@ -678,3 +728,179 @@ class Output(object):
                 outfile.write(str({'variable': var_save, 'atm': vars(atm), 'parameter': vars(para)}))
             else:
                 pickle.dump( {'variable': var_save, 'atm': vars(atm), 'parameter': vars(para) }, outfile, protocol=4)
+
+    # ---- Phase 16: vendored plotting methods (op.py:3262-3454) ----
+    # Verbatim ports of master's matplotlib plot routines, with `plt`
+    # imported lazily so non-plotting tests don't pull matplotlib in.
+    # The only adaptation: arrays are converted via `np.asarray(...)` so
+    # the plot code reads JAX arrays as numpy.
+
+    def plot_update(self, var, atm, para):
+        plt = _import_plt()
+        tex_labels = {
+            'H':'H','H2':'H$_2$','O':'O','OH':'OH','H2O':'H$_2$O',
+            'CH':'CH','C':'C','CH2':'CH$_2$','CH3':'CH$_3$','CH4':'CH$_4$',
+            'HCO':'HCO','H2CO':'H$_2$CO','C4H2':'C$_4$H$_2$',
+            'C2':'C$_2$','C2H2':'C$_2$H$_2$','C2H3':'C$_2$H$_3$',
+            'C2H':'C$_2$H','CO':'CO','CO2':'CO$_2$','He':'He','O2':'O$_2$',
+            'CH3OH':'CH$_3$OH','C2H4':'C$_2$H$_4$','C2H5':'C$_2$H$_5$',
+            'C2H6':'C$_2$H$_6$','CH3O':'CH$_3$O','CH2OH':'CH$_2$OH',
+            'NH3':'NH$_3$',
+        }
+        ymix = np.asarray(var.ymix)
+        plt.figure('live mixing ratios')
+        plt.ion()
+        for color_index, sp in enumerate(vulcan_cfg.plot_spec):
+            sp_lab = tex_labels.get(sp, sp)
+            if color_index == len(para.tableau20):
+                para.tableau20.append(tuple(np.random.rand(3)))
+            color = para.tableau20[color_index]
+            if vulcan_cfg.plot_height == False:
+                plt.plot(ymix[:, species.index(sp)], atm.pco/1.e6,
+                         color=color, label=sp_lab)
+                if vulcan_cfg.use_condense == True and sp in vulcan_cfg.condense_sp:
+                    plt.plot(atm.sat_mix[sp], atm.pco/1.e6,
+                             color=color, label=sp_lab + ' sat', ls='--')
+                plt.gca().set_yscale('log')
+                plt.gca().invert_yaxis()
+                plt.ylabel("Pressure (bar)")
+                plt.ylim((vulcan_cfg.P_b/1.E6, vulcan_cfg.P_t/1.E6))
+            else:
+                plt.plot(ymix[:, species.index(sp)], atm.zmco/1.e5,
+                         color=color, label=sp_lab)
+                if vulcan_cfg.use_condense == True and sp in vulcan_cfg.condense_sp:
+                    plt.plot(atm.sat_mix[sp], atm.zco[1:]/1.e5,
+                             color=color, label=sp_lab + ' sat', ls='--')
+                plt.ylim((atm.zco[0]/1e5, atm.zco[-1]/1e5))
+                plt.ylabel("Height (km)")
+        plt.title(str(para.count) + ' steps and '
+                  + "{:.2e}".format(var.t) + ' s')
+        plt.gca().set_xscale('log')
+        plt.xlim(1.E-20, 1.)
+        plt.legend(frameon=0, prop={'size':14}, loc=3)
+        plt.xlabel("Mixing Ratios")
+        plt.show(block=0)
+        plt.pause(0.001)
+        if vulcan_cfg.use_save_movie == True:
+            plt.savefig(vulcan_cfg.movie_dir + str(para.pic_count)+'.png',
+                        dpi=200)
+            para.pic_count += 1
+        plt.clf()
+
+    def plot_flux_update(self, var, atm, para):
+        plt = _import_plt()
+        plt.ion()
+        plt.plot(np.sum(np.asarray(var.dflux_u), axis=1), atm.pico/1.e6,
+                 label='up flux')
+        plt.plot(np.sum(np.asarray(var.dflux_d), axis=1), atm.pico/1.e6,
+                 label='down flux', ls='--', lw=1.2)
+        plt.plot(np.sum(np.asarray(var.sflux), axis=1), atm.pico/1.e6,
+                 label='stellar flux', ls=':', lw=1.5)
+        plt.title(str(para.count) + ' steps and '
+                  + "{:.2e}".format(var.t) + ' s')
+        plt.gca().set_xscale('log')
+        plt.gca().set_yscale('log')
+        plt.gca().invert_yaxis()
+        plt.xlim(xmin=1.E-8)
+        plt.ylim((atm.pico[0]/1.e6, atm.pico[-1]/1.e6))
+        plt.legend(frameon=0, prop={'size':14}, loc=3)
+        plt.xlabel("Diffusive flux")
+        plt.ylabel("Pressure (bar)")
+        plt.show(block=0)
+        plt.pause(0.1)
+        if vulcan_cfg.use_flux_movie == True:
+            plt.savefig('plot/movie/flux-' + str(para.count) + '.jpg')
+        plt.clf()
+
+    def plot_end(self, var, atm, para):
+        plt = _import_plt()
+        plot_dir = vulcan_cfg.plot_dir
+        colors = ['b','g','r','c','m','y','k','orange','pink','grey',
+                  'darkred','darkblue','salmon','chocolate',
+                  'mediumspringgreen','steelblue','plum','hotpink']
+        ymix = np.asarray(var.ymix)
+        plt.figure('live mixing ratios')
+        for color_index, sp in enumerate(vulcan_cfg.plot_spec):
+            color = colors[color_index % len(colors)]
+            if vulcan_cfg.plot_height == False:
+                plt.plot(ymix[:, species.index(sp)], atm.pco/1.e6,
+                         color=color, label=sp)
+                plt.gca().set_yscale('log')
+                plt.gca().invert_yaxis()
+                plt.ylabel("Pressure (bar)")
+                plt.ylim((vulcan_cfg.P_b/1.E6, vulcan_cfg.P_t/1.E6))
+            else:
+                plt.plot(ymix[:, species.index(sp)], atm.zmco/1.e5,
+                         color=color, label=sp)
+                plt.ylim((atm.zco[0]/1e5, atm.zco[0]/1e5))
+                plt.ylabel("Height (km)")
+        plt.title(str(para.count) + ' steps and '
+                  + "{:.2e}".format(var.t) + ' s')
+        plt.gca().set_xscale('log')
+        plt.xlim(1.E-20, 1.)
+        plt.legend(frameon=0, prop={'size':14}, loc=3)
+        plt.xlabel("Mixing Ratios")
+        plt.savefig(plot_dir + 'mix.png')
+        if vulcan_cfg.use_live_plot == True:
+            plt.draw()
+        elif getattr(vulcan_cfg, 'use_PIL', False) == True:
+            from PIL import Image
+            plot = Image.open(plot_dir + 'mix.png')
+            plot.show()
+            plt.close()
+
+    def plot_evo(self, var, atm, plot_j=-1, plot_ymin=1e-20, dn=1):
+        plt = _import_plt()
+        plot_spec = vulcan_cfg.plot_spec
+        plot_dir = vulcan_cfg.plot_dir
+        plt.figure('evolution')
+        ymix_time = np.array(np.asarray(var.y_time)
+                             / atm.n_0[:, np.newaxis])
+        for i, sp in enumerate(plot_spec):
+            plt.plot(np.asarray(var.t_time)[::dn],
+                     ymix_time[::dn, plot_j, species.index(sp)],
+                     c=plt.cm.rainbow(float(i)/len(plot_spec)),
+                     label=sp)
+        plt.gca().set_xscale('log')
+        plt.gca().set_yscale('log')
+        plt.xlabel('time')
+        plt.ylabel('mixing ratios')
+        plt.ylim((plot_ymin, 1.))
+        plt.legend(frameon=0, prop={'size':14}, loc='best')
+        plt.savefig(plot_dir + 'evo.png')
+        if getattr(vulcan_cfg, 'use_PIL', False) == True:
+            from PIL import Image
+            plot = Image.open(plot_dir + 'evo.png')
+            plot.show()
+            plt.close()
+
+    def plot_evo_inter(self, var, atm, plot_j=-1, plot_ymin=1e-20, dn=1):
+        var.t_time = np.array(var.t_time)
+        self.plot_evo(var, atm, plot_j=plot_j, plot_ymin=plot_ymin, dn=dn)
+
+    def plot_TP(self, atm):
+        plt = _import_plt()
+        plot_dir = vulcan_cfg.plot_dir
+        fig, ax1 = plt.subplots()
+        ax2 = ax1.twiny()
+        if vulcan_cfg.plot_height == False:
+            ax1.semilogy(atm.Tco, atm.pco/1.e6, c='black')
+            ax2.loglog(atm.Kzz, atm.pico[1:-1]/1.e6, c='k', ls='--')
+            plt.gca().invert_yaxis()
+            plt.ylim((vulcan_cfg.P_b/1.E6, vulcan_cfg.P_t/1.E6))
+            ax1.set_ylabel("Pressure (bar)")
+        else:
+            ax1.plot(atm.Tco, atm.zmco/1.e5, c='black')
+            ax2.semilogx(atm.Kzz, atm.zmco[1:]/1.e5, c='k', ls='--')
+            ax1.set_ylabel("Height (km)")
+        ax1.set_xlabel("Temperature (K)")
+        ax2.set_xlabel(r'K$_{zz}$ (cm$^2$s$^{-1}$)')
+        plot_name = plot_dir + 'TPK.png'
+        plt.savefig(plot_name)
+        if getattr(vulcan_cfg, 'use_PIL', False) == True:
+            from PIL import Image
+            plot = Image.open(plot_name)
+            plot.show()
+            plt.close()
+        else:
+            plt.show(block=False)

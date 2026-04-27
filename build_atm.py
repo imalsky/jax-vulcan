@@ -1,5 +1,4 @@
 import numpy as np
-from numpy import polynomial
 import scipy
 from scipy import interpolate
 import scipy.optimize as sop

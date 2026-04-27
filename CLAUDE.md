@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 VULCAN-JAX is a JAX-accelerated port of [VULCAN](https://github.com/exoclime/VULCAN) (Tsai et al. 2017/2021), the photochemical-kinetics solver for exoplanet atmospheres. The goal is one codebase that runs on CPU and GPU, is fully vectorized (jit + vmap), is numerically equivalent to VULCAN-master, and is clean — no dead code, no legacy fallbacks, no magic numbers outside `vulcan_cfg.py`.
 
-VULCAN-JAX is **standalone** (Phase A). `python vulcan_jax.py` runs end-to-end with no `../VULCAN-master/` sibling. The HD189-relevant data files (`atm/`, `thermo/`, `fastchem_vulcan/`, ~28 MB) are vendored copies, and `op.ReadRate` + `op.Output` are vendored into `legacy_io.py`. `vulcan_jax.py` and `op_jax.py` no longer `sys.path.append` upstream.
+VULCAN-JAX is **standalone** (Phase A). `python vulcan_jax.py` runs end-to-end with no `../VULCAN-master/` sibling. The supported Earth / Jupiter / HD189 / HD209 Ros2 runtime assets (`atm/`, `thermo/`, `fastchem_vulcan/`, `cfg_examples/`) are vendored locally, and `op.ReadRate` + `op.Output` are vendored into `legacy_io.py`. `vulcan_jax.py` and `op_jax.py` no longer `sys.path.append` upstream.
 
 `../VULCAN-master/` is the upstream reference. When present, it serves as an *optional* validation oracle: 10 tests compare JAX outputs against upstream's NumPy reference (`op.diffdf`, `op.Ros2.solver`, `chem_funs.symjac`, etc.) and skip cleanly with a clear reason when the sibling is absent. Do not refactor it.
 
@@ -52,15 +52,27 @@ The `-n` flag on `vulcan_jax.py` is accepted for upstream compatibility but is a
 ```
 outer_loop.OuterLoop  (single jit'd lax.while_loop — full integration)
   └── jax_step.jax_ros2_step  (jit'd, vmap-able, GPU-ready)
-        ├── chem.chem_rhs        (segment_sum, vmapped over layers)
-        ├── chem.chem_jac        (jacrev per layer, vmapped)
-        ├── diffusion.apply_*    (eddy + molecular, four modes)
-        └── solver.block_thomas  (two lax.scan: forward elim + back sub)
+        ├── chem.chem_rhs                  (segment_sum, vmapped over layers)
+        ├── chem.chem_jac_analytical       (Phase 11; stoichiometry-driven scatter)
+        ├── jax_step.compute_diff_grav     (Phase 12; y-independent, computed
+        │                                   once per Ros2 step instead of twice)
+        ├── jax_step._build_diff_coeffs_jax (eddy + molecular, four modes)
+        └── solver.block_thomas_diag_offdiag (Phase 12; diagonal-aware
+                                              off-diagonals — O(ni²) rank update)
 
   Photochemistry: photo.py JAX kernels (compute_tau / compute_flux / compute_J)
                   fire inside the runner via lax.cond on update_photo_frq.
   Pre-loop setup: legacy_io.ReadRate (rates + photo bins) + Output.save_cfg /
                   save_out (.vul writer). Vendored from upstream op.py.
+
+  Differentiability: per-step kernels are all jit/vmap/jvp/vjp compatible.
+                  The runner's lax.while_loop supports jvp but NOT vjp; for
+                  reverse-mode AD across the converged state, use
+                  steady_state_grad.differentiable_steady_state or the
+                  structured-input helpers in `steady_state_grad.py` — a
+                  jax.custom_vjp using the implicit-function theorem
+                  (∂y*/∂theta = -(∂f/∂y)^{-1} (∂f/∂theta)). O(1) memory
+                  in step count.
 ```
 
 `chem_funs.py` is a JAX-native module (Phase 9) that re-exports `ni`/`nr`/`spec_list`/`Gibbs`/`chemdf` etc. from `network.py` + `gibbs.py` + `chem.py`. No SymPy code generator; `make_chem_funs.py` is not invoked at startup. `symjac` raises `NotImplementedError` — production uses `chem.chem_jac` directly.
@@ -83,12 +95,14 @@ Numerical agreement vs VULCAN-master (HD189, SNCHO_photo_network_2025):
 ## Numerical hygiene
 
 - **float64 is non-negotiable.** `jax.config.update('jax_enable_x64', True)` is set at module import. Rate constants span ~50 orders of magnitude; float32 silently fails. Don't relax this anywhere.
-- **`chem_jac` uses `jax.jacrev`, not `jacfwd`.** Reverse-mode handles the `segment_sum` scatter pattern more efficiently AND gives slightly better numerical accuracy on this network (4.3e-13 vs 6e-11 for jacfwd). Don't switch back without re-benchmarking on the full HD189 network.
+- **Production uses `chem.chem_jac_analytical`, not `chem.chem_jac`.** Phase 11 replaced `jax.jacrev(chem_rhs_per_layer)` with a stoichiometry-driven analytical build (`chem_jac_analytical`); chem_jac drops 95 ms → 2.6 ms. The `chem.chem_jac` (jacrev) path is kept as the test oracle for `test_chem_jac_sparse.py`. Don't replace the analytical path with AD without re-benchmarking — the speedup is not free, the analytical form skips structurally-zero entries that AD materialises.
+- **block_thomas: production uses `block_thomas_diag_offdiag` (Phase 12).** When sup/sub are diagonal-in-species (which they always are for the diffusion Jacobian), the dense `O(ni³)` matmul `C_j @ inv(A_prev) @ B_{j-1}` reduces to an `O(ni²)` rank update. The dense `block_thomas` stays for callers with truly dense off-diagonals.
 - **`NetworkArrays` is a registered pytree** (`jax.tree_util.register_pytree_node`). `ni`/`nr` ride as static aux_data so `jit`/`vmap` don't retrace per-network and callers don't need `static_argnames` everywhere.
 - **`pos_cut` / `nega_cut` clipping** is replicated explicitly in the outer loop, matching `op.py:2450-2473`. Don't move it into the JIT'd kernel — VULCAN's order matters.
 - **Asymmetric M factor for dissociation reactions.** For `HNCO + M -> H + NCO` (R1051), M is on the LHS only; the forward rate is `k * y[HNCO] * M` (3-body), but the reverse `H + NCO -> HNCO` is bimolecular *without* M. VULCAN's auto-generated `chem_funs` preserves this asymmetry by iterating literal reactant/product lists. `network.py` tracks `has_M_reac` and `has_M_prod` separately, so `is_three_body[forward_i]` and `is_three_body[reverse_i+1]` may differ. Anything that assumes symmetry between forward and reverse three-body status is wrong.
 - **`chem_rhs` cancellation floor.** `chem_rhs` accumulates 20–40 terms per species with production/loss cancellation; relative error vs VULCAN's `chemdf` is ~1e-4 for a few species (CH2_1, HC3N, HCCO at certain layers). This is summation-order sensitivity (`segment_sum` tree reduction vs SymPy's flat sum). The NumPy reference path gives ~3e-5 in the same cells. **Both are mathematically equivalent**; tests on `chem_rhs` use `rtol=1e-3`. The Jacobian has much less per-entry cancellation and agrees to machine precision.
 - **Diffusion Jacobian: VULCAN-master vs ourselves.** `apply_diffusion` matches `op.diffdf` to 2e-6 (FP noise from extracting small residues from `c0~1e10` cancellations). Block diagonals match `op.lhs_jac_tot` to machine precision for sup/sub blocks but disagree at a handful of diagonal cells for heavy condensables (S8, layers 5 and 25). Direct comparison with the analytical derivative of `op.diffdf` confirms our Jacobian is correct — `op.lhs_jac_tot` has a minor self-inconsistency. Impact on integration is negligible; don't try to "fix" us to match upstream there.
+- **`outer_loop.runner` is forward-mode-AD-only.** `jax.lax.while_loop` supports `jvp`/`jacfwd` but raises on `vjp`/`grad`. For reverse-mode through the integration, route through `steady_state_grad.py`'s implicit-function-theorem API. The synthetic test in `tests/test_steady_state_grad.py` validates both the legacy `k_arr` wrapper and the structured-input pytree path against finite differences; the gradient accuracy is bounded by the runner's residual `||f(y*)||`, so use `validate_steady_state_solution(...)` / `steady_state_value_and_grad(...)` and tighten the forward convergence criterion when the default `yconv_cri = 0.01` residual is too loose.
 
 ## Output schema
 
@@ -102,7 +116,7 @@ Same keys, same array shapes, same dtypes (float64) as VULCAN-master. **All JAX 
 
 ## Test discipline
 
-**Current state (Phase 10.7 done):** `pytest tests/` discovers and runs all 26 tests. Most files use a thin `def test_main(): assert main() == 0` wrapper around their existing script-style `main()`; two tests (`test_diffusion`, `test_ros2_step`) wrap the script as a subprocess because they do a deliberate VULCAN-master ↔ VULCAN-JAX module-table swap that only works from a cold Python start. The conden test was already pytest-native. Per-test fixture sharing for the HD189 reference state is a future cleanup (not a correctness gap). Run serially — parallel collides on FastChem.
+**Current state:** `pytest tests/` is green on the current tree. Most files still use a thin `def test_main(): assert main() == 0` wrapper around their existing script-style `main()`; two tests (`test_diffusion`, `test_ros2_step`) wrap the script as a subprocess because they do a deliberate VULCAN-master ↔ VULCAN-JAX module-table swap that only works from a cold Python start. The suite now also includes `compute_Jion` coverage, vendored example-config setup coverage, and an optional CPU↔GPU parity test that skips cleanly on CPU-only hosts. Per-test fixture sharing for the HD189 reference state is a future cleanup (not a correctness gap). Run serially — parallel collides on FastChem.
 
 A function is "important enough to test" if any of these are true:
 - It's on the per-step hot path (`chem_rhs`, `chem_jac`, `block_thomas`, `apply_diffusion`, photo kernels, `jax_ros2_step`).
@@ -132,7 +146,6 @@ Phase 10 of the JAX port is complete (10.1 → 10.7): the outer loop is a single
 
 Remaining open work:
 
-- **Mid-run `fix_species` trigger** (Earth / Jupiter): the one-shot mid-run capture/clamp from `op.py:856-895` is not yet ported. HD189 has `fix_species=[]` so this is dormant; configs that would hit it print a one-time warning at startup.
-- **`compute_Jion`** (photoionisation rates): out of scope for HD189; raises `NotImplementedError`. Add a JAX port mirroring `compute_J_jax` if/when an ionised config is exercised end-to-end.
+- **Backend-parity benchmarking on real GPU hardware.** The kernels are GPU-ready and the repository now includes standalone backend-safe benchmark scripts, but checked-in CPU↔GPU float64 parity numbers still need to be recorded on an actual GPU machine.
 - **Per-test fixture sharing**: `pytest tests/` runs the suite today via thin `def test_main(): assert main() == 0` wrappers; a follow-up cleanup could share an HD189 reference-state fixture across tests in `conftest.py` to cut per-test setup. Parallel execution (`pytest -n auto`) collides on FastChem's fixed output path — run serially.
-- **Custom analytical sparse Jacobian (Phase 11).** ✅ Done. `chem.chem_jac_analytical` replaces `jax.jacrev(chem_rhs_per_layer)` with a stoichiometry-driven analytical build: chem_jac drops 95 ms → 2.6 ms (36×); full step 149 ms → 47 ms (3.2×). Bit-exact (≤1e-13) vs the AD path. The leave-one-out reactant product avoids `(stoich/y)*rate` divide-by-zero when reactant abundance is exactly zero.
+- **Live plotting / movie output remain intentionally unsupported in the JAX runtime.** `runtime_validation.py` rejects those flags before JIT setup rather than silently degrading.

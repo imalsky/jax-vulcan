@@ -69,7 +69,6 @@ def main() -> int:
     print(f"  range: [{tau_ref.min():.3e}, {tau_ref.max():.3e}]")
 
     # === Pack photo data and run JAX version ===
-    species = list(data_var.var_save) if False else None
     import chem_funs
     species_list = chem_funs.spec_list
 

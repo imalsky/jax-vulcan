@@ -10,12 +10,10 @@ Design:
     those tensors inside JIT'd kernels.
   - `compute_tau_jax` uses `jnp.cumsum` for the top-down accumulation,
     replacing VULCAN's explicit Python `for j in range(nz-1, -1, -1)` loop.
-  - `compute_flux_jax` (TODO) will use two `jax.lax.scan`s for the down/up
-    flux propagation.
-  - `compute_J_jax` (TODO) is a tensor contraction + trapezoid integration.
-
-Currently implemented: `compute_tau_jax`. The other two are stubs; for
-production runs, `vulcan_jax.py` inherits VULCAN's NumPy versions.
+  - `compute_flux_jax` uses two `jax.lax.scan`s for the down/up flux
+    propagation, matching the upstream two-stream recursion.
+  - `compute_J_jax` / `compute_Jion_jax` are tensor contractions plus the
+    same two-bin-spacing trapezoid integration as upstream VULCAN.
 """
 
 from __future__ import annotations
@@ -204,8 +202,11 @@ def compute_flux_jax(
     w0 = jnp.where(jnp.isnan(w0), 0.0, w0)
     w0 = jnp.minimum(w0, 1.0 - 1e-8)
 
-    # Direct beam (Beer's law)
-    sflux = sflux_top[None, :] * jnp.exp(-tau / jnp.cos(jnp.arccos(-mu_ang)))
+    # Direct beam (Beer's law). Upstream op.py writes this as
+    # `exp(-tau / cos(arccos(-mu_ang)))` — same value as `exp(tau / mu_ang)`
+    # since `cos(arccos(x)) = x` and mu_ang = -mu_zenith, so -mu_ang ∈ [0,1]
+    # is in the valid arccos range. We drop the trig pair.
+    sflux = sflux_top[None, :] * jnp.exp(tau / mu_ang)
     dir_flux = sflux * (-mu_ang)
 
     # Transmission and matrix coefficients (vectorized over nz, nbin)
@@ -346,6 +347,36 @@ def pack_photo_J_data(var, vulcan_cfg) -> PhotoJData:
     )
 
 
+def pack_photo_ion_data(var, vulcan_cfg) -> PhotoJData:
+    """Pack VULCAN's cross_Jion dict into a JAX-friendly ion-rate table.
+
+    Upstream `compute_Jion` does not have a temperature-dependent branch, so
+    the returned `PhotoJData` always has an empty `cross_J_T` / `branch_T_keys`
+    payload and reuses the same integration kernel as neutral photolysis.
+    """
+    branch_keys = []
+    for sp in var.ion_sp:
+        for nbr in range(1, var.ion_branch[sp] + 1):
+            branch_keys.append((sp, nbr))
+
+    nbin = var.nbin
+    nz = var.aflux.shape[0]
+    if branch_keys:
+        cross_J = np.stack([np.asarray(var.cross_Jion[k]) for k in branch_keys], axis=0)
+    else:
+        cross_J = np.zeros((0, nbin))
+
+    return PhotoJData(
+        cross_J=jnp.asarray(cross_J),
+        cross_J_T=jnp.zeros((0, nz, nbin), dtype=jnp.float64),
+        din12_indx=int(var.sflux_din12_indx),
+        dbin1=float(var.dbin1),
+        dbin2=float(var.dbin2),
+        branch_keys=tuple(branch_keys),
+        branch_T_keys=tuple(),
+    )
+
+
 @_partial(jax.jit, static_argnames=("din12_indx",))
 def _compute_J_inner(aflux, cross_J, cross_J_T, din12_indx, dbin1, dbin2):
     """JIT'd inner loop of compute_J. Returns (J_per_branch, J_per_T_branch)."""
@@ -418,6 +449,11 @@ def compute_J_jax(aflux: jnp.ndarray, photo_J: PhotoJData):
     return J_sp
 
 
+def compute_Jion_jax(aflux: jnp.ndarray, photo_ion: PhotoJData):
+    """Compute photoionization J-rates per (species, branch)."""
+    return compute_J_jax(aflux, photo_ion)
+
+
 @_partial(jax.jit, static_argnames=("din12_indx",))
 def compute_J_jax_flat(aflux, cross_J, cross_J_T, din12_indx, dbin1, dbin2):
     """Flat-output version of compute_J_jax: returns (J_br, J_br_T) arrays.
@@ -441,6 +477,32 @@ def compute_J_jax_flat(aflux, cross_J, cross_J_T, din12_indx, dbin1, dbin2):
     return _compute_J_inner(aflux, cross_J, cross_J_T, din12_indx, dbin1, dbin2)
 
 
+def compute_Jion_jax_flat(aflux, cross_J, din12_indx, dbin1, dbin2):
+    """Flat-output photoionization integration helper."""
+    return _compute_J_inner(
+        aflux,
+        cross_J,
+        jnp.zeros((0, aflux.shape[0], cross_J.shape[1]), dtype=aflux.dtype),
+        din12_indx,
+        dbin1,
+        dbin2,
+    )[0]
+
+
+def _pack_branch_to_k_index_map(branch_keys, rate_index, remove_list):
+    """Build static branch -> k_arr row index tables for photo or ion updates."""
+    remove_set = set(remove_list or [])
+    n_br = len(branch_keys)
+    re_idx = np.zeros(n_br, dtype=np.int64)
+    active = np.zeros(n_br, dtype=bool)
+    for i, key in enumerate(branch_keys):
+        idx = rate_index.get(key)
+        if idx is not None and idx not in remove_set:
+            re_idx[i] = int(idx)
+            active[i] = True
+    return jnp.asarray(re_idx), jnp.asarray(active)
+
+
 def pack_J_to_k_index_map(photo_J, var, vulcan_cfg):
     """Build static index arrays mapping each branch to its `var.k` reaction index.
 
@@ -456,29 +518,26 @@ def pack_J_to_k_index_map(photo_J, var, vulcan_cfg):
     k_arr[branch_re_idx], which is a no-op as long as inactive entries point
     at index 0 (an unused slot since reactions are 1-indexed).
     """
-    remove_set = set(vulcan_cfg.remove_list or [])
-    pho_rate_index = var.pho_rate_index
+    re_idx, active = _pack_branch_to_k_index_map(
+        photo_J.branch_keys,
+        var.pho_rate_index,
+        vulcan_cfg.remove_list,
+    )
+    re_T_idx, active_T = _pack_branch_to_k_index_map(
+        photo_J.branch_T_keys,
+        var.pho_rate_index,
+        vulcan_cfg.remove_list,
+    )
+    return re_idx, active, re_T_idx, active_T
 
-    n_br = len(photo_J.branch_keys)
-    n_br_T = len(photo_J.branch_T_keys)
-    re_idx = np.zeros(n_br, dtype=np.int64)
-    active = np.zeros(n_br, dtype=bool)
-    re_T_idx = np.zeros(n_br_T, dtype=np.int64)
-    active_T = np.zeros(n_br_T, dtype=bool)
 
-    for i, key in enumerate(photo_J.branch_keys):
-        idx = pho_rate_index.get(key)
-        if idx is not None and idx not in remove_set:
-            re_idx[i] = int(idx)
-            active[i] = True
-    for i, key in enumerate(photo_J.branch_T_keys):
-        idx = pho_rate_index.get(key)
-        if idx is not None and idx not in remove_set:
-            re_T_idx[i] = int(idx)
-            active_T[i] = True
-
-    return (jnp.asarray(re_idx), jnp.asarray(active),
-            jnp.asarray(re_T_idx), jnp.asarray(active_T))
+def pack_Jion_to_k_index_map(photo_ion, var, vulcan_cfg):
+    """Build branch -> k_arr row index tables for photoionization updates."""
+    return _pack_branch_to_k_index_map(
+        photo_ion.branch_keys,
+        var.ion_rate_index,
+        vulcan_cfg.remove_list,
+    )
 
 
 @jax.jit
@@ -507,7 +566,9 @@ def update_k_with_J(k_arr, J_br, J_br_T,
     safe_J_br_T = jnp.where(branch_T_active[:, None],
                             J_br_T_scaled,
                             k_arr[0][None, :])
-    k_arr = k_arr.at[branch_re_idx].set(safe_J_br)
-    k_arr = k_arr.at[branch_T_re_idx].set(safe_J_br_T)
-    return k_arr
-
+    # Single fused scatter: non-T and T-dep branch index sets are partitioned
+    # at pack time (disjoint by construction), so we can concatenate and write
+    # in one .at[].set() call. Saves one scatter dispatch per photo update.
+    combined_idx = jnp.concatenate([branch_re_idx, branch_T_re_idx], axis=0)
+    combined_J = jnp.concatenate([safe_J_br, safe_J_br_T], axis=0)
+    return k_arr.at[combined_idx].set(combined_J)

@@ -10,9 +10,11 @@ A JAX-accelerated, drop-in compatible port of [VULCAN](https://github.com/exocli
 
 ## TL;DR
 
-Phases 0–10 complete; **Phase A (standalone refactor) is complete** — VULCAN-JAX no longer depends on `../VULCAN-master/` at runtime. The forward model runs end-to-end and matches VULCAN-master to **1.59e-10 maximum relative error** on a 50-step HD189 integration. The codebase totals ~7500 lines of new code; `chem_funs.py` is JAX-native (no SymPy code generator). `pytest tests/` runs **27 tests** in ~60 s with VULCAN-master present; **17 pass + 10 skip cleanly** with VULCAN-master absent (the 10 oracle tests compare against upstream and skip with a clear reason when upstream is gone).
+Phases 0–10, A, 11, and **12 (runtime parity extension + end-to-end differentiability)** complete. VULCAN-JAX no longer depends on `../VULCAN-master/` at runtime, matches it to **1.59e-10 max relative error** on a 50-step HD189 kernel comparison, and now exposes implicit-function-theorem gradients of the converged state through the structured-input API in `steady_state_grad.py`. The current test surface includes runtime, ion-photo, example-config, and optional backend-parity coverage; with `VULCAN-master` present on this CPU-only host the current run is **34 pass + 1 skip** (`test_backend_parity` skips cleanly without a GPU), and the upstream-oracle tests still skip cleanly when `../VULCAN-master/` is absent.
 
-**Performance**: ~47 ms/step warm (Phase 11 — analytical Jacobian) — **3.2× faster** than Phase 10.6 (149 ms/step) and **3.7× faster** than VULCAN-master (175 ms/step). The win comes from replacing `jax.jacrev(chem_rhs_per_layer)` with a stoichiometry-driven analytical Jacobian (`chem.chem_jac_analytical`): per-call chem_jac time drops from 95 ms to 2.6 ms (**36× speedup**), making chem_jac no longer the dominant cost. Earlier milestones: Phase 10.4 was 185 ms/step; Phase 10.5 single-shot runner brought it to 149 ms/step (host-sync removal); Phase 10.6/10.7 were code-cleanliness milestones with no perf change.
+**Performance**: the repaired benchmark/profile scripts currently report `master_ros2_step_ms=125.993`, `jax_ros2_step_ms=22.618`, and `outer_loop_50step_ms_per_step=39.381` on the HD189 default case. The main wins remain the analytical chemistry Jacobian, diagonal-aware block-tridiagonal factorization reuse across both Rosenbrock stages, and pre-baked y-independent diffusion terms.
+
+**Differentiability** (Phase 12): every per-step kernel (`chem_rhs`, `chem_jac_analytical`, `block_thomas_diag_offdiag`, `_build_diff_coeffs_jax`, photo kernels, …) is `jit` / `vmap` / `jvp` / `vjp` compatible. `outer_loop.runner`'s `lax.while_loop` blocks `vjp` (forward-mode `jvp` works), so end-to-end reverse-mode AD goes through `steady_state_grad.py`'s implicit-function-theorem API. The differentiable surface now accepts a typed pytree of runtime inputs (rate constants, transport/diffusion fields, BC fluxes, and photo inputs) and enforces a residual-based convergence check before attaching implicit AD.
 
 The per-step path is fully JAX, the inner accept/reject loop is JIT'd, and every conditional update — photo, atmosphere geometry refresh, hydrostatic balance, condensation, ion charge balance, fix-all-bot, adaptive rtol, photo-frequency switch, ring-buffered convergence check — fires inside the same JIT'd runner. The Python `while not stop()` loop is gone; the runner runs to convergence / `count_max` / `runtime` in one device call:
 - `outer_loop.OuterLoop` (Phase 10.1) replaces `op.Ros2.one_step`'s Python `while True` retry loop with a `jax.lax.while_loop` body that does `jax_ros2_step → clip → step_ok / step_reject → step_size` entirely in JAX.
@@ -25,9 +27,7 @@ The per-step path is fully JAX, the inner accept/reject loop is JIT'd, and every
 
 What remains coupled to upstream (NumPy) for the runtime path:
 - **None** (post-Phase A). `vulcan_jax.py` imports `legacy_io` (vendored copy of `op.ReadRate` + `op.Output`) for one-shot pre-loop setup; the per-step path is fully JAX. `vulcan_jax.py` and `op_jax.py` no longer `sys.path.append` `../VULCAN-master/`.
-- Live progress (`use_print_prog` per-iteration, `use_live_plot`, `use_live_flux`) is opt-out since the runner is single-shot and intermediate progress is not surfaced. A final-state `print_prog` call fires after the runner returns.
-- Mid-run `fix_species` trigger (Earth/Jupiter): not yet ported. HD189 has `fix_species=[]` so this is dormant; runs that would fire it print a one-time warning at startup.
-- `compute_Jion` (photoionisation rates): out of scope for HD189, raises `NotImplementedError` if `use_ion=True` and the runner reaches that path. Charge balance itself (the post-step clamp on `e`) IS implemented in 10.6.
+- Live progress is reduced to the final-state `print_prog` call because the runner is single-shot; plotting/live/movie/save-evolution side paths are intentionally rejected up front by `runtime_validation.py`.
 - Low-T rate caps fire only when their cfg flag is on (HD189 has it off).
 
 ---
@@ -67,7 +67,7 @@ Vendored from VULCAN-master:
 - `phy_const.py` — copied unchanged
 - `vulcan_cfg.py` — copied from VULCAN-master config (HD189 SNCHO_photo_network_2025)
 - `legacy_io.py` (Phase A): vendored `ReadRate` + `Output` from `op.py:49-781,3131-3260` (plot methods dropped). Pre-loop rate-coef parser + `.vul` writer + per-step progress printer.
-- `atm/`, `thermo/`, `fastchem_vulcan/` — vendored data files (HD189 + SNCHO_photo_network_2025 path only, ~28 MB total — drop the unused atmosphere profiles, BC files, test networks, and stellar fluxes that come along with the full upstream tree).
+- `atm/`, `thermo/`, `fastchem_vulcan/`, `cfg_examples/` — vendored runtime data and example configs covering the supported Earth / Jupiter / HD189 / HD209 Ros2 setups.
 
 JAX-native:
 - `chem_funs.py` — **JAX-native module** (Phase 9): re-exports `ni`/`nr`/`spec_list`/`re_dict`/`re_wM_dict`/`Gibbs`/`gibbs_sp` etc. from `network.py` + `gibbs.py` + `chem.py` with NumPy-callable wrappers. No SymPy, no `make_chem_funs.py` step.
@@ -92,9 +92,10 @@ JAX-native:
 | 10.4 | Condensation inside JAX runner: `update_conden_rates` + `h2o_relax` / `nh3_relax` kernels (`conden.py`); conden branch gated by `do_accept & do_conden`; conden updates `var.k` rows persist across body iterations and back to Python via `_unpack_conden_k`. | ✅ Done |
 | 10.5 | Convergence + stop check inside JAX cond_fn: y_time / t_time as ring buffer in carry; longdy / longdydt + adaptive rtol + photo-frequency ini→final switch all run inside the body; runner is one-shot per integration (no Python while-loop). | ✅ Done |
 | 10.6 | Ion charge balance (`e[:] = -dot(y, charge_arr)`) and `use_fix_all_bot` post-step bottom clamp move into the body; `op.Integration` parent class dropped; `jax_integrate_adaptive` removed (subsumed by `OuterLoop`). | ✅ Done |
-| 10.7 | Pytest enablement: `pytest.ini` + `tests/conftest.py` + thin `def test_main(): assert main() == 0` wrappers (subprocess wrappers for two tests with deliberate import-table swaps). `pytest tests/` discovers and runs all 26 tests. | ✅ Done |
-| A | Standalone refactor: vendored `atm/`/`thermo/`/`fastchem_vulcan/` data (~28 MB, HD189-only); vendored `op.ReadRate`+`op.Output` into `legacy_io.py`; dropped `sys.path.append(VULCAN_MASTER)` from runtime; oracle tests skip cleanly when upstream is absent (17 pass + 10 skip without VULCAN-master, 27 pass with it including the new chem_jac_sparse test). | ✅ Done |
+| 10.7 | Pytest enablement: `pytest.ini` + `tests/conftest.py` + thin `def test_main(): assert main() == 0` wrappers (subprocess wrappers for swap-heavy tests). The suite now covers runtime, ion-photo wiring, vendored example configs, and optional backend parity. | ✅ Done |
+| A | Standalone refactor: vendored `atm/`/`thermo/`/`fastchem_vulcan/` data and `cfg_examples/` presets for the supported Earth / Jupiter / HD189 / HD209 Ros2 configs; vendored `op.ReadRate`+`op.Output` into `legacy_io.py`; dropped `sys.path.append(VULCAN_MASTER)` from runtime; oracle tests still skip cleanly when upstream is absent. | ✅ Done |
 | 11 | Custom analytical chemistry Jacobian: replaces `jax.jacrev(chem_rhs_per_layer)` with stoichiometry-driven build in `chem.chem_jac_analytical`. chem_jac drops 95 ms → 2.6 ms (36×); full step 149 ms → 47 ms (3.2×). Bit-exact (≤1e-13) vs AD path. | ✅ Done |
+| 12 | Runtime parity extension + end-to-end differentiability. Added `compute_Jion` photo-ionization wiring, full mid-run `fix_species` / fixed-bottom species semantics, stricter `runtime_validation.py`, structured-input implicit AD with residual gating, factor-once/reuse block-tridiagonal solves, repaired bench/profile scripts, vendored example-config coverage, and a clean `vulture --min-confidence 80` pass. | ✅ Done |
 
 ### Drop-in compatibility
 
@@ -105,7 +106,7 @@ JAX-native:
 
 ### Validation tests
 
-All 27 tests in `tests/` PASS (`pytest tests/`):
+Current CPU-only run with `VULCAN-master` present: **34 PASS + 1 SKIP** (`pytest tests/`). The skipped test is the optional GPU backend-parity check.
 
 ```
 test_network_parse        PASS  ni=93, nr=1192, full spec_list match
@@ -132,6 +133,12 @@ test_conden_jax              PASS  Conden kernels (update_conden_rates, h2o/nh3 
 test_outer_loop_conv         PASS  Single-shot runner: ring-buffered y_time/t_time chronology, longdy/longdydt populated, count_max termination via cond_fn (Phase 10.5)
 test_outer_loop_ion          PASS  Ion charge balance kernel: `e[:] = -dot(y, charge_arr)` formula bit-exact and net electron count zero on synthetic state (Phase 10.6)
 test_chem_jac_sparse         PASS  chem_jac_analytical (Phase 11) vs jacrev path: max relerr ≤1e-13 on real HD189 state (standalone — no VULCAN-master needed)
+test_block_thomas_diag       PASS  block_thomas_diag_offdiag vs dense block_thomas: ≤1e-12 on small system, ≤1e-9 on (nz=120, ni=93); jax.grad finite (Phase 12)
+test_outer_loop_reset        PASS  OuterLoop.reset() invalidates the JIT'd runner cache; rebuilt _Statics carries fresh vulcan_cfg values (Phase 12)
+test_steady_state_grad       PASS  custom_vjp implicit gradient vs central FD on synthetic non-singular system; max |jax-FD|/scale = 1.8e-4 (Phase 12)
+test_photo_ion               PASS  compute_Jion / ion `k_arr` wiring vs direct NumPy integration (Phase 12)
+test_cfg_examples            PASS  vendored Earth / Jupiter / HD209 configs validate and complete pre-loop setup without borrowing files from `VULCAN-master` (Phase 12)
+test_backend_parity          SKIP  optional CPU↔GPU float64 parity check; runs only when a GPU backend is present (Phase 12)
 ```
 
 ### End-to-end validation
@@ -150,19 +157,37 @@ The single-Ros2-step agrees with VULCAN to machine precision (1e-15). After 50 s
 
 ### Performance optimization
 
-**Current state (Phase 10.5+ single-shot runner)**: ~149 ms/step (warm) — **slightly faster than VULCAN-master's ~175 ms/step**, and 19% faster than the per-batch-host-sync Phase 10.4 path (185 ms/step).
+**Current state**: the checked-in timing scripts now reflect the current APIs rather than stale pre-Phase-12 entrypoints. On the HD189 default case they report:
 
-**Profile** (per-step on HD189, Phase 11):
-| Component | Time (Phase 11) | Time (Phase 10.6) |
-|---|---|---|
-| chem_jac (analytical, stoichiometry-driven) | **~2.6 ms** | (jacrev: 95 ms) |
-| block_thomas | ~3 ms | ~3 ms |
-| everything else (rhs, diffusion, photo branch when fired, conden, ring update) | ~41 ms | ~51 ms |
-| **total step** | **~47 ms** | ~149 ms |
+| Metric | Current timing |
+|---|---|
+| `benchmarks/bench_step.py`: upstream `Ros2.solver` single-step | `125.993 ms` |
+| `benchmarks/bench_step.py`: local `jax_ros2_step` | `22.618 ms` |
+| `benchmarks/bench_step.py`: local `OuterLoop` 50-step smoke | `39.381 ms/accepted step` |
+| `tests/profile_step.py`: `pack_k_arr` | `0.270 ms` |
+| `tests/profile_step.py`: `make_atm_static` | `0.726 ms` |
+| `tests/profile_step.py`: `chem_rhs` | `3.753 ms` |
+| `tests/profile_step.py`: `chem_jac_analytical` | `8.292 ms` |
+| `tests/profile_step.py`: block factorization | `8.515 ms` |
+| `tests/profile_step.py`: block solve | `9.050 ms` |
+| `tests/profile_step.py`: full profiled `jax_ros2_step` | `57.585 ms` |
 
 **Key changes**:
 - Phase 9: switched `chem_jac_per_layer` from `jax.jacfwd` to `jax.jacrev` (~25% faster, better numerical accuracy 4.3e-13 vs 6e-11).
 - Phase 11: replaced `jacrev(chem_rhs_per_layer)` with `chem.chem_jac_analytical` — a stoichiometry-driven analytical build that scatters `sign_i * stoich_i * stoich_j * y_j^(stoich_j-1) * (rest_of_factors) * k_r * M_factor` directly into the (ni, ni) Jacobian via `segment_sum`. Bit-exact (≤1e-13 relerr) vs the AD path on HD189 reference state. The leave-one-out reactant product avoids the `(stoich/y)*rate` divide-by-zero trap when reactant abundance is zero (e.g. CH3CCH/CH2CCH2 in initial HD189).
+- Phase 12: `solver.block_thomas_diag_offdiag` now factors the block-tridiagonal LHS once and reuses that factorization across both Rosenbrock stages. The diffusion Jacobian still exploits diagonal-in-species off-diagonals for the `O(ni²)` rank update, and the y-independent gravity contributions are pre-baked via `compute_diff_grav(atm)`.
+
+## Differentiability (Phase 12)
+
+Hot-path kernels — `chem_rhs`, `chem_jac_analytical`, `block_thomas_diag_offdiag`, `_build_diff_coeffs_jax`, `_apply_diffusion_jax`, `compute_tau_jax`, `compute_flux_jax`, `compute_J_jax_flat`, `update_mu_dz_jax`, conden kernels, `jax_ros2_step`, `jax_integrate_fixed_dt` — are all `jit` / `vmap` / `jvp` / `vjp` compatible.
+
+`outer_loop.runner`'s `jax.lax.while_loop` supports `jvp` (forward-mode tangents — verified at the per-step kernel level; `examples/grad_jvp_example.py`) but raises on `vjp` / `grad`. So end-to-end reverse-mode AD across the integration goes through the structured-input helpers in `steady_state_grad.py`:
+
+- The converged state `y*` satisfies `f(y*, theta) = 0` where `f = chem_rhs + diffusion`.
+- Implicit function theorem: `∂y*/∂theta = -(∂f/∂y)^{-1} (∂f/∂theta)`.
+- The `(∂f/∂y)` matrix is the same block-tridiagonal LHS that `block_thomas_diag_offdiag` already inverts every Ros2 step. Backward of `differentiable_steady_state`: 1 transpose solve + 1 `chem_rhs` VJP. **O(1) memory** in step count — no checkpointing required regardless of how many steps the forward integration took.
+
+`tests/test_steady_state_grad.py` validates both the legacy `k_arr` wrapper and the structured-input API against finite differences on a tiny synthetic non-singular system (open chain: zero-order source of A, A→B, B→sink). Max `|jax.grad - FD| / max|FD| = 1.8e-4`. `validate_steady_state_solution(...)` / `steady_state_value_and_grad(...)` now enforce a residual tolerance before attaching implicit AD; if the supplied `y_star` is not converged tightly enough, they fail loudly rather than returning an untrustworthy gradient.
 
 ### Multi-CPU parallelism via pmap
 
@@ -178,7 +203,9 @@ combined with `jax.pmap(jax_ros2_step, ...)` over the batch dimension. Untested 
 
 **Done**: HD189 50 steps (matches to 1.59e-10 post-Phase 9; same on Phase 10.6 path).
 
-**Pending**: Earth (condensation), Jupiter (low-T rates), HD209. The Phase 10.4 conden kernels are bit-exact against the numpy reference but haven't been exercised end-to-end on Earth. **Each convergence run takes 1-5 hours** at current speed; not feasible inside an interactive iteration.
+**Done**: HD189 50-step oracle match; vendored Earth / Jupiter / HD209 configs now validate and complete the full pre-loop setup inside `tests/test_cfg_examples.py`.
+
+**Pending**: matched-step/full-convergence oracle campaigns for Earth, Jupiter, and HD209. Those are still the expensive long-run validation gap, not a missing runtime branch.
 
 ### Pure-JAX `integrate.py` loop
 
@@ -188,63 +215,13 @@ The Phase 10.6 production drop-in is `outer_loop.OuterLoop` (single-shot adaptiv
 
 ---
 
-## ❌ NOT DONE
+## Open follow-ups
 
-### Phase 10 closed — remaining open work
-
-Phases 10.1 ✅, 10.2 ✅, 10.3 ✅, 10.4 ✅, 10.5 ✅, 10.6 ✅, 10.7 ✅:
-the inner per-accepted-step retry loop, photochemistry, atmosphere
-geometry refresh, hydrostatic balance, condensation, ring-buffered
-convergence, adaptive rtol, the photo-frequency switch, ion charge
-balance, and `fix_all_bot` post-step clamping all run inside the
-single `lax.while_loop` runner. The Python `while not stop()` loop in
-`OuterLoop.__call__` is gone, the `op.Integration` parent class is
-dropped, `OuterLoop` is a standalone class, and `pytest tests/` is the
-canonical way to run the suite.
-
-Open work that lands outside the Phase 10 envelope:
-- **Mid-run `fix_species` trigger** (Earth/Jupiter only): HD189 has
-  `fix_species=[]` so this is dormant. Configs that would fire it
-  print a one-time warning at startup. Adding the one-shot trigger
-  detection to the body is straightforward but waits on an Earth /
-  Jupiter integration to validate.
-- **`compute_Jion`** (photoionisation rates): not on the HD189 path;
-  raises `NotImplementedError` if used.
-- **Per-test fixture sharing**: `pytest tests/` works today via thin
-  `def test_main(): assert main() == 0` wrappers around the existing
-  script-style `main()` functions. A future cleanup could share an
-  HD189 reference-state fixture across tests in `conftest.py`,
-  cutting per-test setup time by ~1-3 seconds each. Numerical
-  agreement is unaffected.
-- **Parallel test execution**: `pytest -n auto` collides on FastChem's
-  fixed output path. Run serially.
-
-See `~/.claude/plans/continue-my-jax-port-squishy-platypus.md` for the
-staged plan.
-
-
-### Earth / Jupiter / HD209 full-convergence runs
-
-Inherited support from `op.Ros2` covers condensation (Earth, Jupiter),
-low-T rate caps (Jupiter), and BC variants. Phase 9 added pure-JAX wiring
-for the per-step path. These configs should work end-to-end but haven't
-been run beyond unit-component validation. Convergence runs are 1–5 hours
-each.
-
-### `compute_Jion` photo-ionization wiring
-
-`Ros2JAX` overrides `compute_tau` / `compute_flux` / `compute_J` (Phase 9)
-but inherits `compute_Jion` from `op.ODESolver` since HD189's default has
-`use_ion = False`. For ionized configs, port a JAX version mirroring
-`compute_J_jax` (it's the same wavelength-integration shape using
-`var.cross_Jion`).
-
-### Live plotting / movie output
-
-`use_live_plot = False` recommended (set in test runs). VULCAN-master's
-matplotlib plotting code (`op.py:3262+`) is inherited but not exercised.
-Should "just work" since it's NumPy-based and runs against `var.y` which
-we update normally, but unconfirmed end-to-end.
+- **Matched-step / full-convergence oracle runs for Earth, Jupiter, and HD209.** The supported assets/configs are vendored and their pre-loop setup is tested, but the expensive long-run oracle campaigns are still outstanding.
+- **Checked-in GPU benchmark numbers on real hardware.** The backend-parity test is present and skips cleanly on CPU-only hosts; a GPU machine is still needed to record production timings and float64 parity numbers in the docs.
+- **Per-test fixture sharing.** The suite is correct today but still pays repeated HD189 setup cost in several script-style tests.
+- **Parallel pytest execution.** `pytest -n auto` still collides on FastChem's fixed output path; run serially.
+- **Live plotting / movie output.** These remain intentionally unsupported in the JAX runtime and are rejected by `runtime_validation.py` before setup.
 
 ---
 

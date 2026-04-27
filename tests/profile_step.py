@@ -1,4 +1,5 @@
-"""Profile one Ros2JAX step to find the bottleneck."""
+"""Profile the current VULCAN-JAX Ros2 step implementation."""
+
 from __future__ import annotations
 
 import os
@@ -12,20 +13,17 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
-sys.path.append(str(ROOT.parent / "VULCAN-master"))
 warnings.filterwarnings("ignore")
 
 
-def main():
-    import vulcan_cfg
-    import store
+def _setup_hd189_state():
     import build_atm
-    import op
-    import chem_funs
+    import chem
+    import legacy_io as op
+    import network
     import op_jax
-    import jax_step as js_mod
-    import chem as chem_mod
-    import jax.numpy as jnp
+    import store
+    import vulcan_cfg
 
     data_var = store.Variables()
     data_atm = store.AtmData()
@@ -36,119 +34,128 @@ def main():
         make_atm.sp_sat(data_atm)
     rate = op.ReadRate()
     data_var = rate.read_rate(data_var, data_atm)
+    if vulcan_cfg.use_lowT_limit_rates:
+        data_var = rate.lim_lowT_rates(data_var, data_atm)
     data_var = rate.rev_rate(data_var, data_atm)
+    data_var = rate.remove_rate(data_var)
     ini = build_atm.InitialAbun()
     data_var = ini.ini_y(data_var, data_atm)
     data_var = ini.ele_sum(data_var)
     data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
     make_atm.mol_diff(data_atm)
     make_atm.BC_flux(data_atm)
-    data_var.dt = 1e-10
-    data_var.ymix = data_var.y / np.vstack(np.sum(data_var.y, axis=1))
+    if vulcan_cfg.use_photo:
+        rate.make_bins_read_cross(data_var, data_atm)
+        make_atm.read_sflux(data_var, data_atm)
+        solver = op_jax.Ros2JAX()
+        solver.compute_tau(data_var, data_atm)
+        solver.compute_flux(data_var, data_atm)
+        solver.compute_J(data_var, data_atm)
+        if vulcan_cfg.use_ion:
+            solver.compute_Jion(data_var, data_atm)
+        data_var = rate.remove_rate(data_var)
+    net = chem.to_jax(network.parse_network(vulcan_cfg.network))
+    return data_var, data_atm, net
 
-    data_para = store.Parameters()
-    solver = op_jax.Ros2JAX()
-    solver.naming_solver(data_para)
 
-    nz, ni = data_var.y.shape
+def _pack_k_arr(k_dict, nr: int, nz: int) -> np.ndarray:
+    out = np.zeros((nr + 1, nz), dtype=np.float64)
+    for ridx, vec in k_dict.items():
+        if 1 <= ridx <= nr:
+            out[ridx] = np.asarray(vec, dtype=np.float64)
+    return out
 
-    # === Profile each piece ===
 
-    # Step 1: pack k_arr
-    n_iter = 10
+def _timeit(fn, n_iter: int = 20) -> float:
     t0 = time.time()
     for _ in range(n_iter):
-        k_arr = np.zeros((1192 + 1, nz), dtype=np.float64)
-        for i, vec in data_var.k.items():
-            if 1 <= i <= 1192:
-                k_arr[i] = np.asarray(vec, dtype=np.float64)
-    t_pack = (time.time() - t0) / n_iter * 1000
+        out = fn()
+        if hasattr(out, "block_until_ready"):
+            out.block_until_ready()
+        elif isinstance(out, tuple):
+            for item in out:
+                if hasattr(item, "block_until_ready"):
+                    item.block_until_ready()
+    return (time.time() - t0) / n_iter * 1000.0
 
-    # Step 2: build atm_static
-    t0 = time.time()
-    for _ in range(n_iter):
-        atm_static = js_mod.make_atm_static(data_atm, ni, nz)
-    t_atm = (time.time() - t0) / n_iter * 1000
 
-    # Step 3: jax_ros2_step (compiled + warm)
-    # Warm up
-    sol, delta = js_mod.jax_ros2_step(
-        jnp.asarray(data_var.y), jnp.asarray(k_arr), float(data_var.dt),
-        atm_static, op_jax._NET_JAX
-    )
-    sol.block_until_ready()
-    t0 = time.time()
-    for _ in range(n_iter):
-        sol, delta = js_mod.jax_ros2_step(
-            jnp.asarray(data_var.y), jnp.asarray(k_arr), float(data_var.dt),
-            atm_static, op_jax._NET_JAX
-        )
-        sol.block_until_ready()
-    t_step = (time.time() - t0) / n_iter * 1000
-
-    # Step 4: full Ros2JAX.solver call
-    t0 = time.time()
-    for _ in range(n_iter):
-        # Need to reset var.y between calls
-        data_var2 = store.Variables()
-        data_var2.y = data_var.y.copy()
-        data_var2.ymix = data_var.ymix.copy()
-        data_var2.dt = 1e-10
-        data_var2.k = data_var.k
-        para2 = store.Parameters()
-        para2.solver_str = "solver"
-        solver.solver(data_var2, data_atm, para2)
-    t_solver = (time.time() - t0) / n_iter * 1000
-
-    print(f"Per-call timings (avg over {n_iter} iters):")
-    print(f"  Pack k_arr:        {t_pack:6.1f} ms")
-    print(f"  Build atm_static:  {t_atm:6.1f} ms")
-    print(f"  jax_ros2_step:     {t_step:6.1f} ms")
-    print(f"  Full solver():     {t_solver:6.1f} ms")
-    print(f"  Overhead:          {t_solver - t_step:6.1f} ms (= solver - jax_step)")
-
-    # === Sub-profile inside jax_ros2_step ===
+def main() -> None:
     import jax
+    import jax.numpy as jnp
+
+    import chem as chem_mod
+    from jax_step import (
+        compute_diff_grav,
+        jax_ros2_step,
+        make_atm_static,
+        _build_diff_coeffs_jax,
+    )
+    from solver import (
+        factor_block_thomas_diag_offdiag,
+        solve_block_thomas_diag_offdiag,
+    )
+
+    data_var, data_atm, net = _setup_hd189_state()
+    nz, ni = data_var.y.shape
+    k_arr = _pack_k_arr(data_var.k, net.nr, nz)
+    atm_static = make_atm_static(data_atm, ni, nz)
+
     y_j = jnp.asarray(data_var.y)
-    M_j = jnp.asarray(data_atm.M)
     k_j = jnp.asarray(k_arr)
+    dt = jnp.float64(1e-10)
 
-    # chem_rhs alone
-    chem_rhs_jit = jax.jit(chem_mod.chem_rhs)
-    chem_rhs_jit(y_j, M_j, k_j, op_jax._NET_JAX).block_until_ready()
-    t0 = time.time()
-    for _ in range(n_iter):
-        chem_rhs_jit(y_j, M_j, k_j, op_jax._NET_JAX).block_until_ready()
-    t_rhs = (time.time() - t0) / n_iter * 1000
+    # Warm the full step once so the breakdown is steady-state, not compile time.
+    sol, _ = jax_ros2_step(y_j, k_j, dt, atm_static, net)
+    sol.block_until_ready()
 
-    # chem_jac alone
-    chem_jac_jit = jax.jit(chem_mod.chem_jac)
-    chem_jac_jit(y_j, M_j, k_j, op_jax._NET_JAX).block_until_ready()
-    t0 = time.time()
-    for _ in range(n_iter):
-        chem_jac_jit(y_j, M_j, k_j, op_jax._NET_JAX).block_until_ready()
-    t_jac = (time.time() - t0) / n_iter * 1000
+    grav = compute_diff_grav(atm_static)
+    A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, _ = _build_diff_coeffs_jax(
+        y_j, atm_static, grav
+    )
+    chem_J = chem_mod.chem_jac_analytical(y_j, atm_static.M, k_j, net)
+    diag_d = A_eddy[:, None] + A_mol
+    diag_d = diag_d.at[0].add(
+        jnp.where(
+            atm_static.use_botflux,
+            -atm_static.bot_vdep / atm_static.dzi[0],
+            jnp.zeros_like(atm_static.bot_vdep),
+        )
+    )
+    sup_d = B_eddy[:-1, None] + B_mol[:-1]
+    sub_d = C_eddy[1:, None] + C_mol[1:]
+    eye = jnp.eye(ni)
+    di = jnp.arange(ni)
+    c0 = 1.0 / ((1.0 + 1.0 / jnp.sqrt(2.0)) * dt)
+    diag = c0 * eye[None] - chem_J
+    diag = diag.at[:, di, di].add(-diag_d)
+    sup_neg = -sup_d
+    sub_neg = -sub_d
+    rhs = chem_mod.chem_rhs(y_j, atm_static.M, k_j, net)
 
-    # block_thomas alone (with random LHS)
-    import solver as solver_mod
-    rng = np.random.default_rng(0)
-    diag_test = jnp.asarray(rng.standard_normal((nz, ni, ni)) + 1e10 * np.eye(ni))
-    sup_test = jnp.asarray(rng.standard_normal((nz - 1, ni, ni)) * 1e-3)
-    sub_test = jnp.asarray(rng.standard_normal((nz - 1, ni, ni)) * 1e-3)
-    rhs_test = jnp.asarray(rng.standard_normal((nz, ni)))
-    bt_jit = jax.jit(solver_mod.block_thomas)
-    bt_jit(diag_test, sup_test, sub_test, rhs_test).block_until_ready()
-    t0 = time.time()
-    for _ in range(n_iter):
-        bt_jit(diag_test, sup_test, sub_test, rhs_test).block_until_ready()
-    t_bt = (time.time() - t0) / n_iter * 1000
+    factor_jit = jax.jit(factor_block_thomas_diag_offdiag)
+    solve_jit = jax.jit(solve_block_thomas_diag_offdiag)
+    rhs_jit = jax.jit(chem_mod.chem_rhs)
+    jac_jit = jax.jit(chem_mod.chem_jac_analytical)
+    step_jit = jax.jit(jax_ros2_step)
 
-    print()
-    print("Sub-pieces of jax_ros2_step:")
-    print(f"  chem_rhs (jit):      {t_rhs:6.1f} ms")
-    print(f"  chem_jac (jit):      {t_jac:6.1f} ms")
-    print(f"  block_thomas (jit):  {t_bt:6.1f} ms")
-    print(f"  --> jac is largest expected component")
+    factors = factor_jit(diag, sup_neg, sub_neg)
+    jax.tree.map(lambda x: x.block_until_ready() if hasattr(x, "block_until_ready") else x, factors)
+
+    t_pack = _timeit(lambda: _pack_k_arr(data_var.k, net.nr, nz), n_iter=20)
+    t_atm = _timeit(lambda: make_atm_static(data_atm, ni, nz), n_iter=20)
+    t_rhs = _timeit(lambda: rhs_jit(y_j, atm_static.M, k_j, net), n_iter=20)
+    t_jac = _timeit(lambda: jac_jit(y_j, atm_static.M, k_j, net), n_iter=20)
+    t_factor = _timeit(lambda: factor_jit(diag, sup_neg, sub_neg), n_iter=20)
+    t_solve = _timeit(lambda: solve_jit(factors, rhs), n_iter=20)
+    t_step = _timeit(lambda: step_jit(y_j, k_j, dt, atm_static, net), n_iter=20)
+
+    print(f"pack_k_arr_ms={t_pack:.3f}")
+    print(f"make_atm_static_ms={t_atm:.3f}")
+    print(f"chem_rhs_ms={t_rhs:.3f}")
+    print(f"chem_jac_analytical_ms={t_jac:.3f}")
+    print(f"block_thomas_factor_ms={t_factor:.3f}")
+    print(f"block_thomas_solve_ms={t_solve:.3f}")
+    print(f"jax_ros2_step_ms={t_step:.3f}")
 
 
 if __name__ == "__main__":

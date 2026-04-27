@@ -47,6 +47,7 @@ from phy_const import kb, Navo
 
 import op_jax       # JAX photo helpers
 import outer_loop   # JAX outer integration loop (Phase 10.1+)
+from runtime_validation import validate_runtime_config
 
 abspath = os.path.abspath(sys.argv[0])
 dname = os.path.dirname(abspath)
@@ -75,6 +76,8 @@ data_para.start_time = time.time()
 
 make_atm = build_atm.Atm()
 output = op.Output()
+
+validate_runtime_config(vulcan_cfg, ROOT)
 
 # Save the config copy
 output.save_cfg(dname)
@@ -117,6 +120,8 @@ if vulcan_cfg.use_photo:
     solver.compute_tau(data_var, data_atm)
     solver.compute_flux(data_var, data_atm)
     solver.compute_J(data_var, data_atm)
+    if vulcan_cfg.use_ion:
+        solver.compute_Jion(data_var, data_atm)
     data_var = rate.remove_rate(data_var)
 
 integ = outer_loop.OuterLoop(solver, output)
@@ -127,5 +132,13 @@ integ(data_var, data_atm, data_para, make_atm)
 
 print(f"VULCAN-JAX done. Saving output to {vulcan_cfg.output_dir}{vulcan_cfg.out_name}")
 output.save_out(data_var, data_atm, data_para, dname)
+
+# Phase 16: post-run plotting hooks (master op.py:902-934 equivalents).
+# These fire only when the corresponding cfg flags are on; the chunked
+# driver inside outer_loop already handled live plotting / movie frames.
+if getattr(vulcan_cfg, "use_plot_end", False):
+    output.plot_end(data_var, data_atm, data_para)
+if getattr(vulcan_cfg, "use_plot_evo", False) and getattr(vulcan_cfg, "save_evolution", False):
+    output.plot_evo(data_var, data_atm)
 
 print(f"Total wall time: {time.time() - data_para.start_time:.1f}s")

@@ -30,14 +30,157 @@ asymptotic flop count and avoids the host-device roundtrip when running on GPU.
 
 from __future__ import annotations
 
+from typing import NamedTuple
+
 import jax
 import jax.numpy as jnp
 
 jax.config.update("jax_enable_x64", True)
 
 
+class BlockThomasDiagFactors(NamedTuple):
+    """LU factors for a diagonal-offdiag block-tridiagonal system.
+
+    `diag_lu` / `diag_piv` are the layerwise LU factors of the forward-
+    eliminated diagonal blocks `A'_j`. `sup_d` / `sub_d` are kept so a new
+    RHS can be solved without rebuilding the factorisation.
+    """
+    diag_lu: jnp.ndarray
+    diag_piv: jnp.ndarray
+    sup_d: jnp.ndarray
+    sub_d: jnp.ndarray
+
+
+def factor_block_thomas_diag_offdiag(diag, sup_d, sub_d):
+    """Factor a diagonal-offdiag block-tridiagonal system once.
+
+    Args:
+        diag:  shape (nz, ni, ni)
+        sup_d: shape (nz-1, ni)
+        sub_d: shape (nz-1, ni)
+
+    Returns:
+        BlockThomasDiagFactors for reuse across multiple RHS solves.
+    """
+    nz = diag.shape[0]
+    ni = diag.shape[1]
+
+    lu_factor = jax.scipy.linalg.lu_factor
+    lu_solve = jax.scipy.linalg.lu_solve
+    eye_ni = jnp.eye(ni)
+
+    A0_lu, A0_piv = lu_factor(diag[0])
+
+    def fwd_step(carry, inputs):
+        A_prev_lu, A_prev_piv = carry
+        A_j, b_jm1, c_j = inputs
+        A_prev_inv = lu_solve((A_prev_lu, A_prev_piv), eye_ni)
+        A_new = A_j - (c_j[:, None] * b_jm1[None, :]) * A_prev_inv
+        A_new_lu, A_new_piv = lu_factor(A_new)
+        return (A_new_lu, A_new_piv), (A_new_lu, A_new_piv)
+
+    _, (diag_lu_tail, diag_piv_tail) = jax.lax.scan(
+        fwd_step,
+        (A0_lu, A0_piv),
+        (diag[1:], sup_d, sub_d),
+    )
+
+    diag_lu_full = jnp.concatenate([A0_lu[None], diag_lu_tail], axis=0)
+    diag_piv_full = jnp.concatenate([A0_piv[None], diag_piv_tail], axis=0)
+    return BlockThomasDiagFactors(
+        diag_lu=diag_lu_full,
+        diag_piv=diag_piv_full,
+        sup_d=sup_d,
+        sub_d=sub_d,
+    )
+
+
+def solve_block_thomas_diag_offdiag(factors: BlockThomasDiagFactors, rhs):
+    """Solve a diagonal-offdiag block-tridiagonal system for a new RHS."""
+    lu_solve = jax.scipy.linalg.lu_solve
+
+    rhs0 = rhs[0]
+
+    def fwd_rhs_step(rhs_prev, inputs):
+        A_prev_lu, A_prev_piv, c_j, rhs_j = inputs
+        invA_r = lu_solve((A_prev_lu, A_prev_piv), rhs_prev)
+        rhs_new = rhs_j - c_j * invA_r
+        return rhs_new, rhs_new
+
+    _, rhs_mod_tail = jax.lax.scan(
+        fwd_rhs_step,
+        rhs0,
+        (
+            factors.diag_lu[:-1],
+            factors.diag_piv[:-1],
+            factors.sub_d,
+            rhs[1:],
+        ),
+    )
+    rhs_mod_full = jnp.concatenate([rhs0[None], rhs_mod_tail], axis=0)
+
+    k_last = lu_solve(
+        (factors.diag_lu[-1], factors.diag_piv[-1]),
+        rhs_mod_full[-1],
+    )
+
+    def bwd_step(k_next, inputs):
+        A_lu, A_piv, rhs_mod, b_j = inputs
+        rhs_local = rhs_mod - b_j * k_next
+        k_curr = lu_solve((A_lu, A_piv), rhs_local)
+        return k_curr, k_curr
+
+    _, k_rev = jax.lax.scan(
+        bwd_step,
+        k_last,
+        (
+            factors.diag_lu[:-1][::-1],
+            factors.diag_piv[:-1][::-1],
+            rhs_mod_full[:-1][::-1],
+            factors.sup_d[::-1],
+        ),
+    )
+    return jnp.concatenate([k_rev[::-1], k_last[None]], axis=0)
+
+
+def block_thomas_diag_offdiag(diag, sup_d, sub_d, rhs):
+    """Block-tridiagonal Thomas solve with DIAGONAL super/sub blocks.
+
+    Specialised for the VULCAN diffusion structure where chemistry contributes
+    a dense `(ni, ni)` diagonal block per layer but diffusion is diagonal-in-
+    species — the super and sub blocks are `diag(d)` for some `(ni,)` vector
+    `d`. With diagonal `B = diag(b)` and diagonal `C = diag(c)` and dense
+    `A_prev_inv`:
+
+        (C @ A_prev_inv @ B)[i, k]  =  c[i] * b[k] * A_prev_inv[i, k]
+
+    so the rank-update `A_new = A_j - C_j @ inv(A_prev) @ B_{j-1}` becomes
+    `A_j - (c_j[:, None] * b_{j-1}[None, :]) * A_prev_inv`. This drops the
+    `C @ invA_B` matmul (`O(ni^3)`) to an elementwise multiply (`O(ni^2)`),
+    halving the per-layer flops in the forward elim. Both stages of Ros2
+    benefit because they share the LHS factorisation.
+
+    Args:
+        diag:  shape (nz, ni, ni)  -- per-layer diagonal blocks (full dense)
+        sup_d: shape (nz-1, ni)    -- diagonals of super-diagonal blocks
+        sub_d: shape (nz-1, ni)    -- diagonals of sub-diagonal blocks
+        rhs:   shape (nz, ni)      -- right-hand side per layer
+
+    Returns:
+        k:    shape (nz, ni)       -- solution
+    """
+    factors = factor_block_thomas_diag_offdiag(diag, sup_d, sub_d)
+    return solve_block_thomas_diag_offdiag(factors, rhs)
+
+
 def block_thomas(diag, sup, sub, rhs):
     """Solve a block-tridiagonal system via Thomas's algorithm.
+
+    Generic dense version; consumes full `(nz-1, ni, ni)` super/sub blocks.
+    The hot path in `jax_step.jax_ros2_step` uses `block_thomas_diag_offdiag`
+    instead, which exploits the diffusion-Jacobian's diagonal-in-species
+    structure for ~2x fewer flops per forward-elim step. This dense variant
+    stays for callers / tests with truly dense off-diagonal blocks.
 
     Args:
         diag: shape (nz, ni, ni)   -- per-layer diagonal blocks (full dense)
@@ -77,8 +220,8 @@ def block_thomas(diag, sup, sub, rhs):
         A_new_lu = lu_factor(A_new)
         return (A_new_lu, rhs_new), (A_new_lu, rhs_new)
 
-    inputs = (diag[1:], sup[:-1] if sup.shape[0] >= nz - 1 else sup, sub, rhs[1:])
-    # sup has shape (nz-1, ni, ni); we feed sup[0..nz-2] which is all of it.
+    # sup has shape (nz-1, ni, ni); each forward-elim step j=1..nz-1 consumes
+    # the (j-1)-th sup block, so all of sup is fed as the per-iter input.
     inputs = (diag[1:], sup, sub, rhs[1:])
 
     _, (A_lu_stack, rhs_mod_stack) = jax.lax.scan(fwd_step, (A0_lu, rhs0), inputs)

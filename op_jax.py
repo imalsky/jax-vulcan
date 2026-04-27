@@ -40,6 +40,7 @@ class Ros2JAX:
     def __init__(self):
         self._photo_data = None
         self._photo_J_data = None
+        self._photo_ion_data = None
 
     # ------------------------------------------------------------------
     # Photochemistry: pure-JAX kernels with NumPy boundaries.
@@ -118,15 +119,25 @@ class Ros2JAX:
                 var.k[ridx] = var.J_sp[(sp, nbr)] * vulcan_cfg.f_diurnal
 
     def compute_Jion(self, var, atm):
-        """Photo-ionisation rate; not yet ported to JAX. Phase 10.6 will add this.
+        """Photo-ionisation rate via JAX. Mirrors op.compute_Jion."""
+        if self._photo_ion_data is None:
+            self._photo_ion_data = _photo_mod.pack_photo_ion_data(var, vulcan_cfg)
 
-        Raises so misconfigured `use_ion=True` runs fail loudly instead of
-        silently producing wrong rates.
-        """
-        raise NotImplementedError(
-            "compute_Jion is not yet ported to VULCAN-JAX. Set use_ion=False "
-            "or wait for Phase 10.6 of the JAX port."
+        Jion_sp_jax = _photo_mod.compute_Jion_jax(
+            jnp.asarray(var.aflux), self._photo_ion_data
         )
+        nz_ = var.aflux.shape[0]
+        var.Jion_sp = {
+            (sp, bn): np.zeros(nz_)
+            for sp in var.ion_sp
+            for bn in range(var.ion_branch[sp] + 1)
+        }
+        for (sp, nbr), Jrow in Jion_sp_jax.items():
+            var.Jion_sp[(sp, nbr)] = np.asarray(Jrow, dtype=np.float64)
+            var.Jion_sp[(sp, 0)] = var.Jion_sp[(sp, 0)] + var.Jion_sp[(sp, nbr)]
+            ridx = var.ion_rate_index.get((sp, nbr))
+            if ridx is not None and ridx not in vulcan_cfg.remove_list:
+                var.k[ridx] = var.Jion_sp[(sp, nbr)] * vulcan_cfg.f_diurnal
 
     def naming_solver(self, para):
         """Compatibility shim. VULCAN-JAX targets only Ros2; the solver
