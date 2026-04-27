@@ -1,7 +1,12 @@
-"""Validate pure-JAX integration loop against op_jax.Ros2JAX.
+"""Validate pure-JAX fixed-dt integration loop against jax_ros2_step.
 
-Compares 10 fixed-dt steps via the JIT'd `jax_integrate_fixed_dt` against
-sequential calls to `op_jax.Ros2JAX.solver`. They should agree.
+Compares 10 fixed-dt steps via the JIT'd `jax_integrate_fixed_dt` (one
+`lax.scan`) against sequential Python-driven calls to `jax_ros2_step`
+(same kernel, no scan). They should agree to machine precision.
+
+Phase 10.6 dropped `jax_integrate_adaptive`; it's been subsumed by
+`outer_loop.OuterLoop`. The fixed-dt scan path is still useful for
+benchmarks and as a JIT-vs-Python-loop equivalence check.
 """
 from __future__ import annotations
 
@@ -16,17 +21,15 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
-sys.path.append(str(ROOT.parent / "VULCAN-master"))
 warnings.filterwarnings("ignore")
 
 
 def main() -> int:
     import jax.numpy as jnp
-    import vulcan_cfg
+    import vulcan_cfg  # noqa: F401  (must import to set globals before others)
     import store
     import build_atm
-    import op
-    import op_jax
+    import legacy_io as op
     import outer_loop  # _NET_JAX moved here in Phase 10.1
     import jax_step as js_mod
     import integrate as int_mod
@@ -106,23 +109,16 @@ def main() -> int:
     relerr_ymix = np.abs(ymix_jax - ymix_py) / np.maximum(np.abs(ymix_py), 1e-30)
     print(f"Max ymix relerr: {relerr_ymix.max():.3e}")
 
-    # === Test adaptive version ===
-    print(f"\nPath C: jax_integrate_adaptive (max_steps=20, rtol=0.25)...")
-    t0 = time.time()
-    y_adapt, dt_final, t_final, count_final = int_mod.jax_integrate_adaptive(
-        jnp.asarray(data_var.y), jnp.asarray(k_arr),
-        dt0=1e-10, max_steps=20, rtol=0.25,
-        dt_min=1e-14, dt_max=1e10, atm=atm_static, net=outer_loop._NET_JAX
-    )
-    y_adapt.block_until_ready()
-    t_adapt = time.time() - t0
-    print(f"  20 adaptive steps: {t_adapt:.2f}s ({t_adapt/20*1000:.1f}ms/step)")
-    print(f"  final dt={float(dt_final):.3e}, t={float(t_final):.3e}, count={int(count_final)}")
-
     print()
     ok = max_relerr < 1e-6
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
+
+
+def test_main():
+    """Pytest wrapper. `main()` returns 0 on success; convert to an
+    assertion so `pytest tests/` collects and runs this script."""
+    assert main() == 0
 
 
 if __name__ == "__main__":

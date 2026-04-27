@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 VULCAN-JAX is a JAX-accelerated port of [VULCAN](https://github.com/exoclime/VULCAN) (Tsai et al. 2017/2021), the photochemical-kinetics solver for exoplanet atmospheres. The goal is one codebase that runs on CPU and GPU, is fully vectorized (jit + vmap), is numerically equivalent to VULCAN-master, and is clean — no dead code, no legacy fallbacks, no magic numbers outside `vulcan_cfg.py`.
 
-`../VULCAN-master/` is the upstream reference and lives in this workspace **only as a validation oracle** (and as the source of `atm/`, `thermo/`, `fastchem_vulcan/` data files, currently symlinked). Do not refactor it.
+VULCAN-JAX is **standalone** (Phase A). `python vulcan_jax.py` runs end-to-end with no `../VULCAN-master/` sibling. The HD189-relevant data files (`atm/`, `thermo/`, `fastchem_vulcan/`, ~28 MB) are vendored copies, and `op.ReadRate` + `op.Output` are vendored into `legacy_io.py`. `vulcan_jax.py` and `op_jax.py` no longer `sys.path.append` upstream.
+
+`../VULCAN-master/` is the upstream reference. When present, it serves as an *optional* validation oracle: 10 tests compare JAX outputs against upstream's NumPy reference (`op.diffdf`, `op.Ros2.solver`, `chem_funs.symjac`, etc.) and skip cleanly with a clear reason when the sibling is absent. Do not refactor it.
 
 `../vulcan-emulator/` is an unrelated transformer-surrogate project. Out of scope for this repo.
 
@@ -28,9 +30,10 @@ python vulcan_jax.py                                            # forward model 
 JAX_PLATFORM_NAME=gpu python vulcan_jax.py                      # GPU, no code changes
 XLA_FLAGS=--xla_force_host_platform_device_count=8 python vulcan_jax.py  # multi-CPU for vmap/pmap
 
-pytest tests/                                                    # full suite (target state)
-pytest tests/ -n auto                                            # parallel via pytest-xdist
+pytest tests/                                                    # full suite (run serially)
 pytest tests/ -k "ros2 or block_thomas"                          # filter
+# NOTE: do not use `-n auto` — parallel runs collide on FastChem's fixed
+# output path (see pytest.ini for details).
 
 ruff check .                                                     # lint
 ruff format .                                                    # format
@@ -44,18 +47,20 @@ The `-n` flag on `vulcan_jax.py` is accepted for upstream compatibility but is a
 
 ## Architecture
 
-`vulcan_jax.py` mirrors `vulcan.py`'s orchestration. The hot path:
+`vulcan_jax.py` mirrors `vulcan.py`'s orchestration. The hot path is fully JAX (post-Phase 10) — `outer_loop.OuterLoop` runs as a single JIT'd `lax.while_loop` on device:
 
 ```
-op.Integration (outer loop, NumPy — Phase 10 will port to lax.while_loop)
-  └── Ros2JAX.solver  → jax_step.jax_ros2_step  (jit'd, vmap-able)
+outer_loop.OuterLoop  (single jit'd lax.while_loop — full integration)
+  └── jax_step.jax_ros2_step  (jit'd, vmap-able, GPU-ready)
         ├── chem.chem_rhs        (segment_sum, vmapped over layers)
         ├── chem.chem_jac        (jacrev per layer, vmapped)
         ├── diffusion.apply_*    (eddy + molecular, four modes)
         └── solver.block_thomas  (two lax.scan: forward elim + back sub)
 
   Photochemistry: photo.py JAX kernels (compute_tau / compute_flux / compute_J)
-                  wired into Ros2JAX.compute_{tau,flux,J} overrides.
+                  fire inside the runner via lax.cond on update_photo_frq.
+  Pre-loop setup: legacy_io.ReadRate (rates + photo bins) + Output.save_cfg /
+                  save_out (.vul writer). Vendored from upstream op.py.
 ```
 
 `chem_funs.py` is a JAX-native module (Phase 9) that re-exports `ni`/`nr`/`spec_list`/`Gibbs`/`chemdf` etc. from `network.py` + `gibbs.py` + `chem.py`. No SymPy code generator; `make_chem_funs.py` is not invoked at startup. `symjac` raises `NotImplementedError` — production uses `chem.chem_jac` directly.
@@ -97,7 +102,7 @@ Same keys, same array shapes, same dtypes (float64) as VULCAN-master. **All JAX 
 
 ## Test discipline
 
-**Target state:** every test file uses pytest collection (`def test_*` with `assert`), shared fixtures live in `conftest.py`, and `pytest tests/` runs everything. The 17 standalone scripts under `tests/` (each with `if __name__ == "__main__": main()`) need to migrate.
+**Current state (Phase 10.7 done):** `pytest tests/` discovers and runs all 26 tests. Most files use a thin `def test_main(): assert main() == 0` wrapper around their existing script-style `main()`; two tests (`test_diffusion`, `test_ros2_step`) wrap the script as a subprocess because they do a deliberate VULCAN-master ↔ VULCAN-JAX module-table swap that only works from a cold Python start. The conden test was already pytest-native. Per-test fixture sharing for the HD189 reference state is a future cleanup (not a correctness gap). Run serially — parallel collides on FastChem.
 
 A function is "important enough to test" if any of these are true:
 - It's on the per-step hot path (`chem_rhs`, `chem_jac`, `block_thomas`, `apply_diffusion`, photo kernels, `jax_ros2_step`).
@@ -123,11 +128,11 @@ Don't add tests that just exercise plumbing or duplicate VULCAN's own physics; t
 
 ## Toward fully-JAX (open work)
 
-These are the remaining pieces to make the per-call path fully JAX with no NumPy hot-path code. Track progress in `STATUS.md`, not here.
+Phase 10 of the JAX port is complete (10.1 → 10.7): the outer loop is a single JIT'd `jax.lax.while_loop` with no NumPy hot-path code, no `op.Ros2` inheritance, no `op.Integration` parent class, and no non-Ros2 fallback. `pytest tests/` discovers and runs the suite. Track per-component progress in `STATUS.md`, not here.
 
-- **Outer integration loop.** `op.Integration.__call__` is still NumPy and is called once per accepted step; condensation, ion charge balance, and step accept/reject live there. The plan is `jax.lax.while_loop` carrying `(y, t, dt, accept_count, ...)`. `integrate.py` already has a basic adaptive-dt JAX loop (validated 1.5e-16 vs the Python loop, 1.6× faster); production drop-in still inherits from `op.Integration` and remains the gap.
-- **Remove the `Ros2JAX(op.Ros2)` inheritance** once the outer loop is ported. `Ros2JAX` already overrides every method on the per-step path; the parent class only contributes the outer loop and `lhs_jac_tot` (which `Ros2JAX` does not call). The subclass relationship pulls in NumPy by import alone.
-- **Drop the non-Ros2 solver branch** in `vulcan_jax.py` (the `else: solver = getattr(op, solver_str)()` block). VULCAN-JAX targets Ros2; any other request should error with a clear message.
-- **Decide on `atm/`/`thermo/`/`fastchem_vulcan/` symlinks.** Drop-in-compat shortcut today; long term, either inline only the data we actually need or make the upstream-tree dependency explicit at config-load time.
-- **Tests migration.** Convert the 17 standalone scripts in `tests/` to pytest functions with shared fixtures (`conftest.py` for the HD189 reference state).
-- **Custom analytical sparse Jacobian (Phase 11).** `chem_jac` is 96% of step time and computes a dense `ni×ni`-per-layer block where ~70% of entries are structurally zero. Stoichiometry-driven sparse assembly is the largest single perf lever (estimated 3-5×).
+Remaining open work:
+
+- **Mid-run `fix_species` trigger** (Earth / Jupiter): the one-shot mid-run capture/clamp from `op.py:856-895` is not yet ported. HD189 has `fix_species=[]` so this is dormant; configs that would hit it print a one-time warning at startup.
+- **`compute_Jion`** (photoionisation rates): out of scope for HD189; raises `NotImplementedError`. Add a JAX port mirroring `compute_J_jax` if/when an ionised config is exercised end-to-end.
+- **Per-test fixture sharing**: `pytest tests/` runs the suite today via thin `def test_main(): assert main() == 0` wrappers; a follow-up cleanup could share an HD189 reference-state fixture across tests in `conftest.py` to cut per-test setup. Parallel execution (`pytest -n auto`) collides on FastChem's fixed output path — run serially.
+- **Custom analytical sparse Jacobian (Phase 11).** ✅ Done. `chem.chem_jac_analytical` replaces `jax.jacrev(chem_rhs_per_layer)` with a stoichiometry-driven analytical build: chem_jac drops 95 ms → 2.6 ms (36×); full step 149 ms → 47 ms (3.2×). Bit-exact (≤1e-13) vs the AD path. The leave-one-out reactant product avoids `(stoich/y)*rate` divide-by-zero when reactant abundance is exactly zero.

@@ -147,6 +147,15 @@ slope_cri = 1.e-4
 yconv_min = 0.1
 flux_cri = 0.1
 flux_atol = 1. # the tol for actinc flux (# photons cm-2 s-1 nm-1)
+
+# === VULCAN-JAX outer loop (outer_loop.OuterLoop) ===
+batch_steps = 1         # accepted Ros2 steps per JAX runner call. Phase 10.1
+                        #   uses 1 (semantic match w/ op.Integration). Phase
+                        #   10.5 raises this once history is in carry.
+batch_max_retries = 8   # safety cap on inner accept/reject retries per
+                        #   accepted step inside the JAX body. Mirrors
+                        #   op.py:2518's "Keep producing negative values!"
+                        #   force-accept-and-clip fallback.
 ### use with caution
 conver_ignore = ['HC3N'] # added 2023. to get rid off non-convergent species, e.g. HC3N without sinks 
 

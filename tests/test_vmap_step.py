@@ -16,7 +16,6 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
-sys.path.append(str(ROOT.parent / "VULCAN-master"))
 
 warnings.filterwarnings("ignore")
 
@@ -28,7 +27,7 @@ def main() -> int:
     import vulcan_cfg
     import store
     import build_atm
-    import op
+    import legacy_io as op
     import chem_funs
 
     # Set up state
@@ -121,6 +120,12 @@ def main() -> int:
     ok = relerr < 1e-12
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
+
+
+def test_main():
+    """Pytest wrapper. `main()` returns 0 on success; convert to an
+    assertion so `pytest tests/` collects and runs this script."""
+    assert main() == 0
 
 
 if __name__ == "__main__":

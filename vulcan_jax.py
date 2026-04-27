@@ -24,25 +24,22 @@ import time
 import warnings
 from pathlib import Path
 
-# Make sure both VULCAN-JAX and VULCAN-master are importable.
+# VULCAN-JAX is standalone — it imports its vendored modules from this directory
+# (no sibling-directory sys.path append).
 ROOT = Path(__file__).resolve().parent
-VULCAN_MASTER = ROOT.parent / "VULCAN-master"
 sys.path.insert(0, str(ROOT))
-sys.path.append(str(VULCAN_MASTER))
 
 # Cwd at the script's directory so relative paths in vulcan_cfg.py resolve
 os.chdir(ROOT)
 
-# chem_funs.py is now a JAX-native module in VULCAN-JAX/; no SymPy regen needed.
-# The -n flag is accepted (and ignored) for compatibility with VULCAN scripts.
+# chem_funs.py is JAX-native; the -n flag is accepted as a no-op for back-compat.
 print("Using JAX-native chem_funs (no make_chem_funs.py step required)")
 
 import numpy as np
 
-# Now safe to import VULCAN modules + JAX kernels
 import store
 import build_atm
-import op
+import legacy_io as op  # vendored op.ReadRate + op.Output (Phase A)
 import chem_funs
 
 import vulcan_cfg

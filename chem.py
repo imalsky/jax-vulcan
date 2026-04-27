@@ -163,6 +163,109 @@ chem_jac = jax.vmap(
 )
 
 
+def chem_jac_analytical_per_layer(
+    y: jnp.ndarray,           # [ni]
+    M: float | jnp.ndarray,
+    k: jnp.ndarray,           # [nr+1]
+    net: NetworkArrays,
+) -> jnp.ndarray:
+    """Analytical chemistry Jacobian for one layer, built directly from
+    stoichiometry. Returns dense [ni, ni] block.
+
+    Analytical formula (mirrors what jacrev produces but skips the AD trace):
+
+        J[i, j] = Σ_{rxns r}  Σ_{output slot s_i, reactant slot s_j}
+                     sign_i * stoich_i * (stoich_j / y[reactant[r, s_j]]) * rate[r]
+
+    where sign_i = +1 if `i` is a product in reaction r, -1 if reactant; and
+    stoich_i / stoich_j are the corresponding entries of product_stoich /
+    reactant_stoich. The (stoich_j / y_j) * rate factor is `∂rate[r]/∂y_j`.
+
+    This sidesteps `jax.jacrev`'s materialisation of an `[ni, ni]` block via
+    `ni` reverse-mode passes. For the SNCHO network (~1192 reactions) the
+    analytical form is ~3-5× faster (Phase 11).
+    """
+    yp = jnp.concatenate([y, jnp.ones((1,), dtype=y.dtype)])
+
+    # Per-slot reactant factors: y_l^stoich_l for actual reactants, 1 for padding.
+    y_r = yp[net.reactant_idx]                                     # [nr+1, max_terms]
+    factor_l = jnp.where(
+        net.reactant_stoich > 0, y_r**net.reactant_stoich, 1.0
+    )                                                              # [nr+1, max_terms]
+
+    # Leave-one-out reactant product per slot j: Π_{l != j} factor_l[r, l].
+    # Using a Python loop over the static max_terms axis (typically 3 for VULCAN).
+    max_terms = net.reactant_idx.shape[1]
+    slot_arange = jnp.arange(max_terms)
+    leave_out_cols = []
+    for j in range(max_terms):
+        # Replace slot j's factor with 1 in the product → leave-one-out.
+        f_excl = jnp.where(slot_arange == j, 1.0, factor_l)
+        leave_out_cols.append(jnp.prod(f_excl, axis=1))
+    leave_out = jnp.stack(leave_out_cols, axis=1)                  # [nr+1, max_terms]
+
+    # ∂rate[r]/∂y[reactant_idx[r, s_j]] = stoich_j * y_j^(stoich_j - 1) * leave_out_j * k_r * M_factor
+    # The y^(stoich-1) form sidesteps the (stoich/y)*rate trap when y_j == 0.
+    pow_minus_one = jnp.where(
+        net.reactant_stoich > 0,
+        y_r ** (net.reactant_stoich - 1),
+        0.0,
+    )                                                              # [nr+1, max_terms]
+    drate_dy = (
+        net.reactant_stoich * pow_minus_one * leave_out * k[:, None]
+    )                                                              # [nr+1, max_terms]
+    drate_dy = jnp.where(
+        net.is_three_body[:, None], drate_dy * M, drate_dy
+    )
+
+    # Scatter contributions into J[i, j].
+    # For each reaction r, for each (output slot s_i, reactant slot s_j):
+    #   J[out_idx[r, s_i], reactant_idx[r, s_j]] += sign * out_stoich * drate_dy[r, s_j]
+    #
+    # We unify the "output" axis by concatenating reactant rows (sign -1) and
+    # product rows (sign +1) along the slot dimension. This gives a single
+    # tensor of contributions with shape [nr+1, max_terms*2, max_terms].
+    ni = net.ni
+    PAD = ni                                                       # padding species index
+
+    # Output (i) tables: stack reactants (sign -1) and products (sign +1).
+    out_idx = jnp.concatenate(
+        [net.reactant_idx, net.product_idx], axis=1
+    )                                                              # [nr+1, 2*max_terms]
+    out_stoich_signed = jnp.concatenate(
+        [-net.reactant_stoich, net.product_stoich], axis=1
+    )                                                              # [nr+1, 2*max_terms]
+
+    # Contributions: [nr+1, 2*max_terms, max_terms]
+    # contrib[r, s_i, s_j] = out_stoich_signed[r, s_i] * drate_dy[r, s_j]
+    contrib = out_stoich_signed[:, :, None] * drate_dy[:, None, :]
+
+    # Index pairs: row = out_idx[r, s_i], col = reactant_idx[r, s_j]
+    # Both have shape [nr+1, 2*max_terms, max_terms] after broadcast.
+    row = jnp.broadcast_to(out_idx[:, :, None], contrib.shape)
+    col = jnp.broadcast_to(net.reactant_idx[:, None, :], contrib.shape)
+
+    # Flatten and scatter via segment_sum into (ni+1)*(ni+1) cells. The PAD
+    # row/col cells are discarded at the end.
+    flat_contrib = contrib.reshape(-1)
+    flat_keys = (row.reshape(-1) * (ni + 1) + col.reshape(-1))
+    J_flat = jax.ops.segment_sum(
+        flat_contrib,
+        flat_keys,
+        num_segments=(ni + 1) * (ni + 1),
+        indices_are_sorted=False,
+    )
+    J = J_flat.reshape(ni + 1, ni + 1)[:ni, :ni]
+    return J
+
+
+# Vmapped over layers: J[nz, ni, ni].
+chem_jac_analytical = jax.vmap(
+    chem_jac_analytical_per_layer,
+    in_axes=(0, 0, 1, None),
+)
+
+
 def chem_rhs_numpy(y: np.ndarray, M: np.ndarray, k: np.ndarray, net: Network) -> np.ndarray:
     """NumPy reference implementation (slower; for tests).
 

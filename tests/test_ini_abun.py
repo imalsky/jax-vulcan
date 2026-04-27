@@ -112,5 +112,11 @@ def main() -> int:
     return 0 if ok else 1
 
 
+def test_main():
+    """Pytest wrapper. `main()` returns 0 on success; convert to an
+    assertion so `pytest tests/` collects and runs this script."""
+    assert main() == 0
+
+
 if __name__ == "__main__":
     sys.exit(main())

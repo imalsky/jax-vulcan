@@ -10,16 +10,26 @@ import warnings
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
+
+# Oracle test: requires VULCAN-master sibling for the upstream op.diffdf /
+# op.lhs_jac_tot reference. Skip cleanly when absent.
+VULCAN_MASTER = ROOT.parent / "VULCAN-master"
+if not VULCAN_MASTER.is_dir():
+    pytest.skip(
+        f"VULCAN-master oracle absent at {VULCAN_MASTER}; "
+        "this comparison test requires the upstream sibling repo.",
+        allow_module_level=True,
+    )
 
 warnings.filterwarnings("ignore")
 
 
 def main() -> int:
     # === Set up VULCAN-master state for reference ===
-    VULCAN_MASTER = ROOT.parent / "VULCAN-master"
     sys.path.insert(0, str(VULCAN_MASTER))
 
     import vulcan_cfg as cfg_v
@@ -206,6 +216,24 @@ def main() -> int:
     )
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
+
+
+def test_main():
+    """Pytest wrapper. This test does a deliberate VULCAN-master ↔
+    VULCAN-JAX module-table swap (see `sys.modules.pop` block in
+    `main()`) which only works from a cold Python start. Under pytest
+    the modules are already cached from prior tests, so we run `main()`
+    in a fresh subprocess and assert the exit code."""
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve())],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, (
+        f"subprocess exited {result.returncode}\n"
+        f"--- stdout ---\n{result.stdout}\n"
+        f"--- stderr ---\n{result.stderr}"
+    )
 
 
 if __name__ == "__main__":

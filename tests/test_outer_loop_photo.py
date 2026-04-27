@@ -34,7 +34,6 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
-sys.path.append(str(ROOT.parent / "VULCAN-master"))
 
 warnings.filterwarnings("ignore")
 
@@ -48,7 +47,7 @@ def main() -> int:
         print("SKIP: vulcan_cfg.use_photo=False; nothing to validate.")
         return 0
 
-    import store, build_atm, op, op_jax, outer_loop
+    import store, build_atm, legacy_io as op, op_jax, outer_loop
 
     # --- Build HD189 reference state with the photo pre-loop (as
     # `vulcan_jax.py` does before entering the integration loop). ---
@@ -208,6 +207,12 @@ def main() -> int:
     print()
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
+
+
+def test_main():
+    """Pytest wrapper. `main()` returns 0 on success; convert to an
+    assertion so `pytest tests/` collects and runs this script."""
+    assert main() == 0
 
 
 if __name__ == "__main__":

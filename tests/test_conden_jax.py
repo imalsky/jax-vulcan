@@ -35,8 +35,12 @@ from pathlib import Path
 
 import numpy as np
 import jax
+
+# Enable float64 BEFORE importing jax.numpy or anything that touches JAX —
+# otherwise the kernels run in float32 and the agreement bound silently
+# loosens to ~1e-7. See `outer_loop.py` for the production import path.
 jax.config.update("jax_enable_x64", True)
-import jax.numpy as jnp
+import jax.numpy as jnp  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -57,12 +61,18 @@ def _make_static(nz: int, ni: int,
                  nh3_conden_top=0,
                  n_0=None, gas_indx_mask=None):
     import conden as _conden_mod
-    if h2o_Dg is None: h2o_Dg = np.zeros(nz)
-    if h2o_sat is None: h2o_sat = np.zeros(nz)
-    if nh3_Dg is None: nh3_Dg = np.zeros(nz)
-    if nh3_sat is None: nh3_sat = np.zeros(nz)
-    if n_0 is None: n_0 = np.ones(nz)
-    if gas_indx_mask is None: gas_indx_mask = np.ones(ni, dtype=bool)
+    if h2o_Dg is None:
+        h2o_Dg = np.zeros(nz)
+    if h2o_sat is None:
+        h2o_sat = np.zeros(nz)
+    if nh3_Dg is None:
+        nh3_Dg = np.zeros(nz)
+    if nh3_sat is None:
+        nh3_sat = np.zeros(nz)
+    if n_0 is None:
+        n_0 = np.ones(nz)
+    if gas_indx_mask is None:
+        gas_indx_mask = np.ones(ni, dtype=bool)
     return _conden_mod.CondenStatic(
         conden_re_idx=jnp.asarray(np.asarray(conden_re_idx, dtype=np.int32)),
         conden_sp_idx=jnp.asarray(np.asarray(conden_sp_idx, dtype=np.int32)),
@@ -94,7 +104,7 @@ def _relerr(ref, ours):
     return float(np.max(np.abs(ours - ref) / denom))
 
 
-def test_update_conden_rates() -> bool:
+def test_update_conden_rates():
     """Two condensation reactions over (nz=5, ni=4) — verify scatter,
     sign split, and the use_relax short-circuit (coeff=0 → all-zero rate).
     """
@@ -143,12 +153,12 @@ def test_update_conden_rates() -> bool:
     untouched_err = max(_relerr(k_arr[r], k_jax[r]) for r in (0, 3, 6, 7))
     print(f"untouched rows relerr: {untouched_err:.3e}")
 
-    ok = (err <= KERNEL_RTOL and zero_check < 1e-30
-          and untouched_err <= KERNEL_RTOL)
-    return ok
+    assert err <= KERNEL_RTOL
+    assert zero_check < 1e-30
+    assert untouched_err <= KERNEL_RTOL
 
 
-def test_apply_h2o_relax_jax() -> bool:
+def test_apply_h2o_relax_jax():
     """Verify against a per-cell numpy implementation of op.h2o_conden_evap_relax."""
     import conden as _conden_mod
 
@@ -211,10 +221,11 @@ def test_apply_h2o_relax_jax() -> bool:
     print(f"apply_h2o_relax_jax  ymix relerr: {ymix_err:.3e}")
     print(f"apply_h2o_relax_jax  y    relerr: {y_err:.3e}")
 
-    return ymix_err <= KERNEL_RTOL and y_err <= KERNEL_RTOL
+    assert ymix_err <= KERNEL_RTOL
+    assert y_err <= KERNEL_RTOL
 
 
-def test_apply_nh3_relax_jax() -> bool:
+def test_apply_nh3_relax_jax():
     """Verify against a per-cell numpy implementation of op.nh3_conden_evap_relax,
     including the conden_top clamp and the NH3_l_s >= 0 clip."""
     import conden as _conden_mod
@@ -283,10 +294,11 @@ def test_apply_nh3_relax_jax() -> bool:
     print(f"apply_nh3_relax_jax  ymix relerr: {ymix_err:.3e}")
     print(f"apply_nh3_relax_jax  y    relerr: {y_err:.3e}")
 
-    return ymix_err <= KERNEL_RTOL and y_err <= KERNEL_RTOL
+    assert ymix_err <= KERNEL_RTOL
+    assert y_err <= KERNEL_RTOL
 
 
-def test_no_op_when_inactive() -> bool:
+def test_no_op_when_inactive():
     """When use_relax flags are False, the kernels must pass through unchanged."""
     import conden as _conden_mod
 
@@ -318,23 +330,26 @@ def test_no_op_when_inactive() -> bool:
     print(f"inactive NH3 relax y     relerr: {err_nh3_y:.3e}")
     print(f"inactive NH3 relax ymix  relerr: {err_nh3_ymix:.3e}")
 
-    return all(e <= KERNEL_RTOL for e in
+    assert all(e <= KERNEL_RTOL for e in
                (err_h2o_y, err_h2o_ymix, err_nh3_y, err_nh3_ymix))
 
 
 def main() -> int:
-    ok = True
-    print("--- update_conden_rates ---")
-    ok &= test_update_conden_rates()
-    print("--- apply_h2o_relax_jax ---")
-    ok &= test_apply_h2o_relax_jax()
-    print("--- apply_nh3_relax_jax ---")
-    ok &= test_apply_nh3_relax_jax()
-    print("--- no-op when inactive ---")
-    ok &= test_no_op_when_inactive()
+    try:
+        print("--- update_conden_rates ---")
+        test_update_conden_rates()
+        print("--- apply_h2o_relax_jax ---")
+        test_apply_h2o_relax_jax()
+        print("--- apply_nh3_relax_jax ---")
+        test_apply_nh3_relax_jax()
+        print("--- no-op when inactive ---")
+        test_no_op_when_inactive()
+    except AssertionError as e:
+        print(f"\nFAIL: {e}")
+        return 1
     print()
-    print("PASS" if ok else "FAIL")
-    return 0 if ok else 1
+    print("PASS")
+    return 0
 
 
 if __name__ == "__main__":

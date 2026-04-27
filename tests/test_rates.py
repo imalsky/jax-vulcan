@@ -15,15 +15,23 @@ import warnings
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 # Imports relative to VULCAN-JAX/
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)              # ensure relative paths in vulcan_cfg.py resolve
 sys.path.insert(0, str(ROOT))
 
-# Add VULCAN-master to path so build_atm, op, store, chem_funs can be imported
+# Oracle test: requires VULCAN-master sibling for the upstream `op` reference.
+# Skip cleanly when absent so VULCAN-JAX-only checkouts don't see a hard failure.
 VULCAN_MASTER = ROOT.parent / "VULCAN-master"
-sys.path.insert(0, str(VULCAN_MASTER))
+if not VULCAN_MASTER.is_dir():
+    pytest.skip(
+        f"VULCAN-master oracle absent at {VULCAN_MASTER}; "
+        "this comparison test requires the upstream sibling repo.",
+        allow_module_level=True,
+    )
+sys.path.append(str(VULCAN_MASTER))
 
 # Suppress SciPy / matplotlib chatter
 warnings.filterwarnings("ignore")
@@ -129,6 +137,12 @@ def main() -> int:
         return 0
     print("FAIL")
     return 1
+
+
+def test_main():
+    """Pytest wrapper. `main()` returns 0 on success; convert to an
+    assertion so `pytest tests/` collects and runs this script."""
+    assert main() == 0
 
 
 if __name__ == "__main__":

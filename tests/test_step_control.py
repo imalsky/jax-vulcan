@@ -17,11 +17,22 @@ from pathlib import Path
 
 import numpy as np
 import jax.numpy as jnp
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
-sys.path.append(str(ROOT.parent / "VULCAN-master"))
+
+# Oracle test: requires VULCAN-master sibling for the upstream
+# op.ODESolver.loss / clip / step_size reference. Skip when absent.
+VULCAN_MASTER = ROOT.parent / "VULCAN-master"
+if not VULCAN_MASTER.is_dir():
+    pytest.skip(
+        f"VULCAN-master oracle absent at {VULCAN_MASTER}; "
+        "this comparison test requires the upstream sibling repo.",
+        allow_module_level=True,
+    )
+sys.path.append(str(VULCAN_MASTER))
 
 warnings.filterwarnings("ignore")
 
@@ -147,6 +158,12 @@ def main() -> int:
     print()
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
+
+
+def test_main():
+    """Pytest wrapper. `main()` returns 0 on success; convert to an
+    assertion so `pytest tests/` collects and runs this script."""
+    assert main() == 0
 
 
 if __name__ == "__main__":

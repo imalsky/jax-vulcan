@@ -14,18 +14,9 @@ all live in `outer_loop.py` now as pure-JAX equivalents.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import jax
 import jax.numpy as jnp
-
-# VULCAN-master must be importable so `vulcan_cfg` reads cross-section paths
-# and `phy_const` is available; we no longer import `op` itself.
-_VULCAN_MASTER = Path(__file__).resolve().parent.parent / "VULCAN-master"
-if str(_VULCAN_MASTER) not in sys.path:
-    sys.path.append(str(_VULCAN_MASTER))
 
 import vulcan_cfg
 from chem_funs import ni as _ni, nr as _nr  # noqa: F401  (re-exported for back-compat)
@@ -140,15 +131,14 @@ class Ros2JAX:
     def naming_solver(self, para):
         """Compatibility shim. VULCAN-JAX targets only Ros2; the solver
         dispatch happens at compile time inside `outer_loop.OuterLoop`, so
-        this is a print-only courtesy.
+        this is a print-only courtesy. Phase 10.6 added in-body support
+        for `use_fix_all_bot` and ion charge balance, so all the
+        remaining op.Ros2 BC variants are covered.
         """
         if vulcan_cfg.use_moldiff:
             print("Include molecular diffusion.")
         else:
             print("No molecular diffusion.")
         if getattr(vulcan_cfg, "use_fix_all_bot", False):
-            raise NotImplementedError(
-                "use_fix_all_bot=True is not yet supported by VULCAN-JAX's "
-                "outer loop (Phase 10.6 will add the post-step bottom clamp)."
-            )
+            print("Use fixed bottom BC.")
         para.solver_str = "solver"
