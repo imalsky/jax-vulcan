@@ -1,9 +1,19 @@
 # ==============================================================================
-# Module contains classes that store all the variables used in VULCAN. 
-# Copyright (C) 2016 Shang-Min Tsai (Shami)                    
+# Module contains classes that store all the variables used in VULCAN.
+# Copyright (C) 2016 Shang-Min Tsai (Shami)
 # ==============================================================================
-# There are three classes: Variables, AtmData, and Parameters, which store the main
-# physical variables, atmospheric variables, and numerical parameters, respectively.
+# There are three classes: Variables, AtmData, and Parameters, which store the
+# main physical variables, atmospheric variables, and numerical parameters,
+# respectively.
+#
+# Phase 19: the typed pre-loop input schema is defined in `state.py`
+# (`AtmInputs` / `RateInputs` / `PhotoInputs` / `RunState`) and is the public
+# format that Phases 20+ will produce from JAX-native setup code. The classes
+# below remain the legacy mutable containers; bridging adapters
+# (`pytree_from_store` / `apply_pytree_to_store`) live in `state.py`. The
+# per-step accumulator fields (`y_time`, `t_time`, `dy_time`, retry counters)
+# are intentionally kept on the numpy host side — the runner does not read
+# them and they are written only at host-sync points.
 # ==============================================================================
 
 import numpy as np
@@ -20,10 +30,27 @@ from chem_funs import ni, nr, spec_list  # number of species and reactions in th
 #@jitclass(spec_var)
 class Variables(object):
     """
-    store the essential variables for calculation  
+    store the essential variables for calculation
     """
-    def __init__(self): # self means the created object instance
-        self.k = {}  # rate coefficients: k[1] is the rate constant of R1 reaction at every level (same shape as Tco and pco)
+    def __init__(self, stellar_flux=None): # self means the created object instance
+        # Phase 19: the historical `np.genfromtxt(vulcan_cfg.sflux_file, ...)`
+        # block was extracted into `state.load_stellar_flux(cfg)`. Callers
+        # can pre-load and pass the result via `stellar_flux=...` for the
+        # "no host I/O in __init__" contract that the typed pytrees rely
+        # on; legacy callers that pass nothing still get the file read here
+        # so the existing test surface keeps working.
+        # Phase 22d retired the dict-keyed `var.k` surface from VULCAN-JAX's
+        # production path. The dense `(nr+1, nz)` `var.k_arr` is the source
+        # of truth; the `.vul` writer synthesizes the legacy
+        # `{i: array(nz)}` dict view at pickle time so plot_py/ scripts
+        # that index `d['variable']['k'][i]` keep working unchanged.
+        # `self.k = {}` is retained as an inert empty dict so oracle tests
+        # that build state with VULCAN-JAX's `store.Variables()` and then
+        # hand it to VULCAN-master's `op.ReadRate.read_rate` (which reads
+        # `var.k` for local binding) continue to work; VULCAN-JAX's own
+        # path neither reads nor writes this dict.
+        self.k = {}
+        self.k_arr = None
         self.y = np.zeros((nz, ni)) # current number density in the shape of (number of vertical levels, number of species)
         self.y_prev = np.zeros((nz, ni)) # number density at the previous step
         self.ymix = np.zeros((nz, ni)) # current mixing ratios
@@ -71,13 +98,14 @@ class Variables(object):
         # if photochemistry is off, the value remaines 0 for checking convergence
         self.aflux_change = 0.
         
-        # The temporary wavelegth range (nm) given by the stellar flux
-        # It will later be adjusted in make_bins_read_cross in op.py considering all molecules the absorbe photons, taking the smaller range of the two 
-        sflux_data = np.genfromtxt(vulcan_cfg.sflux_file, dtype=float, skip_header=1, names = ['lambda', 'flux'])
-        
-        # setting the spectral bins based on the stellar spectrum, bun not shorter than 2nm ann not longer than 700 nm. This will further be ajusted in op.py while reading cross sections
-        self.def_bin_min = max(sflux_data['lambda'][0],2.)  
-        self.def_bin_max = min(sflux_data['lambda'][-1],700.)
+        # The temporary wavelength range (nm) given by the stellar flux.
+        # Later narrowed by `make_bins_read_cross` (legacy_io.ReadRate) using
+        # the wavelength range of all photo-absorbing molecules.
+        if stellar_flux is None:
+            from state import load_stellar_flux
+            stellar_flux = load_stellar_flux(vulcan_cfg)
+        self.def_bin_min = stellar_flux.def_bin_min
+        self.def_bin_max = stellar_flux.def_bin_max
 
         # Define what variables to save in the output file!
         self.var_save = ['k','y','ymix','y_ini','t','dt','longdy','longdydt',\
@@ -90,10 +118,12 @@ class Variables(object):
         self.var_evol_save = ['y_time','t_time']
         self.conden_re_list = []
         
-        # new for rading ratios
-        self.threshold = {}
-        # list of avaliable temperatures of cross sections 
-        self.cross_T_sp_list = {}
+        # Phase 22e: `self.threshold` and `self.cross_T_sp_list` removed
+        # from defaults — both are write-once locals during photo setup.
+        # `populate_photo` writes `var.threshold = _load_thresholds(...)`
+        # before any consumer reads it; `cross_T_sp_list` is now a
+        # function-local variable in `photo_setup._build_photo_static_dense`
+        # (no readers downstream).
         
         # TEST 
         self.v_ratio = np.ones(nz)
@@ -181,7 +211,7 @@ class AtmData(object):
 
 class Parameters(object):
     """
-    store the overall parameters for numerical method and counters  
+    store the overall parameters for numerical method and counters
     """
     def __init__(self):
         self.nega_y = 0
@@ -195,15 +225,8 @@ class Parameters(object):
         self.solver_str = '' # for assigning the name of solver
         self.switch_final_photo_frq = False
         self.where_varies_most = np.zeros((nz, ni)) # recording from where and what species flucating from convergence
-        self.pic_count = 0 # for live plotting
-        
+
         self.fix_species_start = False # flag for the start of fixing condensed species
-        
-        # These are the "Tableau 20" colors as RGB.    
-        self.tableau20 = [(31, 119, 180),(255, 127, 14),(44, 160, 44),(214, 39, 40),(148, 103, 189),(140, 86, 75), (227, 119, 194),(127, 127, 127),(188, 189, 34),(23, 190, 207),\
-        (174, 199, 232),(255, 187, 120),(152, 223, 138),(255, 152, 150),(197, 176, 213),(196, 156, 148),(247, 182, 210),(199, 199, 199),(219, 219, 141),(158, 218, 229)]     
-  
-        # Scale the RGB values to the [0, 1] range, which is the format matplotlib accepts.    
-        for i in range(len(self.tableau20)):    
-            r, g, b = self.tableau20[i]    
-            self.tableau20[i] = (r / 255., g / 255., b / 255.)
+        # Phase 19: `pic_count` and `tableau20` were dropped along with the
+        # live-plotting/movie surface. They were only consumed by
+        # `Output.plot_update` (now deleted).

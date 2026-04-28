@@ -37,10 +37,28 @@ class Ros2JAX:
     and forwards `compute_tau` / `compute_flux` / `compute_J` to JAX kernels.
     """
 
-    def __init__(self):
+    def __init__(self, photo_static=None):
+        # `photo_static` is the dense `PhotoStaticInputs` pytree from
+        # `photo_setup.populate_photo` / `build_photo_static`. When set,
+        # the per-call lazy builders below derive `PhotoData` /
+        # `PhotoJData` from it. When None, the lazy builders construct
+        # the static themselves from `(var, atm)` on first call so test
+        # call sites that do `Ros2JAX()` then `compute_tau(var, atm)`
+        # keep working post-Phase-22e (the legacy dict surface is gone).
+        self._photo_static = photo_static
         self._photo_data = None
         self._photo_J_data = None
         self._photo_ion_data = None
+
+    def _ensure_photo_static(self, var, atm):
+        if self._photo_static is None:
+            import photo_setup as _photo_setup
+            self._photo_static = _photo_setup._build_photo_static_dense(var, atm)
+        if int(self._photo_static.din12_indx) < 0 and hasattr(var, "sflux_din12_indx"):
+            self._photo_static = self._photo_static.with_din12_indx(
+                int(var.sflux_din12_indx)
+            )
+        return self._photo_static
 
     # ------------------------------------------------------------------
     # Photochemistry: pure-JAX kernels with NumPy boundaries.
@@ -48,8 +66,9 @@ class Ros2JAX:
     def compute_tau(self, var, atm):
         """Optical depth via JAX. Mirrors op.compute_tau (op.py:2583-2603)."""
         if self._photo_data is None:
-            self._photo_data = _photo_mod.pack_photo_data(
-                var, vulcan_cfg, list(_NETWORK.species)
+            static = self._ensure_photo_static(var, atm)
+            self._photo_data = _photo_mod.photo_data_from_static(
+                static, list(_NETWORK.species)
             )
         tau_j = _photo_mod.compute_tau_jax(
             jnp.asarray(var.y),
@@ -63,13 +82,14 @@ class Ros2JAX:
         (op.py:2606-2742). Bit-equivalent to the upstream NumPy impl when
         `var.dflux_u` carries the prior call's value (matches op.py:2694).
         """
+        static = self._ensure_photo_static(var, atm)
         ag0 = float(_phy_const.ag0)
         aflux_j, sflux_j, dfd_j, dfu_j = _photo_mod.compute_flux_jax(
             jnp.asarray(var.tau),
             jnp.asarray(var.sflux_top),
             jnp.asarray(var.ymix),
             self._photo_data,
-            jnp.asarray(var.bins),
+            jnp.asarray(static.bins, dtype=jnp.float64),
             float(np.cos(vulcan_cfg.sl_angle)),
             float(vulcan_cfg.edd),
             ag0,
@@ -96,11 +116,14 @@ class Ros2JAX:
         """Wavelength-integrated photolysis rates per (species, branch) via JAX.
 
         Mirrors op.compute_J (op.py:2754-2790): populates var.J_sp dict and
-        writes per-(species, branch) J-rates into var.k at the appropriate
-        reaction indices.
+        writes per-(species, branch) J-rates into var.k_arr at the appropriate
+        reaction indices. Phase 22d: writes to dense `var.k_arr` directly;
+        the legacy dict mirror is rebuilt by `rates.apply_photo_remove` at
+        the end of the photo block.
         """
         if self._photo_J_data is None:
-            self._photo_J_data = _photo_mod.pack_photo_J_data(var, vulcan_cfg)
+            static = self._ensure_photo_static(var, atm)
+            self._photo_J_data = _photo_mod.photo_J_data_from_static(static)
 
         J_sp_jax = _photo_mod.compute_J_jax(
             jnp.asarray(var.aflux), self._photo_J_data
@@ -116,12 +139,13 @@ class Ros2JAX:
             var.J_sp[(sp, 0)] = var.J_sp[(sp, 0)] + var.J_sp[(sp, nbr)]
             ridx = var.pho_rate_index.get((sp, nbr))
             if ridx is not None and ridx not in vulcan_cfg.remove_list:
-                var.k[ridx] = var.J_sp[(sp, nbr)] * vulcan_cfg.f_diurnal
+                var.k_arr[ridx, :] = var.J_sp[(sp, nbr)] * vulcan_cfg.f_diurnal
 
     def compute_Jion(self, var, atm):
         """Photo-ionisation rate via JAX. Mirrors op.compute_Jion."""
         if self._photo_ion_data is None:
-            self._photo_ion_data = _photo_mod.pack_photo_ion_data(var, vulcan_cfg)
+            static = self._ensure_photo_static(var, atm)
+            self._photo_ion_data = _photo_mod.photo_ion_data_from_static(static)
 
         Jion_sp_jax = _photo_mod.compute_Jion_jax(
             jnp.asarray(var.aflux), self._photo_ion_data
@@ -137,7 +161,7 @@ class Ros2JAX:
             var.Jion_sp[(sp, 0)] = var.Jion_sp[(sp, 0)] + var.Jion_sp[(sp, nbr)]
             ridx = var.ion_rate_index.get((sp, nbr))
             if ridx is not None and ridx not in vulcan_cfg.remove_list:
-                var.k[ridx] = var.Jion_sp[(sp, nbr)] * vulcan_cfg.f_diurnal
+                var.k_arr[ridx, :] = var.Jion_sp[(sp, nbr)] * vulcan_cfg.f_diurnal
 
     def naming_solver(self, para):
         """Compatibility shim. VULCAN-JAX targets only Ros2; the solver

@@ -20,7 +20,8 @@ so per-reaction constants are baked into the closed-over `CondenStatic`
 once at OuterLoop init. The H2O / NH3 `use_relax` short-circuit
 (`op.py:1124-1126`, `1156-1158`) is implemented by zeroing the
 corresponding `coeff_per_re` entries — those reactions then write zeros
-into k_arr unconditionally, matching the upstream `var.k[re] = 0`.
+into k_arr unconditionally, matching the upstream `var.k[re] = 0`
+(VULCAN-JAX uses dense `var.k_arr` end-to-end after Phase 22d).
 
 `apply_h2o_relax_jax` / `apply_nh3_relax_jax` run the implicit-Euler
 cold-trap relaxation: condense where `tau > 0` (i.e. `y > sat`), evaporate
@@ -60,7 +61,9 @@ class CondenStatic(NamedTuple):
       - `coeff_per_re[r]` is `m / (rho_p * r_p**2)` baked once. For
         reactions whose species is in `vulcan_cfg.use_relax`, this is set
         to 0 so `update_conden_rates` writes zero rates (matches the
-        `var.k[re] = 0; var.k[re+1] = 0` short-circuit at op.py:1125-1126).
+        `var.k[re] = 0; var.k[re+1] = 0` upstream short-circuit at
+        op.py:1125-1126; in VULCAN-JAX the writes target `k_arr[re]` /
+        `k_arr[re+1]` directly inside the JIT'd runner).
     """
     conden_re_idx:   jnp.ndarray   # (n_conden_re,)        int32
     conden_sp_idx:   jnp.ndarray   # (n_conden_re,)        int32

@@ -2,7 +2,7 @@
 Python-side `compute_tau` / `compute_flux` / `compute_J` round-trip.
 
 Builds the HD189 reference state and runs the photo branch *both* ways:
-  (A) via `op_jax.Ros2JAX.compute_{tau,flux,J}` writing into var.tau / var.k
+  (A) via `op_jax.Ros2JAX.compute_{tau,flux,J}` writing into var.tau / var.k_arr
       (the Phase 10.1 path; same JAX kernels but called from Python with a
       NumPy boundary on each call).
   (B) via the Phase 10.2 photo branch closed over by `outer_loop._make_runner`,
@@ -11,15 +11,15 @@ Builds the HD189 reference state and runs the photo branch *both* ways:
 
 The two should agree to machine precision because they share the same kernels
 (`compute_tau_jax`, `compute_flux_jax`, `compute_J_jax_flat`/_compute_J_inner)
-— the only difference is whether the dict-iteration round-trip happens before
-or after device sync. Anything beyond ~1e-13 indicates a wiring bug in the
-Phase 10.2 carry plumbing.
+— the only difference is whether the round-trip happens before or after device
+sync. Anything beyond ~1e-13 indicates a wiring bug in the Phase 10.2 carry
+plumbing.
 
 Validates:
     1. var.tau / var.aflux / var.sflux / var.dflux_d / var.dflux_u / var.prev_aflux
        agree to ≤ 1e-13.
     2. var.aflux_change agrees to ≤ 1e-13.
-    3. var.k entries for active photo branches agree to ≤ 1e-13.
+    3. var.k_arr entries for active photo branches agree to ≤ 1e-13.
     4. var.J_sp[(sp, nbr)] entries (incl. the (sp, 0) total) agree to ≤ 1e-13.
 """
 from __future__ import annotations
@@ -47,7 +47,9 @@ def main() -> int:
         print("SKIP: vulcan_cfg.use_photo=False; nothing to validate.")
         return 0
 
-    import store, build_atm, legacy_io as op, op_jax, outer_loop
+    import store, legacy_io as op, op_jax, outer_loop
+    from atm_setup import Atm
+    from ini_abun import InitialAbun
 
     # --- Build HD189 reference state with the photo pre-loop (as
     # `vulcan_jax.py` does before entering the integration loop). ---
@@ -55,22 +57,23 @@ def main() -> int:
     data_atm = store.AtmData()
     data_para = store.Parameters()
 
-    make_atm = build_atm.Atm()
+    make_atm = Atm()
     output = op.Output()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
     rate = op.ReadRate()
     data_var = rate.read_rate(data_var, data_atm)
-    data_var = rate.rev_rate(data_var, data_atm)
-    data_var = rate.remove_rate(data_var)
-    ini_abun = build_atm.InitialAbun()
+    import rates as _rates_mod
+    _network = _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
+    ini_abun = InitialAbun()
     data_var = ini_abun.ini_y(data_var, data_atm)
     data_var = ini_abun.ele_sum(data_var)
     data_atm = make_atm.f_mu_dz(data_var, data_atm, output)
     make_atm.mol_diff(data_atm)
     make_atm.BC_flux(data_atm)
 
-    rate.make_bins_read_cross(data_var, data_atm)
+    import photo_setup as _photo_setup
+    _photo_setup.populate_photo_arrays(data_var, data_atm)
     make_atm.read_sflux(data_var, data_atm)
 
     # Snapshot the pre-photo state so Path B can run from the SAME starting
@@ -85,7 +88,7 @@ def main() -> int:
         dflux_d=data_var.dflux_d.copy(),
         dflux_u=data_var.dflux_u.copy(),
         aflux_change=float(data_var.aflux_change),
-        k={i: np.copy(v) for i, v in data_var.k.items()},
+        k_arr=data_var.k_arr.copy(),
     )
 
     # --- Path A: Python-side compute_tau / compute_flux / compute_J ---
@@ -93,7 +96,7 @@ def main() -> int:
     solver.compute_tau(data_var, data_atm)
     solver.compute_flux(data_var, data_atm)
     solver.compute_J(data_var, data_atm)
-    data_var = rate.remove_rate(data_var)
+    _rates_mod.apply_photo_remove(vulcan_cfg, data_var, _network, data_atm)
 
     # Snapshot Path A outputs for comparison.
     tau_A = data_var.tau.copy()
@@ -103,7 +106,7 @@ def main() -> int:
     dflux_u_A = data_var.dflux_u.copy()
     prev_aflux_A = data_var.prev_aflux.copy()
     aflux_change_A = float(data_var.aflux_change)
-    k_A = {i: np.copy(v) for i, v in data_var.k.items()}
+    k_arr_A = data_var.k_arr.copy()
     J_sp_A = {k: np.copy(v) for k, v in data_var.J_sp.items()}
 
     # Restore pre-photo state so Path B sees what Path A saw.
@@ -115,7 +118,7 @@ def main() -> int:
     data_var.dflux_d = pre_photo["dflux_d"].copy()
     data_var.dflux_u = pre_photo["dflux_u"].copy()
     data_var.aflux_change = pre_photo["aflux_change"]
-    data_var.k = {i: np.copy(v) for i, v in pre_photo["k"].items()}
+    data_var.k_arr = pre_photo["k_arr"].copy()
 
     # --- Path B: photo branch inside the JAX runner ---
     integ = outer_loop.OuterLoop(solver, output)
@@ -132,7 +135,7 @@ def main() -> int:
     dflux_u_B = data_var.dflux_u.copy()
     prev_aflux_B = data_var.prev_aflux.copy()
     aflux_change_B = float(data_var.aflux_change)
-    k_B = {i: np.copy(v) for i, v in data_var.k.items()}
+    k_arr_B = data_var.k_arr.copy()
     J_sp_B = {k: np.copy(v) for k, v in data_var.J_sp.items()}
 
     ok = True
@@ -163,29 +166,27 @@ def main() -> int:
         print("FAIL: aflux_change mismatch")
         ok = False
 
-    # var.k: only photo-driven reactions should change between batches; anything
-    # outside that set should be bit-identical. Both paths write the same J*.
+    # var.k_arr: only photo-driven reactions should change between batches;
+    # anything outside that set should be bit-identical. Both paths write
+    # the same J*.
     pho_re_set = {
         idx for (sp, nbr), idx in data_var.pho_rate_index.items()
         if idx not in vulcan_cfg.remove_list
     }
     max_k_relerr = 0.0
     n_changed = 0
-    for ridx in sorted(k_A.keys()):
-        if ridx not in k_B:
-            print(f"FAIL: k_arr key {ridx} present in A but missing in B")
-            ok = False
-            continue
-        diff = np.abs(k_A[ridx] - k_B[ridx])
-        denom = np.maximum(np.abs(k_A[ridx]), 1e-300)
+    nr_plus_one = k_arr_A.shape[0]
+    for ridx in range(1, nr_plus_one):
+        diff = np.abs(k_arr_A[ridx] - k_arr_B[ridx])
+        denom = np.maximum(np.abs(k_arr_A[ridx]), 1e-300)
         re = float(np.max(diff / denom))
         if ridx in pho_re_set:
             n_changed += 1
             max_k_relerr = max(max_k_relerr, re)
         if re > PHOTO_RTOL:
-            print(f"FAIL: var.k[{ridx}] relerr {re:.3e} (in pho={ridx in pho_re_set})")
+            print(f"FAIL: var.k_arr[{ridx}] relerr {re:.3e} (in pho={ridx in pho_re_set})")
             ok = False
-    print(f"var.k photo entries:   {n_changed} reactions, max relerr {max_k_relerr:.3e}")
+    print(f"var.k_arr photo entries:   {n_changed} reactions, max relerr {max_k_relerr:.3e}")
 
     # J_sp: every (sp, nbr) entry in A should appear in B with same values,
     # including the (sp, 0) totals.

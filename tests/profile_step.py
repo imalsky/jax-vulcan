@@ -17,7 +17,8 @@ warnings.filterwarnings("ignore")
 
 
 def _setup_hd189_state():
-    import build_atm
+    from atm_setup import Atm
+    from ini_abun import InitialAbun
     import chem
     import legacy_io as op
     import network
@@ -27,25 +28,24 @@ def _setup_hd189_state():
 
     data_var = store.Variables()
     data_atm = store.AtmData()
-    make_atm = build_atm.Atm()
+    make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
     if vulcan_cfg.use_condense:
         make_atm.sp_sat(data_atm)
     rate = op.ReadRate()
     data_var = rate.read_rate(data_var, data_atm)
-    if vulcan_cfg.use_lowT_limit_rates:
-        data_var = rate.lim_lowT_rates(data_var, data_atm)
-    data_var = rate.rev_rate(data_var, data_atm)
-    data_var = rate.remove_rate(data_var)
-    ini = build_atm.InitialAbun()
+    import rates as _rates_mod
+    _network = _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
+    ini = InitialAbun()
     data_var = ini.ini_y(data_var, data_atm)
     data_var = ini.ele_sum(data_var)
     data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
     make_atm.mol_diff(data_atm)
     make_atm.BC_flux(data_atm)
     if vulcan_cfg.use_photo:
-        rate.make_bins_read_cross(data_var, data_atm)
+        import photo_setup as _photo_setup
+        _photo_setup.populate_photo_arrays(data_var, data_atm)
         make_atm.read_sflux(data_var, data_atm)
         solver = op_jax.Ros2JAX()
         solver.compute_tau(data_var, data_atm)
@@ -53,16 +53,16 @@ def _setup_hd189_state():
         solver.compute_J(data_var, data_atm)
         if vulcan_cfg.use_ion:
             solver.compute_Jion(data_var, data_atm)
-        data_var = rate.remove_rate(data_var)
+        _rates_mod.apply_photo_remove(vulcan_cfg, data_var, _network, data_atm)
     net = chem.to_jax(network.parse_network(vulcan_cfg.network))
     return data_var, data_atm, net
 
 
-def _pack_k_arr(k_dict, nr: int, nz: int) -> np.ndarray:
-    out = np.zeros((nr + 1, nz), dtype=np.float64)
-    for ridx, vec in k_dict.items():
-        if 1 <= ridx <= nr:
-            out[ridx] = np.asarray(vec, dtype=np.float64)
+def _pack_k_arr(var, nr: int, nz: int) -> np.ndarray:
+    """Phase 22d: read the dense `(nr+1, nz)` array directly off `var.k_arr`."""
+    out = np.asarray(var.k_arr, dtype=np.float64)
+    if out.shape != (nr + 1, nz):
+        raise ValueError(f"var.k_arr shape {out.shape} != expected ({nr+1}, {nz})")
     return out
 
 
@@ -97,7 +97,7 @@ def main() -> None:
 
     data_var, data_atm, net = _setup_hd189_state()
     nz, ni = data_var.y.shape
-    k_arr = _pack_k_arr(data_var.k, net.nr, nz)
+    k_arr = _pack_k_arr(data_var, net.nr, nz)
     atm_static = make_atm_static(data_atm, ni, nz)
 
     y_j = jnp.asarray(data_var.y)
@@ -141,7 +141,7 @@ def main() -> None:
     factors = factor_jit(diag, sup_neg, sub_neg)
     jax.tree.map(lambda x: x.block_until_ready() if hasattr(x, "block_until_ready") else x, factors)
 
-    t_pack = _timeit(lambda: _pack_k_arr(data_var.k, net.nr, nz), n_iter=20)
+    t_pack = _timeit(lambda: _pack_k_arr(data_var, net.nr, nz), n_iter=20)
     t_atm = _timeit(lambda: make_atm_static(data_atm, ni, nz), n_iter=20)
     t_rhs = _timeit(lambda: rhs_jit(y_j, atm_static.M, k_j, net), n_iter=20)
     t_jac = _timeit(lambda: jac_jit(y_j, atm_static.M, k_j, net), n_iter=20)

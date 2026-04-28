@@ -35,7 +35,8 @@ warnings.filterwarnings("ignore")
 
 def main() -> int:
     import vulcan_cfg                       # noqa
-    import store, build_atm, op             # noqa
+    import store, op                        # noqa
+    from atm_setup import Atm
     import chem_funs                         # noqa
 
     import network as net_mod
@@ -45,7 +46,7 @@ def main() -> int:
     # === 1. VULCAN setup (build atm + read forward + reverse rates) ===
     data_var = store.Variables()
     data_atm = store.AtmData()
-    make_atm = build_atm.Atm()
+    make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
     if vulcan_cfg.use_condense:

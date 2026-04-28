@@ -26,22 +26,24 @@ def main() -> int:
 
     import vulcan_cfg
     import store
-    import build_atm
+    from atm_setup import Atm
+    from ini_abun import InitialAbun
     import legacy_io as op
     import chem_funs
 
     # Set up state
     data_var = store.Variables()
     data_atm = store.AtmData()
-    make_atm = build_atm.Atm()
+    make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
     if vulcan_cfg.use_condense:
         make_atm.sp_sat(data_atm)
     rate = op.ReadRate()
     data_var = rate.read_rate(data_var, data_atm)
-    data_var = rate.rev_rate(data_var, data_atm)
-    ini = build_atm.InitialAbun()
+    import rates as _rates_mod
+    _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
+    ini = InitialAbun()
     data_var = ini.ini_y(data_var, data_atm)
     data_var = ini.ele_sum(data_var)
     data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
@@ -51,7 +53,6 @@ def main() -> int:
 
     y0 = np.asarray(data_var.y, dtype=np.float64)
     nz, ni = y0.shape
-    k_dict = data_var.k
 
     import network as net_mod
     import chem as chem_mod
@@ -61,10 +62,7 @@ def main() -> int:
     net_jax = chem_mod.to_jax(net)
     atm_static = js_mod.make_atm_static(data_atm, ni, nz)
 
-    k_arr = np.zeros((net.nr + 1, nz), dtype=np.float64)
-    for i, vec in k_dict.items():
-        if 1 <= i <= net.nr:
-            k_arr[i] = np.asarray(vec, dtype=np.float64)
+    k_arr = np.asarray(data_var.k_arr, dtype=np.float64)
 
     # Single step (compile + warmup)
     print("Compiling JAX kernel ...")

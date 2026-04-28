@@ -14,8 +14,6 @@ body with the corresponding op.py block; do not modify in-place.
 """
 
 import numpy as np
-import scipy
-from scipy import interpolate
 import os
 import pickle
 import time
@@ -43,8 +41,14 @@ class ReadRate(object):
 
     def read_rate(self, var, atm):
 
-        Rf, Rindx, a, n, E, a_inf, n_inf, E_inf, k, k_fun, k_inf, kinf_fun, k_fun_new, pho_rate_index = \
-        var.Rf, var.Rindx, var.a, var.n, var.E, var.a_inf, var.n_inf, var.E_inf, var.k, var.k_fun, var.k_inf, var.kinf_fun, var.k_fun_new,\
+        # Phase 22d retired `var.k`; the local `k` dict here is scratch
+        # space the parser fills as it walks the network. The final values
+        # are discarded -- `rates.setup_var_k` recomputes the dense rate
+        # array from scratch right after this method returns. Kept for
+        # bytewise compatibility with the upstream parser body below.
+        k = {}
+        Rf, Rindx, a, n, E, a_inf, n_inf, E_inf, k_fun, k_inf, kinf_fun, k_fun_new, pho_rate_index = \
+        var.Rf, var.Rindx, var.a, var.n, var.E, var.a_inf, var.n_inf, var.E_inf, var.k_fun, var.k_inf, var.kinf_fun, var.k_fun_new,\
          var.pho_rate_index
         ion_rate_index = var.ion_rate_index
 
@@ -244,9 +248,12 @@ class ReadRate(object):
 
         k_fun.update(k_fun_new)
 
-        # store k into data_var
-        # remeber k_fun has not removed reactions from remove_list
-        var.k = k
+        # Phase 22d retired the dict-keyed `var.k` surface. The values
+        # parsed here are immediately superseded by
+        # `rates.setup_var_k -> rates.build_rate_array`, which writes the
+        # dense `var.k_arr`. We keep the closures (`k_fun`, `kinf_fun`)
+        # because legacy_io still emits them as part of `read_rate`'s
+        # metadata return -- nothing downstream reads them post-22d.
         var.k_fun = k_fun
         var.kinf_fun = kinf_fun
 
@@ -256,348 +263,14 @@ class ReadRate(object):
         return var
 
 
-    def rev_rate(self, var, atm):
 
-        rev_list = range(2,  var.stop_rev_indx, 2)
-        # setting the rest reversal zeros
-        for i in range(var.stop_rev_indx+1, nr+1,2):
-            var.k[i] = np.zeros(nz)
-
-        Tco = atm.Tco.copy()
-
-        # reversing rates and storing into data_var
-        print ('Reverse rates from R1 to R' + str(var.stop_rev_indx-2))
-        print ('Rates greater than 1e-6:')
-        for i in rev_list:
-            if i in vulcan_cfg.remove_list:
-                 var.k[i] = np.repeat(0.,nz)
-            else:
-                var.k_fun[i] = lambda temp, mm, i=i: var.k_fun[i-1](temp, mm)/chem_funs.Gibbs(i-1,temp)
-                var.k[i] = var.k[i-1]/chem_funs.Gibbs(i-1,Tco)
-
-            if np.any(var.k[i] > 1.e-6): print ('R' + str(i) + " " + var.Rf[i-1] +' :  ' + str(np.amax(var.k[i])) )
-            if np.any(var.k[i-1] > 1.e-6): print ('R' + str(i-1) + " " + var.Rf[i-1] + ' :  ' + str(np.amax(var.k[i-1])) )
-
-        return var
-
-
-    def remove_rate(self, var):
-
-        for i in vulcan_cfg.remove_list:
-            var.k[i] = np.repeat(0.,nz)
-            var.k_fun[i] = lambda temp, mm, i=i: np.repeat(0.,nz)
-
-        return var
-
-    def lim_lowT_rates(self, var, atm): # for setting up the lower limit of rate coefficients for low T
-        for i in range(1,nr,2):
-            if var.Rf[i] == 'H + CH3 + M -> CH4 + M':
-                T_mask = atm.Tco <= 277.5
-                k0 = 6e-29; kinf = 2.06E-10 *atm.Tco**-0.4 # from Moses+2005
-                lowT_lim = k0 / (1. + k0*atm.M/kinf)
-                print ("using the low temperature limit for CH3 + H + M -> CH4 + M")
-                print ("capping "); print (var.k[i][T_mask]); print ("at "); print (lowT_lim[T_mask])
-                var.k[i][T_mask] =  lowT_lim[T_mask]
-
-            elif var.Rf[i] == 'H + C2H4 + M -> C2H5 + M':
-                T_mask = atm.Tco <= 300
-                print ("using the low temperature limit for H + C2H4 + M -> C2H5 + M")
-                print ("capping "); print (var.k[i][T_mask]); print ("at "); print (3.7E-30)
-                var.k[i][T_mask] = 3.7E-30 # from Moses+2005
-
-            elif var.Rf[i] == 'H + C2H5 + M -> C2H6 + M':
-                T_mask = atm.Tco <= 200
-                print ("using the low temperature limit for H + C2H5 + M -> C2H6 + M")
-                print ("capping "); print (var.k[i][T_mask]); print ("at "); print (2.49E-27)
-                var.k[i][T_mask] = 2.49E-27 # from Moses+2005
-
-        return var
-
-    def make_bins_read_cross(self,var,atm):
-        '''
-        determining the bin range and only use the min and max wavelength that the molecules absorb
-        to avoid photons with w0=1 (pure scatteing) in certain wavelengths
-        var.cross stores the total absorption cross sections of each species, e.g. var.cross['H2O']
-        var.cross stores the IDIVIDUAL photodissociation cross sections for each bracnh, e.g. var.cross_J[('H2O',1)], which is equvilent to var.cross['H2O'] times the branching ratio of branch 1
-        '''
-        photo_sp = list(var.photo_sp)
-        ion_sp = list(var.ion_sp)
-        absp_sp = photo_sp + ion_sp
-        sp0 = photo_sp[0]
-
-        cross_raw, scat_raw = {}, {}
-        ratio_raw, ion_ratio_raw = {}, {}
-        cross_T_raw = {}
-
-        # In the end, we do not need photons beyond the longest-wavelength threshold from all species (different from absorption)
-        sp_label = np.genfromtxt(vulcan_cfg.cross_folder+'thresholds.txt',dtype=str, usecols=0) # taking the first column as labels
-        lmd_data = np.genfromtxt(vulcan_cfg.cross_folder+'thresholds.txt', skip_header = 1)[:,1] # discarding the fist column
-
-        # for setting up the wavelength coverage
-        threshold = {label: row for label, row in zip(sp_label, lmd_data) if label in species} # only include the species in the current network
-        var.threshold = threshold
-
-        # reading in cross sections into dictionaries
-        for n, sp in enumerate(absp_sp):
-
-            if vulcan_cfg.use_ion == True:
-                try: cross_raw[sp] = np.genfromtxt(vulcan_cfg.cross_folder+sp+'/'+sp+'_cross.csv',dtype=float,delimiter=',',skip_header=1, names = ['lambda','cross','disso','ion'])
-                except: print ('\nMissing the cross section from ' + sp); raise
-                if sp in ion_sp:
-                    try: ion_ratio_raw[sp] = np.genfromtxt(vulcan_cfg.cross_folder+sp+'/'+sp+'_ion_branch.csv',dtype=float,delimiter=',',skip_header=1, names = True)
-                    except: print ('\nMissing the ion branching ratio from ' + sp); raise
-            else:
-                try: cross_raw[sp] = np.genfromtxt(vulcan_cfg.cross_folder+sp+'/'+sp+'_cross.csv',dtype=float,delimiter=',',skip_header=1, names = ['lambda','cross','disso'])
-                except: print ('\nMissing the cross section from ' + sp); raise
-
-            # reading in the branching ratios
-            if sp in photo_sp: # excluding ion_sp
-                try: ratio_raw[sp] = np.genfromtxt(vulcan_cfg.cross_folder+sp+'/'+sp+'_branch.csv',dtype=float,delimiter=',',skip_header=1, names = True)
-                except: print ('\nMissing the branching ratio from ' + sp); raise
-
-            # reading in temperature dependent cross sections
-            if sp in vulcan_cfg.T_cross_sp:
-                T_list = []
-                for temp_file in os.listdir("thermo/photo_cross/" + sp + "/"):
-                    if temp_file.startswith(sp) and temp_file.endswith("K.csv"):
-                        temp = temp_file
-                        temp = temp.replace(sp,''); temp = temp.replace('_cross_',''); temp = temp.replace('K.csv','')
-                        T_list.append(int(temp) )
-                        var.cross_T_sp_list[sp] = T_list
-                for tt in T_list:
-                    if vulcan_cfg.use_ion == True: # usually the T-dependent cross sections are only measured in the photodissociation-relavent wavelengths so cross_tot = cross_diss
-                        cross_T_raw[(sp, tt)] = np.genfromtxt(vulcan_cfg.cross_folder+sp+'/'+sp+'_cross_'+str(tt)+'K.csv',dtype=float,delimiter=',',skip_header=1, names = ['lambda','cross','disso','ion'])
-                    else: cross_T_raw[(sp, tt)] = np.genfromtxt(vulcan_cfg.cross_folder+sp+'/'+sp+'_cross_'+str(tt)+'K.csv',dtype=float,delimiter=',',skip_header=1, names = ['lambda','cross','disso'])
-                # room-T cross section
-                cross_T_raw[(sp, 300)] = cross_raw[sp]
-                var.cross_T_sp_list[sp].append(300)
-
-            if cross_raw[sp]['cross'][0] == 0 or cross_raw[sp]['cross'][-1] ==0:
-                raise IOError ('\n Please remove the zeros in the cross file of ' + sp)
-
-            if n==0: # the first species
-                bin_min = cross_raw[sp]['lambda'][0]
-                bin_max = cross_raw[sp]['lambda'][-1]
-                # photolysis threshold
-                try: diss_max = threshold[sp]
-                except: print (sp + " not in threshol.txt"); raise
-
-            else:
-                sp_min, sp_max = cross_raw[sp]['lambda'][0], cross_raw[sp]['lambda'][-1]
-                if sp_min < bin_min: bin_min = sp_min
-                if sp_max > bin_max: bin_max = sp_max
-                try:
-                    if threshold[sp] > diss_max:
-                        diss_max = threshold[sp]
-                except: print (sp + " not in threshol.txt"); raise
-
-        # constraining the bin_min and bin_max by the default values defined in store.py
-        bin_min = max(bin_min, var.def_bin_min)
-        bin_max = min(bin_max, var.def_bin_max, diss_max)
-        print ("Input stellar spectrum from " + "{:.1f}".format(var.def_bin_min) + " to " + "{:.1f}".format(var.def_bin_max) )
-        print ("Photodissociation threshold: " + "{:.1f}".format(diss_max) )
-        print ("Using wavelength bins from " + "{:.1f}".format(bin_min) + " to " +  str(bin_max) )
-
-        var.dbin1 = vulcan_cfg.dbin1
-        var.dbin2 = vulcan_cfg.dbin2
-        if vulcan_cfg.dbin_12trans >= bin_min and vulcan_cfg.dbin_12trans <= bin_max:
-            bins = np.concatenate(( np.arange(bin_min,vulcan_cfg.dbin_12trans, var.dbin1), np.arange(vulcan_cfg.dbin_12trans,bin_max, var.dbin2) ))
-        else: bins = np.arange(bin_min,bin_max, var.dbin1)
-        var.bins = bins
-        var.nbin = len(bins)
-
-        # all variables that depend on the size of nbins
-        # the direct beam (staggered)
-        var.sflux = np.zeros( (nz+1, var.nbin) )
-        # the diffusive flux (staggered)
-        var.dflux_u, var.dflux_d = np.zeros( (nz+1, var.nbin) ), np.zeros( (nz+1, var.nbin) )
-        # the total actinic flux (non-staggered)
-        var.aflux = np.zeros( (nz, var.nbin) )
-        # the total actinic flux from the previous calculation
-        prev_aflux = np.zeros( (nz, var.nbin) )
-
-        # staggered
-        var.tau = np.zeros( (nz+1, var.nbin) )
-        # the stellar flux at TOA
-        var.sflux_top = np.zeros(var.nbin)
-
-
-        # read_cross
-        # creat a dict of cross section with key=sp and values=bins in data_var
-        var.cross = dict([(sp, np.zeros(var.nbin)) for sp in absp_sp ]) # including photo_sp and ion_sp
-
-        # read cross of disscoiation
-        var.cross_J = dict([((sp,i), np.zeros(var.nbin)) for sp in photo_sp for i in range(1,var.n_branch[sp]+1)])
-        var.cross_scat = dict([(sp, np.zeros(var.nbin)) for sp in vulcan_cfg.scat_sp])
-
-        # for temperature-dependent cross sections
-        var.cross_T = dict([(sp, np.zeros((nz, var.nbin) )) for sp in vulcan_cfg.T_cross_sp ])
-        var.cross_J_T = dict([((sp,i), np.zeros((nz, var.nbin) )) for sp in vulcan_cfg.T_cross_sp for i in range(1,var.n_branch[sp]+1) ])
-
-        #read cross of ionisation
-        if vulcan_cfg.use_ion == True: var.cross_Jion = dict([((sp,i), np.zeros(var.nbin)) for sp in ion_sp for i in range(1,var.ion_branch[sp]+1)])
-
-        for sp in photo_sp: # photodissociation only; photoionization takes a separate branch ratio file
-            # for values outside the boundary => fill_value = 0
-            inter_cross = interpolate.interp1d(cross_raw[sp]['lambda'], cross_raw[sp]['cross'], bounds_error=False, fill_value=0)
-            inter_cross_J = interpolate.interp1d(cross_raw[sp]['lambda'], cross_raw[sp]['disso'], bounds_error=False, fill_value=0)
-            inter_ratio = {} # excluding ionization branches
-
-            for i in range(1,var.n_branch[sp]+1): # fill_value extends the first and last elements for branching ratios
-                br_key = 'br_ratio_' + str(i)
-                try:
-                    inter_ratio[i] = interpolate.interp1d(ratio_raw[sp]['lambda'], ratio_raw[sp][br_key], bounds_error=False, fill_value=(ratio_raw[sp][br_key][0],ratio_raw[sp][br_key][-1]))
-                except: print("The branches in the network file does not match the branchong ratio file for " + str(sp))
-
-            # using a loop instead of an array because it's easier to handle the branching ratios
-            for n, ld in enumerate(bins):
-                var.cross[sp][n] = inter_cross(ld)
-
-                # using the branching ratio (from the files) to construct the individual cross section of each branch
-                for i in range(1,var.n_branch[sp]+1):
-                    var.cross_J[(sp,i)][n] = inter_cross_J(ld) * inter_ratio[i](ld)
-
-            # make var.cross_T[(sp,i)] and var.cross_J_T[(sp,i)] here in 2D array: nz * bins (same shape as tau)
-            # T-dependent cross sections are usually only measured in the photodissociation-relavent wavelengths so cross_tot = cross_diss
-            if sp in vulcan_cfg.T_cross_sp:
-
-                # T list of species sp that have T-depedent cross sections (inclduing 300 K for inter_cross)
-                T_list = np.array(var.cross_T_sp_list[sp])
-                max_T_sp = np.amax(T_list)
-                min_T_sp = np.amin(T_list)
-
-                for lev, Tz in enumerate(atm.Tco): # looping z
-
-                    Tz_between = False # flag for Tz in between any two elements in T_list
-                    # define the interpolating T range
-                    if list(T_list[T_list <= Tz]) and list(T_list[T_list > Tz]):
-                        Tlow = T_list[T_list <= Tz].max() # closest T in T_list smaller than Tz
-                        Thigh = T_list[T_list > Tz].min() # closest T in T_list larger than Tz
-                        Tz_between = True
-
-                        # find the wavelength range that are included in both cross_T_raw[(sp,Tlow)] and cross_T_raw[(sp,Thigh)]
-                        ld_min = max( cross_T_raw[(sp,Tlow)]['lambda'][0], cross_T_raw[(sp,Thigh)]['lambda'][0] )
-                        ld_max = min( cross_T_raw[(sp,Tlow)]['lambda'][-1], cross_T_raw[(sp,Thigh)]['lambda'][-1] )
-                        inter_cross_lowT = interpolate.interp1d(cross_T_raw[(sp,Tlow)]['lambda'], cross_T_raw[(sp,Tlow)]['cross'], bounds_error=False, fill_value=0)
-                        inter_cross_highT = interpolate.interp1d(cross_T_raw[(sp,Thigh)]['lambda'], cross_T_raw[(sp,Thigh)]['cross'], bounds_error=False, fill_value=0)
-                        inter_cross_J_lowT = interpolate.interp1d(cross_T_raw[(sp,Tlow)]['lambda'], cross_T_raw[(sp,Tlow)]['disso'], bounds_error=False, fill_value=0)
-                        inter_cross_J_highT = interpolate.interp1d(cross_T_raw[(sp,Thigh)]['lambda'], cross_T_raw[(sp,Thigh)]['disso'], bounds_error=False, fill_value=0)
-
-                        for n, ld in enumerate(bins): # looping bins
-
-                            # not within the T-cross wavelength range
-                            if ld < ld_min or ld > ld_max:
-                                var.cross_T[sp][lev, n] = var.cross[sp][n]
-                                # don't forget the cross_J_T branches
-                                for i in range(1,var.n_branch[sp]+1):
-                                    var.cross_J_T[(sp,i)][lev, n] = var.cross_J[(sp,i)][n]
-
-                            else:
-                                # update: inerpolation in log10 for cross sections and linearly between Tlow and Thigh
-                                log_lowT = np.log10(inter_cross_lowT(ld))
-                                log_highT = np.log10(inter_cross_highT(ld))
-                                if np.isinf(log_lowT ): log_lowT = -100. # replacing -inf with -100
-                                if np.isinf(log_highT ): log_highT = -100.
-
-                                inter_T = interpolate.interp1d([Tlow,Thigh], [log_lowT,log_highT], axis=0) # at wavelength ld, interpolating between Tlow and Thigh in log10
-                                if inter_T(Tz) == -100: var.cross_T[sp][lev, n] == 0.
-                                else: var.cross_T[sp][lev, n] = 10**(inter_T(Tz))
-
-                                # update: inerpolation in log10 for cross sections and linearly between Tlow and Thigh
-                                # using the branching ratio (from the files) to construct the individual cross section of each branch
-                                for i in range(1,var.n_branch[sp]+1):
-                                    J_log_lowT = np.log10(inter_cross_J_lowT(ld))
-                                    J_log_highT = np.log10(inter_cross_J_highT(ld))
-                                    if np.isinf(J_log_lowT): J_log_lowT = -100. # replacing -inf with -100
-                                    if np.isinf(J_log_highT): J_log_highT = -100.
-
-                                    inter_cross_J_T = interpolate.interp1d([Tlow,Thigh], [J_log_lowT,J_log_highT], axis=0)
-
-                                    if inter_cross_J_T(Tz) == -100: var.cross_J_T[(sp,i)][lev, n] = 0.
-                                    else: var.cross_J_T[(sp,i)][lev, n] = 10**(inter_cross_J_T(Tz)) * inter_ratio[i](ld) # same inter_ratio[i](ld) as the standard one above
-
-
-                    elif not list(T_list[T_list < Tz]): # Tz equal or smaller than all T in T_list including 300K (empty list)
-
-                        if min_T_sp == 300:
-                            var.cross_T[sp][lev] = var.cross[sp] # using the cross section at room T
-                            for i in range(1,var.n_branch[sp]+1):
-                                var.cross_J_T[(sp,i)][lev] = var.cross_J[(sp,i)]
-                        else: # min_T_sp != 300; T-cross lower than room temperature
-                            # the wavelength range of cross_T_raw at T = min_T_sp
-                            ld_min, ld_max = cross_T_raw[(sp,min_T_sp)]['lambda'][0], cross_T_raw[(sp,min_T_sp)]['lambda'][-1]
-                            inter_cross_lowT = interpolate.interp1d(cross_T_raw[(sp,min_T_sp)]['lambda'], cross_T_raw[(sp,min_T_sp)]['cross'], bounds_error=False, fill_value=0)
-                            inter_cross_J_lowT = interpolate.interp1d(cross_T_raw[(sp,min_T_sp)]['lambda'], cross_T_raw[(sp,min_T_sp)]['disso'], bounds_error=False, fill_value=0)
-                            for n, ld in enumerate(bins): # looping bins
-                                # not within the T-cross wavelength range
-                                if ld < ld_min or ld > ld_max:
-                                    var.cross_T[sp][lev, n] = var.cross[sp][n]
-                                    # don't forget the cross_J_T branches
-                                    for i in range(1,var.n_branch[sp]+1):
-                                        var.cross_J_T[(sp,i)][lev, n] = var.cross_J[(sp,i)][n]
-                                else:
-                                    var.cross_T[sp][lev, n] = inter_cross_lowT(ld)
-                                    # using the branching ratio (from the files) to construct the individual cross section of each branch
-                                    for i in range(1,var.n_branch[sp]+1):
-                                        var.cross_J_T[(sp,i)][lev, n] = inter_cross_J_lowT(ld) * inter_ratio[i](ld) # same inter_ratio[i](ld) as the standard one above
-
-                    else: # Tz equal or larger than all T in T_list (empty list)
-                        # the wavelength range of cross_T_raw[(sp,Thigh)]
-
-                        if max_T_sp == 300:
-                            var.cross_T[sp][lev] = var.cross[sp] # using the cross section at room T
-                            for i in range(1,var.n_branch[sp]+1):
-                                var.cross_J_T[(sp,i)][lev] = var.cross_J[(sp,i)]
-                        else:  # the wavelength range of cross_T_raw at T = max_T_sp
-                            ld_min, ld_max = cross_T_raw[(sp,max_T_sp)]['lambda'][0], cross_T_raw[(sp,max_T_sp)]['lambda'][-1]
-                            inter_cross_highT = interpolate.interp1d(cross_T_raw[(sp,max_T_sp)]['lambda'], cross_T_raw[(sp,max_T_sp)]['cross'], bounds_error=False, fill_value=0)
-                            inter_cross_J_highT = interpolate.interp1d(cross_T_raw[(sp,max_T_sp)]['lambda'], cross_T_raw[(sp,max_T_sp)]['disso'], bounds_error=False, fill_value=0)
-                            for n, ld in enumerate(bins): # looping bins
-                                # not within the T-cross wavelength range
-                                if ld < ld_min or ld > ld_max:
-                                    var.cross_T[sp][lev, n] = var.cross[sp][n]
-                                    # don't forget the cross_J_T branches
-                                    for i in range(1,var.n_branch[sp]+1):
-                                        var.cross_J_T[(sp,i)][lev, n] = var.cross_J[(sp,i)][n]
-                                else:
-                                    var.cross_T[sp][lev, n] = inter_cross_highT(ld)
-
-                                    # using the branching ratio (from the files) to construct the individual cross section of each branch
-                                    for i in range(1,var.n_branch[sp]+1):
-                                        var.cross_J_T[(sp,i)][lev, n] = inter_cross_J_highT(ld) * inter_ratio[i](ld) # same inter_ratio[i](ld) as the standard one above
-
-
-        if vulcan_cfg.use_ion == True:
-            for sp in ion_sp:
-                if sp not in photo_sp:
-                    inter_cross = interpolate.interp1d(cross_raw[sp]['lambda'], cross_raw[sp]['cross'], bounds_error=False, fill_value=0)
-
-                inter_cross_Jion = interpolate.interp1d(cross_raw[sp]['lambda'], cross_raw[sp]['ion'], bounds_error=False, fill_value=0)
-                ion_inter_ratio = {} # For ionization branches
-
-                for i in range(1,var.ion_branch[sp]+1): # fill_value extends the first and last elements for branching ratios
-                    br_key = 'br_ratio_' + str(i)
-                    try:
-                        ion_inter_ratio[i] = interpolate.interp1d(ion_ratio_raw[sp]['lambda'], ion_ratio_raw[sp][br_key], bounds_error=False, fill_value=(ion_ratio_raw[sp][br_key][0],ion_ratio_raw[sp][br_key][-1]))
-                    except: print("The ionic branches in the network file does not match the branchong ratio file for " + str(sp))
-
-                for n, ld in enumerate(bins):
-                    # for species noe appeared in photodissociation but only in photoionization, like H
-                    if sp not in photo_sp: var.cross[sp][n] = inter_cross(ld)
-                    for i in range(1,var.ion_branch[sp]+1):
-                        var.cross_Jion[(sp,i)][n] = inter_cross_Jion(ld) * ion_inter_ratio[i](ld)
-
-        # reading in cross sections of Rayleigh Scattering
-        for sp in vulcan_cfg.scat_sp:
-            scat_raw[sp] = np.genfromtxt(vulcan_cfg.cross_folder + 'rayleigh/' + sp+'_scat.txt',dtype=float,\
-            skip_header=1, names = ['lambda','cross'])
-
-            # for values outside the boundary => fill_value = 0
-            inter_scat = interpolate.interp1d(scat_raw[sp]['lambda'], scat_raw[sp]['cross'], bounds_error=False, fill_value=0)
-
-            for n, ld in enumerate(bins):
-                var.cross_scat[sp][n] = inter_scat(ld)
-
+    # Phase 22e: `make_bins_read_cross` retired. The dense
+    # `PhotoStaticInputs` pytree built by `photo_setup.populate_photo`
+    # / `photo_setup._build_photo_static_dense` is the canonical
+    # photo-input surface; the .vul writer synthesizes the legacy dict
+    # views from it at pickle time (see `_synthesize_cross_dicts` below).
+    # Tests that need master's dict view continue to use master's
+    # `op.ReadRate().make_bins_read_cross` from sys.path.
 
 def _import_plt():
     """Lazy import of matplotlib so tests that don't plot don't pay the cost."""
@@ -608,14 +281,59 @@ def _import_plt():
     return plt
 
 
+def _synthesize_cross_dicts(static) -> dict:
+    """Build the legacy `var.cross*` dict views from a `PhotoStaticInputs`.
+
+    Phase 22e: the .vul writer keeps publishing the same six photo dict
+    keys the upstream `plot_py/` scripts index (`d['variable']['cross']
+    [sp]`, `d['variable']['cross_J'][(sp,i)]`, etc.); the dicts are now
+    rebuilt from the dense pytree at pickle time instead of read off
+    `var`. Every value is wrapped in `np.asarray(..., dtype=np.float64)`
+    so downstream consumers see plain ndarrays (not jax arrays) — same
+    pattern as the Phase 22d k-synthesizer above.
+    """
+    cross = {
+        sp: np.asarray(static.absp_cross[i], dtype=np.float64)
+        for i, sp in enumerate(static.absp_sp)
+    }
+    cross_T = {
+        sp: np.asarray(static.absp_T_cross[i], dtype=np.float64)
+        for i, sp in enumerate(static.absp_T_sp)
+    }
+    cross_J = {
+        k: np.asarray(static.cross_J[i], dtype=np.float64)
+        for i, k in enumerate(static.branch_keys)
+    }
+    cross_J_T = {
+        k: np.asarray(static.cross_J_T[i], dtype=np.float64)
+        for i, k in enumerate(static.branch_T_keys)
+    }
+    cross_scat = {
+        sp: np.asarray(static.scat_cross[i], dtype=np.float64)
+        for i, sp in enumerate(static.scat_sp)
+    }
+    cross_Jion = {
+        k: np.asarray(static.cross_Jion[i], dtype=np.float64)
+        for i, k in enumerate(static.ion_branch_keys)
+    }
+    return {
+        'cross': cross,
+        'cross_T': cross_T,
+        'cross_J': cross_J,
+        'cross_J_T': cross_J_T,
+        'cross_scat': cross_scat,
+        'cross_Jion': cross_Jion,
+    }
+
+
 class Output(object):
     """Vendored from VULCAN-master/op.py:3131-3454.
 
-    Phase 16: matplotlib-using methods (plot_update / plot_flux_update /
-    plot_end / plot_evo / plot_evo_inter / plot_TP) are vendored back in,
-    each with a lazy plt import. Set `VULCAN_HEADLESS_PLOT=1` in the env
-    to force the Agg backend (useful in CI or for save_movie without a
-    display).
+    Phase 19: live-output paths (plot_update / plot_flux_update /
+    plot_evo_inter, save-movie hooks) were dropped from the supported
+    surface; only the post-run plotters (plot_end / plot_evo / plot_TP)
+    remain. Set `VULCAN_HEADLESS_PLOT=1` in the env to force the Agg
+    backend (useful in CI).
     """
 
     def __init__(self):
@@ -624,8 +342,6 @@ class Output(object):
 
         if not os.path.exists(output_dir): os.makedirs(output_dir)
         if not os.path.exists(plot_dir): os.makedirs(plot_dir)
-        if vulcan_cfg.use_save_movie == True:
-            if not os.path.exists(vulcan_cfg.movie_dir): os.makedirs(vulcan_cfg.movie_dir)
 
         if os.path.isfile(output_dir+out_name):
             print ('Warning... the output file: ' + str(out_name) + ' already exists.\n')
@@ -696,7 +412,7 @@ class Output(object):
             cfg_str = f.read()
         with open(dname + '/' + output_dir + "cfg_" + out_name[:-3] + "txt", 'w') as f: f.write(cfg_str)
 
-    def save_out(self, var, atm, para, dname):
+    def save_out(self, var, atm, para, dname, photo_static=None):
         output_dir, out_name = vulcan_cfg.output_dir, vulcan_cfg.out_name
         output_file = dname + '/' + output_dir + out_name
 
@@ -713,8 +429,35 @@ class Output(object):
         # making the save dict
         var_save = {'species':species, 'nr':nr}
 
+        # Phase 22e: when use_photo, the cross-section dict surface is
+        # synthesized from the dense `PhotoStaticInputs` pytree at pickle
+        # time. Callers that don't supply `photo_static` get a lazy build
+        # from `(var, atm)` so legacy save_out callsites keep working
+        # without explicit plumbing.
+        if photo_static is None and bool(getattr(vulcan_cfg, "use_photo", False)):
+            import photo_setup as _photo_setup
+            photo_static = _photo_setup._build_photo_static_dense(var, atm)
+            if hasattr(var, "sflux_din12_indx"):
+                photo_static = photo_static.with_din12_indx(
+                    int(var.sflux_din12_indx)
+                )
+        photo_dicts = (
+            _synthesize_cross_dicts(photo_static)
+            if photo_static is not None else None
+        )
+
         for key in var.var_save:
-            var_save[key] = getattr(var, key)
+            if key == 'k':
+                # Phase 22d: synthesize the legacy `{i: array(nz)}` dict
+                # view from the dense `var.k_arr` at write time so the .vul
+                # schema (and plot_py/ scripts that index `d['k'][i]`) keep
+                # working without the deprecated `var.k` attribute.
+                k_arr = np.asarray(var.k_arr, dtype=np.float64)
+                var_save[key] = {i: k_arr[i].copy() for i in range(1, k_arr.shape[0])}
+            elif photo_dicts is not None and key in photo_dicts:
+                var_save[key] = photo_dicts[key]
+            else:
+                var_save[key] = getattr(var, key)
         if vulcan_cfg.save_evolution == True:
             # The JAX OuterLoop already captures (y, t) at the configured
             # `save_evo_frq` cadence into var.y_time / var.t_time during
@@ -729,88 +472,12 @@ class Output(object):
             else:
                 pickle.dump( {'variable': var_save, 'atm': vars(atm), 'parameter': vars(para) }, outfile, protocol=4)
 
-    # ---- Phase 16: vendored plotting methods (op.py:3262-3454) ----
-    # Verbatim ports of master's matplotlib plot routines, with `plt`
-    # imported lazily so non-plotting tests don't pull matplotlib in.
-    # The only adaptation: arrays are converted via `np.asarray(...)` so
-    # the plot code reads JAX arrays as numpy.
-
-    def plot_update(self, var, atm, para):
-        plt = _import_plt()
-        tex_labels = {
-            'H':'H','H2':'H$_2$','O':'O','OH':'OH','H2O':'H$_2$O',
-            'CH':'CH','C':'C','CH2':'CH$_2$','CH3':'CH$_3$','CH4':'CH$_4$',
-            'HCO':'HCO','H2CO':'H$_2$CO','C4H2':'C$_4$H$_2$',
-            'C2':'C$_2$','C2H2':'C$_2$H$_2$','C2H3':'C$_2$H$_3$',
-            'C2H':'C$_2$H','CO':'CO','CO2':'CO$_2$','He':'He','O2':'O$_2$',
-            'CH3OH':'CH$_3$OH','C2H4':'C$_2$H$_4$','C2H5':'C$_2$H$_5$',
-            'C2H6':'C$_2$H$_6$','CH3O':'CH$_3$O','CH2OH':'CH$_2$OH',
-            'NH3':'NH$_3$',
-        }
-        ymix = np.asarray(var.ymix)
-        plt.figure('live mixing ratios')
-        plt.ion()
-        for color_index, sp in enumerate(vulcan_cfg.plot_spec):
-            sp_lab = tex_labels.get(sp, sp)
-            if color_index == len(para.tableau20):
-                para.tableau20.append(tuple(np.random.rand(3)))
-            color = para.tableau20[color_index]
-            if vulcan_cfg.plot_height == False:
-                plt.plot(ymix[:, species.index(sp)], atm.pco/1.e6,
-                         color=color, label=sp_lab)
-                if vulcan_cfg.use_condense == True and sp in vulcan_cfg.condense_sp:
-                    plt.plot(atm.sat_mix[sp], atm.pco/1.e6,
-                             color=color, label=sp_lab + ' sat', ls='--')
-                plt.gca().set_yscale('log')
-                plt.gca().invert_yaxis()
-                plt.ylabel("Pressure (bar)")
-                plt.ylim((vulcan_cfg.P_b/1.E6, vulcan_cfg.P_t/1.E6))
-            else:
-                plt.plot(ymix[:, species.index(sp)], atm.zmco/1.e5,
-                         color=color, label=sp_lab)
-                if vulcan_cfg.use_condense == True and sp in vulcan_cfg.condense_sp:
-                    plt.plot(atm.sat_mix[sp], atm.zco[1:]/1.e5,
-                             color=color, label=sp_lab + ' sat', ls='--')
-                plt.ylim((atm.zco[0]/1e5, atm.zco[-1]/1e5))
-                plt.ylabel("Height (km)")
-        plt.title(str(para.count) + ' steps and '
-                  + "{:.2e}".format(var.t) + ' s')
-        plt.gca().set_xscale('log')
-        plt.xlim(1.E-20, 1.)
-        plt.legend(frameon=0, prop={'size':14}, loc=3)
-        plt.xlabel("Mixing Ratios")
-        plt.show(block=0)
-        plt.pause(0.001)
-        if vulcan_cfg.use_save_movie == True:
-            plt.savefig(vulcan_cfg.movie_dir + str(para.pic_count)+'.png',
-                        dpi=200)
-            para.pic_count += 1
-        plt.clf()
-
-    def plot_flux_update(self, var, atm, para):
-        plt = _import_plt()
-        plt.ion()
-        plt.plot(np.sum(np.asarray(var.dflux_u), axis=1), atm.pico/1.e6,
-                 label='up flux')
-        plt.plot(np.sum(np.asarray(var.dflux_d), axis=1), atm.pico/1.e6,
-                 label='down flux', ls='--', lw=1.2)
-        plt.plot(np.sum(np.asarray(var.sflux), axis=1), atm.pico/1.e6,
-                 label='stellar flux', ls=':', lw=1.5)
-        plt.title(str(para.count) + ' steps and '
-                  + "{:.2e}".format(var.t) + ' s')
-        plt.gca().set_xscale('log')
-        plt.gca().set_yscale('log')
-        plt.gca().invert_yaxis()
-        plt.xlim(xmin=1.E-8)
-        plt.ylim((atm.pico[0]/1.e6, atm.pico[-1]/1.e6))
-        plt.legend(frameon=0, prop={'size':14}, loc=3)
-        plt.xlabel("Diffusive flux")
-        plt.ylabel("Pressure (bar)")
-        plt.show(block=0)
-        plt.pause(0.1)
-        if vulcan_cfg.use_flux_movie == True:
-            plt.savefig('plot/movie/flux-' + str(para.count) + '.jpg')
-        plt.clf()
+    # ---- Post-run plotting (op.py:3262-3454, pruned to non-live methods) ----
+    # Phase 19: live-window paths (plot_update / plot_flux_update /
+    # plot_evo_inter, use_live_plot draw, use_PIL pop-ups, save-movie hooks)
+    # were dropped. The remaining methods are post-run only — they save a
+    # PNG to `plot_dir` and return. `plt` is imported lazily so non-plotting
+    # tests don't pull matplotlib in.
 
     def plot_end(self, var, atm, para):
         plt = _import_plt()
@@ -819,7 +486,7 @@ class Output(object):
                   'darkred','darkblue','salmon','chocolate',
                   'mediumspringgreen','steelblue','plum','hotpink']
         ymix = np.asarray(var.ymix)
-        plt.figure('live mixing ratios')
+        plt.figure('mixing ratios')
         for color_index, sp in enumerate(vulcan_cfg.plot_spec):
             color = colors[color_index % len(colors)]
             if vulcan_cfg.plot_height == False:
@@ -841,13 +508,7 @@ class Output(object):
         plt.legend(frameon=0, prop={'size':14}, loc=3)
         plt.xlabel("Mixing Ratios")
         plt.savefig(plot_dir + 'mix.png')
-        if vulcan_cfg.use_live_plot == True:
-            plt.draw()
-        elif getattr(vulcan_cfg, 'use_PIL', False) == True:
-            from PIL import Image
-            plot = Image.open(plot_dir + 'mix.png')
-            plot.show()
-            plt.close()
+        plt.close()
 
     def plot_evo(self, var, atm, plot_j=-1, plot_ymin=1e-20, dn=1):
         plt = _import_plt()
@@ -868,15 +529,7 @@ class Output(object):
         plt.ylim((plot_ymin, 1.))
         plt.legend(frameon=0, prop={'size':14}, loc='best')
         plt.savefig(plot_dir + 'evo.png')
-        if getattr(vulcan_cfg, 'use_PIL', False) == True:
-            from PIL import Image
-            plot = Image.open(plot_dir + 'evo.png')
-            plot.show()
-            plt.close()
-
-    def plot_evo_inter(self, var, atm, plot_j=-1, plot_ymin=1e-20, dn=1):
-        var.t_time = np.array(var.t_time)
-        self.plot_evo(var, atm, plot_j=plot_j, plot_ymin=plot_ymin, dn=dn)
+        plt.close()
 
     def plot_TP(self, atm):
         plt = _import_plt()
@@ -895,12 +548,5 @@ class Output(object):
             ax1.set_ylabel("Height (km)")
         ax1.set_xlabel("Temperature (K)")
         ax2.set_xlabel(r'K$_{zz}$ (cm$^2$s$^{-1}$)')
-        plot_name = plot_dir + 'TPK.png'
-        plt.savefig(plot_name)
-        if getattr(vulcan_cfg, 'use_PIL', False) == True:
-            from PIL import Image
-            plot = Image.open(plot_name)
-            plot.show()
-            plt.close()
-        else:
-            plt.show(block=False)
+        plt.savefig(plot_dir + 'TPK.png')
+        plt.close()

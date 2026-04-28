@@ -49,50 +49,63 @@ class PhotoData(NamedTuple):
     scat_cross: jnp.ndarray
 
 
-def pack_photo_data(var, vulcan_cfg, species_list) -> PhotoData:
-    """Pack VULCAN's dict-based cross-section storage into a JAX PhotoData.
+def photo_data_from_static(static, species_list) -> PhotoData:
+    """Phase 22e: build the runtime `PhotoData` from a `PhotoStaticInputs`.
 
-    Run once at startup after `op.ReadRate.make_bins_read_cross` populates
-    var.cross, var.cross_T, var.cross_scat.
+    `species_list` carries the network species ordering (typically
+    `chem_funs.spec_list`); the returned `PhotoData` indexes into that
+    list via `absp_idx` / `absp_T_idx` / `scat_idx`.
+
+    `static.absp_cross` carries one row per species in `static.absp_sp`
+    (which is `photo_sp + ion_sp`, T-dep included). We slice out the
+    non-T-dep subset for the runtime kernel's `absp_cross` and the
+    T-dep subset for `absp_T_cross`.
     """
-    nbin = var.nbin
-    nz = var.tau.shape[0] - 1   # tau is (nz+1, nbin) staggered
-    T_cross_sp = list(vulcan_cfg.T_cross_sp or [])
-    scat_sp = list(vulcan_cfg.scat_sp or [])
+    T_cross_sp = set(static.absp_T_sp)
+    absp_sp_non_T = [sp for sp in static.absp_sp if sp not in T_cross_sp]
+    absp_T_sp_list = list(static.absp_T_sp)
+    scat_sp_list = list(static.scat_sp)
+    nbin = int(static.nbin)
 
-    # Absorbing species (photo_sp + ion_sp), excluding T-dep ones
-    absp_sp_all = sorted(set.union(set(var.photo_sp), set(var.ion_sp)))
-    absp_sp = [sp for sp in absp_sp_all if sp not in T_cross_sp]
-    absp_T_sp = [sp for sp in absp_sp_all if sp in T_cross_sp]
-
-    if absp_sp:
-        absp_idx = np.array([species_list.index(sp) for sp in absp_sp], dtype=np.int64)
-        absp_cross = np.stack([np.asarray(var.cross[sp]) for sp in absp_sp], axis=0)
+    if absp_sp_non_T:
+        absp_idx = np.array(
+            [species_list.index(sp) for sp in absp_sp_non_T], dtype=np.int64,
+        )
+        absp_sp_to_row = {sp: i for i, sp in enumerate(static.absp_sp)}
+        sel = jnp.array([absp_sp_to_row[sp] for sp in absp_sp_non_T])
+        absp_cross = static.absp_cross[sel]
     else:
         absp_idx = np.zeros((0,), dtype=np.int64)
-        absp_cross = np.zeros((0, nbin), dtype=np.float64)
+        absp_cross = jnp.zeros((0, nbin), dtype=jnp.float64)
 
-    if absp_T_sp:
-        absp_T_idx = np.array([species_list.index(sp) for sp in absp_T_sp], dtype=np.int64)
-        absp_T_cross = np.stack([np.asarray(var.cross_T[sp]) for sp in absp_T_sp], axis=0)
+    # absp_T_cross: pass through as-is. The static carries the correct
+    # `(n_T, nz, nbin)` shape (with n_T == 0 when there are no T-dep
+    # absorbers but nz still set from atm.Tco), so rebuilding here would
+    # only lose the layer-count metadata the comparison tests expect.
+    if absp_T_sp_list:
+        absp_T_idx = np.array(
+            [species_list.index(sp) for sp in absp_T_sp_list], dtype=np.int64,
+        )
     else:
         absp_T_idx = np.zeros((0,), dtype=np.int64)
-        absp_T_cross = np.zeros((0, nz, nbin), dtype=np.float64)
+    absp_T_cross = static.absp_T_cross
 
-    if scat_sp:
-        scat_idx = np.array([species_list.index(sp) for sp in scat_sp], dtype=np.int64)
-        scat_cross = np.stack([np.asarray(var.cross_scat[sp]) for sp in scat_sp], axis=0)
+    if scat_sp_list:
+        scat_idx = np.array(
+            [species_list.index(sp) for sp in scat_sp_list], dtype=np.int64,
+        )
+        scat_cross = static.scat_cross
     else:
         scat_idx = np.zeros((0,), dtype=np.int64)
-        scat_cross = np.zeros((0, nbin), dtype=np.float64)
+        scat_cross = jnp.zeros((0, nbin), dtype=jnp.float64)
 
     return PhotoData(
         absp_idx=jnp.asarray(absp_idx),
-        absp_cross=jnp.asarray(absp_cross),
+        absp_cross=absp_cross,
         absp_T_idx=jnp.asarray(absp_T_idx),
-        absp_T_cross=jnp.asarray(absp_T_cross),
+        absp_T_cross=absp_T_cross,
         scat_idx=jnp.asarray(scat_idx),
-        scat_cross=jnp.asarray(scat_cross),
+        scat_cross=scat_cross,
     )
 
 
@@ -313,66 +326,54 @@ class PhotoJData(NamedTuple):
     branch_T_keys: tuple
 
 
-def pack_photo_J_data(var, vulcan_cfg) -> PhotoJData:
-    """Pack VULCAN's cross_J / cross_J_T dicts into JAX-friendly tensors."""
-    T_cross_sp = list(vulcan_cfg.T_cross_sp or [])
-    branch_keys = []
-    branch_T_keys = []
-    for sp in var.photo_sp:
-        for nbr in range(1, var.n_branch[sp] + 1):
-            if sp in T_cross_sp:
-                branch_T_keys.append((sp, nbr))
-            else:
-                branch_keys.append((sp, nbr))
+def photo_J_data_from_static(static) -> PhotoJData:
+    """Phase 22e: build the runtime photolysis `PhotoJData` from a
+    `PhotoStaticInputs`. Pure selector; no `var` argument.
 
-    nbin = var.nbin
-    nz = var.aflux.shape[0]
-    if branch_keys:
-        cross_J = np.stack([np.asarray(var.cross_J[k]) for k in branch_keys], axis=0)
-    else:
-        cross_J = np.zeros((0, nbin))
-    if branch_T_keys:
-        cross_J_T = np.stack([np.asarray(var.cross_J_T[k]) for k in branch_T_keys], axis=0)
-    else:
-        cross_J_T = np.zeros((0, nz, nbin))
-
+    `static.din12_indx` must be `>= 0` (set after `read_sflux` via
+    `static.with_din12_indx(...)`); a negative value indicates the
+    pytree was used before the `read_sflux` step that fixes the
+    bin-spacing transition index.
+    """
+    if int(static.din12_indx) < 0:
+        raise ValueError(
+            "PhotoStaticInputs.din12_indx is -1; call "
+            "static.with_din12_indx(int(var.sflux_din12_indx)) after "
+            "read_sflux."
+        )
     return PhotoJData(
-        cross_J=jnp.asarray(cross_J),
-        cross_J_T=jnp.asarray(cross_J_T),
-        din12_indx=int(var.sflux_din12_indx),
-        dbin1=float(var.dbin1),
-        dbin2=float(var.dbin2),
-        branch_keys=tuple(branch_keys),
-        branch_T_keys=tuple(branch_T_keys),
+        cross_J=static.cross_J,
+        cross_J_T=static.cross_J_T,
+        din12_indx=int(static.din12_indx),
+        dbin1=float(static.dbin1),
+        dbin2=float(static.dbin2),
+        branch_keys=tuple(static.branch_keys),
+        branch_T_keys=tuple(static.branch_T_keys),
     )
 
 
-def pack_photo_ion_data(var, vulcan_cfg) -> PhotoJData:
-    """Pack VULCAN's cross_Jion dict into a JAX-friendly ion-rate table.
+def photo_ion_data_from_static(static) -> PhotoJData:
+    """Phase 22e: build the runtime photoionization `PhotoJData` from a
+    `PhotoStaticInputs`. Pure selector; no `var` argument.
 
-    Upstream `compute_Jion` does not have a temperature-dependent branch, so
-    the returned `PhotoJData` always has an empty `cross_J_T` / `branch_T_keys`
-    payload and reuses the same integration kernel as neutral photolysis.
+    `cross_J_T` is empty by construction -- upstream `compute_Jion`
+    has no T-dependent branch.
     """
-    branch_keys = []
-    for sp in var.ion_sp:
-        for nbr in range(1, var.ion_branch[sp] + 1):
-            branch_keys.append((sp, nbr))
-
-    nbin = var.nbin
-    nz = var.aflux.shape[0]
-    if branch_keys:
-        cross_J = np.stack([np.asarray(var.cross_Jion[k]) for k in branch_keys], axis=0)
-    else:
-        cross_J = np.zeros((0, nbin))
-
+    if int(static.din12_indx) < 0:
+        raise ValueError(
+            "PhotoStaticInputs.din12_indx is -1; call "
+            "static.with_din12_indx(int(var.sflux_din12_indx)) after "
+            "read_sflux."
+        )
+    nbin = int(static.nbin)
+    nz = int(static.absp_T_cross.shape[1]) if static.absp_T_cross.shape[0] > 0 else 0
     return PhotoJData(
-        cross_J=jnp.asarray(cross_J),
-        cross_J_T=jnp.zeros((0, nz, nbin), dtype=jnp.float64),
-        din12_indx=int(var.sflux_din12_indx),
-        dbin1=float(var.dbin1),
-        dbin2=float(var.dbin2),
-        branch_keys=tuple(branch_keys),
+        cross_J=static.cross_Jion,
+        cross_J_T=jnp.zeros((0, max(nz, 1), nbin), dtype=jnp.float64),
+        din12_indx=int(static.din12_indx),
+        dbin1=float(static.dbin1),
+        dbin2=float(static.dbin2),
+        branch_keys=tuple(static.ion_branch_keys),
         branch_T_keys=tuple(),
     )
 

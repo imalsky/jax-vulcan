@@ -38,29 +38,43 @@ ATOM_LOSS_RTOL = 0.05
 
 
 def main() -> int:
-    import vulcan_cfg
+    # Sync vulcan_cfg references. test_chem pops `vulcan_cfg` from
+    # sys.modules mid-run; a plain `import vulcan_cfg` here would create a
+    # fresh module object distinct from the one outer_loop / legacy_io
+    # captured at their module-import time, and our `count_max = 50` would
+    # land on the detached copy while the runner reads count_max from
+    # outer_loop's still-stale reference. Pin everything to legacy_io's
+    # reference instead so the runner and the printer see what we set.
+    import outer_loop
+    import legacy_io as op
+    vulcan_cfg = op.vulcan_cfg
+    sys.modules["vulcan_cfg"] = vulcan_cfg
+    outer_loop.vulcan_cfg = vulcan_cfg
+
     vulcan_cfg.count_max = 50
     vulcan_cfg.count_min = 1
     vulcan_cfg.use_print_prog = False
     vulcan_cfg.use_live_plot = False
     vulcan_cfg.use_live_flux = False
 
-    import store, build_atm, legacy_io as op, op_jax, outer_loop
+    import store, op_jax
+    import rates as _rates_mod
+    from atm_setup import Atm
+    from ini_abun import InitialAbun
 
     data_var = store.Variables()
     data_atm = store.AtmData()
     data_para = store.Parameters()
     data_para.start_time = time.time()
-    make_atm = build_atm.Atm()
+    make_atm = Atm()
     output = op.Output()
 
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
     rate = op.ReadRate()
     data_var = rate.read_rate(data_var, data_atm)
-    data_var = rate.rev_rate(data_var, data_atm)
-    data_var = rate.remove_rate(data_var)
-    ini_abun = build_atm.InitialAbun()
+    _network = _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
+    ini_abun = InitialAbun()
     data_var = ini_abun.ini_y(data_var, data_atm)
     data_var = ini_abun.ele_sum(data_var)
     data_atm = make_atm.f_mu_dz(data_var, data_atm, output)
@@ -69,12 +83,13 @@ def main() -> int:
 
     solver = op_jax.Ros2JAX()
     if vulcan_cfg.use_photo:
-        rate.make_bins_read_cross(data_var, data_atm)
+        import photo_setup as _photo_setup
+        _photo_setup.populate_photo_arrays(data_var, data_atm)
         make_atm.read_sflux(data_var, data_atm)
         solver.compute_tau(data_var, data_atm)
         solver.compute_flux(data_var, data_atm)
         solver.compute_J(data_var, data_atm)
-        data_var = rate.remove_rate(data_var)
+        _rates_mod.apply_photo_remove(vulcan_cfg, data_var, _network, data_atm)
 
     integ = outer_loop.OuterLoop(solver, output)
     solver.naming_solver(data_para)

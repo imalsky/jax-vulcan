@@ -38,7 +38,8 @@ print("Using JAX-native chem_funs (no make_chem_funs.py step required)")
 import numpy as np
 
 import store
-import build_atm
+from atm_setup import Atm
+from ini_abun import InitialAbun
 import legacy_io as op  # vendored op.ReadRate + op.Output (Phase A)
 import chem_funs
 
@@ -48,6 +49,9 @@ from phy_const import kb, Navo
 import op_jax       # JAX photo helpers
 import outer_loop   # JAX outer integration loop (Phase 10.1+)
 from runtime_validation import validate_runtime_config
+from state import load_stellar_flux  # Phase 19 — host-side sflux read
+import rates as _rates       # Phase 22a-2: build_rate_array entry point
+import photo_setup as _photo_setup  # Phase 22b: populate_photo_arrays
 
 abspath = os.path.abspath(sys.argv[0])
 dname = os.path.dirname(abspath)
@@ -68,13 +72,17 @@ compo = np.genfromtxt(vulcan_cfg.com_file, names=True, dtype=type_list)
 compo_row = list(compo["species"])
 
 # === Construct the storage objects ===
-data_var = store.Variables()
+# Phase 19: pre-load stellar flux on the host so `Variables.__init__`
+# doesn't touch disk. The explicit call site keeps the pre-loop pytree's
+# "no host I/O at construction" contract honest.
+stellar_flux = load_stellar_flux(vulcan_cfg)
+data_var = store.Variables(stellar_flux=stellar_flux)
 data_atm = store.AtmData()
 data_para = store.Parameters()
 
 data_para.start_time = time.time()
 
-make_atm = build_atm.Atm()
+make_atm = Atm()
 output = op.Output()
 
 validate_runtime_config(vulcan_cfg, ROOT)
@@ -89,15 +97,25 @@ if vulcan_cfg.use_condense:
     make_atm.sp_sat(data_atm)
 
 rate = op.ReadRate()
+# Phase 22a-2: read_rate is still called for metadata population
+# (var.Rf, var.pho_rate_index, var.n_branch, var.photo_sp, etc. that
+# downstream photo / conden / .vul writer paths read off `data_var`).
+# The rate VALUES it produces are immediately overwritten below by
+# `build_rate_array`, which subsumes rev_rate / remove_rate /
+# lim_lowT_rates into one JAX-native NumPy pipeline.
 data_var = rate.read_rate(data_var, data_atm)
 
-if vulcan_cfg.use_lowT_limit_rates:
-    data_var = rate.lim_lowT_rates(data_var, data_atm)
+# Phase 22a-2: forward (Arrhenius/Lindemann/Troe) -> optional low-T
+# caps -> reverse via Gibbs -> remove_list, all in one
+# NumPy-on-Network call. Bit-exact (<=1e-13) replacement for the legacy
+# rev_rate / remove_rate / lim_lowT_rates chain (verified in
+# tests/test_read_rate.py::test_build_rate_array_matches_legacy_hd189).
+# Phase 22d: writes the dense (nr+1, nz) array directly to `var.k_arr`;
+# the legacy dict-keyed `var.k` surface was retired and is synthesized
+# only at .vul write time for downstream plot_py/ scripts.
+_network = _rates.setup_var_k(vulcan_cfg, data_var, data_atm)
 
-data_var = rate.rev_rate(data_var, data_atm)
-data_var = rate.remove_rate(data_var)
-
-ini_abun = build_atm.InitialAbun()
+ini_abun = InitialAbun()
 data_var = ini_abun.ini_y(data_var, data_atm)
 data_var = ini_abun.ele_sum(data_var)
 
@@ -115,14 +133,30 @@ if solver_str != "Ros2":
 solver = op_jax.Ros2JAX()
 
 if vulcan_cfg.use_photo:
-    rate.make_bins_read_cross(data_var, data_atm)
+    # Phase 22b set up the host-side dict surface (`var.cross[sp]`, ...).
+    # Phase 22e adds the dense `PhotoStaticInputs` pytree alongside it
+    # and stashes it on the solver so `compute_tau` / `compute_flux` /
+    # `compute_J` / `compute_Jion` derive their `PhotoData` /
+    # `PhotoJData` from the static instead of the dicts. The dict path
+    # is still produced (and consumed by the .vul writer) until Phase
+    # 22e step 9 retires the dict writes.
+    _photo_setup.populate_photo_arrays(data_var, data_atm)
     make_atm.read_sflux(data_var, data_atm)
+    photo_static = _photo_setup._build_photo_static_dense(data_var, data_atm)
+    photo_static = photo_static.with_din12_indx(int(data_var.sflux_din12_indx))
+    solver._photo_static = photo_static
     solver.compute_tau(data_var, data_atm)
     solver.compute_flux(data_var, data_atm)
     solver.compute_J(data_var, data_atm)
     if vulcan_cfg.use_ion:
         solver.compute_Jion(data_var, data_atm)
-    data_var = rate.remove_rate(data_var)
+    # Apply `remove_list` on the dense `var.k_arr` after compute_J /
+    # compute_Jion overwrite the photodissociation rows. Phase 22d
+    # writers target `var.k_arr` directly; the legacy `var.k` dict was
+    # retired.
+    _rates.apply_photo_remove(vulcan_cfg, data_var, _network, data_atm)
+else:
+    photo_static = None
 
 integ = outer_loop.OuterLoop(solver, output)
 solver.naming_solver(data_para)
@@ -131,7 +165,7 @@ print(f"VULCAN-JAX starting integration at t=0, dt={data_var.dt:.2e}")
 integ(data_var, data_atm, data_para, make_atm)
 
 print(f"VULCAN-JAX done. Saving output to {vulcan_cfg.output_dir}{vulcan_cfg.out_name}")
-output.save_out(data_var, data_atm, data_para, dname)
+output.save_out(data_var, data_atm, data_para, dname, photo_static=photo_static)
 
 # Phase 16: post-run plotting hooks (master op.py:902-934 equivalents).
 # These fire only when the corresponding cfg flags are on; the chunked

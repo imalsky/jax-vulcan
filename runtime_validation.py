@@ -7,15 +7,26 @@ from pathlib import Path
 import chem_funs
 
 
-_RUNTIME_SCOPE_FLAGS: tuple[str, ...] = ()
+# Phase 19: live-output paths (matplotlib live mixing-ratio plot, live flux
+# plot, movie frame save) were dropped from the supported runtime surface.
+# `save_out` produces the .vul pickle; the post-run scripts under `plot_py/`
+# (and the kept `Output.plot_end` / `plot_evo` / `plot_TP`) cover
+# visualisation. These flags are rejected if set to True.
+_DROPPED_LIVE_OUTPUT_FLAGS: tuple[str, ...] = (
+    "use_live_plot",
+    "use_live_flux",
+    "use_save_movie",
+    "use_flux_movie",
+)
 
 
 def validate_runtime_config(cfg, root: Path | None = None) -> None:
     """Reject unsupported or incomplete runtime configs before JIT setup.
 
-    The JAX port targets runtime / physics parity. Plotting, movie generation,
-    and other interactive side paths are intentionally out of scope here and
-    must fail loudly instead of silently degrading.
+    Enforces solver choice, required file paths, and incompatible option
+    combinations. Phase 19 also rejects the dropped live-output flags
+    (`use_live_plot` / `use_live_flux` / `use_save_movie` / `use_flux_movie`)
+    when set to True.
     """
     root = Path(__file__).resolve().parent if root is None else Path(root)
     errors: list[str] = []
@@ -25,10 +36,11 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
             f"ode_solver={cfg.ode_solver!r} is unsupported; VULCAN-JAX only supports 'Ros2'."
         )
 
-    for flag in _RUNTIME_SCOPE_FLAGS:
+    for flag in _DROPPED_LIVE_OUTPUT_FLAGS:
         if bool(getattr(cfg, flag, False)):
             errors.append(
-                f"{flag}=True is out of runtime-parity scope for VULCAN-JAX; disable it."
+                f"{flag}=True is no longer supported (Phase 19 dropped live "
+                "output); use save_out + post-run scripts (plot_py/) instead."
             )
 
     if bool(getattr(cfg, "use_ion", False)) and not bool(getattr(cfg, "use_photo", False)):

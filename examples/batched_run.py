@@ -31,7 +31,8 @@ def main():
 
     import vulcan_cfg
     import store
-    import build_atm
+    from atm_setup import Atm
+    from ini_abun import InitialAbun
     import op
     import op_jax
     import jax_step as js_mod
@@ -40,7 +41,7 @@ def main():
     print("Setting up base atmosphere...")
     data_var = store.Variables()
     data_atm = store.AtmData()
-    make_atm = build_atm.Atm()
+    make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
     if vulcan_cfg.use_condense:
@@ -48,7 +49,7 @@ def main():
     rate = op.ReadRate()
     data_var = rate.read_rate(data_var, data_atm)
     data_var = rate.rev_rate(data_var, data_atm)
-    ini = build_atm.InitialAbun()
+    ini = InitialAbun()
     data_var = ini.ini_y(data_var, data_atm)
     data_var = ini.ele_sum(data_var)
     data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
@@ -57,10 +58,7 @@ def main():
     nz, ni = data_var.y.shape
 
     atm_static = js_mod.make_atm_static(data_atm, ni, nz)
-    k_arr = np.zeros((1192 + 1, nz), dtype=np.float64)
-    for i, vec in data_var.k.items():
-        if 1 <= i <= 1192:
-            k_arr[i] = np.asarray(vec, dtype=np.float64)
+    k_arr = np.asarray(data_var.k_arr, dtype=np.float64)
 
     # Build a batch of N=8 atmospheres -- same structure but small
     # perturbations to the initial y to simulate a parameter sweep.

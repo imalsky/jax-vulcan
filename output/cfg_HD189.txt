@@ -19,7 +19,6 @@ vul_ini = 'output/' # the file to initialize the abundances for ini_mix = 'vulca
 # output:
 output_dir = 'output/'
 plot_dir = 'plot/'
-movie_dir = 'plot/movie/'
 out_name =  'HD189.vul' # output file name
 
 # ====== Setting up the elemental abundance ======
@@ -135,7 +134,7 @@ dt_max = runtime*1e-5
 dt_var_max = 2.
 dt_var_min = 0.5
 count_min = 120
-count_max = int(3E4)
+count_max = int(50)  # Phase 22e oracle check
 atol = 1.E-1 # Try decreasing this if the solutions are not stable
 mtol = 1.E-22
 mtol_conv = 1.E-20
@@ -166,19 +165,24 @@ use_adapt_rtol = True
 rtol_min = 0.02
 rtol_max = 2.5  
 
-# ====== Setting up for ouwtput and plotting ======
-# plotting:
-plot_TP = False
-use_live_plot = True
+# ====== Setting up for output and plotting ======
+# Phase 19: live-output paths (use_live_plot / use_live_flux / use_save_movie /
+# use_flux_movie) were dropped. Visualisation is via post-run scripts under
+# plot_py/ plus the kept Output.plot_end / plot_evo / plot_TP, gated by
+# `use_plot_end` / `use_plot_evo` / `plot_TP` and `save_evolution` for plot_evo.
+# The four dropped flags are kept here as `False` so VULCAN-master's
+# `op.Output.__init__` (read at oracle-test setup time, e.g.
+# `tests/test_diffusion_variants.py`) finds them; runtime_validation.py
+# accepts `False` values and only rejects `True`.
+use_live_plot = False
 use_live_flux = False
-use_plot_end = False
-use_plot_evo = False
 use_save_movie = False
 use_flux_movie = False
+
+plot_TP = False
+use_plot_end = False
+use_plot_evo = False
 plot_height = False
-use_PIL = True 
-live_plot_frq = 10
-save_movie_rate = live_plot_frq
 y_time_freq = 1  #  storing data for every 'y_time_freq' step
 plot_spec = ['H2O', 'H', 'CH4', 'CO', 'CO2', 'C2H2', 'HCN', 'NH3' ]
 # output:

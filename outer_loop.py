@@ -1158,7 +1158,7 @@ class OuterLoop:
         ]
 
         # compo_arr (ni, n_atoms) — same as op_jax.Ros2JAX._build_compo_arr.
-        import build_atm as _ba
+        import composition as _ba
         compo = _ba.compo
         compo_row = _ba.compo_row
         ni_ = _NETWORK.ni
@@ -1445,22 +1445,32 @@ class OuterLoop:
         if not vulcan_cfg.use_photo:
             return None
 
-        # Reuse caches from op_jax.Ros2JAX if pre-loop already built them.
+        # Phase 22e: derive everything from the dense `PhotoStaticInputs`
+        # pytree. If the solver doesn't have one yet (test sites that
+        # construct `Ros2JAX()` without wiring), use the same lazy
+        # builder Ros2JAX itself uses so the static is built once and
+        # cached.
         odesolver = self.odesolver
+        photo_static = getattr(odesolver, "_photo_static", None)
+        if photo_static is None and hasattr(odesolver, "_ensure_photo_static"):
+            photo_static = odesolver._ensure_photo_static(var, atm)
+
         photo_data = getattr(odesolver, "_photo_data", None)
         if photo_data is None:
-            photo_data = _photo_mod.pack_photo_data(
-                var, vulcan_cfg, list(_NETWORK.species)
+            photo_data = _photo_mod.photo_data_from_static(
+                photo_static, list(_NETWORK.species)
             )
             odesolver._photo_data = photo_data
         photo_J_data = getattr(odesolver, "_photo_J_data", None)
         if photo_J_data is None:
-            photo_J_data = _photo_mod.pack_photo_J_data(var, vulcan_cfg)
+            photo_J_data = _photo_mod.photo_J_data_from_static(photo_static)
             odesolver._photo_J_data = photo_J_data
         photo_ion_data = getattr(odesolver, "_photo_ion_data", None)
         if vulcan_cfg.use_ion:
             if photo_ion_data is None:
-                photo_ion_data = _photo_mod.pack_photo_ion_data(var, vulcan_cfg)
+                photo_ion_data = _photo_mod.photo_ion_data_from_static(
+                    photo_static
+                )
                 odesolver._photo_ion_data = photo_ion_data
         else:
             photo_ion_data = None
@@ -1477,7 +1487,12 @@ class OuterLoop:
         else:
             ion_branch_re_idx = jnp.zeros((0,), dtype=jnp.int64)
             ion_branch_active = jnp.zeros((0,), dtype=jnp.bool_)
-            cross_Jion = jnp.zeros((0, int(var.nbin)), dtype=jnp.float64)
+            cross_Jion = jnp.zeros((0, int(photo_static.nbin)), dtype=jnp.float64)
+
+        bins_arr = jnp.asarray(photo_static.bins, dtype=jnp.float64)
+        din12_indx = int(photo_static.din12_indx)
+        dbin1 = float(photo_static.dbin1)
+        dbin2 = float(photo_static.dbin2)
 
         ag0 = float(_phy_const.ag0)
         return _PhotoStatic(
@@ -1493,12 +1508,12 @@ class OuterLoop:
             cross_Jion=cross_Jion,
             ion_branch_re_idx=ion_branch_re_idx,
             ion_branch_active=ion_branch_active,
-            bins=jnp.asarray(var.bins, dtype=jnp.float64),
+            bins=bins_arr,
             sflux_top=jnp.asarray(var.sflux_top, dtype=jnp.float64),
             dz=jnp.asarray(atm.dz, dtype=jnp.float64),
-            din12_indx=int(var.sflux_din12_indx),
-            dbin1=float(var.dbin1),
-            dbin2=float(var.dbin2),
+            din12_indx=din12_indx,
+            dbin1=dbin1,
+            dbin2=dbin2,
             mu_zenith=float(np.cos(vulcan_cfg.sl_angle)),
             edd=float(vulcan_cfg.edd),
             ag0=ag0,
@@ -1515,7 +1530,7 @@ class OuterLoop:
         the reference layer / boundary z-value once at OuterLoop init.
         These never change during integration.
         """
-        import build_atm as _ba
+        import composition as _ba
         species = _ba.species
         ni = _NETWORK.ni
         nz = atm.Tco.shape[0]
@@ -1716,13 +1731,21 @@ class OuterLoop:
         )
 
     @staticmethod
-    def _pack_k_arr(k_dict, nr: int, nz: int) -> jnp.ndarray:
-        """Pack `var.k` dict (keyed 1..nr) into a (nr+1, nz) jnp array."""
-        out = np.zeros((nr + 1, nz), dtype=np.float64)
-        for i, vec in k_dict.items():
-            if 1 <= i <= nr:
-                out[i] = np.asarray(vec, dtype=np.float64)
-        return jnp.asarray(out)
+    def _pack_k_arr(var, nr: int, nz: int) -> jnp.ndarray:
+        """Return a `(nr+1, nz)` jnp view of `var.k_arr` after a shape check.
+
+        Phase 22d: `var.k` (the dict keyed 1..nr) is gone; the dense array
+        has been the source of truth since the rate parser ran. The shape
+        check is cheap insurance — if anything desyncs it raises here
+        rather than silently feeding the wrong shape into the JIT'd
+        runner.
+        """
+        k_arr = np.asarray(var.k_arr, dtype=np.float64)
+        if k_arr.shape != (nr + 1, nz):
+            raise ValueError(
+                f"var.k_arr shape {k_arr.shape} != expected ({nr+1}, {nz})"
+            )
+        return jnp.asarray(k_arr)
 
     def _atom_dict_to_arr(self, d: dict) -> np.ndarray:
         return np.asarray(
@@ -1746,7 +1769,7 @@ class OuterLoop:
         if self._photo_static is None:
             tiny = jnp.zeros((1, 1), dtype=jnp.float64)
             return dict(
-                k_arr=self._pack_k_arr(var.k, nr, nz),
+                k_arr=self._pack_k_arr(var, nr, nz),
                 tau=tiny, aflux=tiny, sflux=tiny,
                 dflux_d=tiny, dflux_u=tiny, prev_aflux=tiny,
                 aflux_change=jnp.float64(0.0),
@@ -1763,7 +1786,7 @@ class OuterLoop:
         # If pre-loop compute_J wasn't called, J_br placeholders are zeros;
         # the first photo branch firing will populate them from aflux.
         return dict(
-            k_arr=self._pack_k_arr(var.k, nr, nz),
+            k_arr=self._pack_k_arr(var, nr, nz),
             tau=jnp.asarray(var.tau, dtype=jnp.float64),
             aflux=jnp.asarray(var.aflux, dtype=jnp.float64),
             sflux=jnp.asarray(var.sflux, dtype=jnp.float64),
@@ -1976,9 +1999,10 @@ class OuterLoop:
             self._unpack_J_sp(state, var)
             self._unpack_k(state, var)
 
-        # Phase 10.4 conden k unpack: write the conden rate rows back into
-        # `var.k` so any downstream output / diagnostics see the latest
-        # forward + reverse condensation rates.
+        # Phase 10.4 conden k unpack: snapshot the conden-updated rate rows
+        # from `state.k_arr` into `var.k_arr` (Phase 22d retired the legacy
+        # `var.k` dict; the .vul writer synthesizes the dict view at pickle
+        # time).
         if self._conden_static is not None:
             self._unpack_conden_k(state, var)
 
@@ -2042,22 +2066,15 @@ class OuterLoop:
                 var.Jion_sp[(sp, 0)] = var.Jion_sp[(sp, 0)] + Jion_br_np[i]
 
     def _unpack_k(self, state: JaxIntegState, var) -> None:
-        """Write photo-updated rate rows back into `var.k` so the Python-side
-        condensation / output paths see the latest values."""
-        k_arr = np.asarray(state.k_arr, dtype=np.float64)
-        for i, key in enumerate(self._photo_static.photo_J_data.branch_keys):
-            ridx = var.pho_rate_index.get(key)
-            if ridx is not None and ridx not in vulcan_cfg.remove_list:
-                var.k[ridx] = k_arr[ridx]
-        for i, key in enumerate(self._photo_static.photo_J_data.branch_T_keys):
-            ridx = var.pho_rate_index.get(key)
-            if ridx is not None and ridx not in vulcan_cfg.remove_list:
-                var.k[ridx] = k_arr[ridx]
-        if self._photo_static.cross_Jion.shape[0] > 0:
-            for key in self._photo_static.photo_ion_data.branch_keys:
-                ridx = var.ion_rate_index.get(key)
-                if ridx is not None and ridx not in vulcan_cfg.remove_list:
-                    var.k[ridx] = k_arr[ridx]
+        """Snapshot photo-updated rate rows from `state.k_arr` into
+        `var.k_arr`. Phase 22d: a full-array snapshot replaces the per-row
+        dict writes; rows that weren't touched inside the runner are equal
+        to the initial `var.k_arr` so the overwrite is idempotent for them
+        and authoritative for the rows the photo branch updated. The
+        legacy `{i: array(nz)}` dict view is synthesized at `.vul` write
+        time by `legacy_io.Output.save_out`.
+        """
+        var.k_arr = np.asarray(state.k_arr, dtype=np.float64)
 
     def _unpack_ring(self, state: JaxIntegState, var) -> None:
         """Rebuild `var.y_time` / `var.t_time` chronologically from the ring.
@@ -2100,18 +2117,13 @@ class OuterLoop:
         var.atom_loss_time = [final_atom_loss for _ in range(L)]
 
     def _unpack_conden_k(self, state: JaxIntegState, var) -> None:
-        """Write conden-updated forward + reverse rate rows back into `var.k`.
-
-        Mirrors `op.conden`'s `var.k[re] = ...; var.k[re+1] = ...` writes
-        (`op.py:1144-1145` and friends) so the .vul output and any
-        downstream Python diagnostics see the latest condensation +
-        evaporation rates.
+        """Snapshot conden-updated rate rows from `state.k_arr` into
+        `var.k_arr`. Phase 22d: full-array overwrite; conden rows updated
+        inside the runner are reflected verbatim, others retain their
+        pre-runner values. The legacy `{i: array(nz)}` dict view is
+        synthesized at `.vul` write time by `legacy_io.Output.save_out`.
         """
-        k_arr = np.asarray(state.k_arr, dtype=np.float64)
-        re_idx_np = np.asarray(self._conden_static.conden_re_idx, dtype=np.int32)
-        for ridx in re_idx_np.tolist():
-            var.k[ridx] = k_arr[ridx]
-            var.k[ridx + 1] = k_arr[ridx + 1]
+        var.k_arr = np.asarray(state.k_arr, dtype=np.float64)
 
     # -----------------------------------------------------------------
     # f_dy — inlined from op.Integration.f_dy (op.py:1003-1015)
@@ -2142,23 +2154,22 @@ class OuterLoop:
 
     # -----------------------------------------------------------------
     # Phase 16: chunked driver — interleaves the JIT'd runner with
-    # host-side progress / plot / movie hooks.
+    # host-side progress hooks. Phase 19 dropped the matplotlib
+    # live-plot / live-flux / movie callbacks; only `print_prog`
+    # remains as a host-side per-chunk hook.
     # -----------------------------------------------------------------
     def _run_chunked(self, init_state, atm_static, var, para, atm):
         """Run the integration in `print_prog_num`-sized chunks so the host
-        can print / plot / record movie frames between chunks.
+        can call `print_prog` between chunks.
 
-        Phase 16: termination has the same semantics as the single-shot
-        path (count_max / runtime / converged); the chunk cap exists only
-        to give the host a place to call `print_prog` etc. The
-        bit-equivalence to the single-shot path is asserted by
-        `tests/test_chunked_runner.py`.
+        Termination has the same semantics as the single-shot path
+        (count_max / runtime / converged); the chunk cap exists only to
+        give the host a place to print progress. Bit-equivalence to the
+        single-shot path is asserted by `tests/test_chunked_runner.py`.
         """
         chunk_size = max(int(getattr(vulcan_cfg, "print_prog_num", 100)), 1)
         count_max_static = int(self._statics.count_max)
         runtime_static = float(self._statics.runtime)
-        live_plot = bool(getattr(vulcan_cfg, "use_live_plot", False))
-        live_flux = bool(getattr(vulcan_cfg, "use_live_flux", False))
         use_print_prog = bool(getattr(vulcan_cfg, "use_print_prog", False))
 
         state = init_state
@@ -2183,17 +2194,13 @@ class OuterLoop:
             if terminated_for_real:
                 return state
 
-            # Sync state to host for plot/print hooks.
+            # Sync state to host for the print_prog hook.
             self._unpack_state(state, var, para, atm)
             if use_print_prog:
                 if (not hasattr(para, "where_varies_most")
                         or para.where_varies_most is None):
                     para.where_varies_most = np.zeros_like(var.y)
                 self.output.print_prog(var, para)
-            if live_plot:
-                self.output.plot_update(var, atm, para)
-            if live_flux and bool(getattr(vulcan_cfg, "use_photo", False)):
-                self.output.plot_flux_update(var, atm, para)
 
     # -----------------------------------------------------------------
     # Outer Python orchestration (drop-in for op.Integration.__call__)
@@ -2209,12 +2216,12 @@ class OuterLoop:
         method only handles pre-loop setup, the device call(s), and
         post-run unpacking + final-state diagnostics.
 
-        Phase 16: when any of `use_print_prog`, `use_live_plot`,
-        `use_live_flux`, or `use_save_movie` is on, the integration runs
-        in chunks of `print_prog_num` accepted steps so the host can
-        print / plot / save a movie frame between chunks. Otherwise it
-        is single-shot. Both paths are bit-equivalent on the final
-        state.
+        Phase 16/19: when `use_chunked_runner=True`, the integration
+        runs in chunks of `print_prog_num` accepted steps so the host
+        can call `print_prog` between chunks. Otherwise it is
+        single-shot. Both paths are bit-equivalent on the final state.
+        Phase 19 dropped the matplotlib live-plot / live-flux / movie
+        callbacks; only `print_prog` remains as a per-chunk hook.
         """
         del make_atm  # captured into _refresh_static at init (Phase 10.3)
         validate_runtime_config(vulcan_cfg)
@@ -2228,13 +2235,11 @@ class OuterLoop:
         atm_static = make_atm_static(atm, ni, nz)
         init_state = self._pack_state(var, para, atm)
 
-        # Phase 16: chunked execution is opt-in via the explicit
-        # `use_chunked_runner` cfg flag. When on, the integration runs in
-        # `print_prog_num`-sized chunks so the host can fire
-        # `print_prog` / `plot_update` / `plot_flux_update` / movie
-        # frame between chunks. Off (default), the runner is single-shot.
-        # Auto-detecting chunked from the plotting flags was tried and
-        # rejected — too fragile against test-suite module-cache state.
+        # Phase 16/19: chunked execution is opt-in via the explicit
+        # `use_chunked_runner` cfg flag. When on, the integration runs
+        # in `print_prog_num`-sized chunks so the host can fire
+        # `print_prog` between chunks. Off (default), the runner is
+        # single-shot.
         use_chunked = bool(getattr(vulcan_cfg, "use_chunked_runner", False))
 
         if use_chunked:

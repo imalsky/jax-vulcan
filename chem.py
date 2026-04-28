@@ -125,6 +125,23 @@ def chem_rhs_per_layer(
 
     # `num_segments=ni+1` -- the last segment (index ni) collects all padding
     # contributions; we discard it.
+    #
+    # Phase 17 note: a Neumaier-compensated single-scan replacement for
+    # `segment_sum` was investigated and reverted. It made the per-cell
+    # sum machine-precise relative to its own input terms, but did NOT
+    # narrow the ~1e-4 chem_rhs vs master gap, because that gap is set
+    # by per-term floating-point roundoff differences in the rate
+    # computation itself (e.g. JAX's `prod_r * 1.0 * 1.0` vs master's
+    # explicit `y[A] * y[B]`), not by sum-order drift. Verified
+    # experimentally: master's `chemdf` is bit-identical to
+    # `math.fsum(master_terms)`, and our compensated sum is bit-identical
+    # to `math.fsum(jax_terms)` — the two `*_terms` arrays differ by
+    # ~1 ulp per multiply, which dominates after summing ~7K terms of
+    # magnitude ~1e11 down to ~1e2. Closing that gap requires Stage 3
+    # of the Phase 17 plan: emit each term in master's SymPy order (a
+    # codegen step with a large perf hit), so for now the floor stays
+    # documented in `CLAUDE.md` (Numerical hygiene) and the production
+    # path uses the fast tree-reduction `segment_sum`.
     loss = jax.ops.segment_sum(
         flat_r_st * rate_repeat,
         flat_r_idx,

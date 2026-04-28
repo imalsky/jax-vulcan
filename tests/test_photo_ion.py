@@ -55,10 +55,33 @@ def main() -> int:
         dbin1=dbin1,
         dbin2=dbin2,
         nbin=aflux.shape[1],
-        k={7: np.zeros(aflux.shape[0]), 8: np.zeros(aflux.shape[0]), 9: np.zeros(aflux.shape[0])},
+        k_arr=np.zeros((10, aflux.shape[0]), dtype=np.float64),
     )
 
-    solver = op_jax.Ros2JAX()
+    # Phase 22e: hand the synthetic ion-cross arrays to Ros2JAX through
+    # a minimal PhotoStaticInputs so its lazy `_ensure_photo_static`
+    # doesn't try to read a full pre-loop state off the SimpleNamespace.
+    import jax.numpy as jnp
+    from state import PhotoStaticInputs
+    nbin = aflux.shape[1]
+    nz = aflux.shape[0]
+    photo_static = PhotoStaticInputs(
+        bins=jnp.zeros((nbin,), dtype=jnp.float64),
+        nbin=nbin, dbin1=dbin1, dbin2=dbin2, din12_indx=split,
+        absp_sp=(), absp_T_sp=(), scat_sp=(),
+        branch_keys=(), branch_T_keys=(),
+        ion_branch_keys=(("H2O", 1), ("H2O", 2), ("NH3", 1)),
+        absp_cross=jnp.zeros((0, nbin), dtype=jnp.float64),
+        absp_T_cross=jnp.zeros((0, nz, nbin), dtype=jnp.float64),
+        scat_cross=jnp.zeros((0, nbin), dtype=jnp.float64),
+        cross_J=jnp.zeros((0, nbin), dtype=jnp.float64),
+        cross_J_T=jnp.zeros((0, nz, nbin), dtype=jnp.float64),
+        cross_Jion=jnp.asarray(
+            np.stack([cross_h2o_1, cross_h2o_2, cross_nh3_1], axis=0),
+            dtype=jnp.float64,
+        ),
+    )
+    solver = op_jax.Ros2JAX(photo_static=photo_static)
     solver.compute_Jion(var, atm=None)
 
     expected = {
@@ -79,8 +102,8 @@ def main() -> int:
         if relerr > 1e-14:
             ok = False
         ridx = var.ion_rate_index[key]
-        if not np.allclose(var.k[ridx], want * f_diurnal, rtol=1e-14, atol=0.0):
-            print(f"FAIL: k[{ridx}] mismatch for {key}")
+        if not np.allclose(var.k_arr[ridx, :], want * f_diurnal, rtol=1e-14, atol=0.0):
+            print(f"FAIL: k_arr[{ridx}] mismatch for {key}")
             ok = False
 
     for sp, want in expected_total.items():

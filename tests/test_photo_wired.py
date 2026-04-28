@@ -32,24 +32,39 @@ warnings.filterwarnings("ignore")
 
 def main() -> int:
     import vulcan_cfg                               # noqa
-    import store, build_atm, op                     # noqa
+    import store, op                                 # noqa
+    from atm_setup import Atm
+    from ini_abun import InitialAbun
 
     # Build atmospheric / chemistry state up to the point compute_tau is called.
     data_var = store.Variables()
     data_atm = store.AtmData()
-    make_atm = build_atm.Atm()
+    make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
     rate = op.ReadRate()
     data_var = rate.read_rate(data_var, data_atm)
     data_var = rate.rev_rate(data_var, data_atm)
     data_var = rate.remove_rate(data_var)
-    ini_abun = build_atm.InitialAbun()
+    # Phase 22d: VULCAN-JAX's `op_jax.compute_J` writes `var.k_arr[ridx, :]`
+    # (dense) instead of the legacy `var.k` dict. Bridge master's parsed
+    # dict into the dense surface so VULCAN-JAX's path can read/write it.
+    import network as _net_mod
+    import rates as _rates_mod
+    _net = _net_mod.parse_network(vulcan_cfg.network)
+    nz_local = int(data_atm.Tco.shape[0])
+    data_var.k_arr = _rates_mod.k_array_from_dict(_net, data_var.k, nz=nz_local)
+    ini_abun = InitialAbun()
     data_var = ini_abun.ini_y(data_var, data_atm)
     data_var = ini_abun.ele_sum(data_var)
     data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
     make_atm.mol_diff(data_atm)
     make_atm.BC_flux(data_atm)
+    # This is a JAX-vs-master oracle test, so we deliberately use
+    # master's `make_bins_read_cross` to populate the legacy dict
+    # surface that master's `op.Ros2().compute_tau` reads. The JAX
+    # `op_jax.Ros2JAX` lazy-builds its own `PhotoStaticInputs` from
+    # `(var, atm)` on first call, so it doesn't need the dicts.
     rate.make_bins_read_cross(data_var, data_atm)
     make_atm.read_sflux(data_var, data_atm)
 

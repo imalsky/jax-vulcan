@@ -40,7 +40,7 @@ warnings.filterwarnings("ignore")
 def main() -> int:
     import vulcan_cfg                       # noqa: E402
     import store                            # noqa: E402
-    import build_atm                        # noqa: E402
+    from atm_setup import Atm               # noqa: E402
     import op                               # noqa: E402
 
     import network as net_mod               # VULCAN-JAX
@@ -50,7 +50,7 @@ def main() -> int:
     data_var = store.Variables()
     data_atm = store.AtmData()
 
-    make_atm = build_atm.Atm()
+    make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
     if vulcan_cfg.use_condense:

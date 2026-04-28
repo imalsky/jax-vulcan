@@ -34,14 +34,15 @@ def main() -> int:
     import jax.numpy as jnp
     import vulcan_cfg
     import store
-    import build_atm
+    from atm_setup import Atm
+    from ini_abun import InitialAbun
     import op
     import photo as photo_mod
 
     # === Set up state with photochemistry ===
     data_var = store.Variables()
     data_atm = store.AtmData()
-    make_atm = build_atm.Atm()
+    make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
     if vulcan_cfg.use_condense:
@@ -49,7 +50,7 @@ def main() -> int:
     rate = op.ReadRate()
     data_var = rate.read_rate(data_var, data_atm)
     data_var = rate.rev_rate(data_var, data_atm)
-    ini = build_atm.InitialAbun()
+    ini = InitialAbun()
     data_var = ini.ini_y(data_var, data_atm)
     data_var = ini.ele_sum(data_var)
     data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
@@ -72,7 +73,13 @@ def main() -> int:
     import chem_funs
     species_list = chem_funs.spec_list
 
-    photo_data = photo_mod.pack_photo_data(data_var, vulcan_cfg, species_list)
+    # Phase 22e: build the dense `PhotoStaticInputs` and derive the
+    # runtime `PhotoData` from it; master's `make_bins_read_cross`
+    # above already populated the dicts master's compute_tau needs.
+    import photo_setup
+    static = photo_setup._build_photo_static_dense(data_var, data_atm)
+    static = static.with_din12_indx(int(data_var.sflux_din12_indx))
+    photo_data = photo_mod.photo_data_from_static(static, species_list)
     print(f"\nPacked photo data:")
     print(f"  absp species (non-T):  {photo_data.absp_idx.shape[0]}")
     print(f"  absp species (T-dep):  {photo_data.absp_T_idx.shape[0]}")
@@ -137,7 +144,7 @@ def main() -> int:
     J_ref = dict(data_var.J_sp)
     print(f"\nVULCAN J_sp: {len(J_ref)} (species, branch) entries")
 
-    photo_J = photo_mod.pack_photo_J_data(data_var, vulcan_cfg)
+    photo_J = photo_mod.photo_J_data_from_static(static)
     J_jax = photo_mod.compute_J_jax(jnp.asarray(aflux_jax), photo_J)
     print(f"JAX J_jax:   {len(J_jax)} (species, branch) entries")
 

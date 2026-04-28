@@ -1,0 +1,784 @@
+VULCAN-JAX: ALL REMAINING WORK FOR A COMPLETE JAX REWRITE
+Date: 2026-04-27 (Phase 22e complete: `var.cross*` dict-surface retired;
+the dense `state.PhotoStaticInputs` pytree is the canonical photo-input
+surface; photo / op_jax / outer_loop kernels read from it; the .vul
+writer synthesizes the six legacy `cross*` dict views from the pytree
+at pickle time. `legacy_io.ReadRate.make_bins_read_cross` is deleted;
+`store.Variables` no longer initializes `threshold` / `cross_T_sp_list`.)
+
+Phase 22a (rate parser consolidation) closed:
+- Three new entry points in `rates.py`:
+  - `apply_lowT_caps(net, k, T, M)` — masked `np.where` over the 3
+    hardcoded reactions in `legacy_io.lim_lowT_rates` (Moses+2005
+    Lindemann cap for H+CH3+M, constant caps for H+C2H4+M and
+    H+C2H5+M). Caller gates on `cfg.use_lowT_limit_rates`.
+  - `apply_remove_list(net, k, remove_list)` — literal zero of indices
+    in `cfg.remove_list`; does NOT auto-zero a paired forward/reverse
+    partner (matches legacy `remove_rate` semantics exactly).
+  - `build_rate_array(cfg, net, atm, nasa9_coeffs)` — end-to-end glue:
+    forward (Arrhenius/Lindemann/Troe) → optional lowT caps → reverse
+    via Gibbs (`gibbs.K_eq_array` + `fill_reverse_k(remove_list=None)`)
+    → final remove pass. Returns dense `(nr+1, nz)` `np.ndarray`.
+    Bit-exact (≤1e-13; actually 0.0 abs/rel err on HD189) replacement
+    for the legacy `read_rate → lim_lowT_rates → rev_rate →
+    remove_rate` chain.
+- Production rewire in `vulcan_jax.py`: the four legacy rate-method
+  calls (lines 97-104) collapse to one `build_rate_array` invocation
+  (legacy `read_rate` retained for metadata population only —
+  `var.Rf` / `var.pho_rate_index` / `var.n_branch` / `var.photo_sp`
+  etc.).
+- New `Variables.k_arr` field on `store.Variables` carries the dense
+  `(nr+1, nz)` mirror; `var.k` dict is populated via
+  `rates.k_dict_from_array` for back-compat with photo / conden writers
+  (`photo.py:551`, `op_jax.py:119,140`, `outer_loop.py:2051,2055,2060,
+  2113,2114`, `conden.py:23,63`) and the `.vul` writer.
+- New `tests/test_read_rate.py` (6 tests):
+  - `test_lowT_caps_fire_all_three` — synthetic Tco crossing the three
+    thresholds (150 / 250 / 290 / 350 K); verifies cap values match
+    Moses+2005 formulas to bit-precision.
+  - `test_lowT_caps_no_op_when_T_above_thresholds` — T>300K everywhere
+    leaves k unchanged.
+  - `test_remove_list_zeros_only_listed_indices` — `[1, 3, 4, 6]`
+    zeros literally those rows; partners (2, 5, 7) untouched.
+  - `test_remove_list_none_or_empty_is_noop` — None / empty pass-through.
+  - `test_build_rate_array_matches_legacy_hd189` — end-to-end vs the
+    legacy `read_rate / rev_rate / remove_rate` chain on the HD189
+    reference state (`hd189_state` fixture); compares all forward +
+    reverse rows excluding photo / ion / conden / radiative slots
+    (those are managed by separate paths in 22b).
+  - `test_build_rate_array_with_lowT_caps` — `use_lowT_limit_rates=True`
+    on HD189 fires the C2H4 cap on cooler upper layers (T<=300 K);
+    capped layers exactly equal 3.7e-30, others match the off-cap path.
+- Suite: pre-existing test_chem.py exposes a latent suite-ordering
+  bug when `chem_funs` is loaded into sys.modules before its master-
+  swap runs (independent of Phase 22a); standalone runs pass cleanly.
+  HD189 setup smoke-passes through the rewired path.
+- `legacy_io.ReadRate.{read_rate, rev_rate, remove_rate, lim_lowT_rates}`
+  retained — full deletion deferred to Phase 22b along with the
+  `var.cross*` dict-surface retirement (the ~20 standalone tests that
+  call the legacy chain don't need rewriting in 22a).
+
+Phase 19 (typed pre-loop pytree foundation + live-output drop) closed:
+- Added `state.py` with `AtmInputs` / `RateInputs` / `PhotoInputs` /
+  `RunState` (typed JAX pytrees) + `pytree_from_store` /
+  `apply_pytree_to_store` adapters + `load_stellar_flux(cfg)` host-side
+  reader.
+- `Variables.__init__` no longer reads disk on its own; pass an
+  optional `stellar_flux=` payload to keep the constructor I/O-free.
+- Live-plot / live-flux / save-movie / flux-movie support paths
+  removed: validator rejects them, `Output.plot_update` /
+  `plot_flux_update` / `plot_evo_inter` deleted, `outer_loop._run_chunked`
+  no longer fires the matplotlib callbacks. `plot_end` / `plot_evo` /
+  `plot_TP` survive as post-run-only PNG writers.
+
+Phase 20 (`Atm.*` rewrite into JAX-native `atm_setup.py`) closed:
+- Added `atm_setup.py` (~640 lines) with pure JAX kernels: `compute_pico`,
+  `analytical_TP_H14` (uses `jax.scipy.special.expn`), `load_TPK` (handles
+  `atm_type ∈ {file, isothermal, analytical, vulcan_ini, table}` and
+  `Kzz_prof ∈ {const, JM16, Pfunc, file}` — descending atm files are
+  flipped on host before `jnp.interp`), `compute_mean_mass`,
+  `compute_mu_dz_g` (sequential height integration via `lax.scan`
+  upward + downward from `pref_indx`), `compute_settling_velocity`,
+  `compute_mol_diff` (vmapped per species, four `atm_base` modes),
+  `read_bc_flux`, `compute_sat_p` (eight condensables), `read_sflux_binned`.
+- `build_atm.py` thinned: `Atm` body deleted, `from atm_setup import Atm`
+  re-exports the facade so the ~20 existing `make_atm.f_pico(data_atm)`
+  call sites keep working unchanged. `compo` / `compo_row` / `species`
+  and `InitialAbun` stay until Phase 21.
+- New `tests/test_atm_setup_matrix.py` (31 parametrized cases) covers
+  the cfg matrix HD189 alone misses: 3 `atm_type` × 4 `Kzz_prof` × 4
+  `atm_base` × 8 condensables × BC modes — all asserting ≤1e-13
+  agreement vs direct numpy/scipy references.
+- Suite: 48 → 79 PASS + 1 SKIP; ruff clean on all new files; vulture
+  clean. HD189 50-step oracle still bit-exact at 1.59e-10.
+
+Phase 21 (`InitialAbun.*` rewrite + `build_atm.py` deletion) closed:
+- Added `composition.py` (extracts `compo` / `compo_row` / `species`
+  data tables; precomputes a `(ni, n_atoms)` JAX `compo_array` for
+  vectorised stoichiometric sums).
+- Added `ini_abun.py` (~470 lines) with pure JAX kernels:
+  `_abun_lowT_residual` (5-mol H2/H2O/CH4/He/NH3),
+  `_abun_highT_residual` (4-mol parity helper, currently unused),
+  `_jax_newton` (`lax.while_loop` + `jax.jacrev` — replaces
+  `scipy.optimize.fsolve` for `const_lowT`), `compute_atom_ini`
+  (`jnp.einsum` — replaces master's per-atom Python loop in `ele_sum`),
+  plus host-side mode dispatch for `EQ` (FastChem subprocess, paths
+  byte-identical), `const_mix`, `vulcan_ini` (pickle), `table`
+  (`np.genfromtxt`), and `const_lowT` (JAX Newton). The `InitialAbun`
+  class is the legacy facade that mutates `data_var` / `data_atm` so
+  `vulcan_jax.py` and the ~17 test/example/benchmark call sites keep
+  working unchanged.
+- Added `state.IniAbunOutputs` NamedTuple defining the gas-phase
+  composition + atom totals + charge_list pytree slot.
+- DELETED `build_atm.py`. All JAX-side `import build_atm` references
+  rewired to `atm_setup` / `ini_abun` / `composition`. The ~5 master-
+  side `import build_atm as ba_v` aliases inside test fork patterns
+  (`tests/test_chem.py`, `tests/test_diffusion.py`,
+  `tests/test_ros2_step.py`, `tests/test_ini_abun.py:zzz_main`,
+  `tests/test_build_atm.py`) still work because they import master's
+  build_atm.py via sys.path manipulation, not VULCAN-JAX's.
+- New parametrized `tests/test_ini_abun.py` (8 tests):
+  `const_mix` algebraic check; `vulcan_ini` pickle round-trip from
+  `output/HD189.vul`; `table` mode synthesised on `tmp_path`;
+  `const_lowT` JAX Newton vs scipy fsolve over 3 elemental-ratio
+  regimes (≤1e-13 — actually achieved ~1e-16); `charge_list`
+  invariant for `use_ion=False`; EQ-mode bit-exact fork against
+  VULCAN-master (`test_zzz_main_eq_vs_master`, named `zzz_` so it
+  runs LAST — the master fork pops modules and would corrupt
+  per-mode tests above it).
+- Suite: 79 → 86 PASS + 1 SKIP; ruff clean on all new files;
+  vulture clean. HD189 50-step oracle still bit-exact at 1.59e-10.
+
+Open: A2 (Phase 22+, `legacy_io.ReadRate` rewrite — rate parser +
+cross-section ingestion) is next.
+
+Scope used for this document
+----------------------------
+This is the strict scope:
+
+1. All live VULCAN-master functionality should exist in the JAX tree.
+2. All numerical / physics / preprocessing paths that affect a run should be
+   implemented in JAX rather than vendored NumPy / SciPy code.
+3. The JAX tree should not need VULCAN-master at runtime or for validation of
+   supported configs.
+4. Utility / plotting / diagnostic surface should be present in the JAX repo
+   as well, so the repo is functionally complete rather than only
+   "solver-complete".
+
+Dependency policy for this document
+-----------------------------------
+External dependencies that VULCAN-master already calls do NOT need to be
+rewritten. The goal is to replace VULCAN itself, not every third-party tool it
+uses.
+
+Examples:
+- FastChem can remain an external solver, because VULCAN-master already shells
+  out to it for EQ initialization.
+- matplotlib / PIL do not need JAX rewrites.
+- NumPy / SciPy used inside VULCAN-owned code are still fair rewrite targets,
+  because that is part of replacing VULCAN's implementation.
+
+Important scope note
+--------------------
+Ros2 is the only live solver in VULCAN-master. The other solver classes in
+op.py are commented-out dead code, not active user-facing functionality.
+Therefore there is no real missing non-Ros2 solver port unless the goal is to
+resurrect dead code as a separate project.
+
+Items already assigned to another agent
+---------------------------------------
+These are still remaining tasks, but they are already owned elsewhere:
+
+- Phase 16 suite-ordering regression
+- Phase 17 compensated chem_rhs summation
+- Phase 18 per-test fixture sharing
+
+Current high-level status
+-------------------------
+The core Ros2 runtime is mostly rewritten in JAX already:
+
+- JAX chemistry RHS / Jacobian
+- JAX diffusion + block solves
+- JAX Ros2 step
+- JAX outer loop
+- JAX photo kernels
+- JAX condensation kernels
+- JAX atm-refresh kernels
+- JAX ion / fix-species / fix-bottom runtime logic
+
+The largest remaining gap is that the repo is not yet a complete JAX rewrite
+of the VULCAN-owned workflow. The remaining work is concentrated in:
+
+- pre-loop atmosphere / initialization logic
+- rate / cross-section / photo-bin preprocessing
+- EQ initialization wrapper logic around the external FastChem solver
+- repo-surface parity (diagnostics, tools, plot scripts, remaining helper/docs)
+- validation breadth across the full config matrix
+
+As of 2026-04-27, the non-code runtime data files under `atm/` and `thermo/`
+that the current JAX code can select are vendored in `VULCAN-JAX/`. The
+remaining tree deltas in those areas are helper scripts / README files only,
+plus the non-runtime FastChem source/build tree.
+
+======================================================================
+A. MUST-DO FOR REPLACING THE VULCAN RUNTIME WITH JAX
+======================================================================
+
+A1. Replace vendored build_atm.py with JAX-native setup code [CLOSED]
+---------------------------------------------------------------------
+Closed by Phases 20 and 21. `build_atm.py` is gone from the tree.
+
+Phase 20 closed (Atm.*):
+- Atm.f_pico                                                     [DONE]
+- Atm.load_TPK for atm_type {file, isothermal, analytical,
+  vulcan_ini, table}                                             [DONE]
+- Atm.mean_mass, Atm.f_mu_dz                                     [DONE]
+- Atm.read_sflux                                                 [DONE]
+- Atm.mol_diff (atm_base {H2, N2, O2, CO2})                      [DONE]
+- Atm.BC_flux                                                    [DONE]
+- Atm.sp_sat (8 condensables)                                    [DONE]
+
+Phase 21 closed (InitialAbun.*):
+- compo / compo_row / species data tables → composition.py       [DONE]
+- InitialAbun.ini_y for all 5 ini_mix modes:
+  - "EQ"          (FastChem subprocess preserved)                [DONE]
+  - "const_mix"                                                  [DONE]
+  - "vulcan_ini"  (pickle.load on host)                          [DONE]
+  - "table"       (np.genfromtxt on host)                        [DONE]
+  - "const_lowT"  (JAX Newton replaces scipy.optimize.fsolve)    [DONE]
+- InitialAbun.abun_lowT / abun_highT residual functions          [DONE]
+- InitialAbun.ele_sum (jnp.einsum replaces per-atom Python loop) [DONE]
+- build_atm.py DELETED                                           [DONE]
+- Anti-risk note: scipy.optimize.fsolve vs JAX Newton turned out
+  to NOT be a problem — the 5-mol system is so well-conditioned
+  that the JAX Newton matches scipy fsolve to ~1e-16 across a 4×
+  wider elemental-ratio range than HD189's solar values.
+
+
+A2. FastChem replacement is NOT required for this scope
+-------------------------------------------------------
+Current state:
+- EQ initialization still runs the external binary in VULCAN-master and
+  VULCAN-JAX/build_atm.py.
+
+Scope decision:
+- This is acceptable.
+- FastChem is a third-party dependency already used by VULCAN-master, so it is
+  not part of the required rewrite surface.
+
+What still matters:
+- The VULCAN-side wrapper around FastChem should remain supported and tested.
+- The JAX tree should continue to run EQ initialization with the same external
+  FastChem workflow that VULCAN-master uses.
+- If desired, a future project could replace FastChem with a JAX-native
+  equilibrium solver, but that is optional and out of scope for "replace
+  VULCAN".
+
+Effort:
+- None required for completeness beyond keeping the wrapper healthy
+
+
+A3. Replace vendored legacy_io.ReadRate with JAX-native preprocessing
+--------------------------------------------------------------------
+Current state (Phase 22c complete):
+- ReadRate.read_rate                 [RETAINED — provides metadata
+                                       (var.Rf, var.pho_rate_index,
+                                       var.n_branch, var.photo_sp,
+                                       var.ion_sp, ...) that downstream
+                                       photo / conden / .vul writer
+                                       paths still consume]
+- ReadRate.rev_rate                  [DELETED — Phase 22c. Replaced by
+                                       gibbs.fill_reverse_k via
+                                       rates.build_rate_array]
+- ReadRate.remove_rate               [DELETED — Phase 22c. Replaced by
+                                       rates.apply_remove_list /
+                                       rates.apply_photo_remove]
+- ReadRate.lim_lowT_rates            [DELETED — Phase 22c. Replaced by
+                                       rates.apply_lowT_caps (gated by
+                                       cfg.use_lowT_limit_rates inside
+                                       rates.build_rate_array)]
+- ReadRate.make_bins_read_cross      [RETAINED — solely as oracle for
+                                       tests/test_photo_setup.py's
+                                       bit-exact regression check; not
+                                       called from production. Deletion
+                                       bundled with the var.cross* dict
+                                       surface retirement in Phase 22e]
+
+Phase 22a + 22b consolidated the JAX-native replacements; Phase 22c
+deleted the three legacy rate-method members (rev_rate, remove_rate,
+lim_lowT_rates) and migrated all VULCAN-JAX callers (production +
+~15 standalone tests + examples + benchmarks) to the rates.setup_var_k
++ rates.apply_photo_remove convenience helpers. Oracle tests using
+VULCAN-master's op.ReadRate() are unaffected (they import master's op
+directly and use master's pipeline). HD189 50-step oracle still
+bit-exact at 1.59e-10.
+
+Phase 22b delivered:
+- New `photo_setup.py` (~430 lines, pure NumPy):
+  - Host-side CSV readers (`_load_thresholds`, `_load_cross_csv`,
+    `_load_branch_csv`, `_load_ion_branch_csv`,
+    `_discover_T_cross_files`, `_load_T_cross_csv`,
+    `_load_rayleigh_csv`).
+  - `_make_bins(bin_min, bin_max, dbin1, dbin2, dbin_12trans)` —
+    two-resolution wavelength grid (mirrors legacy lines 401-405).
+  - `_interp_zero_extrap` / `_interp_edge_extrap` — bit-exact
+    `scipy.interp1d(kind='linear', bounds_error=False, fill_value=...)`
+    replacements via `_sort_pairs` + `np.interp(left=..., right=...)`.
+    The sort step is critical: `scipy.interp1d` sorts xp internally,
+    `np.interp` does not, and CH3SH_branch.csv has a typo (`354.0`
+    between `253.5` and `309.5`) that exposes the difference.
+  - `_bin_T_dependent` — three-case T-axis branching (Tz between
+    Tlow/Thigh; Tz < min_T; Tz > max_T) with the legacy `log10` /
+    `-100` sentinel pattern preserved.
+  - `populate_photo_arrays(var, atm)` — top-level mutation entry
+    point; bit-exact replacement for `make_bins_read_cross`.
+
+- Production rewire in `vulcan_jax.py`: `if vulcan_cfg.use_photo:
+  photo_setup.populate_photo_arrays(data_var, data_atm)` replaces the
+  legacy `rate.make_bins_read_cross` call. After photo writes
+  overwrite var.k for photodissociation reactions, var.k_arr is
+  re-synced via `rates.k_array_from_dict`.
+
+- New `tests/test_photo_setup.py` (2 tests):
+  - `test_photo_setup_matches_legacy_hd189` — bit-exact (0.0 err)
+    vs legacy on HD189 (use_photo=True, T_cross_sp=[],
+    use_ion=False, scat_sp=['H2','He']).
+  - `test_photo_setup_matches_legacy_with_T_dep_cross_sections` —
+    bit-exact match with T_cross_sp=['CO2','H2O','NH3'] patched on
+    (Earth-style T-dep path, exercises the per-layer × per-bin
+    log10-space interp).
+
+- End-to-end HD189 5-step smoke runs cleanly through the rewired
+  photo path (3.1s wall).
+
+- Ruff/vulture clean on photo_setup.py + tests/test_photo_setup.py.
+
+
+Phase 22d delivered (var.k retirement):
+- op_jax.compute_J / compute_Jion now write var.k_arr[ridx, :] directly;
+  the legacy var.k dict writes are gone.
+- outer_loop._unpack_k / _unpack_conden_k collapsed to a single full-array
+  snapshot from state.k_arr into var.k_arr (no per-row dict mirror).
+- state.pytree_from_store reads var.k_arr directly; state.apply_pytree_to_store
+  writes var.k_arr (no dict round-trip).
+- rates.setup_var_k and rates.apply_photo_remove no longer mirror to var.k.
+- legacy_io.read_rate keeps a local k = {} as scratch; var.k attribute is
+  not assigned. Variables.__init__ drops self.k = {}.
+- legacy_io.Output.save_out synthesizes the legacy {i: array(nz)} dict view
+  from var.k_arr at .vul write time so plot_py/ scripts keep working.
+- Migrated tests/test_outer_loop_photo, tests/test_chem_jac_sparse,
+  tests/test_integrate, tests/test_vmap_step, tests/test_backend_parity,
+  tests/test_read_rate, tests/test_photo_ion, tests/profile_step,
+  examples/grad_implicit_example, examples/batched_run, benchmarks/bench_step
+  off var.k.items() loops to var.k_arr indexing.
+- HD189 50-step oracle still bit-exact at 1.59e-10.
+
+Phase 22e delivered (var.cross* retirement, closed):
+- New state.PhotoStaticInputs NamedTuple holds the dense cross-section
+  pytree: bins / dbin scalars + (sp, branch) ordering tuples + dense
+  absp_cross / absp_T_cross / cross_J / cross_J_T / cross_Jion /
+  scat_cross arrays.
+- photo_setup._build_photo_static_dense reads CSVs and produces the
+  pytree; photo_setup.populate_photo writes scalars + runtime buffers
+  on var and returns the static; photo_setup.populate_photo_arrays is
+  now a thin compat wrapper for the ~17 standalone callers that ignore
+  the return value.
+- photo.photo_data_from_static / photo_J_data_from_static /
+  photo_ion_data_from_static replace the deleted pack_photo_data /
+  pack_photo_J_data / pack_photo_ion_data; the runtime kernels never
+  touch a dict.
+- op_jax.Ros2JAX accepts photo_static= and lazily builds it from
+  (var, atm) via _ensure_photo_static for test sites that don't wire
+  it explicitly.
+- outer_loop._build_photo_static reads from solver._photo_static
+  (lazy-built when needed); the var.bins / var.dbin* / var.nbin /
+  var.sflux_top reads collapse to direct static field access.
+- vulcan_jax.py builds the static after read_sflux, _replaces din12_indx
+  from var.sflux_din12_indx, stashes it on the solver, and threads it
+  into output.save_out(..., photo_static=...).
+- legacy_io.Output.save_out adds _synthesize_cross_dicts, which rebuilds
+  the six legacy {cross, cross_J, cross_T, cross_J_T, cross_Jion,
+  cross_scat} dict views from the dense pytree at pickle time so the
+  .vul schema stays unchanged for plot_py/ consumers.
+- legacy_io.ReadRate.make_bins_read_cross is deleted (~285 lines);
+  store.Variables drops self.threshold = {} and self.cross_T_sp_list = {}
+  from defaults (now write-once locals during photo setup); legacy_io.py
+  drops the now-unused scipy + scipy.interpolate imports.
+- tests/test_photo_setup.py is migrated to compare the static against
+  tests/data/photo_setup_hd189_baseline.npz +
+  tests/data/photo_setup_hd189_T_dep.npz (no legacy oracle dependency);
+  tests/_gen_photo_baseline.py is updated to dump from the dense pytree.
+- tests/test_photo.py and tests/test_photo_ion.py migrated to consume
+  the static directly (test_photo_wired keeps master's
+  make_bins_read_cross because master's compute_tau path needs the
+  dicts).
+- HD189 50-step oracle still bit-exact at 1.59e-10.
+
+
+A4. Remove remaining mutable NumPy-heavy store object assumptions
+----------------------------------------------------------------
+Current state (post-Phase-21):
+- The typed pre-loop input schema lives in `state.py`
+  (`AtmInputs` / `RateInputs` / `PhotoInputs` / `IniAbunOutputs` /
+  `RunState`) and the `pytree_from_store` / `apply_pytree_to_store`
+  adapters bridge legacy callers.
+- Setup-time `np.genfromtxt(sflux_file)` was extracted into
+  `state.load_stellar_flux(cfg)`; `Variables.__init__` now accepts an
+  optional payload so the constructor stays I/O-free when callers
+  pre-load.
+- Phase 20 introduced `atm_setup.py` with pure JAX kernels for every
+  Atm.* method. Phase 21 introduced `ini_abun.py` with pure JAX kernels
+  for `compute_atom_ini` plus the host-side mode dispatch for
+  `InitialAbun.ini_y` (5 modes); both exposed thin facades that mutate
+  `data_var` / `data_atm` so the existing test surface works unchanged.
+- VULCAN-JAX/store.py still holds the mutable Variables/AtmData/Parameters
+  containers; the runner still consumes them directly today.
+  `pic_count` / `tableau20` (live-plot leftovers) were removed.
+
+Remaining sub-work:
+- Wire `OuterLoop` to consume `RunState` directly instead of
+  `(var, atm)`. After this, the deep-copy-per-test fixture pattern can
+  be replaced with a frozen pytree.
+- Final cleanup: drop `store.py` once nothing reads it (a future phase
+  after legacy_io.ReadRate is rewritten).
+
+Why this matters:
+- The pytree foundation is in place and both halves of the pre-loop
+  setup are JAX-native. Removing the mutable container shim is the
+  last cleanup before the runner-side rewrite (consume RunState
+  directly).
+
+Effort:
+- The remaining shim removal is mostly mechanical and depends on the
+  legacy_io.ReadRate rewrite (A3 / Phase 22+) finishing first.
+
+
+A5. Clean up the chunked/live-output path (closed Phase 19)
+-------------------------------------------------------------------
+Decision: dropped from the supported surface.
+- `runtime_validation.py` now rejects `use_live_plot=True`,
+  `use_live_flux=True`, `use_save_movie=True`, `use_flux_movie=True`
+  with a clear "Phase 19 dropped live output" error.
+- `Output.plot_update` / `plot_flux_update` / `plot_evo_inter` and the
+  matching `outer_loop._run_chunked` callbacks were deleted.
+- Post-run plotters (`plot_end` / `plot_evo` / `plot_TP`) and
+  `print_prog` (stdout-only) are kept.
+- `use_chunked_runner=True` still works; it now only fires
+  `print_prog` between chunks.
+
+Effort: complete.
+
+
+======================================================================
+B. MUST-DO FOR FULL VULCAN-MASTER REPO-SURFACE PARITY
+======================================================================
+
+B1. Port or replace missing top-level master modules
+---------------------------------------------------
+Missing from VULCAN-JAX today:
+- diagnose.py
+- make_chem_funs.py
+
+What remains:
+- Add a JAX-side diagnostic tool equivalent to diagnose.py.
+- Decide how to handle make_chem_funs.py:
+  - likely a no-op compatibility wrapper plus documentation, since the JAX tree
+    does not need SymPy codegen
+  - if exact script-level compatibility is desired, keep the command surface
+    but redirect it to the JAX-native chem_funs path
+
+Effort:
+- Low to medium
+- Roughly 2 to 4 days
+
+
+B2. Add missing plot_py surface
+-------------------------------
+Missing files count: 18
+
+Missing files:
+- README.md
+- plot_Earth.py
+- plot_Jupiter_Tsai2021.py
+- plot_TP_Kzz.py
+- plot_actinic_flux.py
+- plot_cross.py
+- plot_cross_branches.py
+- plot_evolution.py
+- plot_helios_spectra.py
+- plot_many_vulcan.py
+- plot_spectra.py
+- plot_stellar_flux.py
+- plot_tau1_height_species.py
+- plot_tau1_species.py
+- plot_tot_cross.py
+- plot_vulcan.py
+- prt_spectrum.py
+- stellar_flux_resample.py
+
+What remains:
+- Vendor or rewrite these scripts into the JAX tree.
+- Verify they load JAX-produced .vul files without assumptions that only hold
+  for master runs.
+- Decide whether they remain plain Python / matplotlib scripts or become part
+  of a cleaner plotting package.
+
+Effort:
+- Medium
+- Roughly 3 to 7 days
+
+
+B3. Add missing tools surface
+-----------------------------
+Missing files count: 3
+
+Missing files:
+- make_mix_table.py
+- make_spectra_in_nm.py
+- print_actinic_flux.py
+
+What remains:
+- Vendor or rewrite these scripts into the JAX tree.
+- Validate them against JAX-produced outputs and vendored assets.
+
+Effort:
+- Low
+- Roughly 1 to 3 days
+
+
+B4. Runtime data payload is copied; helper/docs surface still differs
+--------------------------------------------------------------------
+Current state:
+- As of 2026-04-27, all non-code `atm/` and `thermo/` files from
+  `VULCAN-master` that the current JAX runtime/config surface can select are
+  present in `VULCAN-JAX/`.
+- `thermo/photo_cross/`, `cfg_examples/`, and the
+  `fastchem_vulcan/fastchem` + `input/*` + `output/*` runtime payload are also
+  present.
+- The remaining differences in these trees are helper scripts / README files
+  and the non-runtime FastChem source/build tree.
+
+Remaining helper/docs files in `atm/`:
+- README.txt
+- convert_vpl_spectra_in_nm.py
+- make_spectra_in_nm.py
+- stellar_flux/README.txt
+- stellar_flux/plot_spectra.py
+- stellar_flux/read_muscles_spectra_in_nm.py
+
+Remaining helper/docs files in `thermo/`:
+- README.md
+- make_compose.py
+
+Optional non-runtime FastChem mirror:
+- The JAX tree does not mirror the full `fastchem_vulcan/fastchem_src/`,
+  `obj/`, and build-makefile tree from master.
+- This does not block runtime parity because `build_atm.py` only uses the
+  executable plus `input/*` and `output/*`.
+- If compile-from-source repo parity becomes a requirement, that tree can be
+  vendored later as a separate task.
+
+What remains:
+- Decide whether the helper/docs files should be copied verbatim, rewritten, or
+  dropped as intentional non-runtime omissions.
+- Add smoke coverage for any newly vendored atmospheres or networks if they are
+  promoted into the supported validation matrix.
+
+Why this matters:
+- The runtime data gap is closed, but full repo-surface parity still includes
+  helper scripts/docs and optional build-from-source convenience surface.
+
+Effort:
+- Low
+- Roughly 1 to 3 days for the helper/docs parity decision and follow-up docs
+
+
+======================================================================
+C. VALIDATION GAPS STILL OPEN
+======================================================================
+
+C1. Full oracle campaigns beyond HD189
+-------------------------------------
+Current state:
+- HD189 matched-step comparison is strong.
+- Earth / Jupiter / HD209 have setup coverage, not the same depth of long-run
+  oracle coverage.
+
+Remaining sub-work:
+- Run matched-step JAX vs master comparisons for Earth, Jupiter, HD209.
+- Run longer count_max-matched comparisons for each.
+- Decide which additional vendored atmospheres / networks also require oracle
+  baselines once the missing assets are added.
+
+Effort:
+- Medium
+- Roughly 3 to 7 days of runtime + analysis work
+
+
+C2. Full config-matrix coverage
+-------------------------------
+The following branches should be explicitly exercised in a stable automated
+matrix before calling the rewrite complete:
+
+- use_photo on / off
+- use_ion on / off
+- use_condense on / off
+- use_lowT_limit_rates on / off
+- T_cross_sp non-empty
+- use_vm_mol on / off
+- use_settling on / off
+- use_topflux on / off
+- use_botflux on / off
+- use_fix_sp_bot non-empty
+- use_fix_all_bot on / off
+- use_fix_H2He on / off
+- fix_species non-empty
+- save_evolution on / off
+- plot / movie / live-output path, if retained as supported
+- atmosphere setup modes:
+  - file
+  - isothermal
+  - analytical
+  - vulcan_ini
+  - table, if still supported
+- initialization modes:
+  - EQ
+  - const_mix
+  - vulcan_ini
+  - table
+
+Effort:
+- Medium to large
+- Roughly 1 to 2 weeks, much of it parallelizable
+
+
+C3. Real GPU parity and multi-device validation
+-----------------------------------------------
+Current state:
+- The code is architected for GPU / vmap.
+- The repo has an optional backend-parity test.
+- Checked-in evidence on real GPU hardware is still thin.
+
+Remaining sub-work:
+- Record CPU vs GPU float64 parity on real hardware.
+- Run the full supported config slice on GPU.
+- Validate memory behavior and compile times on realistic cases.
+- Validate pmap if that is intended to be a supported user path.
+
+Effort:
+- Medium
+- Roughly 2 to 5 days on available hardware
+
+
+======================================================================
+D. CLEANUP / COMPATIBILITY WORK THAT STILL MATTERS
+======================================================================
+
+D1. Suite-ordering regression
+-----------------------------
+Status:
+- In progress with another agent.
+
+What it is:
+- Tests currently leak mutable cfg / module state across the suite.
+- This is not a physics gap, but it blocks a clean "all green" repo.
+
+Effort:
+- Low
+
+
+D2. Compensated chem_rhs summation  [WONTFIX, maintainer policy]
+---------------------------------
+Status:
+- WONTFIX. The user has explicitly opted to leave the documented chem_rhs
+  cancellation floor in place. Do not attempt to close it.
+
+What it is:
+- chem_rhs has a known, documented ~1e-4 relerr vs VULCAN-master for a small
+  set of species (CH2_1, HC3N, HCCO at certain layers). Phase 17 traced this
+  to per-term ulp drift between JAX's `jnp.prod(y**stoich)` and master's
+  SymPy-emitted `y[A] * y[B] * y[C]` -- not a summation-order issue
+  (Neumaier-compensated summation does NOT close the gap).
+- Closing the gap requires emitting each term in master's SymPy order via
+  codegen. Stage 3 of the original Phase 17 plan. Pays a ~14x per-call cost
+  on the per-step hot path; the trade is net-negative for the project.
+
+Why this is permanent:
+- The user has decided this floor is acceptable. Future agents:
+  - Document the floor when comparing JAX outputs to master.
+  - Do not work on Stage 3 codegen.
+  - Do not relax test tolerances to hide the floor (current rtol=1e-3 on
+    chem_rhs is the right tolerance; the Jacobian, which has less per-entry
+    cancellation, agrees to machine precision).
+- See CLAUDE.md "Numerical hygiene -> chem_rhs cancellation floor" and
+  README.md "Validation" for the canonical write-up.
+
+Effort:
+- N/A (WONTFIX).
+
+
+D3. Per-test fixture sharing
+----------------------------
+Status:
+- In progress with another agent.
+
+What it is:
+- Mostly test hygiene / runtime reduction.
+- Not a functionality blocker by itself.
+
+Effort:
+- Low
+
+
+D4. Documentation reconciliation
+--------------------------------
+Current state:
+- README.md, STATUS.md, runtime_validation.py, and the actual code paths are no
+  longer fully consistent about plotting / movie / chunked behavior and test
+  counts.
+
+Remaining sub-work:
+- Bring docs back in sync with implementation.
+- Document the exact meaning of "standalone", "all-JAX hot path", and
+  "complete rewrite".
+- Document the final decision on FastChem and plotting scope.
+
+Effort:
+- Low
+- Roughly 1 to 2 days
+
+
+======================================================================
+E. ITEMS THAT ARE OPTIONAL, NOT REQUIRED FOR "COMPLETE REWRITE"
+======================================================================
+
+These are valuable, but they are not blockers for "all VULCAN functionality in
+the JAX tree" unless the project scope is broadened:
+
+- reverse-mode AD through the full while_loop integration, instead of the
+  current implicit-AD steady-state route
+- additional performance tuning beyond correctness / parity
+- broader batch / pmap production ergonomics
+- codebase modernization unrelated to behavior
+
+
+======================================================================
+SUGGESTED EXECUTION ORDER
+======================================================================
+
+1. Finish the test-regression fix and restore a stable green suite.
+2. Keep FastChem as an accepted external dependency and stop treating it as a
+   rewrite blocker.
+3. Rewrite build_atm.py in JAX-native pieces where that code belongs to
+   VULCAN rather than FastChem.
+4. Rewrite legacy_io.ReadRate in JAX-native pieces.
+5. Clean up store/state representation.
+6. Resolve live-plot / movie support semantics.
+7. Vendor / port the remaining helper/docs surface, tools, diagnose.py, and
+   plot_py/.
+8. Run the full oracle / config-matrix campaign.
+9. Reconcile docs and freeze the support contract.
+
+
+======================================================================
+BOTTOM LINE
+======================================================================
+
+If the target is "the Ros2 runtime hot path is JAX", the project is already
+close.
+
+If the target is "all VULCAN functionality, just in JAX", the remaining work is
+still substantial. The biggest incomplete pieces are not the Ros2 step itself;
+they are:
+
+- JAX-native atmosphere / initialization setup
+- JAX-native rate / cross-section / photo preprocessing
+- adding back the remaining repo surface (diagnostics, plot scripts, tools,
+  helper/docs)
+- broad validation across the full master config matrix
+
+Rough total remaining effort for a complete VULCAN replacement under this
+scope:
+- Approximately 4 to 7 weeks of focused work
+- This estimate assumes FastChem remains an accepted external dependency,
+  matching VULCAN-master behavior

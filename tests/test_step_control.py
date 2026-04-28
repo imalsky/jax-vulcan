@@ -39,21 +39,23 @@ warnings.filterwarnings("ignore")
 
 def main() -> int:
     import vulcan_cfg
-    import store, build_atm, op
+    import store, op
+    from atm_setup import Atm
+    from ini_abun import InitialAbun
     import outer_loop
 
     # --- Build state ---
     data_var = store.Variables()
     data_atm = store.AtmData()
     data_para = store.Parameters()
-    make_atm = build_atm.Atm()
+    make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
     rate = op.ReadRate()
     data_var = rate.read_rate(data_var, data_atm)
     data_var = rate.rev_rate(data_var, data_atm)
     data_var = rate.remove_rate(data_var)
-    ini_abun = build_atm.InitialAbun()
+    ini_abun = InitialAbun()
     data_var = ini_abun.ini_y(data_var, data_atm)
     data_var = ini_abun.ele_sum(data_var)
     data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())

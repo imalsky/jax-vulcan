@@ -55,25 +55,24 @@ from runtime_validation import validate_runtime_config
 
 validate_runtime_config(cfg, root=root)
 
-import build_atm
+from atm_setup import Atm
+from ini_abun import InitialAbun
 import legacy_io as op
 import op_jax
 import store
 
 data_var = store.Variables()
 data_atm = store.AtmData()
-make_atm = build_atm.Atm()
+make_atm = Atm()
 data_atm = make_atm.f_pico(data_atm)
 data_atm = make_atm.load_TPK(data_atm)
 if cfg.use_condense:
     make_atm.sp_sat(data_atm)
 rate = op.ReadRate()
 data_var = rate.read_rate(data_var, data_atm)
-if cfg.use_lowT_limit_rates:
-    data_var = rate.lim_lowT_rates(data_var, data_atm)
-data_var = rate.rev_rate(data_var, data_atm)
-data_var = rate.remove_rate(data_var)
-ini = build_atm.InitialAbun()
+import rates as _rates_mod
+_network = _rates_mod.setup_var_k(cfg, data_var, data_atm)
+ini = InitialAbun()
 data_var = ini.ini_y(data_var, data_atm)
 data_var = ini.ele_sum(data_var)
 data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
@@ -81,7 +80,8 @@ make_atm.mol_diff(data_atm)
 make_atm.BC_flux(data_atm)
 
 if cfg.use_photo:
-    rate.make_bins_read_cross(data_var, data_atm)
+    import photo_setup as _photo_setup
+    _photo_setup.populate_photo_arrays(data_var, data_atm)
     make_atm.read_sflux(data_var, data_atm)
     solver = op_jax.Ros2JAX()
     solver.compute_tau(data_var, data_atm)
@@ -89,7 +89,7 @@ if cfg.use_photo:
     solver.compute_J(data_var, data_atm)
     if cfg.use_ion:
         solver.compute_Jion(data_var, data_atm)
-    data_var = rate.remove_rate(data_var)
+    _rates_mod.apply_photo_remove(cfg, data_var, _network, data_atm)
 
 print("PASS")
 """

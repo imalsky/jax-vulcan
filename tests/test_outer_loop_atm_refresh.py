@@ -55,14 +55,16 @@ REFRESH_RTOL = 1e-13
 
 def main() -> int:
     import vulcan_cfg
-    import store, build_atm, op, op_jax, outer_loop
+    import store, op, op_jax, outer_loop
+    from atm_setup import Atm
+    from ini_abun import InitialAbun
 
     # --- Build HD189 reference state ---
     data_var = store.Variables()
     data_atm = store.AtmData()
     data_para = store.Parameters()
 
-    make_atm = build_atm.Atm()
+    make_atm = Atm()
     output = op.Output()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
@@ -70,7 +72,15 @@ def main() -> int:
     data_var = rate.read_rate(data_var, data_atm)
     data_var = rate.rev_rate(data_var, data_atm)
     data_var = rate.remove_rate(data_var)
-    ini_abun = build_atm.InitialAbun()
+    # Phase 22d: VULCAN-JAX's runner reads `var.k_arr` (dense), not the
+    # legacy `var.k` dict. Master's rate-parser populates the dict; bridge
+    # it into the dense surface for VULCAN-JAX's path.
+    import network as _net_mod
+    import rates as _rates_mod
+    _net = _net_mod.parse_network(vulcan_cfg.network)
+    nz_local = int(data_atm.Tco.shape[0])
+    data_var.k_arr = _rates_mod.k_array_from_dict(_net, data_var.k, nz=nz_local)
+    ini_abun = InitialAbun()
     data_var = ini_abun.ini_y(data_var, data_atm)
     data_var = ini_abun.ele_sum(data_var)
     data_atm = make_atm.f_mu_dz(data_var, data_atm, output)
@@ -81,7 +91,8 @@ def main() -> int:
         # `_ensure_runner` builds the photo branch too, which needs var.nbin
         # and friends; do the photo pre-loop here even though the test only
         # exercises the refresh branch.
-        rate.make_bins_read_cross(data_var, data_atm)
+        import photo_setup as _photo_setup
+        _photo_setup.populate_photo_arrays(data_var, data_atm)
         make_atm.read_sflux(data_var, data_atm)
 
     # Perturb ymix slightly so the refresh produces non-trivial deltas

@@ -35,7 +35,8 @@ warnings.filterwarnings("ignore")
 def main() -> int:
     import vulcan_cfg
     import store
-    import build_atm
+    from atm_setup import Atm
+    from ini_abun import InitialAbun
     import op
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import diffusion_numpy_ref as diff_mod
@@ -43,7 +44,7 @@ def main() -> int:
     # Set up canonical HD189 state
     data_var = store.Variables()
     data_atm = store.AtmData()
-    make_atm = build_atm.Atm()
+    make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
     if vulcan_cfg.use_condense:
@@ -51,7 +52,7 @@ def main() -> int:
     rate = op.ReadRate()
     data_var = rate.read_rate(data_var, data_atm)
     data_var = rate.rev_rate(data_var, data_atm)
-    ini = build_atm.InitialAbun()
+    ini = InitialAbun()
     data_var = ini.ini_y(data_var, data_atm)
     data_var = ini.ele_sum(data_var)
     data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())

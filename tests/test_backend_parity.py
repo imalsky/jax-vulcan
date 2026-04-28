@@ -22,7 +22,8 @@ warnings.filterwarnings("ignore")
 
 
 def _setup_hd189_state():
-    import build_atm
+    from atm_setup import Atm
+    from ini_abun import InitialAbun
     import chem
     import legacy_io as op
     import network
@@ -31,18 +32,16 @@ def _setup_hd189_state():
 
     data_var = store.Variables()
     data_atm = store.AtmData()
-    make_atm = build_atm.Atm()
+    make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
     if vulcan_cfg.use_condense:
         make_atm.sp_sat(data_atm)
     rate = op.ReadRate()
     data_var = rate.read_rate(data_var, data_atm)
-    if vulcan_cfg.use_lowT_limit_rates:
-        data_var = rate.lim_lowT_rates(data_var, data_atm)
-    data_var = rate.rev_rate(data_var, data_atm)
-    data_var = rate.remove_rate(data_var)
-    ini = build_atm.InitialAbun()
+    import rates as _rates_mod
+    _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
+    ini = InitialAbun()
     data_var = ini.ini_y(data_var, data_atm)
     data_var = ini.ele_sum(data_var)
     data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
@@ -51,14 +50,6 @@ def _setup_hd189_state():
     data_var.dt = 1e-10
     net = chem.to_jax(network.parse_network(vulcan_cfg.network))
     return data_var, data_atm, net
-
-
-def _pack_k_arr(k_dict: dict[int, np.ndarray], nr: int, nz: int) -> np.ndarray:
-    k_arr = np.zeros((nr + 1, nz), dtype=np.float64)  # shape: (nr + 1, nz)
-    for ridx, vec in k_dict.items():
-        if 1 <= ridx <= nr:
-            k_arr[ridx] = np.asarray(vec, dtype=np.float64)
-    return k_arr
 
 
 def test_jax_ros2_step_cpu_gpu_parity() -> None:
@@ -80,7 +71,7 @@ def test_jax_ros2_step_cpu_gpu_parity() -> None:
     data_var, data_atm, net = _setup_hd189_state()
     nz, ni = data_var.y.shape
     atm_static = make_atm_static(data_atm, ni, nz)
-    k_arr = _pack_k_arr(data_var.k, net.nr, nz)
+    k_arr = np.asarray(data_var.k_arr, dtype=np.float64)
 
     y_cpu = jax.device_put(jnp.asarray(data_var.y), cpu_device)  # shape: (nz, ni)
     k_cpu = jax.device_put(jnp.asarray(k_arr), cpu_device)  # shape: (nr + 1, nz)

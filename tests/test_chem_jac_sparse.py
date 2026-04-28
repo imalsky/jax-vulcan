@@ -26,52 +26,27 @@ sys.path.insert(0, str(ROOT))
 warnings.filterwarnings("ignore")
 
 
-def main() -> int:
-    import vulcan_cfg
-    import store, build_atm
-    import legacy_io as op
-    import chem_funs  # noqa: F401  (network parse triggers chem_funs setup)
-
+def _check_jacobians(state) -> int:
+    """Compare chem_jac_analytical vs jacrev path on the given HD189 state."""
+    import chem as chem_mod
     import jax.numpy as jnp
     import network as net_mod
-    import chem as chem_mod
+    import vulcan_cfg
 
-    # --- Build canonical HD189 state ---
-    data_var = store.Variables()
-    data_atm = store.AtmData()
-    make_atm = build_atm.Atm()
-    data_atm = make_atm.f_pico(data_atm)
-    data_atm = make_atm.load_TPK(data_atm)
-    if vulcan_cfg.use_condense:
-        make_atm.sp_sat(data_atm)
-    rate = op.ReadRate()
-    data_var = rate.read_rate(data_var, data_atm)
-    data_var = rate.rev_rate(data_var, data_atm)
-    data_var = rate.remove_rate(data_var)
-    ini = build_atm.InitialAbun()
-    data_var = ini.ini_y(data_var, data_atm)
-    data_var = ini.ele_sum(data_var)
-
-    # Real HD189 state
+    data_var, data_atm = state.var, state.atm
     y = jnp.asarray(data_var.y, dtype=jnp.float64)              # [nz, ni]
     M = jnp.asarray(data_atm.M, dtype=jnp.float64)              # [nz]
     nz, ni = y.shape
 
-    # Pack k dict to JAX array [nr+1, nz]
     net = net_mod.parse_network(vulcan_cfg.network)
     net_jax = chem_mod.to_jax(net)
-    k_arr = np.zeros((net.nr + 1, nz), dtype=np.float64)
-    for i, vec in data_var.k.items():
-        k_arr[i] = np.asarray(vec, dtype=np.float64)
-    k_arr = jnp.asarray(k_arr)
+    k_arr = jnp.asarray(np.asarray(data_var.k_arr, dtype=np.float64))
 
     print(f"State: nz={nz}, ni={ni}, nr={net.nr}")
 
-    # --- Compute both Jacobians ---
     J_dense = np.asarray(chem_mod.chem_jac(y, M, k_arr, net_jax))           # [nz, ni, ni]
     J_anal = np.asarray(chem_mod.chem_jac_analytical(y, M, k_arr, net_jax)) # [nz, ni, ni]
 
-    # --- Compare ---
     diff = np.abs(J_anal - J_dense)
     abs_max_dense = max(np.abs(J_dense).max(), 1e-300)
     relerr = diff / np.maximum(np.abs(J_dense), 1e-30)
@@ -94,9 +69,47 @@ def main() -> int:
     return 0 if ok else 1
 
 
-def test_main():
-    """Pytest wrapper."""
-    assert main() == 0
+def test_main(hd189_state):
+    """Pytest entry. Uses the session-scoped HD189 fixture so the rate
+    parser / FastChem / atmospheric build doesn't re-run per test."""
+    assert _check_jacobians(hd189_state) == 0
+
+
+def main() -> int:
+    """Standalone entry: build the HD189 state inline (mirrors what the
+    `hd189_state` fixture does) so `python tests/test_chem_jac_sparse.py`
+    still works outside pytest."""
+    from atm_setup import Atm
+    from ini_abun import InitialAbun
+    import legacy_io as op
+    import op_jax
+    import store
+    import vulcan_cfg
+
+    data_var = store.Variables()
+    data_atm = store.AtmData()
+    data_para = store.Parameters()
+    make_atm = Atm()
+    output = op.Output()
+    data_atm = make_atm.f_pico(data_atm)
+    data_atm = make_atm.load_TPK(data_atm)
+    if vulcan_cfg.use_condense:
+        make_atm.sp_sat(data_atm)
+    rate = op.ReadRate()
+    data_var = rate.read_rate(data_var, data_atm)
+    import rates as _rates_mod
+    _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
+    ini = InitialAbun()
+    data_var = ini.ini_y(data_var, data_atm)
+    data_var = ini.ele_sum(data_var)
+
+    # Match the fixture's shape so _check_jacobians can consume either.
+    from conftest import HD189State  # type: ignore[import-not-found]
+    state = HD189State(
+        var=data_var, atm=data_atm, para=data_para,
+        make_atm=make_atm, output=output, solver=op_jax.Ros2JAX(),
+    )
+    return _check_jacobians(state)
 
 
 if __name__ == "__main__":

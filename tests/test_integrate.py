@@ -28,7 +28,8 @@ def main() -> int:
     import jax.numpy as jnp
     import vulcan_cfg  # noqa: F401  (must import to set globals before others)
     import store
-    import build_atm
+    from atm_setup import Atm
+    from ini_abun import InitialAbun
     import legacy_io as op
     import outer_loop  # _NET_JAX moved here in Phase 10.1
     import jax_step as js_mod
@@ -37,15 +38,16 @@ def main() -> int:
     # Build canonical state
     data_var = store.Variables()
     data_atm = store.AtmData()
-    make_atm = build_atm.Atm()
+    make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
     if vulcan_cfg.use_condense:
         make_atm.sp_sat(data_atm)
     rate = op.ReadRate()
     data_var = rate.read_rate(data_var, data_atm)
-    data_var = rate.rev_rate(data_var, data_atm)
-    ini = build_atm.InitialAbun()
+    import rates as _rates_mod
+    _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
+    ini = InitialAbun()
     data_var = ini.ini_y(data_var, data_atm)
     data_var = ini.ele_sum(data_var)
     data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
@@ -55,10 +57,7 @@ def main() -> int:
     print(f"State: nz={nz}, ni={ni}")
 
     atm_static = js_mod.make_atm_static(data_atm, ni, nz)
-    k_arr = np.zeros((1192 + 1, nz), dtype=np.float64)
-    for i, vec in data_var.k.items():
-        if 1 <= i <= 1192:
-            k_arr[i] = np.asarray(vec, dtype=np.float64)
+    k_arr = np.asarray(data_var.k_arr, dtype=np.float64)
 
     dt = 1e-10
     N = 10

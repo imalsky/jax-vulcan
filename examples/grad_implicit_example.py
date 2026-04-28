@@ -50,7 +50,8 @@ def main() -> int:
     vulcan_cfg.use_live_flux = False
 
     import store
-    import build_atm
+    from atm_setup import Atm
+    from ini_abun import InitialAbun
     import legacy_io as op
     import op_jax
     import outer_loop
@@ -68,16 +69,17 @@ def main() -> int:
     data_atm = store.AtmData()
     data_para = store.Parameters()
     data_para.start_time = t0
-    make_atm = build_atm.Atm()
+    make_atm = Atm()
     output = op.Output()
 
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
     rate = op.ReadRate()
     data_var = rate.read_rate(data_var, data_atm)
-    data_var = rate.rev_rate(data_var, data_atm)
-    data_var = rate.remove_rate(data_var)
-    ini_abun = build_atm.InitialAbun()
+    import rates as _rates_mod
+    import photo_setup as _photo_setup
+    _network = _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
+    ini_abun = InitialAbun()
     data_var = ini_abun.ini_y(data_var, data_atm)
     data_var = ini_abun.ele_sum(data_var)
     data_atm = make_atm.f_mu_dz(data_var, data_atm, output)
@@ -86,12 +88,12 @@ def main() -> int:
 
     solver = op_jax.Ros2JAX()
     if vulcan_cfg.use_photo:
-        rate.make_bins_read_cross(data_var, data_atm)
+        _photo_setup.populate_photo_arrays(data_var, data_atm)
         make_atm.read_sflux(data_var, data_atm)
         solver.compute_tau(data_var, data_atm)
         solver.compute_flux(data_var, data_atm)
         solver.compute_J(data_var, data_atm)
-        data_var = rate.remove_rate(data_var)
+        _rates_mod.apply_photo_remove(vulcan_cfg, data_var, _network, data_atm)
 
     integ = outer_loop.OuterLoop(solver, output)
     solver.naming_solver(data_para)
@@ -106,12 +108,8 @@ def main() -> int:
     nz = data_atm.Tco.shape[0]
     ni = network.ni
 
-    # Pack k_arr from the var.k dict.
-    k_arr = np.zeros((network.nr + 1, nz), dtype=np.float64)
-    for i, vec in data_var.k.items():
-        if 1 <= i <= network.nr:
-            k_arr[i] = np.asarray(vec, dtype=np.float64)
-    k_arr = jnp.asarray(k_arr)
+    # Phase 22d: dense `var.k_arr` is the source of truth.
+    k_arr = jnp.asarray(np.asarray(data_var.k_arr, dtype=np.float64))
 
     atm_static = make_atm_static(data_atm, ni, nz)
 

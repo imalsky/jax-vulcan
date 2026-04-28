@@ -26,10 +26,10 @@ warnings.filterwarnings("ignore")
 
 
 def main() -> int:
-    # Import VULCAN-JAX's build_atm + store + chem_funs (shim)
-    import build_atm                  # VULCAN-JAX copy
-    import store                      # VULCAN-JAX copy
-    import chem_funs as cf_jax        # VULCAN-JAX shim
+    # Import VULCAN-JAX's atm_setup + store + chem_funs (shim)
+    from atm_setup import Atm           # VULCAN-JAX (Phase 20)
+    import store                        # VULCAN-JAX copy
+    import chem_funs as cf_jax          # VULCAN-JAX shim
     import vulcan_cfg
 
     print(f"VULCAN-JAX chem_funs: ni={cf_jax.ni} nr={cf_jax.nr}")
@@ -38,7 +38,7 @@ def main() -> int:
     # === Run JAX-side pipeline ===
     data_var = store.Variables()
     data_atm = store.AtmData()
-    make_atm = build_atm.Atm()
+    make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
     if vulcan_cfg.use_condense:

@@ -42,22 +42,24 @@ def _setup_state():
     vulcan_cfg.use_live_plot = False
     vulcan_cfg.use_live_flux = False
 
-    import store, build_atm, legacy_io as op, op_jax, outer_loop  # noqa: E401
+    import store, legacy_io as op, op_jax, outer_loop  # noqa: E401
+    from atm_setup import Atm
+    from ini_abun import InitialAbun
 
     data_var = store.Variables()
     data_atm = store.AtmData()
     data_para = store.Parameters()
     data_para.start_time = time.time()
-    make_atm = build_atm.Atm()
+    make_atm = Atm()
     output = op.Output()
 
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
     rate = op.ReadRate()
     data_var = rate.read_rate(data_var, data_atm)
-    data_var = rate.rev_rate(data_var, data_atm)
-    data_var = rate.remove_rate(data_var)
-    ini_abun = build_atm.InitialAbun()
+    import rates as _rates_mod
+    _network = _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
+    ini_abun = InitialAbun()
     data_var = ini_abun.ini_y(data_var, data_atm)
     data_var = ini_abun.ele_sum(data_var)
     data_atm = make_atm.f_mu_dz(data_var, data_atm, output)
@@ -65,12 +67,13 @@ def _setup_state():
     make_atm.BC_flux(data_atm)
     solver = op_jax.Ros2JAX()
     if vulcan_cfg.use_photo:
-        rate.make_bins_read_cross(data_var, data_atm)
+        import photo_setup as _photo_setup
+        _photo_setup.populate_photo_arrays(data_var, data_atm)
         make_atm.read_sflux(data_var, data_atm)
         solver.compute_tau(data_var, data_atm)
         solver.compute_flux(data_var, data_atm)
         solver.compute_J(data_var, data_atm)
-        data_var = rate.remove_rate(data_var)
+        _rates_mod.apply_photo_remove(vulcan_cfg, data_var, _network, data_atm)
     return solver, output, data_var, data_atm, data_para, outer_loop
 
 
