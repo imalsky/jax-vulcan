@@ -1,32 +1,12 @@
-"""JAX-native photo cross-section preprocessing (Phase 22b → 22e).
+"""Photo cross-section preprocessing.
 
-Replaces `legacy_io.ReadRate.make_bins_read_cross`. Builds the wavelength
-bin grid + interpolates per-species absorption / dissociation /
-ionization / Rayleigh cross sections + branch ratios onto that grid.
+Builds the wavelength bin grid and interpolates per-species absorption /
+dissociation / ionization / Rayleigh cross sections + branch ratios onto
+that grid. Pure NumPy: setup runs once at startup.
 
-Phase 22e: the canonical entry point is `populate_photo(var, atm) ->
-PhotoStaticInputs`. The dict-keyed view (`var.cross[sp]`,
-`var.cross_J[(sp, i)]`, ...) is no longer written; the `.vul` writer
-synthesizes it from the dense pytree at pickle time.
-
-Numerical contract: bit-exact (<= 1e-13; in practice 0.0 abs/rel err)
-vs the legacy `make_bins_read_cross` on the supported config matrix
-(HD189 / Earth / Jupiter / HD209 cfg_examples). `scipy.interpolate.
-interp1d(kind='linear', bounds_error=False, fill_value=...)` and
-`numpy.interp(..., left=..., right=...)` compute the same linear
-formula and clip the same way; we use `np.interp` throughout.
-
-Design:
-  - Pure NumPy. No JAX or scipy here. Setup runs once at startup; JIT
-    overhead is pure cost. NumPy gives bit-exact match to scipy's
-    `interp1d(kind='linear')`.
-  - Host-side CSV I/O at the boundary; the actual interpolation
-    kernels are flat array ops the runtime can later vmap or batch.
-  - `build_photo_static(cfg, atm)` is the pure builder; it returns a
-    `state.PhotoStaticInputs` pytree with every dense cross-section
-    array the runtime needs. `populate_photo(var, atm)` is a
-    convenience wrapper that also zero-allocates the runtime mutable
-    buffers (`var.tau`, `var.sflux`, ...) on `var`.
+`np.interp` matches `scipy.interpolate.interp1d(kind='linear',
+bounds_error=False, fill_value=...)` bit-exactly, so we use np.interp
+throughout.
 """
 
 from __future__ import annotations
@@ -40,27 +20,17 @@ import vulcan_cfg
 from state import PhotoStaticInputs
 
 
-_LOWT_SENTINEL = -100.0  # log10 stand-in for log10(0) = -inf; mirrors
-# `legacy_io.py:499/500` exactly.
+# log10 stand-in for log10(0) = -inf in T-axis log-space interpolation.
+_LOWT_SENTINEL = -100.0
 
-
-# ---------------------------------------------------------------------------
-# Host-side CSV readers
-# ---------------------------------------------------------------------------
 
 def _cross_folder() -> str:
-    """Return cfg.cross_folder with no trailing-slash gymnastics."""
     return str(vulcan_cfg.cross_folder)
 
 
 def _load_thresholds(species_in_network) -> dict[str, float]:
-    """Read `cross_folder/thresholds.txt` and return the per-species
-    photodissociation wavelength threshold (nm).
-
-    Mirrors `legacy_io.py:333-338`: `np.genfromtxt(usecols=0)` for the
-    label column, `np.genfromtxt(skip_header=1)[:, 1]` for the value
-    column. Filtered to species present in the current network.
-    """
+    """Read `cross_folder/thresholds.txt`; return per-species photodissociation
+    wavelength threshold (nm), filtered to species in the network."""
     folder = _cross_folder()
     sp_label = np.genfromtxt(folder + "thresholds.txt", dtype=str, usecols=0)
     lmd_data = np.genfromtxt(folder + "thresholds.txt", skip_header=1)[:, 1]
@@ -73,11 +43,7 @@ def _load_thresholds(species_in_network) -> dict[str, float]:
 
 
 def _load_cross_csv(sp: str, use_ion: bool) -> np.ndarray:
-    """Read `cross_folder/{sp}/{sp}_cross.csv`.
-
-    4-column when `use_ion=True` (lambda, cross, disso, ion), else
-    3-column (lambda, cross, disso). Mirrors `legacy_io.py:344-352`.
-    """
+    """Read `cross_folder/{sp}/{sp}_cross.csv`. 4-column when `use_ion`, else 3-column."""
     folder = _cross_folder()
     path = folder + sp + "/" + sp + "_cross.csv"
     names = (["lambda", "cross", "disso", "ion"] if use_ion
@@ -92,9 +58,8 @@ def _load_cross_csv(sp: str, use_ion: bool) -> np.ndarray:
 
 
 def _load_branch_csv(sp: str) -> np.ndarray:
-    """Read `cross_folder/{sp}/{sp}_branch.csv`. Column names auto-
-    detected from header (br_ratio_1, br_ratio_2, ...). Mirrors
-    `legacy_io.py:355`."""
+    """Read `cross_folder/{sp}/{sp}_branch.csv`. Column names auto-detected
+    from header (br_ratio_1, br_ratio_2, ...)."""
     folder = _cross_folder()
     path = folder + sp + "/" + sp + "_branch.csv"
     try:
@@ -107,8 +72,7 @@ def _load_branch_csv(sp: str) -> np.ndarray:
 
 
 def _load_ion_branch_csv(sp: str) -> np.ndarray:
-    """Read `cross_folder/{sp}/{sp}_ion_branch.csv`. Mirrors
-    `legacy_io.py:347`."""
+    """Read `cross_folder/{sp}/{sp}_ion_branch.csv`."""
     folder = _cross_folder()
     path = folder + sp + "/" + sp + "_ion_branch.csv"
     try:
@@ -121,13 +85,8 @@ def _load_ion_branch_csv(sp: str) -> np.ndarray:
 
 
 def _discover_T_cross_files(sp: str) -> list[int]:
-    """Scan `thermo/photo_cross/{sp}/` for `{sp}_cross_{T}K.csv` files
-    and return the integer T list. Mirrors `legacy_io.py:361-366`.
-
-    Note: legacy hardcodes the path string ``"thermo/photo_cross/" + sp +
-    "/"`` (not via cfg.cross_folder). We match that exactly so any user
-    who has reconfigured cross_folder still gets the same behavior.
-    """
+    """Scan `thermo/photo_cross/{sp}/` for `{sp}_cross_{T}K.csv` files;
+    return the integer T list. Path is hardcoded (not via cfg.cross_folder)."""
     T_list: list[int] = []
     folder = "thermo/photo_cross/" + sp + "/"
     for temp_file in os.listdir(folder):
@@ -143,8 +102,7 @@ def _discover_T_cross_files(sp: str) -> list[int]:
 
 
 def _load_T_cross_csv(sp: str, T: int, use_ion: bool) -> np.ndarray:
-    """Read `cross_folder/{sp}/{sp}_cross_{T}K.csv`. Mirrors
-    `legacy_io.py:368-370`."""
+    """Read `cross_folder/{sp}/{sp}_cross_{T}K.csv`."""
     folder = _cross_folder()
     path = folder + sp + "/" + sp + "_cross_" + str(T) + "K.csv"
     names = (["lambda", "cross", "disso", "ion"] if use_ion
@@ -155,8 +113,7 @@ def _load_T_cross_csv(sp: str, T: int, use_ion: bool) -> np.ndarray:
 
 
 def _load_rayleigh_csv(sp: str) -> np.ndarray:
-    """Read `cross_folder/rayleigh/{sp}_scat.txt`. Mirrors
-    `legacy_io.py:592-593`."""
+    """Read `cross_folder/rayleigh/{sp}_scat.txt`."""
     folder = _cross_folder()
     path = folder + "rayleigh/" + sp + "_scat.txt"
     return np.genfromtxt(
@@ -164,20 +121,15 @@ def _load_rayleigh_csv(sp: str) -> np.ndarray:
     )
 
 
-# ---------------------------------------------------------------------------
-# Bin grid + per-bin interpolation kernels
-# ---------------------------------------------------------------------------
-
 def _make_bins(
     bin_min: float, bin_max: float,
     dbin1: float, dbin2: float, dbin_12trans: float,
 ) -> np.ndarray:
-    """Two-resolution wavelength bin grid (nm). Mirrors
-    `legacy_io.py:401-405` exactly.
+    """Two-resolution wavelength bin grid (nm).
 
-    If `bin_min <= dbin_12trans <= bin_max`: concat fine-grid arange
-    below the transition with coarse-grid arange above. Otherwise a
-    single dbin1-spaced arange.
+    If `bin_min <= dbin_12trans <= bin_max`, fine-grid arange below the
+    transition is concatenated with coarse-grid arange above; else a single
+    dbin1-spaced arange.
     """
     if dbin_12trans >= bin_min and dbin_12trans <= bin_max:
         return np.concatenate((
@@ -188,23 +140,15 @@ def _make_bins(
 
 
 def _sort_pairs(xp: np.ndarray, fp: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    """Sort `(xp, fp)` by `xp`. `scipy.interpolate.interp1d` does this
-    internally so non-monotonic data files (e.g. CH3SH_branch.csv has a
-    typo `354.0` between `253.5` and `309.5`) interpolate correctly;
-    `np.interp` does NOT sort, so we have to do it explicitly to match.
-    """
+    """Sort `(xp, fp)` by `xp`. scipy.interpolate.interp1d sorts internally;
+    np.interp does not, so non-monotonic data files (e.g. CH3SH_branch.csv
+    has a typo `354.0` between `253.5` and `309.5`) need an explicit sort."""
     order = np.argsort(xp, kind="stable")
     return xp[order], fp[order]
 
 
 def _interp_zero_extrap(xp: np.ndarray, fp: np.ndarray, x: np.ndarray) -> np.ndarray:
-    """Linear interpolation with `fill_value=0` outside [xp[0], xp[-1]].
-
-    Bit-exact equivalent of
-    `scipy.interpolate.interp1d(xp, fp, kind='linear',
-        bounds_error=False, fill_value=0)(x)`. Sorts (xp, fp) first to
-    match scipy's internal sort behavior on non-monotonic inputs.
-    """
+    """Linear interpolation with `fill_value=0` outside [xp[0], xp[-1]]."""
     xp_s, fp_s = _sort_pairs(xp, fp)
     return np.interp(x, xp_s, fp_s, left=0.0, right=0.0)
 
@@ -213,10 +157,8 @@ def _interp_edge_extrap(xp: np.ndarray, fp: np.ndarray, x: np.ndarray) -> np.nda
     """Linear interpolation with `fill_value=(fp[0], fp[-1])` outside
     [xp[0], xp[-1]] -- the asymmetric branch-ratio extrapolation rule.
 
-    Bit-exact equivalent of `scipy.interpolate.interp1d(...,
-    fill_value=(fp[0], fp[-1]))(x)`. The fill values are read from the
-    *unsorted* fp[0] / fp[-1] to match scipy's exact behavior, while
-    the in-bounds interpolation uses the sorted pairs.
+    Fill values are read from the *unsorted* fp[0]/fp[-1] to match scipy's
+    exact behavior, while the in-bounds interpolation uses sorted pairs.
     """
     left = float(fp[0])
     right = float(fp[-1])
@@ -227,35 +169,23 @@ def _interp_edge_extrap(xp: np.ndarray, fp: np.ndarray, x: np.ndarray) -> np.nda
 def _interp_T_log_pair(
     Tlow: float, Thigh: float, low_at_ld: float, high_at_ld: float, Tz: float,
 ) -> float:
-    """Single (lev, bin) T-axis log10-space linear interp between two T
-    samples. Mirrors `legacy_io.py:497-504` -- a 1-D interp1d on
-    `[Tlow, Thigh] -> [log10_low, log10_high]` evaluated at Tz, with
-    `log10(0) -> -100` sentinel and a final `10**` round-trip
-    (sentinel collapses to 0 by the `inter_T == -100` check).
+    """Single (lev, bin) T-axis log10-space linear interp between two T samples.
+
+    log10(0) maps to a -100 sentinel; if the interpolated value is exactly the
+    sentinel, return 0.0 (no 10**sentinel).
     """
     log_low = np.log10(low_at_ld) if low_at_ld > 0 else _LOWT_SENTINEL
     log_high = np.log10(high_at_ld) if high_at_ld > 0 else _LOWT_SENTINEL
-    # 1-D linear interp; np.interp matches scipy.interp1d kind='linear'.
     val = np.interp(Tz, [Tlow, Thigh], [log_low, log_high])
-    # Mirrors legacy line 503: `if inter_T(Tz) == -100: var.cross_T == 0.`
-    # (the legacy uses `==` instead of `=` so this branch is a no-op;
-    # cross_T is already 0-initialized, which we mirror by short-circuiting
-    # to 0.0 only when val IS the sentinel exactly).
     if val == _LOWT_SENTINEL:
         return 0.0
     return float(10.0 ** val)
 
 
-# ---------------------------------------------------------------------------
-# Per-species cross-section binning helpers
-# ---------------------------------------------------------------------------
-
 def _bin_cross_and_branches(
     cross_raw: np.ndarray, ratio_raw: np.ndarray, n_branch: int, bins: np.ndarray,
 ) -> tuple[np.ndarray, dict[int, np.ndarray]]:
-    """Build `cross[bin]` and `cross_J[branch_i][bin]` for one
-    photodissociation species. Mirrors `legacy_io.py:442-458`.
-    """
+    """Build `cross[bin]` and `cross_J[branch_i][bin]` for one photodissociation species."""
     lam = cross_raw["lambda"]
     cross_at_bins = _interp_zero_extrap(lam, cross_raw["cross"], bins)
     disso_at_bins = _interp_zero_extrap(lam, cross_raw["disso"], bins)
@@ -286,12 +216,7 @@ def _bin_T_dependent(
 ) -> tuple[np.ndarray, dict[int, np.ndarray]]:
     """Per-layer T-dependent cross + branch interpolation.
 
-    Mirrors `legacy_io.py:462-567` (the three-case T branching). Returns
-    `cross_T[lev, bin]` and per-branch `cross_J_T[i][lev, bin]`. The
-    layer/bin loop is preserved as written for byte-for-byte parity --
-    vectorising it would require careful handling of the
-    `if ld < ld_min or ld > ld_max` mask per-(sp, T) pair, which is
-    bookkeeping pain for almost no perf gain (this runs once at startup).
+    Returns `cross_T[lev, bin]` and per-branch `cross_J_T[i][lev, bin]`.
     """
     nz = int(Tco.shape[0])
     nbin = int(bins.shape[0])
@@ -309,7 +234,6 @@ def _bin_T_dependent(
         above = T_list_arr[T_list_arr > Tz]
 
         if below.size > 0 and above.size > 0:
-            # Tz is between two T samples -> log10-space linear interp
             Tlow = int(below.max())
             Thigh = int(above.min())
             raw_low = cross_T_raw[(sp, Tlow)]
@@ -317,8 +241,6 @@ def _bin_T_dependent(
             ld_min = max(raw_low["lambda"][0], raw_high["lambda"][0])
             ld_max = min(raw_low["lambda"][-1], raw_high["lambda"][-1])
 
-            # Pre-bin the two T samples on the global wavelength grid so
-            # the inner (bin, branch) loop is just a couple of numpy ops.
             cross_low_at_bins = _interp_zero_extrap(
                 raw_low["lambda"], raw_low["cross"], bins,
             )
@@ -353,9 +275,7 @@ def _bin_T_dependent(
                         )
 
         elif below.size == 0:
-            # Tz is below the lowest tabulated T sample. If 300 K is the
-            # min, fall back to the room-T cross section (= cross_at_bins);
-            # otherwise extrapolate from the lowest tabulated T.
+            # Tz below the lowest tabulated T sample.
             if min_T_sp == 300:
                 cross_T[lev] = cross_at_bins
                 for i in range(1, n_branch + 1):
@@ -385,7 +305,7 @@ def _bin_T_dependent(
                             )
 
         else:
-            # Tz is above the highest tabulated T sample.
+            # Tz above the highest tabulated T sample.
             if max_T_sp == 300:
                 cross_T[lev] = cross_at_bins
                 for i in range(1, n_branch + 1):
@@ -417,58 +337,27 @@ def _bin_T_dependent(
     return cross_T, cross_J_T
 
 
-# ---------------------------------------------------------------------------
-# Top-level builder
-# ---------------------------------------------------------------------------
-
 def populate_photo_arrays(var, atm) -> None:
-    """Phase 22e backwards-compat wrapper for `populate_photo`.
-
-    Pre-22e callers expect an in-place mutator that writes the legacy
-    `var.cross*` dict surface plus scalars + runtime buffers. After 22e
-    the dict surface is gone — only scalars (`var.bins`, `var.nbin`,
-    `var.dbin1`, `var.dbin2`, `var.threshold`) and runtime buffers
-    (`var.tau`, `var.aflux`, ...) remain on `var`; the dense cross
-    sections live in the returned `PhotoStaticInputs` pytree. Callers
-    that need the static must switch to `populate_photo` (returns the
-    pytree); callers that only need `var.bins` / `var.nbin` / runtime-
-    buffer initialization can keep calling this name.
-    """
+    """In-place mutator wrapper for `populate_photo`."""
     populate_photo(var, atm)
 
-
-
-
-# ---------------------------------------------------------------------------
-# Phase 22e: dense-pytree builder
-# ---------------------------------------------------------------------------
 
 def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
     """Pure builder of the dense `PhotoStaticInputs` pytree.
 
-    Reads the same CSV files as `populate_photo_arrays` and returns the
-    same numerical cross sections, but packed as dense `(n, nbin)` /
-    `(n, nz, nbin)` arrays instead of Python dicts. `din12_indx`
-    initializes to `-1`; the caller must `_replace(din12_indx=...)`
+    `din12_indx` initializes to `-1`; the caller must `_replace(din12_indx=...)`
     after `read_sflux` runs.
-
-    `var` is read for the photo-metadata fields populated by
-    `legacy_io.read_rate` (`var.photo_sp`, `var.ion_sp`, `var.n_branch`,
-    `var.ion_branch`, `var.def_bin_min`, `var.def_bin_max`). No
-    mutation of `var` happens here.
     """
     photo_sp = list(var.photo_sp)
     ion_sp = list(var.ion_sp)
-    # Match the canonical ordering used by photo.pack_photo_data
-    # (sorted union, alphabetical species names) so the dense pytree
-    # row order is invariant of network reading order.
+    # Sorted union (alphabetical) so the dense pytree row order is invariant
+    # of network reading order.
     absp_sp_list = sorted(set(photo_sp) | set(ion_sp))
     use_ion = bool(getattr(vulcan_cfg, "use_ion", False))
     T_cross_sp = list(vulcan_cfg.T_cross_sp or [])
     scat_sp_list = list(vulcan_cfg.scat_sp or [])
     nz = int(atm.Tco.shape[0])
 
-    # 1. Threshold table + raw CSV ingestion (locals only).
     import chem_funs
     threshold = _load_thresholds(chem_funs.spec_list)
 
@@ -518,7 +407,6 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
             if sp_diss > diss_max:
                 diss_max = sp_diss
 
-    # 2. Constrain by stellar-flux extents + photolysis threshold.
     bin_min = max(bin_min, var.def_bin_min)
     bin_max = min(bin_max, var.def_bin_max, diss_max)
     print(
@@ -532,13 +420,11 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
         + "{:.1f}".format(bin_min) + " to " + str(bin_max)
     )
 
-    # 3. Bin grid.
     dbin1 = float(vulcan_cfg.dbin1)
     dbin2 = float(vulcan_cfg.dbin2)
     bins = _make_bins(bin_min, bin_max, dbin1, dbin2, vulcan_cfg.dbin_12trans)
     nbin = int(bins.shape[0])
 
-    # 4. Per-photo-species absorbing cross + branch cross.
     cross_per_sp: dict[str, np.ndarray] = {
         sp: np.zeros(nbin, dtype=np.float64) for sp in absp_sp_list
     }
@@ -575,7 +461,6 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
             for i in range(1, var.n_branch[sp] + 1):
                 cross_J_T_per_key[(sp, i)] = cross_J_T_per_branch[i].copy()
 
-    # 5. Ion cross interpolation.
     cross_Jion_per_key: dict[tuple[str, int], np.ndarray] = {}
     if use_ion:
         for sp in ion_sp:
@@ -597,7 +482,6 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
                     cross_Jion_at_bins * ratio_at_bins
                 )
 
-    # 6. Rayleigh scattering.
     cross_scat_per_sp: dict[str, np.ndarray] = {}
     for sp in scat_sp_list:
         scat_raw = _load_rayleigh_csv(sp)
@@ -605,9 +489,8 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
             scat_raw["lambda"], scat_raw["cross"], bins,
         )
 
-    # 7. Pack dense arrays. Order is the canonical iteration order
-    # consumers (photo runtime kernels + .vul synthesizer) rely on.
-    absp_sp_ordered = tuple(absp_sp_list)        # photo_sp + ion_sp
+    # Canonical iteration order consumers (photo runtime kernels + .vul writer) rely on.
+    absp_sp_ordered = tuple(absp_sp_list)
     absp_T_sp_ordered = tuple(sp for sp in absp_sp_list if sp in T_cross_sp)
     scat_sp_ordered = tuple(scat_sp_list)
     branch_keys_ordered = tuple(
@@ -690,30 +573,17 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
 
 
 def build_photo_static(cfg, atm, var) -> PhotoStaticInputs:
-    """Pure builder: reads CSVs + atm.Tco, returns the dense
-    `PhotoStaticInputs` pytree.
+    """Pure builder: reads CSVs + atm.Tco, returns the dense `PhotoStaticInputs` pytree.
 
-    `cfg` is accepted for symmetry with the rest of the JAX-native
-    setup API but is not consumed directly -- the per-species CSV
-    paths and dbin scalars come from the `vulcan_cfg` module that
-    every other host-side reader uses. `var` is read for the
-    photo-metadata populated by `legacy_io.read_rate`.
-
-    `din12_indx` is `-1` until the post-photo `read_sflux` write fires;
-    use `static.with_din12_indx(int(var.sflux_din12_indx))` to attach
-    it.
+    `din12_indx` is `-1` until `read_sflux` runs; use
+    `static.with_din12_indx(int(var.sflux_din12_indx))` to attach it.
     """
-    del cfg  # match the rest of the setup API; vulcan_cfg is module-global
+    del cfg
     return _build_photo_static_dense(var, atm)
 
 
 def _alloc_runtime_buffers(var, nbin: int, nz: int) -> None:
-    """Zero-allocate the host-side runtime mutable buffers on `var`.
-
-    The runner reads these between batches (`var.tau`, `var.sflux`,
-    `var.aflux`, ...); they stay on `var` because the chunked-driver
-    path and `_initial_photo_carry` initialize the JAX carry from them.
-    """
+    """Zero-allocate the host-side runtime mutable buffers on `var`."""
     var.sflux = np.zeros((nz + 1, nbin), dtype=np.float64)
     var.dflux_u = np.zeros((nz + 1, nbin), dtype=np.float64)
     var.dflux_d = np.zeros((nz + 1, nbin), dtype=np.float64)
@@ -723,20 +593,11 @@ def _alloc_runtime_buffers(var, nbin: int, nz: int) -> None:
 
 
 def populate_photo(var, atm) -> PhotoStaticInputs:
-    """Build the dense `PhotoStaticInputs` pytree, write scalar grid
-    metadata + threshold table to `var`, and zero-allocate the runtime
-    mutable buffers on `var`.
+    """Build the dense `PhotoStaticInputs` pytree, write scalar grid metadata
+    + threshold table to `var`, and zero-allocate the runtime mutable buffers.
 
-    Phase 22e replacement for `populate_photo_arrays`. Returns the
-    pytree; the caller wires it into `Ros2JAX(...)` and the `.vul`
-    writer. After `read_sflux` populates `var.sflux_din12_indx`,
-    re-attach via `static = static.with_din12_indx(int(var.sflux_din12_indx))`.
-
-    Scalars (`var.bins` / `var.nbin` / `var.dbin1` / `var.dbin2` /
-    `var.threshold`) stay on `var` because `atm_setup.read_sflux` and
-    a handful of legacy callers still read them. The cross-section dict
-    surface (`var.cross[sp]`, ...) is gone; the .vul writer's synthesizer
-    rebuilds the legacy dict view from the pytree at pickle time.
+    After `read_sflux` populates `var.sflux_din12_indx`, re-attach via
+    `static = static.with_din12_indx(int(var.sflux_din12_indx))`.
     """
     static = _build_photo_static_dense(var, atm)
     var.bins = np.asarray(static.bins, dtype=np.float64)

@@ -157,6 +157,7 @@ def main() -> int:
     return 0 if ok else 1
 
 
+@pytest.mark.master_serial
 def test_main():
     """Pytest wrapper. `main()` returns 0 on success; convert to an
     assertion so `pytest tests/` collects and runs this script."""

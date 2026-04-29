@@ -1,5 +1,5 @@
-"""Validate chem_jac_analytical_per_layer (Phase 11 / B.1+B.2) against
-the existing jacrev-based dense Jacobian on the HD189 reference state.
+"""Validate chem_jac_analytical_per_layer against the jacrev-based dense
+Jacobian on the HD189 reference state.
 
 The analytical Jacobian is built from stoichiometry directly:
     J[i, j] = Σ_{rxns r} Σ_{out slot s_i, reac slot s_j}
@@ -80,34 +80,24 @@ def main() -> int:
     `hd189_state` fixture does) so `python tests/test_chem_jac_sparse.py`
     still works outside pytest."""
     from atm_setup import Atm
-    from ini_abun import InitialAbun
     import legacy_io as op
     import op_jax
-    import store
     import vulcan_cfg
+    from state import RunState, legacy_view
 
-    data_var = store.Variables()
-    data_atm = store.AtmData()
-    data_para = store.Parameters()
+    rs = RunState.with_pre_loop_setup(vulcan_cfg)
+    data_var, data_atm, data_para = legacy_view(rs)
     make_atm = Atm()
     output = op.Output()
-    data_atm = make_atm.f_pico(data_atm)
-    data_atm = make_atm.load_TPK(data_atm)
-    if vulcan_cfg.use_condense:
-        make_atm.sp_sat(data_atm)
-    rate = op.ReadRate()
-    data_var = rate.read_rate(data_var, data_atm)
-    import rates as _rates_mod
-    _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
-    ini = InitialAbun()
-    data_var = ini.ini_y(data_var, data_atm)
-    data_var = ini.ele_sum(data_var)
+    solver = op_jax.Ros2JAX()
+    if vulcan_cfg.use_photo and rs.photo_static is not None:
+        solver._photo_static = rs.photo_static
 
     # Match the fixture's shape so _check_jacobians can consume either.
     from conftest import HD189State  # type: ignore[import-not-found]
     state = HD189State(
         var=data_var, atm=data_atm, para=data_para,
-        make_atm=make_atm, output=output, solver=op_jax.Ros2JAX(),
+        make_atm=make_atm, output=output, solver=solver,
     )
     return _check_jacobians(state)
 

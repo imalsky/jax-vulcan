@@ -34,30 +34,16 @@ warnings.filterwarnings("ignore")
 
 def main() -> int:
     import vulcan_cfg
-    import store
-    from atm_setup import Atm
-    from ini_abun import InitialAbun
-    import op
+    import op  # VULCAN-master's op (oracle)
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import diffusion_numpy_ref as diff_mod
 
-    # Set up canonical HD189 state
-    data_var = store.Variables()
-    data_atm = store.AtmData()
-    make_atm = Atm()
-    data_atm = make_atm.f_pico(data_atm)
-    data_atm = make_atm.load_TPK(data_atm)
-    if vulcan_cfg.use_condense:
-        make_atm.sp_sat(data_atm)
-    rate = op.ReadRate()
-    data_var = rate.read_rate(data_var, data_atm)
-    data_var = rate.rev_rate(data_var, data_atm)
-    ini = InitialAbun()
-    data_var = ini.ini_y(data_var, data_atm)
-    data_var = ini.ele_sum(data_var)
-    data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
-    make_atm.mol_diff(data_atm)
-    make_atm.BC_flux(data_atm)
+    # Build canonical HD189 state via the typed pre-loop pipeline and
+    # derive a legacy `(var, atm, _)` shim for master's `op.ODESolver`,
+    # which only reads `var.y` and `atm.*` (both populated by `legacy_view`).
+    from state import RunState, legacy_view
+    rs = RunState.with_pre_loop_setup(vulcan_cfg)
+    data_var, data_atm, _ = legacy_view(rs)
     nz, ni = data_var.y.shape
 
     # Populate atm.vs with synthetic settling velocities for non-zero variant test
@@ -129,6 +115,7 @@ def main() -> int:
     return 0 if ok else 1
 
 
+@pytest.mark.master_serial
 def test_main():
     """Pytest wrapper. `main()` returns 0 on success; convert to an
     assertion so `pytest tests/` collects and runs this script."""

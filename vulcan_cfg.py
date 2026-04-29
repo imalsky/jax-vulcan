@@ -148,9 +148,10 @@ flux_cri = 0.1
 flux_atol = 1. # the tol for actinc flux (# photons cm-2 s-1 nm-1)
 
 # === VULCAN-JAX outer loop (outer_loop.OuterLoop) ===
-batch_steps = 1         # accepted Ros2 steps per JAX runner call. Phase 10.1
-                        #   uses 1 (semantic match w/ op.Integration). Phase
-                        #   10.5 raises this once history is in carry.
+batch_steps = 1         # accepted Ros2 steps per JAX runner call. Held at
+                        #   1 for semantic match with op.Integration; the
+                        #   single-shot runner means this is effectively
+                        #   ignored in production.
 batch_max_retries = 8   # safety cap on inner accept/reject retries per
                         #   accepted step inside the JAX body. Mirrors
                         #   op.py:2518's "Keep producing negative values!"
@@ -158,26 +159,53 @@ batch_max_retries = 8   # safety cap on inner accept/reject retries per
 ### use with caution
 conver_ignore = ['HC3N'] # added 2023. to get rid off non-convergent species, e.g. HC3N without sinks 
 
-# ====== Setting up numerical parameters for Ros2 ODE solver ====== 
-rtol = 0.25             # relative tolerence for adjusting the stepsize 
+# ====== Setting up numerical parameters for Ros2 ODE solver ======
+rtol = 0.25             # relative tolerence for adjusting the stepsize
 post_conden_rtol = 0.1 # switched to this value after fix_species_time
 use_adapt_rtol = True
 rtol_min = 0.02
-rtol_max = 2.5  
+rtol_max = 2.5
+
+# Adaptive rtol cadence + multipliers (op.py:836-852).
+# Each `adapt_rtol_dec_period` accepted steps, if max|atom_loss| >= loss_criteria,
+# rtol *= adapt_rtol_dec and loss_criteria *= adapt_rtol_loss_mul. Each
+# `adapt_rtol_inc_period` accepted steps (count > 0), if max|atom_loss| <
+# adapt_rtol_inc_loss_thresh, rtol *= adapt_rtol_inc.
+adapt_rtol_dec_period = 10
+adapt_rtol_dec = 0.75
+adapt_rtol_loss_mul = 2.0
+adapt_rtol_inc_period = 1000
+adapt_rtol_inc = 1.25
+adapt_rtol_inc_loss_thresh = 2e-4
+
+# Hycean H2/He bottom-pin trip time (op.py:2935). After `t > hycean_pin_time`,
+# the first accepted step snapshots the bottom-layer ymix for H2 and He and
+# pins them at that value forever.
+hycean_pin_time = 1e6
+
+# Photo update_photo_frq ini→final switch thresholds (op.py:819-823).
+# When longdy < photo_switch_longdy_thresh AND longdydt < photo_switch_longdydt_thresh,
+# the per-iteration photo cadence switches from ini_update_photo_frq to
+# final_update_photo_frq. Master uses `yconv_min*10.0` for the longdy gate.
+photo_switch_longdy_thresh = yconv_min * 10.0
+photo_switch_longdydt_thresh = 1e-6
 
 # ====== Setting up for output and plotting ======
-# Phase 19: live-output paths (use_live_plot / use_live_flux / use_save_movie /
-# use_flux_movie) were dropped. Visualisation is via post-run scripts under
-# plot_py/ plus the kept Output.plot_end / plot_evo / plot_TP, gated by
-# `use_plot_end` / `use_plot_evo` / `plot_TP` and `save_evolution` for plot_evo.
-# The four dropped flags are kept here as `False` so VULCAN-master's
-# `op.Output.__init__` (read at oracle-test setup time, e.g.
-# `tests/test_diffusion_variants.py`) finds them; runtime_validation.py
-# accepts `False` values and only rejects `True`.
+# Live-output flags. Each enables a host-side hook called between JIT'd
+# step batches at `live_plot_frq` cadence (see live_ui.py). Setting any
+# flag to True forces the chunked-runner path so the host can read
+# state between chunks.
+#   use_live_plot:  matplotlib mixing-ratio plot (op.plot_update)
+#   use_live_flux:  matplotlib actinic/diffuse flux plot (requires use_photo)
+#   use_save_movie: write `movie_dir/{N}.png` frames each plot tick
+#   use_flux_movie: write `plot/movie/flux-{N}.jpg` frames each flux tick
 use_live_plot = False
 use_live_flux = False
 use_save_movie = False
 use_flux_movie = False
+use_PIL = False           # post-run: open mix.png in a PIL viewer
+movie_dir = 'plot/movie/' # destination for use_save_movie frames
+live_plot_frq = 10        # accepted-step cadence for live UI updates
 
 plot_TP = False
 use_plot_end = False

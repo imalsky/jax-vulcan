@@ -1,4 +1,4 @@
-"""Validate Phase 10.5 — the JAX runner is one-shot and the in-runner
+"""Validate that the JAX runner is one-shot and the in-runner
 convergence check terminates the integration without Python-side polling.
 
 Three assertions:
@@ -62,39 +62,19 @@ def main() -> int:
     vulcan_cfg.use_live_plot = False
     vulcan_cfg.use_live_flux = False
 
-    import store, op_jax  # noqa: E401
+    import op_jax
     from atm_setup import Atm
-    from ini_abun import InitialAbun
+    from state import RunState, legacy_view
 
-    data_var = store.Variables()
-    data_atm = store.AtmData()
-    data_para = store.Parameters()
+    rs = RunState.with_pre_loop_setup(vulcan_cfg)
+    data_var, data_atm, data_para = legacy_view(rs)
     data_para.start_time = time.time()
     make_atm = Atm()
     output = op.Output()
 
-    data_atm = make_atm.f_pico(data_atm)
-    data_atm = make_atm.load_TPK(data_atm)
-    rate = op.ReadRate()
-    data_var = rate.read_rate(data_var, data_atm)
-    import rates as _rates_mod
-    _network = _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
-    ini_abun = InitialAbun()
-    data_var = ini_abun.ini_y(data_var, data_atm)
-    data_var = ini_abun.ele_sum(data_var)
-    data_atm = make_atm.f_mu_dz(data_var, data_atm, output)
-    make_atm.mol_diff(data_atm)
-    make_atm.BC_flux(data_atm)
-
     solver = op_jax.Ros2JAX()
-    if vulcan_cfg.use_photo:
-        import photo_setup as _photo_setup
-        _photo_setup.populate_photo_arrays(data_var, data_atm)
-        make_atm.read_sflux(data_var, data_atm)
-        solver.compute_tau(data_var, data_atm)
-        solver.compute_flux(data_var, data_atm)
-        solver.compute_J(data_var, data_atm)
-        _rates_mod.apply_photo_remove(vulcan_cfg, data_var, _network, data_atm)
+    if vulcan_cfg.use_photo and rs.photo_static is not None:
+        solver._photo_static = rs.photo_static
 
     integ = outer_loop.OuterLoop(solver, output)
     integ(data_var, data_atm, data_para, make_atm)

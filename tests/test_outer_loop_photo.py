@@ -1,19 +1,18 @@
-"""Validate Phase 10.2: photo update inside the JAX runner matches a single
+"""Validate that the photo update inside the JAX runner matches a single
 Python-side `compute_tau` / `compute_flux` / `compute_J` round-trip.
 
 Builds the HD189 reference state and runs the photo branch *both* ways:
-  (A) via `op_jax.Ros2JAX.compute_{tau,flux,J}` writing into var.tau / var.k_arr
-      (the Phase 10.1 path; same JAX kernels but called from Python with a
-      NumPy boundary on each call).
-  (B) via the Phase 10.2 photo branch closed over by `outer_loop._make_runner`,
-      operating on a `JaxIntegState` carry and feeding back into var via
-      `_unpack_state`.
+  (A) via `op_jax.Ros2JAX.compute_{tau,flux,J}` writing into var.tau /
+      var.k_arr (Python-side dispatch around the same JAX kernels).
+  (B) via the in-runner photo branch closed over by
+      `outer_loop._make_runner`, operating on a `JaxIntegState` carry and
+      feeding back into var via `_unpack_state`.
 
-The two should agree to machine precision because they share the same kernels
-(`compute_tau_jax`, `compute_flux_jax`, `compute_J_jax_flat`/_compute_J_inner)
-— the only difference is whether the round-trip happens before or after device
-sync. Anything beyond ~1e-13 indicates a wiring bug in the Phase 10.2 carry
-plumbing.
+The two should agree to machine precision because they share the same
+kernels (`compute_tau_jax`, `compute_flux_jax`,
+`compute_J_jax_flat`/`_compute_J_inner`) — the only difference is
+whether the round-trip happens before or after device sync. Anything
+beyond ~1e-13 indicates a wiring bug in the carry plumbing.
 
 Validates:
     1. var.tau / var.aflux / var.sflux / var.dflux_d / var.dflux_u / var.prev_aflux
@@ -29,6 +28,7 @@ import sys
 import warnings
 from pathlib import Path
 
+import jax.numpy as jnp
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -47,34 +47,25 @@ def main() -> int:
         print("SKIP: vulcan_cfg.use_photo=False; nothing to validate.")
         return 0
 
-    import store, legacy_io as op, op_jax, outer_loop
-    from atm_setup import Atm
-    from ini_abun import InitialAbun
+    import legacy_io as op, op_jax, outer_loop
+    from state import RunState, legacy_view
 
     # --- Build HD189 reference state with the photo pre-loop (as
     # `vulcan_jax.py` does before entering the integration loop). ---
-    data_var = store.Variables()
-    data_atm = store.AtmData()
-    data_para = store.Parameters()
-
-    make_atm = Atm()
+    rs = RunState.with_pre_loop_setup(vulcan_cfg)
+    data_var, data_atm, data_para = legacy_view(rs)
     output = op.Output()
-    data_atm = make_atm.f_pico(data_atm)
-    data_atm = make_atm.load_TPK(data_atm)
-    rate = op.ReadRate()
-    data_var = rate.read_rate(data_var, data_atm)
+
+    # `with_pre_loop_setup` already ran the full photo pipeline once
+    # (compute_tau/flux/J + apply_photo_remove), so the legacy_view
+    # state already has Path A's outputs — capture them as the Path A
+    # snapshot directly. To get the pre-photo state for Path B, we need
+    # to undo the photo pass; instead, re-import network and reset
+    # var.k_arr to the post-rate-build, pre-photo values via
+    # `setup_var_k`, then re-run Path A explicitly so we have a clean
+    # pre/post split.
     import rates as _rates_mod
     _network = _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
-    ini_abun = InitialAbun()
-    data_var = ini_abun.ini_y(data_var, data_atm)
-    data_var = ini_abun.ele_sum(data_var)
-    data_atm = make_atm.f_mu_dz(data_var, data_atm, output)
-    make_atm.mol_diff(data_atm)
-    make_atm.BC_flux(data_atm)
-
-    import photo_setup as _photo_setup
-    _photo_setup.populate_photo_arrays(data_var, data_atm)
-    make_atm.read_sflux(data_var, data_atm)
 
     # Snapshot the pre-photo state so Path B can run from the SAME starting
     # point as Path A — otherwise Path B's compute_flux is computing the
@@ -93,6 +84,8 @@ def main() -> int:
 
     # --- Path A: Python-side compute_tau / compute_flux / compute_J ---
     solver = op_jax.Ros2JAX()
+    if rs.photo_static is not None:
+        solver._photo_static = rs.photo_static
     solver.compute_tau(data_var, data_atm)
     solver.compute_flux(data_var, data_atm)
     solver.compute_J(data_var, data_atm)
@@ -143,6 +136,23 @@ def main() -> int:
     def _relerr(ref, ours):
         denom = np.maximum(np.abs(ref), 1e-300)
         return float(np.max(np.abs(ours - ref) / denom))
+
+    # Regression: the in-runner photo branch must use the dynamic dz carried
+    # by JaxIntegState, not the initial photo_static.dz closed over at trace
+    # time. update_mu_dz changes dz during long runs, and op.compute_tau reads
+    # the current atm.dz on every photo update.
+    dz_scale = jnp.linspace(0.95, 1.05, init_state.dz.shape[0])
+    dynamic_state = init_state._replace(dz=init_state.dz * dz_scale)
+    dynamic_final = photo_branch(dynamic_state)
+    tau_dynamic_ref = outer_loop._photo_mod.compute_tau_jax(
+        dynamic_state.y, dynamic_state.dz, integ._photo_static.photo_data,
+    )
+    dyn_dz_err = _relerr(np.asarray(tau_dynamic_ref),
+                         np.asarray(dynamic_final.tau))
+    print(f"dynamic-dz tau relerr: {dyn_dz_err:.3e}")
+    if dyn_dz_err > PHOTO_RTOL:
+        print("FAIL: photo branch did not use dynamic state.dz")
+        ok = False
 
     for label, A, B in (
         ("tau",        tau_A,        tau_B),

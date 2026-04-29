@@ -28,12 +28,10 @@ sys.path.insert(0, str(ROOT))
 
 jax.config.update("jax_enable_x64", True)
 
-import chem as chem_mod
 from chem import NetworkArrays
 from jax_step import AtmStatic
 from steady_state_grad import (
     build_steady_state_inputs,
-    differentiable_steady_state_inputs,
     differentiable_steady_state,
     steady_state_residual,
     steady_state_value_and_grad,

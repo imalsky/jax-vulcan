@@ -1,23 +1,9 @@
-"""Pure-JAX atmosphere-refresh kernels (Phase 10.3).
+"""Pure-JAX atmosphere-refresh kernels: mu/dz/g/Hp + diffusion-limited escape.
 
-JAX ports of `op.update_mu_dz` (`VULCAN-master/op.py:944-984`) and
-`op.update_phi_esc` (`op.py:986-999`). These run inside the JAX
-`OuterLoop` runner, gated by `lax.cond` on a `do_atm_refresh` flag fired
-every `update_frq` accepted steps — the same cadence as the upstream
-NumPy path.
-
-`update_mu_dz` recomputes mean molecular weight, scale height, and the
-hydrostatic z-grid from the current `ymix`. The hydrostatic loop is a
-true sequential dependency (`zco[i+1] = zco[i] + dz[i]`), so it lives in
-two `jax.lax.scan` calls — one upward from `pref_indx` (the layer closest
-to the reference pressure, ≈1 bar for gas giants) and one downward from
-`pref_indx-1` to 0. With `pref_indx == 0` (rocky-planet path) the
-downward scan is a length-zero scan that no-ops.
-
-`update_phi_esc` updates the diffusion-limited escape flux at TOA for
-each species in `vulcan_cfg.diff_esc`. For HD189 with `use_topflux=False`
-this only affects diagnostics, but we update it anyway to stay
-bit-faithful to VULCAN's recorded state.
+The hydrostatic loop is a true sequential dependency
+(`zco[i+1] = zco[i] + dz[i]`) and uses two `lax.scan`s — one upward from
+`pref_indx` and one downward to 0; the downward scan is length-0 when
+`pref_indx == 0`.
 """
 
 from __future__ import annotations
@@ -29,12 +15,7 @@ import jax.numpy as jnp
 
 
 class AtmRefreshStatic(NamedTuple):
-    """Closed-over static inputs to the atm-refresh kernels.
-
-    Every field is constant during integration: T-P profile, planetary
-    radius / surface gravity, species masses / molar masses, the static
-    `pref_indx` boundary, etc.
-    """
+    """Closed-over static inputs to the atm-refresh kernels."""
     Tco:           jnp.ndarray   # (nz,)        layer-center temperature (K)
     pico:          jnp.ndarray   # (nz+1,)      interface pressure (dyne/cm^2)
     mol_mass:      jnp.ndarray   # (ni,)        molar mass per species (g/mol)
@@ -53,23 +34,10 @@ class AtmRefreshStatic(NamedTuple):
 
 
 def update_mu_dz_jax(ymix: jnp.ndarray, st: AtmRefreshStatic):
-    """JAX port of `op.update_mu_dz` (op.py:944-984).
+    """Recompute (mu, g, Hp, dz, zco, dzi, Hpi) from the current ymix.
 
-    Returns the updated atmosphere geometry derived from the current ymix:
-
-        mu  : (nz,)   mean molar mass per layer
-        g   : (nz,)   gravity (gs at pref_indx, gs*(Rp/(Rp+zco))^2 elsewhere)
-        Hp  : (nz,)   pressure scale height (kb*Tco / (mu/Navo * g))
-        dz  : (nz,)   layer thickness (Hp * log(pico[i]/pico[i+1]))
-        zco : (nz+1,) interface heights (cumsum from zco_pref)
-        dzi : (nz-1,) interface dz (0.5*(dz[i]+dz[i-1]))
-        Hpi : (nz-1,) interface scale height (0.5*(Hp[i]+Hp[i+1]))
-
-    The hydrostatic loop is split into a forward scan from `pref_indx`
-    upward and a backward scan from `pref_indx-1` downward — both true
-    sequential dependencies on the running `zco`. `Ti` is intentionally
-    not returned because it depends only on the static `Tco` (op.py:980,
-    `0.5*(Tco + roll(Tco,-1))[:-1]`) — capture it once at OuterLoop init.
+    `Ti` is intentionally not returned — it depends only on the static `Tco`
+    and is captured once at OuterLoop init.
     """
     Tco = st.Tco
     pico = st.pico
@@ -82,14 +50,12 @@ def update_mu_dz_jax(ymix: jnp.ndarray, st: AtmRefreshStatic):
     nz = st.nz
     zco_pref = jnp.float64(st.zco_pref)
 
-    # mu vectorized over layers (op.build_atm.mean_mass:520-525).
-    mu = jnp.einsum("zi,i->z", ymix, mol_mass)  # (nz,)
+    mu = jnp.einsum("zi,i->z", ymix, mol_mass)
 
-    # Forward scan: zco propagates upward from zco_pref; per-layer
-    # outputs are (g, Hp, dz, zco_top) for layers pref_indx..nz-1.
+    # Forward scan upward from `pref_indx` to nz-1.
     def fwd_step(zco_i, i):
-        # At the reference layer, g uses the surface value directly
-        # (op.py:957). Above it, g follows 1/r^2 from Rp+zco[i].
+        # g at the reference layer is gs by definition; above it, g follows
+        # the inverse-square law from Rp+zco[i].
         is_pref = i == pref_indx
         g_i = jnp.where(is_pref, gs, gs * (Rp / (Rp + zco_i)) ** 2)
         Hp_i = kb * Tco[i] / (mu[i] / Navo * g_i)
@@ -101,13 +67,10 @@ def update_mu_dz_jax(ymix: jnp.ndarray, st: AtmRefreshStatic):
     _, (g_fwd, Hp_fwd, dz_fwd, zco_above) = jax.lax.scan(
         fwd_step, zco_pref, fwd_indices,
     )
-    # zco_above has length nz-pref_indx, giving zco at indices pref_indx+1..nz.
 
-    # Backward scan: zco propagates downward from zco_pref; per-layer
-    # outputs are (g, Hp, dz, zco_bot) for layers pref_indx-1..0.
-    # When pref_indx == 0 this scan has length 0 and produces empties.
+    # Backward scan downward from pref_indx-1 to 0; length 0 when pref_indx==0.
     def bwd_step(zco_ip1, i):
-        # g uses Rp+zco[i+1] (op.py:967; the layer is BELOW zco[i+1]).
+        # The layer sits below zco[i+1], so g uses Rp+zco[i+1].
         g_i = gs * (Rp / (Rp + zco_ip1)) ** 2
         Hp_i = kb * Tco[i] / (mu[i] / Navo * g_i)
         dz_i = Hp_i * jnp.log(pico[i] / pico[i + 1])
@@ -118,42 +81,27 @@ def update_mu_dz_jax(ymix: jnp.ndarray, st: AtmRefreshStatic):
     _, (g_bwd_rev, Hp_bwd_rev, dz_bwd_rev, zco_below_rev) = jax.lax.scan(
         bwd_step, zco_pref, bwd_indices,
     )
-    # The backward outputs are in DECREASING-i order (i = pref_indx-1, ..., 0).
-    # Reverse to canonical i = 0, 1, ..., pref_indx-1 ordering before stacking.
+    # Backward outputs are in decreasing-i order; reverse to canonical 0..pref_indx-1.
     g_bwd = g_bwd_rev[::-1]
     Hp_bwd = Hp_bwd_rev[::-1]
     dz_bwd = dz_bwd_rev[::-1]
     zco_below = zco_below_rev[::-1]
 
-    g = jnp.concatenate([g_bwd, g_fwd])      # (nz,)
-    Hp = jnp.concatenate([Hp_bwd, Hp_fwd])   # (nz,)
-    dz = jnp.concatenate([dz_bwd, dz_fwd])   # (nz,)
-    zco = jnp.concatenate([zco_below,
-                            zco_pref[None],
-                            zco_above])      # (nz+1,)
+    g = jnp.concatenate([g_bwd, g_fwd])
+    Hp = jnp.concatenate([Hp_bwd, Hp_fwd])
+    dz = jnp.concatenate([dz_bwd, dz_fwd])
+    zco = jnp.concatenate([zco_below, zco_pref[None], zco_above])
 
-    # dzi (op.py:974-975): 0.5*(dz + roll(dz,1))[1:] == 0.5*(dz[:-1] + dz[1:])
-    dzi = 0.5 * (dz[:-1] + dz[1:])           # (nz-1,)
-
-    # Hpi (op.py:981-982): 0.5*(Hp + roll(Hp,-1))[:-1] == 0.5*(Hp[:-1] + Hp[1:])
-    Hpi = 0.5 * (Hp[:-1] + Hp[1:])           # (nz-1,)
+    dzi = 0.5 * (dz[:-1] + dz[1:])
+    Hpi = 0.5 * (Hp[:-1] + Hp[1:])
 
     return mu, g, Hp, dz, zco, dzi, Hpi
 
 
 def update_phi_esc_jax(y: jnp.ndarray, g: jnp.ndarray, Hp: jnp.ndarray,
                        top_flux_in: jnp.ndarray, st: AtmRefreshStatic) -> jnp.ndarray:
-    """JAX port of `op.update_phi_esc` (op.py:986-999).
-
-    For each species in `diff_esc_idx`, computes the diffusion-limited
-    escape flux at the top interface:
-
-        top_flux[sp] = -Dzz[-1, sp] * y[-1, sp] *
-                       (1/Hp[-1] - ms[sp] * g[-1] / (Navo * kb * Tco[-1]))
-
-    bounded below by `-max_flux`. Other species' top_flux entries are
-    passed through unchanged from `top_flux_in`.
-    """
+    """Diffusion-limited escape flux at TOA for each species in `diff_esc_idx`,
+    floored at `-max_flux`. Other species pass through unchanged."""
     diff_esc_idx = st.diff_esc_idx
     Tco_top = st.Tco[-1]
     kb = st.kb

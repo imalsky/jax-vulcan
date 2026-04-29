@@ -1,11 +1,10 @@
-"""Phase 22e: validate `photo_setup.build_photo_static` against the
-checked-in npz fixtures generated from the Phase 22b legacy oracle.
+"""Validate `photo_setup.build_photo_static` against checked-in npz
+fixtures.
 
 The fixtures (`tests/data/photo_setup_hd189_baseline.npz` and
 `tests/data/photo_setup_hd189_T_dep.npz`) were captured by
-`tests/_gen_photo_baseline.py` on the green pre-22e tree and are the
-only oracle for the photo cross-section preprocessing now that
-`legacy_io.ReadRate.make_bins_read_cross` is retired.
+`tests/_gen_photo_baseline.py` and are the canonical oracle for the
+photo cross-section preprocessing.
 
 Tolerance is 0.0 abs/rel err — the static is derived from the same
 NumPy CSV pipeline as the fixture, so any drift is a real bug.
@@ -32,13 +31,19 @@ FIXTURE_DIR = ROOT / "tests" / "data"
 
 
 def _build_state_through_read_rate():
-    """Run the pre-photo VULCAN setup and return (var, atm)."""
-    import legacy_io as op
-    import store
-    from atm_setup import Atm
+    """Run the pre-photo VULCAN setup and return (var, atm).
 
-    data_var = store.Variables()
-    data_atm = store.AtmData()
+    `state._Variables` / `_AtmData` are the private legacy mutable
+    containers. `photo_setup._build_photo_static_dense` reads dict attrs
+    that `legacy_io.ReadRate.read_rate` writes onto `var`, so we need the
+    legacy containers here rather than a `legacy_view(rs)` shim.
+    """
+    import legacy_io as op
+    from atm_setup import Atm
+    from state import _Variables, _AtmData
+
+    data_var = _Variables()
+    data_atm = _AtmData()
     make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)

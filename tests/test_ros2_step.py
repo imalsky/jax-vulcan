@@ -36,7 +36,6 @@ def main() -> int:
     import store as st_v
     import build_atm as ba_v
     import op as op_v
-    import chem_funs as cf_v
 
     data_var = st_v.Variables()
     data_atm = st_v.AtmData()
@@ -149,6 +148,7 @@ def main() -> int:
     return 0 if ok else 1
 
 
+@pytest.mark.master_serial
 def test_main():
     """Pytest wrapper. This test does a deliberate VULCAN-master ↔
     VULCAN-JAX module-table swap (see `sys.modules.pop` block in

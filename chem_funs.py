@@ -1,30 +1,6 @@
-"""JAX-native drop-in replacement for VULCAN-master's auto-generated chem_funs.py.
-
-This module exports the same public names that VULCAN-master/op.py, store.py,
-and build_atm.py expect, but is built on top of the VULCAN-JAX network parser
-+ JAX chemistry kernels rather than the SymPy code generator. Eliminates the
-need for `make_chem_funs.py` at startup.
-
-Public API (compatible with VULCAN-master/chem_funs.py):
-    ni, nr                   - network metadata (int)
-    spec_list                - ordered species (list[str])
-    re_dict, re_wM_dict      - reaction text dicts keyed by parser-i
-    chemdf(y, M, k)          - chemistry RHS (NumPy callable)
-    symjac(y, M, k)          - chemistry Jacobian; raises NotImplementedError
-                               (VULCAN-JAX uses chem.chem_jac directly)
-    neg_symjac(y, M, k)      - same as symjac but negated; raises NotImplementedError
-    Gibbs(i, T)              - K_eq for forward reaction i at temperature(s) T
-    gibbs_sp(name, T)        - g_species / (RT) per layer
-    h_RT, s_R, g_RT          - NASA-9 polynomial helpers
-    cp_R, cp_R_sp            - heat capacity helpers
-
-Lifecycle:
-    Network is parsed at import time using `vulcan_cfg.network`. NASA-9
-    coefficients are loaded from `thermo/NASA9/<sp>.txt` for each species.
-    A K_eq cache stores per-temperature-array results to avoid recomputing
-    when `Gibbs(i, T)` is called in a loop over reaction indices (the typical
-    pattern in op.ReadRate.rev_rate).
-"""
+"""JAX-native chem_funs: parses the network at import time and exposes the
+same public surface (ni, nr, spec_list, re_dict, chemdf, Gibbs, gibbs_sp, ...)
+as VULCAN-master's auto-generated chem_funs.py — backed by JAX kernels."""
 
 from __future__ import annotations
 
@@ -42,25 +18,16 @@ import gibbs as _gibbs
 jax.config.update("jax_enable_x64", True)
 
 
-# ---------------------------------------------------------------------------
-# One-time setup at import: parse network, load NASA-9, pack JAX arrays.
-# ---------------------------------------------------------------------------
-
 _NETWORK = _network.parse_network(vulcan_cfg.network)
 _NET_JAX = _chem.to_jax(_NETWORK)
 
-# Resolve thermo directory relative to vulcan_cfg.network or by convention.
+# Locate thermo/NASA9 next to the network file, or fall back to repo-root.
 _THERMO_DIR = Path(vulcan_cfg.network).parent
 if not (_THERMO_DIR / "NASA9").exists():
-    # Fall back: thermo/ next to the script
     _THERMO_DIR = Path(__file__).resolve().parent / "thermo"
 
 _NASA9_COEFFS, _NASA9_PRESENT = _gibbs.load_nasa9(_NETWORK.species, _THERMO_DIR)
 
-
-# ---------------------------------------------------------------------------
-# Public data: ni, nr, spec_list, re_dict, re_wM_dict
-# ---------------------------------------------------------------------------
 
 ni: int = _NETWORK.ni
 nr: int = _NETWORK.nr
@@ -70,15 +37,9 @@ spec_list: list[str] = list(_NETWORK.species)
 def _build_re_dicts(net: _network.Network) -> tuple[dict, dict]:
     """Reconstruct re_dict / re_wM_dict from the parsed network.
 
-    Format (matches VULCAN's auto-generated dicts):
-        re_dict[parser_i] = [[reactant_name, ...], [product_name, ...]]
-            - species names with stoichiometric repetition (e.g. ['H', 'H'])
-            - 'M' is excluded
-        re_wM_dict[parser_i] = same, but 'M' is included for 3-body reactions
-            so callers can reconstruct the original equation text.
-
-    Both forward (odd parser_i) and reverse (even parser_i) entries are
-    populated; reverse swaps reactants and products.
+    `re_dict[i] = [[reactants], [products]]` with stoichiometric repetition
+    (e.g. ['H', 'H']) and 'M' excluded. `re_wM_dict[i]` is the same with
+    'M' appended on each side that had it.
     """
     species = net.species
     re_dict: dict[int, list[list[str]]] = {}
@@ -93,19 +54,17 @@ def _build_re_dicts(net: _network.Network) -> tuple[dict, dict]:
             has_M_reac = bool(net.is_three_body[i])
             has_M_prod = bool(net.is_three_body[i + 1]) if (i + 1) <= net.nr else False
         else:
-            # Reverse: reactants = forward's products, products = forward's reactants.
+            # Reverse i swaps reactants and products of forward i-1.
+            # M asymmetry is handled per slot (parsing sets is_three_body[i] and
+            # is_three_body[i-1] independently for dissociation reactions).
             f = i - 1
             r_idx = net.product_idx[f]
             p_idx = net.reactant_idx[f]
             r_st = net.product_stoich[f]
             p_st = net.reactant_stoich[f]
-            # 3-body asymmetry: forward.has_M_reac maps to forward.is_three_body[f];
-            # reverse "reactants" are forward "products", so reverse 3-body is
-            # net.is_three_body[i] (the reverse slot itself, set during parsing).
             has_M_reac = bool(net.is_three_body[i])
             has_M_prod = bool(net.is_three_body[f])
 
-        # Expand stoichiometry into name repetition; drop padding (sp_idx == ni)
         reactants: list[str] = []
         for sp_idx, st in zip(r_idx, r_st):
             if int(st) == 0 or sp_idx >= net.ni:
@@ -119,7 +78,6 @@ def _build_re_dicts(net: _network.Network) -> tuple[dict, dict]:
 
         re_dict[i] = [list(reactants), list(products)]
 
-        # With-M variant: append 'M' on each side that had it
         reactants_wM = list(reactants)
         products_wM = list(products)
         if has_M_reac:
@@ -134,16 +92,11 @@ def _build_re_dicts(net: _network.Network) -> tuple[dict, dict]:
 re_dict, re_wM_dict = _build_re_dicts(_NETWORK)
 
 
-# ---------------------------------------------------------------------------
-# Chemistry RHS (NumPy wrapper around chem.chem_rhs)
-# ---------------------------------------------------------------------------
-
 def _pack_k_dict(k) -> np.ndarray:
-    """Convert var.k dict-or-array into a (nr+1, nz) NumPy array."""
+    """Convert var.k (dict or ndarray) into a (nr+1, nz) NumPy array."""
     if isinstance(k, np.ndarray):
         return np.asarray(k, dtype=np.float64)
     if isinstance(k, dict):
-        # Determine nz from any populated entry
         nz = None
         for v in k.values():
             arr = np.asarray(v)
@@ -161,16 +114,7 @@ def _pack_k_dict(k) -> np.ndarray:
 
 
 def chemdf(y, M, k) -> np.ndarray:
-    """Chemistry RHS at all layers. NumPy in / NumPy out wrapper around chem.chem_rhs.
-
-    Args:
-        y: (nz, ni) number densities
-        M: (nz,) total density
-        k: var.k dict OR (nr+1, nz) array
-
-    Returns:
-        dydt: (nz, ni) NumPy array
-    """
+    """Chemistry RHS at all layers. y (nz, ni), M (nz,), k dict-or-(nr+1, nz). Returns (nz, ni)."""
     y_np = np.asarray(y, dtype=np.float64)
     M_np = np.asarray(M, dtype=np.float64)
     k_arr = _pack_k_dict(k)
@@ -181,38 +125,20 @@ def chemdf(y, M, k) -> np.ndarray:
 
 
 def symjac(y, M, k):
-    """Full block-diagonal chemistry Jacobian as a flat (ni*nz, ni*nz) NumPy matrix.
-
-    VULCAN-JAX's production hot path (Ros2JAX.solver) does NOT call this — it
-    uses chem.chem_jac directly to get the (nz, ni, ni) block stack and feeds
-    it into the JAX block-Thomas solver without ever materializing the full
-    flat matrix. The flat form is only consumed by op.lhs_jac_tot, which is
-    used by VULCAN-master's scipy solve_banded path (replaced by our JAX path).
-
-    Materializing the full matrix for HD189 (nz=120, ni=93) is ~90 MB and
-    serves no purpose in the JAX port. We raise rather than silently produce
-    a giant array.
-    """
+    """Not provided. VULCAN-JAX consumes the (nz, ni, ni) block-diagonal
+    Jacobian directly via `chem.chem_jac`; the flat (nz*ni, nz*ni) form is
+    only needed by master's scipy solve_banded path."""
     raise NotImplementedError(
-        "chem_funs.symjac is not provided by the JAX-native chem_funs. "
-        "VULCAN-JAX uses chem.chem_jac (block stack [nz, ni, ni]) directly "
-        "via Ros2JAX.solver / jax_step.jax_ros2_step. If you need the flat "
-        "(nz*ni, nz*ni) form, fall back to VULCAN-master/chem_funs.py."
+        "chem_funs.symjac: use chem.chem_jac (block stack) instead."
     )
 
 
 def neg_symjac(y, M, k):
-    """Negated symjac (placeholder; raises like symjac)."""
+    """Not provided; see `symjac`."""
     raise NotImplementedError(
-        "chem_funs.neg_symjac is not provided by the JAX-native chem_funs. "
-        "VULCAN-JAX subclasses op.Ros2 and overrides solver() to use "
-        "chem.chem_jac directly without going through neg_symjac."
+        "chem_funs.neg_symjac: use chem.chem_jac (block stack) instead."
     )
 
-
-# ---------------------------------------------------------------------------
-# NASA-9 polynomial helpers (h/RT, s/R, g/RT, cp/R)
-# ---------------------------------------------------------------------------
 
 def h_RT(T, a):
     """h(T) / (RT) for a 10-element NASA-9 coefficient row."""
@@ -253,7 +179,7 @@ def g_RT(T, a_low, a_high):
 
 
 def gibbs_sp(name, T):
-    """Per-species Gibbs energy g/(RT) at temperature(s) T. `name` is a species string."""
+    """Per-species g/(RT) at temperature(s) T."""
     j = spec_list.index(name)
     return g_RT(T, _NASA9_COEFFS[j, 0], _NASA9_COEFFS[j, 1])
 
@@ -275,13 +201,8 @@ def cp_R_sp(name, T):
     )
 
 
-# ---------------------------------------------------------------------------
-# Equilibrium constant Gibbs(i, T)
-# ---------------------------------------------------------------------------
-
-# Cache K_eq arrays keyed by (T.shape, T.tobytes()). VULCAN's rev_rate calls
-# Gibbs(i, T) once per forward reaction (~600 calls) with the same T array;
-# without caching that's 600 redundant evaluations of K_eq_array.
+# Cache K_eq arrays by T identity. `Gibbs(i, T)` is typically called in a loop
+# over reaction indices with the same T, so naive recomputation costs ~600x.
 _K_EQ_CACHE: dict = {}
 
 
@@ -292,7 +213,6 @@ def _K_eq_array_cached(T_np: np.ndarray) -> np.ndarray:
         return cached
     g_sp = _gibbs.gibbs_sp_vector(_NASA9_COEFFS, T_np)
     K_eq = _gibbs.K_eq_array(_NETWORK, g_sp, T_np)
-    # Cap cache at 4 entries (typical: one Tco array reused many times)
     if len(_K_EQ_CACHE) >= 4:
         _K_EQ_CACHE.clear()
     _K_EQ_CACHE[key] = K_eq
@@ -302,26 +222,15 @@ def _K_eq_array_cached(T_np: np.ndarray) -> np.ndarray:
 def Gibbs(i, T):
     """Equilibrium constant K_eq for forward reaction i at temperature(s) T.
 
-    Mirrors VULCAN's chem_funs.Gibbs(i, T): returns the value such that
-    `k_reverse = k_forward / Gibbs(i, T)`. Includes the (k_B T / P0)^Δn factor
-    where Δn = n_reac - n_prod (folded into the formula).
-
-    Args:
-        i: forward reaction parser-index (1, 3, 5, ...)
-        T: scalar or array of temperatures (K)
-
-    Returns:
-        K_eq: float (if T scalar) or ndarray with same shape as T.
+    Returns float for scalar T, ndarray otherwise. The (k_B T / P0)^Δn
+    factor (Δn = n_reac - n_prod) is folded into the result, so
+    `k_reverse = k_forward / Gibbs(i, T)`.
     """
     T_arr = np.atleast_1d(np.asarray(T, dtype=np.float64))
-    K = _K_eq_array_cached(T_arr)[i]   # (T_arr.size,)
+    K = _K_eq_array_cached(T_arr)[i]
     if np.isscalar(T) or np.ndim(T) == 0:
         return float(K[0])
     return K
 
 
-# ---------------------------------------------------------------------------
-# Convenience: re-export NetworkArrays (some tests pull this directly).
-# ---------------------------------------------------------------------------
-
-NETWORK = _NETWORK   # kept for tooling that wants the structured object
+NETWORK = _NETWORK

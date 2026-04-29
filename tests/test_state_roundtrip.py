@@ -1,10 +1,9 @@
-"""Phase 19: typed pre-loop pytree round-trip.
+"""Typed pre-loop pytree round-trip.
 
 Asserts that `pytree_from_store(var, atm)` produces a `RunState` whose
 re-write via `apply_pytree_to_store` and re-read via
-`pytree_from_store` yields a tree-equal pytree. This pins the schema
-so Phase 20+ rewrites of build_atm / legacy_io.ReadRate cannot
-silently drop a field.
+`pytree_from_store` yields a tree-equal pytree. Pins the schema so
+future setup-pipeline edits cannot silently drop a field.
 """
 from __future__ import annotations
 

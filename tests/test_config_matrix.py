@@ -1,5 +1,4 @@
-"""Phase 23 W3-C2: breadth coverage of vulcan_cfg flags not exercised by
-the existing per-flag tests.
+"""Breadth coverage of vulcan_cfg flags not exercised by the per-flag tests.
 
 Each case targets a single config flag (or a small group), runs the
 relevant pre-loop setup (or a short integration), and asserts something
@@ -75,13 +74,18 @@ def _hd189_atm_minimal():
     """HD189 pre-loop atmosphere: pico, Tco, M, n_0, ymix.
 
     This is the minimum to exercise atm-only kernels. No photo, no rates.
+
+    Stays light by skipping the full `RunState.with_pre_loop_setup`
+    pipeline (no FastChem, no rate parser, no photo cross-sections);
+    uses the private `state._Variables` / `_AtmData` containers for
+    atm-only setup.
     """
     from atm_setup import Atm
-    import store
+    from state import _Variables, _AtmData
     import vulcan_cfg as _cfg
 
-    data_var = store.Variables()
-    data_atm = store.AtmData()
+    data_var = _Variables()
+    data_atm = _AtmData()
     make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
@@ -98,6 +102,10 @@ def _setup_full_state(count_max: int = 5):
     `count_min` / `use_print_prog` via `cfg_overrides`. This helper does
     NOT wrap those fields itself (they are set unconditionally to keep
     the smoke-run shape predictable).
+
+    Builds the canonical pre-loop state via
+    `RunState.with_pre_loop_setup` and threads `rs.photo_static` onto the
+    solver — same pattern the conftest fixture uses.
     """
     import vulcan_cfg
 
@@ -108,41 +116,17 @@ def _setup_full_state(count_max: int = 5):
     import legacy_io as op
     import op_jax
     import outer_loop  # noqa: F401
-    import rates as _rates_mod
-    import store
     from atm_setup import Atm
-    from ini_abun import InitialAbun
+    from state import RunState, legacy_view
 
-    data_var = store.Variables()
-    data_atm = store.AtmData()
-    data_para = store.Parameters()
+    rs = RunState.with_pre_loop_setup(vulcan_cfg)
+    data_var, data_atm, data_para = legacy_view(rs)
     data_para.start_time = time.time()
     make_atm = Atm()
     output = op.Output()
-
-    data_atm = make_atm.f_pico(data_atm)
-    data_atm = make_atm.load_TPK(data_atm)
-    if vulcan_cfg.use_condense:
-        make_atm.sp_sat(data_atm)
-    rate = op.ReadRate()
-    data_var = rate.read_rate(data_var, data_atm)
-    network = _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
-    ini = InitialAbun()
-    data_var = ini.ini_y(data_var, data_atm)
-    data_var = ini.ele_sum(data_var)
-    data_atm = make_atm.f_mu_dz(data_var, data_atm, output)
-    make_atm.mol_diff(data_atm)
-    make_atm.BC_flux(data_atm)
     solver = op_jax.Ros2JAX()
-    if vulcan_cfg.use_photo:
-        import photo_setup as _photo_setup
-
-        _photo_setup.populate_photo_arrays(data_var, data_atm)
-        make_atm.read_sflux(data_var, data_atm)
-        solver.compute_tau(data_var, data_atm)
-        solver.compute_flux(data_var, data_atm)
-        solver.compute_J(data_var, data_atm)
-        _rates_mod.apply_photo_remove(vulcan_cfg, data_var, network, data_atm)
+    if vulcan_cfg.use_photo and rs.photo_static is not None:
+        solver._photo_static = rs.photo_static
     return solver, output, data_var, data_atm, data_para, make_atm
 
 
@@ -259,9 +243,9 @@ def test_use_vm_mol_populates_vm():
         _, data_atm, make_atm = _hd189_atm_minimal()
         # f_mu_dz needs ymix; populate via const_mix to avoid FastChem.
         from ini_abun import InitialAbun
-        import store
+        from state import _Variables
 
-        data_var = store.Variables()
+        data_var = _Variables()
         with cfg_overrides(
             ini_mix="const_mix", const_mix={"H2": 0.9, "He": 0.0838, "H2O": 1e-3},
         ):

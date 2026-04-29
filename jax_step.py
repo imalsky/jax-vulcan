@@ -1,26 +1,8 @@
-"""Pure-JAX Ros2 step function — vmap-compatible.
+"""Vmap-compatible JAX Ros2 step.
 
-This module exposes a single `jax_ros2_step` that takes JAX arrays only and
-returns updated state + truncation error proxy. It can be JIT'd, vmapped over
-a batch axis, and run on GPU without code changes.
-
-The function operates on a STATIC atmosphere snapshot (Kzz, Dzz, Hpi, Ti,
-alpha, ms, g, dzi).  This is intentional: Kzz/Dzz/etc. depend only on atm,
-not y -- they're constant during a step.  ysum(y) IS handled inside the step.
-
-For batch parallelism over many atmospheric profiles, vmap over the leading
-axis of (y, M, k, T_atm, K_atm, ...).  Each batch element runs an independent
-Ros2 step.
-
-Limitations:
-  - 3-body M factor uses literal_unroll over flagged reactions (slow); for
-    speed-of-light, port the chemistry RHS to use a precomputed
-    "M-multiplied k" array per layer.
-
-This is the production Ros2 kernel used by `outer_loop.OuterLoop`: the
-diffusion operator now includes the runtime BC / transport variants needed by
-the upstream configs (`use_topflux`, `use_botflux`, `use_vm_mol`,
-`use_settling`).
+`jax_ros2_step` operates on a static atmosphere snapshot (Kzz, Dzz, Hpi, ...);
+ysum(y) is handled inside the step. For batch parallelism over multiple
+atmospheres, vmap over the leading axis of (y, M, k, atm).
 """
 
 from __future__ import annotations
@@ -42,11 +24,8 @@ jax.config.update("jax_enable_x64", True)
 
 
 class AtmStatic(NamedTuple):
-    """Atmosphere parameters that are constant within a Ros2 step.
-
-    All fields are JAX arrays. Shape information (nz, ni) is inferred from
-    the leading axis of `Tco` and the trailing axis of `Dzz` -- pure traced.
-    """
+    """Atmosphere parameters held constant within a Ros2 step. nz from
+    Tco's leading axis, ni from Dzz's trailing axis."""
     Kzz: jnp.ndarray       # (nz-1,)
     Dzz: jnp.ndarray       # (nz-1, ni)
     dzi: jnp.ndarray       # (nz-1,)
@@ -73,20 +52,9 @@ class AtmStatic(NamedTuple):
 class DiffGrav(NamedTuple):
     """Pre-baked y-independent transport contributions to the mol-diff blocks.
 
-    These depend only on the atmosphere snapshot — geometry plus the selected
-    transport mode (`gravity`, `vm`, `settling`, `settling_vm`) — never on
-    `y`. We compute them once per Ros2 step (or once per `update_frq` accepted
-    steps after Phase 10.3 atm refresh) and reuse for both stages of the
-    Rosenbrock step.
-
-    Fields:
-      A_grav_int:    (nz-2, ni) — `1/(2*dz_ave) * (Dzz[j]*grav_j - Dzz[j-1]*grav_jm)`
-      B_grav_int:    (nz-2, ni) — `1/(2*dz_ave) * Dzz[j] * grav_jp_b`
-      C_grav_int:    (nz-2, ni) — `-1/(2*dz_ave) * Dzz[j-1] * grav_jm_c`
-      bdry0_grav:    (ni,)      — `1/dzi[0]  * Dzz[0]/2  * (-1/Hpi[0]  + ...)`
-      bdry_top_grav: (ni,)      — `-1/dzi[-1] * Dzz[-1]/2 * (-1/Hpi[-1] + ...)`
-      dz_ave:        (nz-2,)    — `0.5*(dzi[j-1] + dzi[j])` (also reused for the
-                                  ysum-dependent eddy / mol terms)
+    Computed once per Ros2 step (atm refresh recomputes); reused for both
+    stages of the Rosenbrock step. `dz_ave = 0.5*(dzi[j-1] + dzi[j])` is
+    also consumed by the ysum-dependent eddy/mol terms.
     """
     A_grav_int:    jnp.ndarray
     B_grav_int:    jnp.ndarray
@@ -180,23 +148,11 @@ def compute_diff_grav(atm: AtmStatic) -> DiffGrav:
 
 
 def _build_diff_coeffs_jax(y, atm: AtmStatic, grav: DiffGrav):
-    """JAX version of diffusion.build_diffusion_coeffs (interior + boundaries).
+    """Diffusion (eddy + molecular) coefficient blocks for one Ros2 stage.
 
-    Args:
-        y:    (nz, ni)     current number densities.
-        atm:  AtmStatic    atmosphere (T-P / Kzz / Dzz / etc).
-        grav: DiffGrav     y-independent gravity contributions, one per Ros2
-                           step (computed by `compute_diff_grav`). Reused
-                           between the y and yk2 evaluations.
-
-    Returns:
-        A_eddy: (nz,)        eddy A coefficient per layer
-        B_eddy: (nz,)
-        C_eddy: (nz,)
-        A_mol:  (nz, ni)     mol Ai per layer per species
-        B_mol:  (nz, ni)
-        C_mol:  (nz, ni)
-        ysum:   (nz,)
+    `grav` carries the y-independent gravity contribution; this function
+    layers in the y-dependent part. Returns
+    (A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, ysum).
     """
     Kzz, Dzz, dzi, vz = atm.Kzz, atm.Dzz, atm.dzi, atm.vz
     ni = atm.ms.shape[0]
@@ -204,8 +160,7 @@ def _build_diff_coeffs_jax(y, atm: AtmStatic, grav: DiffGrav):
 
     ysum = jnp.sum(jnp.where(atm.gas_indx_mask[None, :], y, 0.0), axis=1)
 
-    # Interior coefficients (j = 1 .. nz-2). We build the full nz arrays then
-    # overwrite the boundaries.
+    # Build full nz arrays of interior values, then overwrite the boundaries.
     j_int = jnp.arange(1, nz - 1)
     dz_ave = grav.dz_ave                                       # (nz-2,)
 
@@ -216,19 +171,17 @@ def _build_diff_coeffs_jax(y, atm: AtmStatic, grav: DiffGrav):
     B_eddy_int = 1.0 / dz_ave * Kzz[j_int] / dzi[j_int] * (ysum[j_int + 1] + ysum[j_int]) / 2.0 / ysum[j_int + 1]
     C_eddy_int = 1.0 / dz_ave * Kzz[j_int - 1] / dzi[j_int - 1] * (ysum[j_int] + ysum[j_int - 1]) / 2.0 / ysum[j_int - 1]
 
-    # Vertical advection (bool * value gives upwind switch in NumPy; same in JAX)
+    # Vertical advection (bool*value gives the upwind switch).
     A_eddy_int = A_eddy_int - ((vz[j_int] > 0) * vz[j_int] - (vz[j_int - 1] < 0) * vz[j_int - 1]) / dz_ave
     B_eddy_int = B_eddy_int - ((vz[j_int] < 0) * vz[j_int]) / dz_ave
     C_eddy_int = C_eddy_int + ((vz[j_int - 1] > 0) * vz[j_int - 1]) / dz_ave
 
-    # Boundary j = 0
     A_eddy_0 = -1.0 / dzi[0] * (Kzz[0] / dzi[0]) * (ysum[1] + ysum[0]) / 2.0 / ysum[0]
     A_eddy_0 = A_eddy_0 - ((vz[0] > 0) * vz[0]) / dzi[0]
     B_eddy_0 = 1.0 / dzi[0] * (Kzz[0] / dzi[0]) * (ysum[1] + ysum[0]) / 2.0 / ysum[1]
     B_eddy_0 = B_eddy_0 - ((vz[0] < 0) * vz[0]) / dzi[0]
     C_eddy_0 = 0.0
 
-    # Boundary j = nz-1
     A_eddy_top = -1.0 / dzi[-1] * (Kzz[-1] / dzi[-1]) * (ysum[-1] + ysum[-2]) / 2.0 / ysum[-1]
     A_eddy_top = A_eddy_top + ((vz[-1] < 0) * vz[-1]) / dzi[-1]
     C_eddy_top = 1.0 / dzi[-1] * (Kzz[-1] / dzi[-1]) * (ysum[-1] + ysum[-2]) / 2.0 / ysum[-2]
@@ -239,8 +192,7 @@ def _build_diff_coeffs_jax(y, atm: AtmStatic, grav: DiffGrav):
     B_eddy = jnp.concatenate([jnp.array([B_eddy_0]), B_eddy_int, jnp.array([B_eddy_top])])
     C_eddy = jnp.concatenate([jnp.array([C_eddy_0]), C_eddy_int, jnp.array([C_eddy_top])])
 
-    # Molecular diffusion blocks (per-species). y-dependent part + pre-baked
-    # gravity contribution from `grav` (added once per Ros2 step).
+    # Molecular-diffusion per-species blocks: y-dependent part + pre-baked grav.
     Ai_int = -1.0 / dz_ave[:, None] * (
         Dzz[j_int] / dzi[j_int][:, None] * (ysum[j_int + 1][:, None] + ysum[j_int][:, None]) / 2.0
         + Dzz[j_int - 1] / dzi[j_int - 1][:, None] * (ysum[j_int][:, None] + ysum[j_int - 1][:, None]) / 2.0
@@ -253,7 +205,6 @@ def _build_diff_coeffs_jax(y, atm: AtmStatic, grav: DiffGrav):
     Ci_int = 1.0 / dz_ave[:, None] * Dzz[j_int - 1] / dzi[j_int - 1][:, None] * (ysum[j_int][:, None] + ysum[j_int - 1][:, None]) / 2.0 / ysum[j_int - 1][:, None]
     Ci_int = Ci_int + grav.C_grav_int
 
-    # Boundaries (j = 0 and j = nz-1) — y-dependent eddy/mol part + pre-baked grav.
     Ai_0 = -1.0 / dzi[0] * (Dzz[0] / dzi[0]) * (ysum[1] + ysum[0]) / 2.0 / ysum[0] + grav.bdry0_grav[0]
     Bi_0 = 1.0 / dzi[0] * (Dzz[0] / dzi[0]) * (ysum[1] + ysum[0]) / 2.0 / ysum[1] + grav.bdry0_grav[1]
     Ci_0 = jnp.zeros(ni)
@@ -270,11 +221,10 @@ def _build_diff_coeffs_jax(y, atm: AtmStatic, grav: DiffGrav):
 
 
 def _apply_diffusion_jax(y, A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, atm: AtmStatic):
-    """Compute diff[nz, ni] = (A+Ai)*y[j] + (B+Bi)*y[j+1] + (C+Ci)*y[j-1]."""
+    """diff[j] = (A+Ai)*y[j] + (B+Bi)*y[j+1] + (C+Ci)*y[j-1], plus BC fluxes."""
     A_total = A_eddy[:, None] + A_mol
     B_total = B_eddy[:, None] + B_mol
     C_total = C_eddy[:, None] + C_mol
-    nz = y.shape[0]
     diff_0 = A_total[0] * y[0] + B_total[0] * y[1]
     diff_top = A_total[-1] * y[-1] + C_total[-1] * y[-2]
     diff_int = (
@@ -298,42 +248,33 @@ def _apply_diffusion_jax(y, A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, atm: At
 
 @jax.jit
 def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=None):
-    """One JIT'd 2nd-order Rosenbrock step. Pure JAX.
+    """One 2nd-order Rosenbrock step.
 
-    Args:
-        y:    (nz, ni)
-        k_arr:(nr+1, nz)
-        dt:   scalar
-        atm:  AtmStatic
-        net:  NetworkArrays
-
-    Returns:
-        sol: (nz, ni)
-        delta_arr: (nz, ni)
+    Returns (sol, delta_arr), both (nz, ni). `fix_mask` (nz, ni) optionally
+    pins selected (layer, species) entries by zeroing the corresponding
+    rows/cols of the LHS and RHS.
     """
     r = 1.0 + 1.0 / jnp.sqrt(2.0)
     c0 = 1.0 / (r * dt)
     ni = atm.ms.shape[0]
     M = atm.M
 
-    # y-independent gravity contributions to the molecular-diffusion blocks.
-    # Computed once per Ros2 step; reused for the y and yk2 evaluations.
+    # y-independent gravity terms; reused for the y and yk2 evaluations.
     grav = compute_diff_grav(atm)
 
-    # Diffusion coefficients (depend on y via ysum) at y
     A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, _ = _build_diff_coeffs_jax(y, atm, grav)
 
     diff_at_y = _apply_diffusion_jax(y, A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, atm)
-    rhs_y = chem_rhs(y, M, k_arr, net) + diff_at_y                       # (nz, ni)
-    # Phase 11: analytical (stoichiometry-driven) Jacobian replaces the dense
-    # `jax.jacrev`-built path; bit-exact (≤1e-13) on HD189 and ~3-5x faster
-    # because it skips materialising the structurally-zero entries.
-    chem_J = chem_jac_analytical(y, M, k_arr, net)                       # (nz, ni, ni)
+    rhs_y = chem_rhs(y, M, k_arr, net) + diff_at_y
+    # Analytical Jacobian: ≤1e-13 vs the AD path and ~3-5× faster because it
+    # skips materialising the structurally-zero entries.
+    chem_J = chem_jac_analytical(y, M, k_arr, net)
 
-    # Diffusion block diagonals (diagonal-in-species)
-    diag_d = A_eddy[:, None] + A_mol                                     # (nz, ni)
-    sup_d = B_eddy[:-1, None] + B_mol[:-1]                               # (nz-1, ni)
-    sub_d = C_eddy[1:, None] + C_mol[1:]                                 # (nz-1, ni)
+    # Diffusion blocks are diagonal-in-species → pass off-diagonals as (nz-1, ni)
+    # vectors to skip the O(ni^3) C @ invA_B matmul in forward elim.
+    diag_d = A_eddy[:, None] + A_mol
+    sup_d = B_eddy[:-1, None] + B_mol[:-1]
+    sub_d = C_eddy[1:, None] + C_mol[1:]
     bot_vdep_term = jnp.where(
         atm.use_botflux,
         -atm.bot_vdep / atm.dzi[0],
@@ -341,9 +282,6 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
     )
     diag_d = diag_d.at[0].add(bot_vdep_term)
 
-    # LHS = c0*I - chem_J - diff_J. Diffusion contributions are diagonal-in-
-    # species, so we pass them as (nz-1, ni) vectors to block_thomas_diag_offdiag
-    # (skips the C @ invA_B matmul; ~2x fewer flops in forward elim).
     eye = jnp.eye(ni)
     di = jnp.arange(ni)
     diag = c0 * eye[None] - chem_J
@@ -359,11 +297,9 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
         sup_neg = jnp.where(fix_mask[:-1], 0.0, sup_neg)
         sub_neg = jnp.where(fix_mask[1:], 0.0, sub_neg)
 
-    # First Rosenbrock stage
     factors = factor_block_thomas_diag_offdiag(diag, sup_neg, sub_neg)
     k1 = solve_block_thomas_diag_offdiag(factors, rhs_y)
 
-    # Second stage at yk2
     yk2 = y + k1 / r
     A_eddy2, B_eddy2, C_eddy2, A_mol2, B_mol2, C_mol2, _ = _build_diff_coeffs_jax(yk2, atm, grav)
     diff_at_yk2 = _apply_diffusion_jax(yk2, A_eddy2, B_eddy2, C_eddy2, A_mol2, B_mol2, C_mol2, atm)
@@ -380,7 +316,7 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
 
 
 def make_atm_static(atm, ni: int, nz: int) -> AtmStatic:
-    """Convert a VULCAN store.AtmData into the JAX AtmStatic struct."""
+    """Build an AtmStatic from a legacy AtmData container."""
     use_vm = bool(getattr(vulcan_cfg, "use_vm_mol", False) and getattr(vulcan_cfg, "use_moldiff", True))
     use_set = bool(getattr(vulcan_cfg, "use_settling", False) and getattr(vulcan_cfg, "use_moldiff", True))
     use_topflux = bool(getattr(vulcan_cfg, "use_topflux", False))

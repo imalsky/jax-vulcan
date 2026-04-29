@@ -1,4 +1,4 @@
-"""Validate Phase 10.4 conden kernels against direct NumPy reference math.
+"""Validate the JAX conden kernels against direct NumPy reference math.
 
 The HD189 default config sets `use_condense=False`, so an end-to-end
 integration test of condensation is out of scope for this sub-milestone

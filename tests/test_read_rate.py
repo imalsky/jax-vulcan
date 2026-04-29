@@ -1,4 +1,4 @@
-"""Phase 22a-1 unit tests for the new entry points in `rates.py`.
+"""Unit tests for the entry points in `rates.py`.
 
 Covers:
   - `apply_lowT_caps`: synthetic Tco that fires all three caps; check the
@@ -46,12 +46,12 @@ def _find_rxn_idx(net, eq: str) -> int:
 def _load_nasa9_local(net):
     """Load NASA-9 coefficients fresh.
 
-    We deliberately don't read `nasa9_coeffs` because the suite
-    has a known module-state ordering issue (see the Phase 16 conftest
-    note): tests that pop `chem_funs` from `sys.modules` can re-resolve it
-    to upstream's SymPy-generated `chem_funs.py`, which doesn't expose the
-    JAX-side private attribute. Loading directly via `gibbs.load_nasa9`
-    avoids the question.
+    We deliberately don't read `nasa9_coeffs` because the suite has a
+    known module-state ordering issue (see the conftest snapshot/restore
+    note): tests that pop `chem_funs` from `sys.modules` can re-resolve
+    it to upstream's SymPy-generated `chem_funs.py`, which doesn't expose
+    the JAX-side private attribute. Loading directly via
+    `gibbs.load_nasa9` avoids the question.
     """
     import gibbs
     import vulcan_cfg
@@ -195,10 +195,9 @@ def test_build_rate_array_matches_legacy_hd189(hd189_state):
     (HD189 has `use_lowT_limit_rates=False`, `remove_list=[]`).
 
     The conftest fixture also runs `compute_J` which overwrites the photo
-    rate slots with computed J-rates -- those live in a separate code path
-    that Phase 22b will rewrite. Mask those (and ion / conden /
-    radiative slots) from this comparison; `build_rate_array` is the
-    chemistry-rate half only.
+    rate slots with computed J-rates -- those live in a separate code
+    path. Mask those (and ion / conden / radiative slots) from this
+    comparison; `build_rate_array` is the chemistry-rate half only.
     """
     import network as net_mod
     import rates
@@ -212,8 +211,8 @@ def test_build_rate_array_matches_legacy_hd189(hd189_state):
 
     nr = int(net.nr)
     nz = int(hd189_state.atm.Tco.shape[0])
-    # Phase 22d: hd189_state.var carries the dense rate array on `k_arr`
-    # (the legacy `var.k` dict was retired). Compare against that.
+    # `hd189_state.var.k_arr` carries the dense rate array; compare
+    # against that.
     k_legacy = np.asarray(hd189_state.var.k_arr, dtype=np.float64)
     if k_legacy.shape != (nr + 1, nz):
         raise AssertionError(
@@ -221,7 +220,7 @@ def test_build_rate_array_matches_legacy_hd189(hd189_state):
         )
 
     # Reactions whose rate row is set outside the read_rate -> rev_rate ->
-    # remove_rate chain (and which Phase 22a does not own).
+    # remove_rate chain (and therefore not in `build_rate_array`'s scope).
     skip_mask = np.zeros(nr + 1, dtype=bool)
     for i in range(1, nr + 1):
         if (net.is_photo[i] or net.is_ion[i]

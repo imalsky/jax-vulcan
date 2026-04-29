@@ -2,12 +2,18 @@
 
 Source: ../VULCAN-master/op.py.
 Contents:
-- class ReadRate (op.py:49-781): network parser + rate-coef builder + photo
-  bins/cross-section loader. Called from vulcan_jax.py for one-shot pre-loop
-  setup (rate-constant assembly + photo cross-section binning).
-- class Output (op.py:3131-3260, plotting methods + matplotlib import dropped):
-  config copy + .vul writer + per-step progress printer. Called from
-  vulcan_jax.py and outer_loop.OuterLoop.print_prog.
+- class ReadRate (op.py:49-781): network parser + rate-coef builder. Called
+  by `state._build_pre_loop_runstate` for one-shot pre-loop setup. Rate
+  *values* are subsequently re-assembled by the JAX-friendly
+  `rates.build_rate_array`; this class is retained because its metadata
+  population (`var.Rf`, `var.pho_rate_index`, `var.n_branch`, `var.photo_sp`,
+  `var.ion_sp`, ...) is the canonical source for those host-side dicts.
+- class Output (op.py:3131-3260, with the matplotlib live-plot/movie paths
+  dropped): config copy + `.vul` writer + per-step progress printer. The
+  `.vul` schema is byte-identical to upstream's so VULCAN's `plot_py/`
+  scripts read our output unmodified; the photo cross-section dict views
+  and the per-reaction `var.k` dict are synthesized at pickle time from
+  the dense `PhotoStaticInputs` pytree and `var.k_arr`.
 
 Verbatim copy of upstream method bodies. To re-sync: replace each method's
 body with the corresponding op.py block; do not modify in-place.
@@ -41,15 +47,16 @@ class ReadRate(object):
 
     def read_rate(self, var, atm):
 
-        # Phase 22d retired `var.k`; the local `k` dict here is scratch
-        # space the parser fills as it walks the network. The final values
-        # are discarded -- `rates.setup_var_k` recomputes the dense rate
-        # array from scratch right after this method returns. Kept for
-        # bytewise compatibility with the upstream parser body below.
+        # The local `k` dict here is scratch space the parser fills as it
+        # walks the network. The final values are discarded —
+        # `rates.setup_var_k` recomputes the dense rate array from scratch
+        # right after this method returns. Kept for bytewise compatibility
+        # with the upstream parser body below.
         k = {}
-        Rf, Rindx, a, n, E, a_inf, n_inf, E_inf, k_fun, k_inf, kinf_fun, k_fun_new, pho_rate_index = \
-        var.Rf, var.Rindx, var.a, var.n, var.E, var.a_inf, var.n_inf, var.E_inf, var.k_fun, var.k_inf, var.kinf_fun, var.k_fun_new,\
-         var.pho_rate_index
+        Rf, Rindx, a, n, E, a_inf, n_inf, E_inf, pho_rate_index = (
+            var.Rf, var.Rindx, var.a, var.n, var.E,
+            var.a_inf, var.n_inf, var.E_inf, var.pho_rate_index,
+        )
         ion_rate_index = var.ion_rate_index
 
         i = self.i
@@ -144,29 +151,16 @@ class ReadRate(object):
                     if columns[-1].strip() == 'He': re_He = i
                     elif columns[-1].strip() == 'ex1': re_CH3OH = i
 
-                    # Note: make the defaut i=i
-                    k_fun[i] = lambda temp, mm, i=i: a[i] *temp**n[i] * np.exp(-E[i]/temp)
-
-
+                    k0 = a[i] * Tco**n[i] * np.exp(-E[i]/Tco)
                     if re_tri == False:
-                        k[i] = k_fun[i](Tco, M)
-
-                    # for 3-body reactions, also calculating k_inf
-                    elif re_tri == True and len(columns)>=6:
-
-
-                        kinf_fun[i] = lambda temp, i=i: a_inf[i] *temp**n_inf[i] * np.exp(-E_inf[i]/temp)
-                        k_fun_new[i] = lambda temp, mm, i=i: (a[i] *temp**n[i] * np.exp(-E[i]/temp))/(1 + (a[i] *temp**n[i] * np.exp(-E[i]/temp))*mm/(a_inf[i] *temp**n_inf[i] * np.exp(-E_inf[i]/temp)) )
-
-                        #k[i] = k_fun_new[i](Tco, M)
-                        k_inf = a_inf[i] *Tco**n_inf[i] * np.exp(-E_inf[i]/Tco)
-                        k[i] = k_fun[i](Tco, M)
-                        k[i] = k[i]/(1 + k[i]*M/k_inf )
-
-
-                    else: # for 3-body reactions without high-pressure rates
-                        k[i] = k_fun[i](Tco, M)
-
+                        k[i] = k0
+                    elif re_tri == True and len(columns) >= 6:
+                        # 3-body with high-pressure limit (Lindemann)
+                        k_inf_val = a_inf[i] * Tco**n_inf[i] * np.exp(-E_inf[i]/Tco)
+                        k[i] = k0 / (1 + k0 * M / k_inf_val)
+                    else:
+                        # 3-body without high-pressure rates
+                        k[i] = k0
 
                     i += 2
                     # end if not
@@ -187,11 +181,6 @@ class ReadRate(object):
                         ff = np.exp( np.log(Fc)/(1.+ (np.log(k[i]*M/k_inf)/nn)**2 ) )
 
                         k[i] = k[i]/(1 + k[i]*M/k_inf ) *ff
-
-                        k_fun[i] = lambda temp, mm, i=i: 1.932E3 *temp**-9.88 *np.exp(-7544./temp) + 5.109E-11*temp**-6.25 *np.exp(-1433./temp)
-                        kinf_fun[i] = lambda temp, mm, i=i: 1.031E-10 * temp**-0.018 *np.exp(16.74/temp)
-                        k_fun_new[i] = lambda temp, mm, i=i: (1.932E3 *temp**-9.88 *np.exp(-7544./temp) + 5.109E-11*temp**-6.25 *np.exp(-1433./temp))/\
-                        (1 + (1.932E3 *temp**-9.88 *np.exp(-7544./temp) + 5.109E-11*temp**-6.25 *np.exp(-1433./temp)) * mm / (1.031E-10 * temp**-0.018 *np.exp(16.74/temp)) )
 
                     i += 2
 
@@ -246,16 +235,11 @@ class ReadRate(object):
 
                     i += 2
 
-        k_fun.update(k_fun_new)
-
-        # Phase 22d retired the dict-keyed `var.k` surface. The values
-        # parsed here are immediately superseded by
-        # `rates.setup_var_k -> rates.build_rate_array`, which writes the
-        # dense `var.k_arr`. We keep the closures (`k_fun`, `kinf_fun`)
-        # because legacy_io still emits them as part of `read_rate`'s
-        # metadata return -- nothing downstream reads them post-22d.
-        var.k_fun = k_fun
-        var.kinf_fun = kinf_fun
+        # The local `k` dict is not assigned to `var` — `rates.build_rate_array`
+        # writes the canonical dense `var.k_arr` from scratch. The parser is
+        # kept only for the metadata side-effects (var.Rf, var.Rindx,
+        # var.pho_rate_index, var.n_branch, var.photo_sp, var.ion_sp,
+        # var.conden_re_list, var.special_re, var.stop_rev_indx).
 
         var.photo_sp = set(photo_sp)
         if vulcan_cfg.use_ion == True: var.ion_sp = set(ion_sp)
@@ -264,13 +248,13 @@ class ReadRate(object):
 
 
 
-    # Phase 22e: `make_bins_read_cross` retired. The dense
-    # `PhotoStaticInputs` pytree built by `photo_setup.populate_photo`
-    # / `photo_setup._build_photo_static_dense` is the canonical
-    # photo-input surface; the .vul writer synthesizes the legacy dict
-    # views from it at pickle time (see `_synthesize_cross_dicts` below).
-    # Tests that need master's dict view continue to use master's
-    # `op.ReadRate().make_bins_read_cross` from sys.path.
+    # `make_bins_read_cross` is intentionally not vendored. The dense
+    # `PhotoStaticInputs` pytree built by `photo_setup.populate_photo` /
+    # `photo_setup._build_photo_static_dense` is the canonical photo-input
+    # surface; the .vul writer synthesizes the legacy dict views from it
+    # at pickle time (see `_synthesize_cross_dicts` below). Tests that
+    # need master's dict view use master's `op.ReadRate().make_bins_read_cross`
+    # from sys.path.
 
 def _import_plt():
     """Lazy import of matplotlib so tests that don't plot don't pay the cost."""
@@ -284,13 +268,12 @@ def _import_plt():
 def _synthesize_cross_dicts(static) -> dict:
     """Build the legacy `var.cross*` dict views from a `PhotoStaticInputs`.
 
-    Phase 22e: the .vul writer keeps publishing the same six photo dict
-    keys the upstream `plot_py/` scripts index (`d['variable']['cross']
-    [sp]`, `d['variable']['cross_J'][(sp,i)]`, etc.); the dicts are now
-    rebuilt from the dense pytree at pickle time instead of read off
-    `var`. Every value is wrapped in `np.asarray(..., dtype=np.float64)`
-    so downstream consumers see plain ndarrays (not jax arrays) — same
-    pattern as the Phase 22d k-synthesizer above.
+    The .vul writer publishes the same six photo dict keys the upstream
+    `plot_py/` scripts index (`d['variable']['cross'][sp]`,
+    `d['variable']['cross_J'][(sp,i)]`, etc.); the dicts are rebuilt from
+    the dense pytree at pickle time. Every value is wrapped in
+    `np.asarray(..., dtype=np.float64)` so downstream consumers see plain
+    ndarrays (not jax arrays).
     """
     cross = {
         sp: np.asarray(static.absp_cross[i], dtype=np.float64)
@@ -326,14 +309,205 @@ def _synthesize_cross_dicts(static) -> dict:
     }
 
 
+def _synthesize_J_sp_dict(runstate, rate_index, branch_count, species_iter):
+    """Reconstruct the legacy `{(sp, branch): array(nz)}` J-rate dict.
+
+    Master writes `var.J_sp[(sp, nbr)]` (per-branch actinic rate) and
+    `var.J_sp[(sp, 0)]` (sum over branches) to the .vul; downstream plot
+    scripts index both shapes. We rebuild from `runstate.rate.k` (the
+    canonical dense rate array) using `rate_index[(sp, br)] -> reaction
+    row`. The branch-0 total is summed at the end to match master.
+
+    Args:
+        runstate:    populated RunState; `runstate.rate.k` carries the
+                     dense `(nr+1, nz)` rate array.
+        rate_index:  `{(sp, br): reaction_index}` mapping from metadata.
+        branch_count: `{sp: n_branch}` mapping (max branch number per sp).
+        species_iter: iterable of species names (photo_sp / ion_sp).
+
+    Returns:
+        `{(sp, branch): np.ndarray(nz)}` in master's schema. Entries with
+        no rate-index mapping (e.g. branches removed via `cfg.remove_list`)
+        get zero arrays.
+    """
+    if runstate.rate is None:
+        return {}
+    k_arr = np.asarray(runstate.rate.k, dtype=np.float64)
+    nz = k_arr.shape[1]
+    f_diurnal = float(getattr(vulcan_cfg, "f_diurnal", 1.0))
+    out: dict = {}
+    for sp in species_iter:
+        nbr_max = int(branch_count.get(sp, 0))
+        # Per-branch rates (index 1..nbr_max). Master uses reaction indices
+        # 1-based and divides out f_diurnal so the dict carries the raw
+        # per-branch J — we mirror that.
+        for br in range(1, nbr_max + 1):
+            ridx = rate_index.get((sp, br))
+            if ridx is None:
+                out[(sp, br)] = np.zeros(nz, dtype=np.float64)
+            else:
+                out[(sp, br)] = k_arr[int(ridx), :] / f_diurnal
+        # Branch 0 = sum across active branches (master op.py:2767).
+        out[(sp, 0)] = np.sum(
+            [out[(sp, br)] for br in range(1, nbr_max + 1)],
+            axis=0,
+        ) if nbr_max > 0 else np.zeros(nz, dtype=np.float64)
+    return out
+
+
+def _is_runstate_arg(obj) -> bool:
+    """Return True iff `obj` is a `state.RunState` (avoids a circular import
+    at module-load time — `legacy_io` is imported very early in the
+    setup pipeline)."""
+    cls = type(obj)
+    return cls.__name__ == "RunState" and cls.__module__ == "state"
+
+
+def _synthesize_save_dicts(runstate, cfg, photo_static=None):
+    """Build the three .vul top-level dicts from a `RunState`.
+
+    Returns `(variable_dict, atm_dict, parameter_dict)` matching the
+    legacy `(vars(data_var) filtered by var_save, vars(atm), vars(para))`
+    shape so the .vul schema is byte-equivalent to upstream's writer for
+    `plot_py/` consumers.
+
+    `photo_static` defaults to `runstate.photo_static`; pass an explicit
+    pytree only when the caller has a different cross-section override.
+    """
+    use_photo = bool(getattr(cfg, "use_photo", False))
+    use_ion = bool(getattr(cfg, "use_ion", False))
+    use_save_evo = bool(getattr(cfg, "save_evolution", False))
+    T_cross_sp = list(getattr(cfg, "T_cross_sp", []) or [])
+
+    # 1. Variable dict — mirrors the legacy var.var_save filter.
+    var_save = {'species': species, 'nr': nr}
+
+    # Rate dict from the dense (nr+1, nz) array.
+    k_arr = np.asarray(runstate.rate.k, dtype=np.float64)
+    var_save['k'] = {i: k_arr[i].copy() for i in range(1, k_arr.shape[0])}
+
+    # Step slice.
+    if runstate.step is not None:
+        var_save['y'] = np.asarray(runstate.step.y, dtype=np.float64)
+        var_save['ymix'] = np.asarray(runstate.step.ymix, dtype=np.float64)
+        var_save['t'] = float(runstate.step.t)
+        var_save['dt'] = float(runstate.step.dt)
+        var_save['longdy'] = float(runstate.step.longdy)
+        var_save['longdydt'] = float(runstate.step.longdydt)
+    # Initial-state snapshot (taken at ini_y; metadata.y_ini holds the
+    # canonical reference even after the runner mutates `step.y`).
+    if runstate.metadata is not None:
+        var_save['y_ini'] = np.asarray(runstate.metadata.y_ini, dtype=np.float64)
+
+    # Atom dicts from the typed atom slot.
+    if runstate.atoms is not None:
+        a = runstate.atoms
+        ai = np.asarray(a.atom_ini)
+        al = np.asarray(a.atom_loss)
+        as_ = np.asarray(a.atom_sum)
+        var_save['atom_ini'] = {sp: float(ai[i]) for i, sp in enumerate(a.atom_order)}
+        var_save['atom_sum'] = {sp: float(as_[i]) for i, sp in enumerate(a.atom_order)}
+        var_save['atom_loss'] = {sp: float(al[i]) for i, sp in enumerate(a.atom_order)}
+        # `atom_conden` historically tracked condensation losses; until
+        # we route conden through the typed schema, publish zeros so the
+        # .vul reader's downstream code keeps working.
+        var_save['atom_conden'] = {sp: 0.0 for sp in a.atom_order}
+
+    # Photo runtime (when use_photo).
+    if use_photo and runstate.photo_runtime is not None:
+        pr = runstate.photo_runtime
+        var_save['tau'] = np.asarray(pr.tau, dtype=np.float64)
+        var_save['sflux'] = np.asarray(pr.sflux, dtype=np.float64)
+        var_save['aflux'] = np.asarray(pr.aflux, dtype=np.float64)
+        var_save['aflux_change'] = float(pr.aflux_change)
+
+    # Photo cross-section dicts.
+    static = photo_static if photo_static is not None else runstate.photo_static
+    if use_photo and static is not None:
+        photo_dicts = _synthesize_cross_dicts(static)
+        var_save['cross'] = photo_dicts['cross']
+        var_save['cross_scat'] = photo_dicts['cross_scat']
+        var_save['cross_J'] = photo_dicts['cross_J']
+        if T_cross_sp:
+            var_save['cross_J'] = photo_dicts['cross_J']
+            var_save['cross_T'] = photo_dicts['cross_T']
+        if use_ion:
+            var_save['cross_Jion'] = photo_dicts['cross_Jion']
+        # Bin grid.
+        var_save['nbin'] = int(static.nbin)
+        var_save['bins'] = np.asarray(static.bins, dtype=np.float64)
+        var_save['dbin1'] = float(static.dbin1)
+        var_save['dbin2'] = float(static.dbin2)
+
+    # Metadata (Rf, n_branch, photo_sp, ion_sp, charge_list, ...).
+    md = runstate.metadata
+    if md is not None:
+        var_save['Rf'] = dict(md.Rf)
+        if use_photo:
+            var_save['n_branch'] = dict(md.n_branch)
+            var_save['J_sp'] = _synthesize_J_sp_dict(
+                runstate, md.pho_rate_index, md.n_branch, md.photo_sp
+            )
+        if use_ion:
+            var_save['charge_list'] = list(md.charge_list)
+            var_save['ion_sp'] = set(md.ion_sp)
+            var_save['ion_wavelen'] = {}
+            var_save['ion_branch'] = dict(md.ion_branch)
+            var_save['ion_br_ratio'] = dict(md.ion_br_ratio)
+            var_save['Jion_sp'] = _synthesize_J_sp_dict(
+                runstate, md.ion_rate_index, md.ion_branch, md.ion_sp
+            )
+
+    # Evolution buffer — only when save_evolution. The OuterLoop fills
+    # `runstate.step.y_evo` / `t_evo` (already sliced to the populated
+    # prefix in `_unpack_state_to_runstate`); we expose them under
+    # the legacy `var.y_time` / `var.t_time` schema.
+    if use_save_evo and runstate.step is not None:
+        var_save['y_time'] = np.asarray(runstate.step.y_evo, dtype=np.float64)
+        var_save['t_time'] = np.asarray(runstate.step.t_evo, dtype=np.float64)
+
+    # 2. Atm dict — mirrors `vars(data_atm)`.
+    atm_save = {}
+    a_in = runstate.atm
+    for f in a_in._fields:
+        atm_save[f] = np.asarray(getattr(a_in, f))
+    if md is not None:
+        atm_save['Ti'] = np.asarray(md.Ti)
+        atm_save['gas_indx'] = list(md.gas_indx)
+        atm_save['pref_indx'] = int(md.pref_indx)
+        atm_save['gs'] = float(md.gs)
+        atm_save['sat_p'] = dict(md.sat_p)
+        atm_save['sat_mix'] = dict(md.sat_mix)
+        atm_save['r_p'] = dict(md.r_p)
+        atm_save['rho_p'] = dict(md.rho_p)
+        atm_save['fix_sp_indx'] = dict(md.fix_sp_indx)
+    atm_save['conden_min_lev'] = {}
+
+    # 3. Parameter dict — mirrors `vars(data_para)`.
+    para_save = {}
+    if runstate.params is not None:
+        p = runstate.params
+        para_save['count'] = int(p.count)
+        para_save['nega_count'] = int(p.nega_count)
+        para_save['loss_count'] = int(p.loss_count)
+        para_save['delta_count'] = int(p.delta_count)
+        para_save['delta'] = float(p.delta)
+        para_save['small_y'] = float(p.small_y)
+        para_save['nega_y'] = float(p.nega_y)
+        para_save['fix_species_start'] = bool(p.fix_species_start)
+    if md is not None:
+        para_save['start_time'] = float(md.start_time)
+
+    return var_save, atm_save, para_save
+
+
 class Output(object):
     """Vendored from VULCAN-master/op.py:3131-3454.
 
-    Phase 19: live-output paths (plot_update / plot_flux_update /
-    plot_evo_inter, save-movie hooks) were dropped from the supported
-    surface; only the post-run plotters (plot_end / plot_evo / plot_TP)
-    remain. Set `VULCAN_HEADLESS_PLOT=1` in the env to force the Agg
-    backend (useful in CI).
+    Live-output paths (plot_update / plot_flux_update / plot_evo_inter,
+    save-movie hooks) are not supported; only the post-run plotters
+    (plot_end / plot_evo / plot_TP) remain. Set `VULCAN_HEADLESS_PLOT=1`
+    in the env to force the Agg backend (useful in CI).
     """
 
     def __init__(self):
@@ -412,7 +586,72 @@ class Output(object):
             cfg_str = f.read()
         with open(dname + '/' + output_dir + "cfg_" + out_name[:-3] + "txt", 'w') as f: f.write(cfg_str)
 
-    def save_out(self, var, atm, para, dname, photo_static=None):
+    def save_out(self, *args, **kwargs):
+        """Write the .vul pickle output.
+
+        Canonical signature: `save_out(runstate, dname, photo_static=None,
+        cfg=None)` — `runstate` is a fully-populated `state.RunState` and
+        the typed slots are the source of truth. The serialiser synthesises
+        the legacy `'variable'` / `'atm'` / `'parameter'` dicts from the
+        typed pytree (rates, atom dicts, photo cross-sections, evolution
+        buffer, ...) so the .vul schema is unchanged for `plot_py/`
+        consumers.
+
+        Legacy callers passing `(var, atm, para, dname, ...)` keep
+        working: `runstate_to_store` is called first to mirror the typed
+        slots onto the legacy containers if a `runstate=...` kwarg is
+        supplied, then the legacy-shape branch runs.
+        """
+        # Resolve the polymorphic signature.
+        if args and _is_runstate_arg(args[0]):
+            return self._save_out_from_runstate(*args, **kwargs)
+        return self._save_out_legacy(*args, **kwargs)
+
+    def _save_out_from_runstate(self, runstate, dname,
+                                photo_static=None, cfg=None):
+        """Canonical .vul writer.
+
+        Reads everything from `runstate` (typed slots + `metadata` +
+        `photo_static`); legacy mutable containers are constructed
+        only as scratch for the shape-synthesis routines.
+        """
+        cfg_mod = cfg if cfg is not None else vulcan_cfg
+        var_save, atm_save, para_save = _synthesize_save_dicts(
+            runstate, cfg_mod, photo_static=photo_static
+        )
+
+        output_dir, out_name = cfg_mod.output_dir, cfg_mod.out_name
+        output_file = dname + '/' + output_dir + out_name
+
+        if not os.path.exists(output_dir):
+            print('The output directory assigned in vulcan_cfg.py does not exist.')
+            print('Directory ', output_dir, " created.")
+            os.mkdir(output_dir)
+
+        with open(output_file, 'wb') as outfile:
+            if cfg_mod.output_humanread:
+                outfile.write(str(
+                    {'variable': var_save, 'atm': atm_save, 'parameter': para_save}
+                ))
+            else:
+                pickle.dump(
+                    {'variable': var_save, 'atm': atm_save, 'parameter': para_save},
+                    outfile, protocol=4,
+                )
+
+    def _save_out_legacy(self, var, atm, para, dname, photo_static=None,
+                        runstate=None):
+        """Legacy .vul writer: reads from `(var, atm, para)`.
+
+        Superseded by `_save_out_from_runstate`. Tests / examples /
+        benchmarks have all been migrated to the RunState path; this
+        branch is kept for back-compat with hybrid oracle tests that
+        share `(var, atm)` with VULCAN-master's pipeline.
+        """
+        if runstate is not None:
+            from state import runstate_to_store as _runstate_to_store
+            _runstate_to_store(runstate, var, atm, para)
+
         output_dir, out_name = vulcan_cfg.output_dir, vulcan_cfg.out_name
         output_file = dname + '/' + output_dir + out_name
 
@@ -429,11 +668,11 @@ class Output(object):
         # making the save dict
         var_save = {'species':species, 'nr':nr}
 
-        # Phase 22e: when use_photo, the cross-section dict surface is
-        # synthesized from the dense `PhotoStaticInputs` pytree at pickle
-        # time. Callers that don't supply `photo_static` get a lazy build
-        # from `(var, atm)` so legacy save_out callsites keep working
-        # without explicit plumbing.
+        # When use_photo, the cross-section dict surface is synthesized
+        # from the dense `PhotoStaticInputs` pytree at pickle time.
+        # Callers that don't supply `photo_static` get a lazy build from
+        # `(var, atm)` so legacy save_out callsites keep working without
+        # explicit plumbing.
         if photo_static is None and bool(getattr(vulcan_cfg, "use_photo", False)):
             import photo_setup as _photo_setup
             photo_static = _photo_setup._build_photo_static_dense(var, atm)
@@ -448,9 +687,9 @@ class Output(object):
 
         for key in var.var_save:
             if key == 'k':
-                # Phase 22d: synthesize the legacy `{i: array(nz)}` dict
-                # view from the dense `var.k_arr` at write time so the .vul
-                # schema (and plot_py/ scripts that index `d['k'][i]`) keep
+                # Synthesize the legacy `{i: array(nz)}` dict view from
+                # the dense `var.k_arr` at write time so the .vul schema
+                # (and plot_py/ scripts that index `d['k'][i]`) keep
                 # working without the deprecated `var.k` attribute.
                 k_arr = np.asarray(var.k_arr, dtype=np.float64)
                 var_save[key] = {i: k_arr[i].copy() for i in range(1, k_arr.shape[0])}
@@ -473,11 +712,12 @@ class Output(object):
                 pickle.dump( {'variable': var_save, 'atm': vars(atm), 'parameter': vars(para) }, outfile, protocol=4)
 
     # ---- Post-run plotting (op.py:3262-3454, pruned to non-live methods) ----
-    # Phase 19: live-window paths (plot_update / plot_flux_update /
-    # plot_evo_inter, use_live_plot draw, use_PIL pop-ups, save-movie hooks)
-    # were dropped. The remaining methods are post-run only — they save a
-    # PNG to `plot_dir` and return. `plt` is imported lazily so non-plotting
-    # tests don't pull matplotlib in.
+    # Live-window paths (plot_update / plot_flux_update / plot_evo_inter,
+    # save-movie hooks) live in `live_ui.py` and run between JIT step
+    # batches, not here. The methods below are post-run only — they save
+    # a PNG to `plot_dir` and optionally pop up the result via PIL when
+    # `use_PIL=True`. `plt` is imported lazily so non-plotting tests
+    # don't pull matplotlib in.
 
     def plot_end(self, var, atm, para):
         plt = _import_plt()
@@ -508,7 +748,19 @@ class Output(object):
         plt.legend(frameon=0, prop={'size':14}, loc=3)
         plt.xlabel("Mixing Ratios")
         plt.savefig(plot_dir + 'mix.png')
-        plt.close()
+
+        # Match master's tail (op.py:3366-3372): if use_live_plot, leave
+        # the figure on screen and just redraw; else if use_PIL, pop the
+        # saved PNG in a separate viewer window. Otherwise close the
+        # figure so subsequent runs don't accumulate.
+        if getattr(vulcan_cfg, "use_live_plot", False):
+            plt.draw()
+        elif getattr(vulcan_cfg, "use_PIL", False):
+            from PIL import Image
+            Image.open(plot_dir + 'mix.png').show()
+            plt.close()
+        else:
+            plt.close()
 
     def plot_evo(self, var, atm, plot_j=-1, plot_ymin=1e-20, dn=1):
         plt = _import_plt()

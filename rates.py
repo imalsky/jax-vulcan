@@ -1,41 +1,14 @@
-"""Rate-coefficient evaluation for VULCAN-JAX.
+"""Forward-rate-constant evaluation for VULCAN-JAX.
 
-Given a parsed `Network` and an atmospheric (T, M) pair, compute the forward
-rate constants `k[nr+1, nz]` (1-based reaction indexing). Reverse-rate slots
-are filled in by `gibbs.fill_reverse_k` (or, end-to-end, by `build_rate_array`
-below).
+Supported forms: modified Arrhenius, Lindemann falloff (with k_inf), bare
+3-body (M-multiplied at RHS time), and a hardcoded Troe expression for
+`OH + CH3 + M -> CH3OH + M`. Photo / conden / radiative / ion slots are
+zero here and filled at runtime.
 
-Supported functional forms (mirrors `op.py:ReadRate.read_rate`):
-  - Modified Arrhenius:        k = A * T^n * exp(-E/T)
-  - Lindemann falloff (3-body w/ k_inf):
-        k_0   = A   * T^n   * exp(-E/T)
-        k_inf = A_∞ * T^n_∞ * exp(-E_∞/T)
-        k     = k_0 / (1 + k_0 * M / k_inf)
-  - 3-body w/o k_inf:           k = A * T^n * exp(-E/T)  (multiplied by [M] in rate eqn)
-  - Hardcoded Troe form for `OH + CH3 + M -> CH3OH + M` (from Jasper 2017)
-  - Photo / condensation / radiative / ion: k = 0 here; filled by photo update
-                                             or condensation logic at runtime.
-
-The output `k[i, :]` for 3-body reactions does NOT include the [M] factor --
-that multiplication happens in the chemistry RHS (`rates.compute_chem_rate`)
-because it depends on the time-evolving total-density M(z) = sum(y).
-
-Phase 22a entry points (consolidate `legacy_io.ReadRate.{read_rate, rev_rate,
-remove_rate, lim_lowT_rates}` into pure-NumPy functions over `Network`):
-  - `compute_forward_k(net, T, M)`  -- forward (Arrhenius / Lindemann / Troe)
-  - `apply_lowT_caps(net, k, T, M)` -- mirrors `lim_lowT_rates` (3 hardcoded
-    reactions; caller gates on `cfg.use_lowT_limit_rates`).
-  - `apply_remove_list(net, k, remove_list)` -- mirrors `remove_rate` (literal
-    zero of the indices in `remove_list`, nothing more).
-  - `build_rate_array(cfg, net, atm, nasa9_coeffs)` -- end-to-end glue:
-    forward -> (lowT caps if cfg flag) -> reverse via Gibbs -> remove pass.
-    Returns dense `(nr+1, nz)` `np.ndarray`. Bit-exact (<=1e-13) to the legacy
-    `legacy_io.ReadRate` pipeline.
-
-Implementation note: NumPy (not jax.numpy). Forward-rate evaluation runs once
-at startup; the inner chemistry RHS that runs every step uses k as a fixed
-input. Keeping this NumPy means we don't recompile when T changes (and gives
-us bit-exact agreement with VULCAN's `var.k`).
+Output is `k[nr+1, nz]` with 1-based reaction indexing. The 3-body [M]
+factor is applied in the chemistry RHS (depends on time-evolving sum(y)),
+not here. Implementation is pure NumPy: setup runs once, and keeping it
+out of JAX gives bit-exact agreement with VULCAN-master's `var.k`.
 """
 
 from __future__ import annotations
@@ -53,10 +26,8 @@ _RATES_ROOT = Path(__file__).resolve().parent
 
 _SPECIAL_OH_CH3 = "OH + CH3 + M -> CH3OH + M"
 
-# Low-T rate caps (mirrors `legacy_io.ReadRate.lim_lowT_rates`, lines 292-314,
-# itself transcribed from upstream `op.py:320-342`). Three hardcoded
-# reactions; the cap is applied to the post-Lindemann k_i below the
-# corresponding T threshold. Values are from Moses et al. 2005.
+# Three hardcoded low-T rate caps (Moses et al. 2005). Each is applied to
+# the post-Lindemann rate below the T threshold.
 _LOWT_CAP_RXN_CH3 = "H + CH3 + M -> CH4 + M"     # T <= 277.5 K, Lindemann form
 _LOWT_CAP_RXN_C2H4 = "H + C2H4 + M -> C2H5 + M"  # T <= 300 K, constant 3.7e-30
 _LOWT_CAP_RXN_C2H5 = "H + C2H5 + M -> C2H6 + M"  # T <= 200 K, constant 2.49e-27
@@ -68,25 +39,21 @@ def _arrhenius(a: float, n: float, E: float, T: np.ndarray) -> np.ndarray:
 
 
 def _troe_OH_CH3(T: np.ndarray, M: np.ndarray) -> np.ndarray:
-    """Hardcoded Troe form for the OH + CH3 + M -> CH3OH + M reaction.
+    """Hardcoded Troe form for `OH + CH3 + M -> CH3OH + M` (Jasper 2017).
 
-    Mirrors `op.py:200-207` exactly. Returns k array shape [nz] in cm^3/s.
+    Returns k of shape [nz] in cm^3/s.
     """
-    # k_0: sum of two modified-Arrhenius terms
     k0 = (
         1.932e3 * T**-9.88 * np.exp(-7544.0 / T)
         + 5.109e-11 * T**-6.25 * np.exp(-1433.0 / T)
     )
-    # k_inf: single modified-Arrhenius
     kinf = 1.031e-10 * T**-0.018 * np.exp(16.74 / T)
-    # Troe broadening factor
     Fc = (
         0.1855 * np.exp(-T / 155.8)
         + 0.8145 * np.exp(-T / 1675.0)
         + np.exp(-4531.0 / T)
     )
     nn = 0.75 - 1.27 * np.log(Fc)
-    # Pressure-dependent broadening (Jasper 2017)
     ff = np.exp(np.log(Fc) / (1.0 + (np.log(k0 * M / kinf) / nn) ** 2))
     return k0 / (1.0 + k0 * M / kinf) * ff
 
@@ -135,36 +102,28 @@ def compute_forward_k(net: Network, T: np.ndarray, M: np.ndarray) -> np.ndarray:
     for i in range(1, nr + 1, 2):
         if not is_forward[i]:
             continue
-        # Photo / ion / condensation / radiative-recomb: rate filled at runtime.
         if is_photo[i] or is_ion[i] or is_conden[i] or is_radiative[i]:
             continue
 
         if is_special[i]:
             if net.Rf.get(i, "").strip() == _SPECIAL_OH_CH3:
                 k[i] = _troe_OH_CH3(T, M)
-            else:
-                # Unknown special reaction: fall back to Arrhenius if A>0 else zero.
-                if a[i] != 0.0:
-                    k[i] = _arrhenius(a[i], n[i], E[i], T)
+            elif a[i] != 0.0:
+                k[i] = _arrhenius(a[i], n[i], E[i], T)
             continue
 
         if has_kinf[i]:
-            # Lindemann-Hinshelwood falloff
             k0 = _arrhenius(a[i], n[i], E[i], T)
             kinf = _arrhenius(a_inf[i], n_inf[i], E_inf[i], T)
             k[i] = k0 / (1.0 + k0 * M / kinf)
         else:
-            # Two-body or 3-body w/o k_inf
             k[i] = _arrhenius(a[i], n[i], E[i], T)
 
     return k
 
 
 def k_dict_from_array(net: Network, k_arr: np.ndarray) -> dict:
-    """Convert k array shape (nr+1, nz) into VULCAN-style dict `{i: array(nz)}`.
-
-    Useful for comparing against VULCAN's `var.k` dict. Skips index 0 (unused).
-    """
+    """Convert (nr+1, nz) into a `{i: array(nz)}` dict; skips index 0."""
     out: dict = {}
     for i in range(1, net.nr + 1):
         out[i] = np.asarray(k_arr[i]).copy()
@@ -181,7 +140,7 @@ def k_array_from_dict(net: Network, k_dict: dict, nz: int) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Phase 22a: low-T caps + remove_list + end-to-end build
+# Low-T caps + remove_list + end-to-end build
 # ---------------------------------------------------------------------------
 
 def apply_lowT_caps(
@@ -295,7 +254,7 @@ def build_rate_array(cfg, net: Network, atm, nasa9_coeffs: np.ndarray) -> np.nda
 
 
 # ---------------------------------------------------------------------------
-# Phase 22c convenience: one-shot rate setup helpers for tests + production.
+# Convenience: one-shot rate setup helpers for tests + production.
 # ---------------------------------------------------------------------------
 
 def setup_var_k(cfg, var, atm) -> Network:
@@ -324,5 +283,5 @@ def apply_photo_remove(cfg, var, network: Network, atm) -> None:
     `var.k_arr` rows for photodissociation slots, apply `cfg.remove_list`
     on the dense array.
     """
-    del atm  # unused after Phase 22d (no shape inference needed)
+    del atm  # accepted for legacy call-shape compatibility; unused
     var.k_arr = apply_remove_list(network, var.k_arr, cfg.remove_list)

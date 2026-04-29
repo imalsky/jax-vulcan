@@ -1,16 +1,4 @@
-"""Photochemistry helpers wrapping VULCAN-JAX's pure-JAX `photo.py` kernels.
-
-`Ros2JAX` no longer subclasses `op.Ros2`. It exists purely as the photo
-adapter: when `vulcan_jax.py`'s pre-loop setup or `outer_loop.OuterLoop`'s
-between-step orchestration needs `compute_tau` / `compute_flux` / `compute_J`,
-those calls dispatch through this class's instance methods so the JAX kernels
-get the lazy-initialised `PhotoData` / `PhotoJData` snapshots.
-
-Phase 10.1 cleanup: removed all step-control overrides (`clip`, `loss`,
-`step_ok`, `step_reject`, `reset_y`, `step_size`), the `solver` / `solver_fix_all_bot`
-hot path, and the `op.Ros2` inheritance. The numerics those methods carried
-all live in `outer_loop.py` now as pure-JAX equivalents.
-"""
+"""Photochemistry adapter: lazy `PhotoStaticInputs` cache + JAX kernel dispatch."""
 
 from __future__ import annotations
 
@@ -19,7 +7,7 @@ import jax
 import jax.numpy as jnp
 
 import vulcan_cfg
-from chem_funs import ni as _ni, nr as _nr  # noqa: F401  (re-exported for back-compat)
+from chem_funs import ni as _ni, nr as _nr  # noqa: F401
 
 import network as _net_mod
 import photo as _photo_mod
@@ -28,23 +16,13 @@ import phy_const as _phy_const
 jax.config.update("jax_enable_x64", True)
 
 
-# Parse the network once.
 _NETWORK = _net_mod.parse_network(vulcan_cfg.network)
 
 
 class Ros2JAX:
-    """Photo wrapper. Holds lazily-built `PhotoData` / `PhotoJData` caches
-    and forwards `compute_tau` / `compute_flux` / `compute_J` to JAX kernels.
-    """
+    """Photo wrapper holding lazy PhotoData/PhotoJData caches."""
 
     def __init__(self, photo_static=None):
-        # `photo_static` is the dense `PhotoStaticInputs` pytree from
-        # `photo_setup.populate_photo` / `build_photo_static`. When set,
-        # the per-call lazy builders below derive `PhotoData` /
-        # `PhotoJData` from it. When None, the lazy builders construct
-        # the static themselves from `(var, atm)` on first call so test
-        # call sites that do `Ros2JAX()` then `compute_tau(var, atm)`
-        # keep working post-Phase-22e (the legacy dict surface is gone).
         self._photo_static = photo_static
         self._photo_data = None
         self._photo_J_data = None
@@ -60,11 +38,8 @@ class Ros2JAX:
             )
         return self._photo_static
 
-    # ------------------------------------------------------------------
-    # Photochemistry: pure-JAX kernels with NumPy boundaries.
-    # ------------------------------------------------------------------
     def compute_tau(self, var, atm):
-        """Optical depth via JAX. Mirrors op.compute_tau (op.py:2583-2603)."""
+        """Compute optical depth and write to `var.tau`."""
         if self._photo_data is None:
             static = self._ensure_photo_static(var, atm)
             self._photo_data = _photo_mod.photo_data_from_static(
@@ -78,10 +53,7 @@ class Ros2JAX:
         var.tau = np.asarray(tau_j, dtype=np.float64)
 
     def compute_flux(self, var, atm):
-        """Two-stream Eddington RT via JAX. Mirrors op.compute_flux
-        (op.py:2606-2742). Bit-equivalent to the upstream NumPy impl when
-        `var.dflux_u` carries the prior call's value (matches op.py:2694).
-        """
+        """Two-stream Eddington RT. Reads var.dflux_u from prior call."""
         static = self._ensure_photo_static(var, atm)
         ag0 = float(_phy_const.ag0)
         aflux_j, sflux_j, dfd_j, dfu_j = _photo_mod.compute_flux_jax(
@@ -102,7 +74,6 @@ class Ros2JAX:
         var.sflux = np.asarray(sflux_j, dtype=np.float64)
         var.dflux_d = np.asarray(dfd_j, dtype=np.float64)
         var.dflux_u = np.asarray(dfu_j, dtype=np.float64)
-        # aflux_change matches op.py:2740 (suppress NaN when all aflux==0).
         mask = var.aflux > vulcan_cfg.flux_atol
         if np.any(mask):
             with np.errstate(invalid="ignore"):
@@ -113,14 +84,7 @@ class Ros2JAX:
             var.aflux_change = 0.0
 
     def compute_J(self, var, atm):
-        """Wavelength-integrated photolysis rates per (species, branch) via JAX.
-
-        Mirrors op.compute_J (op.py:2754-2790): populates var.J_sp dict and
-        writes per-(species, branch) J-rates into var.k_arr at the appropriate
-        reaction indices. Phase 22d: writes to dense `var.k_arr` directly;
-        the legacy dict mirror is rebuilt by `rates.apply_photo_remove` at
-        the end of the photo block.
-        """
+        """Photolysis rates per (species, branch). Writes to var.J_sp + var.k_arr."""
         if self._photo_J_data is None:
             static = self._ensure_photo_static(var, atm)
             self._photo_J_data = _photo_mod.photo_J_data_from_static(static)
@@ -142,7 +106,7 @@ class Ros2JAX:
                 var.k_arr[ridx, :] = var.J_sp[(sp, nbr)] * vulcan_cfg.f_diurnal
 
     def compute_Jion(self, var, atm):
-        """Photo-ionisation rate via JAX. Mirrors op.compute_Jion."""
+        """Photo-ionisation rates per (species, branch). Writes to var.Jion_sp + var.k_arr."""
         if self._photo_ion_data is None:
             static = self._ensure_photo_static(var, atm)
             self._photo_ion_data = _photo_mod.photo_ion_data_from_static(static)
@@ -164,12 +128,6 @@ class Ros2JAX:
                 var.k_arr[ridx, :] = var.Jion_sp[(sp, nbr)] * vulcan_cfg.f_diurnal
 
     def naming_solver(self, para):
-        """Compatibility shim. VULCAN-JAX targets only Ros2; the solver
-        dispatch happens at compile time inside `outer_loop.OuterLoop`, so
-        this is a print-only courtesy. Phase 10.6 added in-body support
-        for `use_fix_all_bot` and ion charge balance, so all the
-        remaining op.Ros2 BC variants are covered.
-        """
         if vulcan_cfg.use_moldiff:
             print("Include molecular diffusion.")
         else:

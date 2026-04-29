@@ -1,15 +1,19 @@
-"""HD209-config oracle: 20-step Ros2 comparison vs VULCAN-master.
+"""Per-config 20-step Ros2 oracle vs VULCAN-master.
 
-Runs the vendored ``cfg_examples/vulcan_cfg_HD209.py`` end-to-end (atm +
+Runs each vendored ``cfg_examples/vulcan_cfg_<NAME>.py`` end-to-end (atm +
 rates + photo + ini_abun + 20 Ros2 steps) on both VULCAN-master and
 VULCAN-JAX, then compares the post-step ``y`` / ``ymix`` / ``t`` / ``dt``
 arrays at each layer x species. Captures a baseline npz under
 ``tests/data/oracle_baselines/`` so future runs without master can still
 validate against the captured state.
 
-HD209 is similar to HD189 (``ini_mix='EQ'``, no condensation) but uses
-the ``NCHO_photo_network.txt`` (no S species) and a different planetary
-atmosphere file with weaker gravity (936 cm/s^2 vs HD189's 2140).
+Parametrized over three configs that exercise paths HD189 doesn't:
+- **Earth** — ``use_condense=True`` with ``T_cross_sp=['CO2','H2O','NH3']``
+  and ``ini_mix='const_mix'``.
+- **HD209** — ``ini_mix='EQ'``, no condensation, ``NCHO_photo_network.txt``
+  (no S species), weaker gravity (936 cm/s^2 vs HD189's 2140).
+- **Jupiter** — ``ini_mix='EQ'``, ``use_photo=True``, low-T rate caps
+  active, condensation on (H2O, NH3).
 
 Skips cleanly when:
 - ``../VULCAN-master/`` is absent AND no baseline npz is on disk.
@@ -33,26 +37,28 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 VULCAN_MASTER = ROOT.parent / "VULCAN-master"
-CFG_NAME = "HD209"
-CFG_FILE = ROOT / "cfg_examples" / f"vulcan_cfg_{CFG_NAME}.py"
 BASELINE_DIR = ROOT / "tests" / "data" / "oracle_baselines"
-BASELINE_FILE = BASELINE_DIR / f"{CFG_NAME.lower()}_20step.npz"
 
 # 20 matched Ros2 steps. Loose enough to absorb the documented chem_rhs
 # cancellation floor (~1e-4 absolute on a few species per CLAUDE.md);
-# tighter than 1e-9 on HD209's smooth atmosphere would be surprising
+# tighter than 1e-9 on smooth pre-condensation phases would be surprising
 # and worth investigating.
 COUNT_MAX = 20
 
-# Master-vs-JAX comparison: 3e-9 absorbs the chem_rhs cancellation floor.
-# Empirically HD209's 20-step run lands at ~1.7e-9 (vs HD189's 50-step
-# 1.59e-10 baseline in CLAUDE.md): early-step relerr is dominated by the
-# per-term ulp drift in chem_rhs documented in CLAUDE.md "Numerical
-# hygiene" — closing it requires SymPy-faithful codegen which is WONTFIX.
-RELERR_VS_MASTER = 3e-9
 # Baseline-vs-JAX comparison: both runs are JAX, so the only drift is
 # JIT compile order; bit-exact within float64 ULP.
 RELERR_VS_BASELINE = 1e-12
+
+# Per-config master-vs-JAX tolerance. Empirically HD209's 20-step run lands
+# at ~1.7e-9 (vs HD189's 50-step 1.59e-10 baseline in CLAUDE.md): early-step
+# relerr is dominated by the per-term ulp drift in chem_rhs documented in
+# CLAUDE.md "Numerical hygiene" — closing it requires SymPy-faithful codegen
+# which is WONTFIX. Earth and Jupiter remain at 1e-9.
+ORACLE_CONFIGS = [
+    pytest.param("Earth", 1e-9, id="Earth"),
+    pytest.param("HD209", 3e-9, id="HD209"),
+    pytest.param("Jupiter", 1e-9, id="Jupiter"),
+]
 
 
 # Defaults the vendored cfgs lack but VULCAN-master's runtime needs (gated
@@ -263,7 +269,7 @@ from atm_setup import Atm
 from ini_abun import InitialAbun
 import op_jax
 import outer_loop
-import store
+from state import _Variables, _AtmData, _Parameters
 
 # Sync vulcan_cfg references — outer_loop / legacy_io captured the module
 # at their own import time; rebind so our cfg overrides land on the
@@ -273,9 +279,9 @@ outer_loop.vulcan_cfg = cfg
 
 import rates as _rates_mod
 
-data_var = store.Variables()
-data_atm = store.AtmData()
-data_para = store.Parameters()
+data_var = _Variables()
+data_atm = _AtmData()
+data_para = _Parameters()
 data_para.start_time = time.time()
 make_atm = Atm()
 output = op.Output()
@@ -454,16 +460,15 @@ def _run_master_subprocess(
         _restore_master(backup_dir)
 
 
-def _save_baseline(jax_npz: Path) -> None:
-    """Persist the JAX-final state under
-    ``tests/data/oracle_baselines/<config>_20step.npz`` for future
+def _save_baseline(jax_npz: Path, baseline_file: Path) -> None:
+    """Persist the JAX-final state to ``baseline_file`` for future
     standalone validation. Stored under both descriptive (`*_final`) and
     short keys so the comparator can read either form.
     """
     BASELINE_DIR.mkdir(parents=True, exist_ok=True)
     jax_d = np.load(jax_npz, allow_pickle=True)
     np.savez_compressed(
-        BASELINE_FILE,
+        baseline_file,
         ymix_final=jax_d["ymix"],
         y_final=jax_d["y"],
         t_final=jax_d["t"],
@@ -528,7 +533,6 @@ def _compare_states(ref_npz: Path, jax_npz: Path) -> dict:
     dt_relerr = abs(float(ref_d["dt"]) - float(jax_d["dt"])) / max(
         abs(float(ref_d["dt"])), 1e-30,
     )
-
     return {
         "status": "ok",
         "max_relerr_y": relerr_y,
@@ -540,26 +544,31 @@ def _compare_states(ref_npz: Path, jax_npz: Path) -> dict:
     }
 
 
-def test_oracle_hd209() -> None:
-    """HD209-config 20-step Ros2 oracle. See module docstring for skips."""
-    if not CFG_FILE.exists():
-        pytest.skip(f"Vendored cfg {CFG_FILE} not present.")
+@pytest.mark.master_serial
+@pytest.mark.parametrize("cfg_name,relerr_vs_master", ORACLE_CONFIGS)
+def test_oracle(cfg_name: str, relerr_vs_master: float) -> None:
+    """Per-config 20-step Ros2 oracle. See module docstring for skips."""
+    cfg_file = ROOT / "cfg_examples" / f"vulcan_cfg_{cfg_name}.py"
+    baseline_file = BASELINE_DIR / f"{cfg_name.lower()}_20step.npz"
 
-    missing_jax = _check_inputs_present(CFG_FILE, ROOT)
+    if not cfg_file.exists():
+        pytest.skip(f"Vendored cfg {cfg_file} not present.")
+
+    missing_jax = _check_inputs_present(cfg_file, ROOT)
     if missing_jax is not None:
         pytest.skip(f"Required input file {missing_jax} not found in VULCAN-JAX.")
 
     have_master = VULCAN_MASTER.is_dir()
-    have_baseline = BASELINE_FILE.exists()
+    have_baseline = baseline_file.exists()
     if not have_master and not have_baseline:
         pytest.skip(
             f"VULCAN-master sibling not present at {VULCAN_MASTER} and no "
-            f"baseline at {BASELINE_FILE}; oracle skipped (VULCAN-JAX is "
+            f"baseline at {baseline_file}; oracle skipped (VULCAN-JAX is "
             "standalone)."
         )
 
     BASELINE_DIR.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=f"oracle_{CFG_NAME.lower()}_") as tmp:
+    with tempfile.TemporaryDirectory(prefix=f"oracle_{cfg_name.lower()}_") as tmp:
         tmp_p = Path(tmp)
         master_npz = tmp_p / "master_state.npz"
         jax_npz = tmp_p / "jax_state.npz"
@@ -569,7 +578,7 @@ def test_oracle_hd209() -> None:
         t0 = time.time()
         res_j = _run_subprocess(
             _JAX_SCRIPT,
-            [str(ROOT), str(jax_npz), str(CFG_FILE), str(COUNT_MAX)],
+            [str(ROOT), str(jax_npz), str(cfg_file), str(COUNT_MAX)],
             timeout=600.0,
         )
         jax_wall = time.time() - t0
@@ -581,13 +590,13 @@ def test_oracle_hd209() -> None:
         )
         assert "JAX_OK" in res_j.stdout, "JAX subprocess did not print JAX_OK"
         assert jax_npz.exists(), f"JAX did not produce {jax_npz}"
-        print(f"[{CFG_NAME}] JAX wall={jax_wall:.1f}s")
+        print(f"[{cfg_name}] JAX wall={jax_wall:.1f}s")
 
         # 2. Try master. If it succeeds, use it as the oracle. Otherwise
         # fall back to the on-disk baseline (or write one from JAX).
         master_status: dict = {"ran": False}
         if have_master:
-            missing_master = _check_inputs_present(CFG_FILE, VULCAN_MASTER)
+            missing_master = _check_inputs_present(cfg_file, VULCAN_MASTER)
             if missing_master is not None:
                 master_status = {
                     "ran": False,
@@ -598,7 +607,7 @@ def test_oracle_hd209() -> None:
             else:
                 t0 = time.time()
                 master_status = _run_master_subprocess(
-                    CFG_FILE, master_npz, backup_dir,
+                    cfg_file, master_npz, backup_dir,
                 )
                 master_status["wall"] = time.time() - t0
 
@@ -611,23 +620,23 @@ def test_oracle_hd209() -> None:
         if master_ok:
             cmp = _compare_states(master_npz, jax_npz)
             ref_label = "master"
-            threshold = RELERR_VS_MASTER
+            threshold = relerr_vs_master
         elif have_baseline:
-            cmp = _compare_states(BASELINE_FILE, jax_npz)
+            cmp = _compare_states(baseline_file, jax_npz)
             ref_label = "baseline"
             threshold = RELERR_VS_BASELINE
         else:
             # No ref available: write JAX as the new baseline so future
             # runs have something. Skip with master error inlined.
-            _save_baseline(jax_npz)
+            _save_baseline(jax_npz, baseline_file)
             stdout = master_status.get("stdout", "")
             stderr = master_status.get("stderr", "")
             skip_reason = master_status.get("skip_reason", "")
             pytest.skip(
-                f"VULCAN-master could not validate {CFG_NAME} "
+                f"VULCAN-master could not validate {cfg_name} "
                 f"(rc={master_status.get('rc')!r}, "
                 f"skip_reason={skip_reason!r}). Captured baseline at "
-                f"{BASELINE_FILE} from JAX run for future regression "
+                f"{baseline_file} from JAX run for future regression "
                 f"comparisons.\n--- master stdout ---\n{stdout}\n"
                 f"--- master stderr ---\n{stderr}"
             )
@@ -645,7 +654,7 @@ def test_oracle_hd209() -> None:
         )
         master_wall = float(master_status.get("wall", 0.0)) if master_ok else 0.0
         print(
-            f"[{CFG_NAME}] ref={ref_label} count_ref={cmp['count_ref']} "
+            f"[{cfg_name}] ref={ref_label} count_ref={cmp['count_ref']} "
             f"count_jax={cmp['count_jax']} master_wall={master_wall:.1f}s "
             f"max_relerr y={cmp['max_relerr_y']:.3e} "
             f"ymix={cmp['max_relerr_ymix']:.3e} "
@@ -657,7 +666,7 @@ def test_oracle_hd209() -> None:
             f"jax={cmp['count_jax']}"
         )
         assert max_relerr <= threshold, (
-            f"{CFG_NAME} oracle: max relerr {max_relerr:.3e} > "
+            f"{cfg_name} oracle: max relerr {max_relerr:.3e} > "
             f"{threshold:.3e} vs {ref_label}: "
             f"y={cmp['max_relerr_y']:.3e} ymix={cmp['max_relerr_ymix']:.3e} "
             f"t={cmp['t_relerr']:.3e} dt={cmp['dt_relerr']:.3e}"
@@ -667,8 +676,4 @@ def test_oracle_hd209() -> None:
         # missing — preserves any earlier-captured baseline that has
         # already been peer-reviewed.
         if master_ok and not have_baseline:
-            _save_baseline(jax_npz)
-
-
-if __name__ == "__main__":
-    test_oracle_hd209()
+            _save_baseline(jax_npz, baseline_file)

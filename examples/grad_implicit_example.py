@@ -49,9 +49,6 @@ def main() -> int:
     vulcan_cfg.use_live_plot = False
     vulcan_cfg.use_live_flux = False
 
-    import store
-    from atm_setup import Atm
-    from ini_abun import InitialAbun
     import legacy_io as op
     import op_jax
     import outer_loop
@@ -62,42 +59,27 @@ def main() -> int:
         differentiable_steady_state,
         steady_state_residual,
     )
+    # Full pre-loop pipeline + RunState-driven runner.
+    from state import RunState, legacy_view
 
     print("Building HD189 atmosphere + running forward integration...")
     t0 = time.time()
-    data_var = store.Variables()
-    data_atm = store.AtmData()
-    data_para = store.Parameters()
+    runstate = RunState.with_pre_loop_setup(vulcan_cfg)
+    data_var, data_atm, data_para = legacy_view(runstate)
     data_para.start_time = t0
-    make_atm = Atm()
     output = op.Output()
 
-    data_atm = make_atm.f_pico(data_atm)
-    data_atm = make_atm.load_TPK(data_atm)
-    rate = op.ReadRate()
-    data_var = rate.read_rate(data_var, data_atm)
-    import rates as _rates_mod
-    import photo_setup as _photo_setup
-    _network = _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
-    ini_abun = InitialAbun()
-    data_var = ini_abun.ini_y(data_var, data_atm)
-    data_var = ini_abun.ele_sum(data_var)
-    data_atm = make_atm.f_mu_dz(data_var, data_atm, output)
-    make_atm.mol_diff(data_atm)
-    make_atm.BC_flux(data_atm)
-
     solver = op_jax.Ros2JAX()
-    if vulcan_cfg.use_photo:
-        _photo_setup.populate_photo_arrays(data_var, data_atm)
-        make_atm.read_sflux(data_var, data_atm)
-        solver.compute_tau(data_var, data_atm)
-        solver.compute_flux(data_var, data_atm)
-        solver.compute_J(data_var, data_atm)
-        _rates_mod.apply_photo_remove(vulcan_cfg, data_var, _network, data_atm)
+    if runstate.photo_static is not None:
+        solver._photo_static = runstate.photo_static
 
     integ = outer_loop.OuterLoop(solver, output)
     solver.naming_solver(data_para)
-    integ(data_var, data_atm, data_para, make_atm)
+    runstate = integ(runstate)
+    # Materialise the converged runstate back into the legacy_view shim
+    # for the downstream `data_var.y` / `data_para.count` reads below.
+    data_var, data_atm, data_para = legacy_view(runstate)
+    data_para.start_time = t0
     print(f"Forward integration done in {time.time() - t0:.1f}s "
           f"({data_para.count} steps)")
 
@@ -108,7 +90,7 @@ def main() -> int:
     nz = data_atm.Tco.shape[0]
     ni = network.ni
 
-    # Phase 22d: dense `var.k_arr` is the source of truth.
+    # The dense `var.k_arr` is the source of truth.
     k_arr = jnp.asarray(np.asarray(data_var.k_arr, dtype=np.float64))
 
     atm_static = make_atm_static(data_atm, ni, nz)

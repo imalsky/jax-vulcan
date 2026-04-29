@@ -1,49 +1,30 @@
-"""Pure-JAX outer-integration loop (Phases 10.1 → 10.6, complete).
+"""Pure-JAX outer integration loop.
 
-Replaces `op.Integration.__call__` (`VULCAN-master/op.py:783-936`) with a
-single JIT'd `jax.lax.while_loop`. After Phase 10.6, `OuterLoop` is a
-standalone class — no `op.Integration` parent — and the per-step path is
-fully JAX with no NumPy hot-path code.
+`OuterLoop` runs the entire VULCAN integration as a single JIT'd
+`jax.lax.while_loop`. The per-step kernel (chemistry RHS, analytical
+Jacobian, diffusion, block-tridiagonal solver) is composed with the
+photochemistry update, atmosphere refresh, condensation, ion charge
+balance, fix-all-bot bottom clamp, adaptive rtol, photo-frequency
+ini→final switch, and ring-buffered convergence check — all inside the
+JIT'd body. There is no Python while-loop and no NumPy on the hot path.
 
-Per-phase scope (cumulative):
-
-- **10.1**: inner accept/reject retries via `jax.lax.while_loop`; pure-JAX
-  ports of `clip` / `loss` / `step_ok` / `step_size`. Drops the
-  `op.Ros2` subclass relationship.
-- **10.2**: `compute_tau` / `compute_flux` / `compute_J` and the `var.k`
-  rewrite move into the body via a `lax.cond`-gated photo branch. Photo
-  state (`tau`, `aflux`, `dflux_u`, `k_arr`, ...) lives in the
-  `JaxIntegState` carry on device.
-- **10.3**: `update_mu_dz` (mu / g / Hp / dz / dzi / Hpi / zco) and
-  `update_phi_esc` (diffusion-limited escape flux) move into the body via
-  a second `lax.cond` on `do_atm_refresh`. Hydrostatic balance
-  (`y = n_0 * ymix`, `op.py:908-914`) runs every accepted step. Geometry
-  fields are spliced into `AtmStatic` per body iteration.
-- **10.4**: `op.conden` plus the optional `op.h2o_conden_evap_relax` /
-  `op.nh3_conden_evap_relax` cold-trap relaxers move into the body via
-  `conden.update_conden_rates` / `apply_h2o_relax_jax` /
-  `apply_nh3_relax_jax`, gated on `do_accept & t >= start_conden_time`.
-- **10.5**: convergence + stop check move into `cond_fn`. y_time / t_time
-  history rides as a `(conv_step, nz, ni)` ring buffer in the carry;
-  adaptive rtol and the photo-frequency ini→final switch move into the
-  body. The runner is one-shot per integration — no Python while-loop.
-- **10.6**: ion charge balance (post-step `e[:] = -dot(y, charge_arr)`)
-  and `use_fix_all_bot` (post-step bottom-row clamp to chemical-EQ
-  mixing ratios) move into the body, gated by Python bools at trace
-  time. `op.Integration` parent is dropped — `OuterLoop` is now a
-  standalone class with `__init__` / `__call__` and an inline `f_dy`.
+Carry state (`JaxIntegState`) holds the proposed and last-accepted
+mixing ratios, photo state (tau / aflux / J-rate tables), atmosphere
+geometry (mu / g / Hp / dz / dzi / Hpi / zco), per-step counters, the
+post-condensation fixed-species mask, and a ring buffer of recent
+(y, t) pairs for the `longdy` / `longdydt` convergence check.
 
 Numerical contract:
-    The JAX runner is mathematically identical to one iteration of
-    `op.Ros2.one_step` followed by `op.Ros2.step_size` — same accept/reject
+    The JAX runner is mathematically identical to VULCAN-master's
+    `op.Ros2.one_step` + `op.Ros2.step_size` — same accept/reject
     decision, same dt update formula, same forced-accept fallback when
-    `dt < dt_min`. The photo branch is bit-equivalent to the Python
-    `Ros2JAX.compute_{tau,flux,J}` calls it replaces (same JAX kernels,
-    no Python boundary).
+    `dt < dt_min`. The photo branch is bit-equivalent to the standalone
+    `Ros2JAX.compute_{tau,flux,J}` kernels.
 """
 
 from __future__ import annotations
 
+import time
 from typing import NamedTuple, Optional
 
 import numpy as np
@@ -58,8 +39,13 @@ import chem as _chem_mod
 import photo as _photo_mod
 import atm_refresh as _atm_refresh_mod
 import conden as _conden_mod
+import state as _state_mod
 from jax_step import AtmStatic, jax_ros2_step, make_atm_static
 from runtime_validation import validate_runtime_config
+
+
+def _now() -> float:
+    return time.time()
 
 jax.config.update("jax_enable_x64", True)
 
@@ -96,7 +82,7 @@ class JaxIntegState(NamedTuple):
     small_y:     jnp.ndarray   # ()              cumulative |y| of clipped-small cells
     nega_y:      jnp.ndarray   # ()              cumulative |y| of clipped-negative cells
 
-    # Phase 10.2: photo state (lives in device memory between batches).
+    # Photo state (lives in device memory between batches).
     # All zeros / unused when use_photo=False.
     k_arr:        jnp.ndarray  # (nr+1, nz)     reaction-rate table (was a Python dict)
     tau:          jnp.ndarray  # (nz+1, nbin)   optical depth
@@ -110,10 +96,10 @@ class JaxIntegState(NamedTuple):
     J_br_T:       jnp.ndarray  # (n_br_T, nz)   per-branch J-rate (T-dep)
     Jion_br:      jnp.ndarray  # (n_ion_br, nz) per-branch J-rate (ion)
 
-    # Phase 10.3: atmosphere geometry (refreshed every `update_frq` accepted
-    # steps via `lax.cond(do_atm_refresh, atm_refresh_branch, ...)`).
-    # `g`, `dzi`, `Hpi` are spliced into the static `AtmStatic` per body
-    # iteration so `jax_ros2_step` sees the freshest diffusion coefficients.
+    # Atmosphere geometry — refreshed every `update_frq` accepted steps via
+    # `lax.cond(do_atm_refresh, atm_refresh_branch, ...)`. `g`, `dzi`, `Hpi`
+    # are spliced into the static `AtmStatic` per body iteration so
+    # `jax_ros2_step` sees the freshest diffusion coefficients.
     g:            jnp.ndarray  # (nz,)          gravity
     mu:           jnp.ndarray  # (nz,)          mean molar mass (g/mol)
     Hp:           jnp.ndarray  # (nz,)          pressure scale height
@@ -124,13 +110,12 @@ class JaxIntegState(NamedTuple):
     top_flux:     jnp.ndarray  # (ni,)          diffusion-limited escape flux at TOA
     vs:           jnp.ndarray  # (nz-1, ni)     settling velocity (zeroed post-condense fix)
 
-    # Phase 10.5: convergence + step-history carry. The body appends the
-    # post-accept (y, t) into the ring at index `accept_count % conv_step`
-    # and `cond_fn` reads `longdy` / `longdydt` to terminate. `rtol` and
-    # `loss_criteria` move into the carry so adaptive-rtol updates
-    # (`op.py:836-852`) can fire inside the body without retracing the
-    # runner. `update_photo_frq` and `is_final_photo_frq` carry the
-    # `op.py:819-823` ini→final switch.
+    # Convergence + step-history carry. The body appends the post-accept
+    # (y, t) into the ring at index `accept_count % conv_step` and `cond_fn`
+    # reads `longdy` / `longdydt` to terminate. `rtol` and `loss_criteria`
+    # ride in the carry so adaptive-rtol updates (`op.py:836-852`) can fire
+    # inside the body without retracing the runner. `update_photo_frq` and
+    # `is_final_photo_frq` carry the `op.py:819-823` ini→final switch.
     y_time_ring:        jnp.ndarray  # (conv_step, nz, ni) float64
     t_time_ring:        jnp.ndarray  # (conv_step,)        float64
     longdy:             jnp.ndarray  # ()                  float64
@@ -153,18 +138,18 @@ class JaxIntegState(NamedTuple):
     h2he_pinned:        jnp.ndarray   # ()  bool
     h2he_mix:           jnp.ndarray   # (2,) float64  [H2_mix, He_mix]
 
-    # Phase 15: save_evolution capture buffer. When save_evolution=False
-    # the buffers are length-1 placeholders that the body never writes.
+    # save_evolution capture buffer. When save_evolution=False the buffers
+    # are length-1 placeholders that the body never writes.
     y_evo:              jnp.ndarray   # (save_evo_n_max, nz, ni) float64
     t_evo:              jnp.ndarray   # (save_evo_n_max,)        float64
     evo_idx:            jnp.ndarray   # ()  int32  next slot to fill
 
-    # Phase 16: chunked-runner cap. The runner terminates a chunk when
+    # Chunked-runner cap. The runner terminates a chunk when
     # `accept_count >= chunk_target`. For single-shot runs we seed
     # `chunk_target = count_max + 1` so the cap never trips and the only
     # terminations are count_max / runtime / converged. The chunked driver
     # in `OuterLoop.run_chunk` updates this between chunks for periodic
-    # plot/print/movie callbacks.
+    # print-progress callbacks.
     chunk_target:       jnp.ndarray   # ()  int32
 
 
@@ -174,9 +159,9 @@ class JaxIntegState(NamedTuple):
 class _PhotoStatic(NamedTuple):
     """Per-run static inputs to the photo branch closure.
 
-    `dz`, `bins`, `sflux_top` are physically static at OuterLoop init; if any
-    of them ever change mid-run (e.g., atm refresh in Phase 10.3 mutates dz),
-    the runner cache must be invalidated and rebuilt.
+    `bins` and `sflux_top` are physically static at OuterLoop init. `dz` is
+    kept here only as the initial photo-grid value; the runner uses the dynamic
+    `JaxIntegState.dz` updated by the atmosphere-refresh branch.
     """
     photo_data:        _photo_mod.PhotoData     # absp / scat cross sections
     photo_J_data:      _photo_mod.PhotoJData    # J cross sections (passed for branch_keys)
@@ -273,7 +258,7 @@ def _make_aggregate_delta_fn(mtol: float, atol: float,
                              condense_zero_mask: jnp.ndarray):
     """Return a closure that computes the scalar `delta` from `delta_arr`.
 
-    Mirrors the post-processing in `op_jax.Ros2JAX.solver` (op_jax.py:373-401):
+    Mirrors the post-processing in upstream `op.Ros2.solver` (op.py:2951-2960):
         delta[ymix < mtol] = 0
         delta[sol < atol] = 0
         delta[bot row] = 0  if use_botflux or use_fix_sp_bot
@@ -281,13 +266,13 @@ def _make_aggregate_delta_fn(mtol: float, atol: float,
         delta_pos = delta[sol > 0] / sol[sol > 0]
         delta = max(delta_pos)
 
-    The fix_species mask is deferred to Phase 10.4; for HD189 it's all-False
-    and gets baked into `condense_zero_mask` here as zeros.
+    The fix_species mask flows in via `condense_zero_mask` (the conden branch
+    sets it for non-gas species; for HD189 it is all-False).
     """
     cond_zero = jnp.asarray(condense_zero_mask, dtype=jnp.bool_)
 
-    def agg(sol, delta_arr, ymix_new):
-        masked = jnp.where(ymix_new < mtol, 0.0, delta_arr)
+    def agg(sol, delta_arr, ymix_old):
+        masked = jnp.where(ymix_old < mtol, 0.0, delta_arr)
         masked = jnp.where(sol < atol, 0.0, masked)
         if zero_bot_row:
             row_zero = jnp.zeros_like(masked).at[0].set(1.0).astype(jnp.bool_)
@@ -327,7 +312,6 @@ def _make_photo_branch(photo_static: _PhotoStatic):
     ion_branch_active = photo_static.ion_branch_active
     bins = photo_static.bins
     sflux_top = photo_static.sflux_top
-    dz = photo_static.dz
     din12_indx = photo_static.din12_indx
     dbin1 = photo_static.dbin1
     dbin2 = photo_static.dbin2
@@ -341,7 +325,7 @@ def _make_photo_branch(photo_static: _PhotoStatic):
 
     def photo_branch(s: JaxIntegState) -> JaxIntegState:
         # Optical depth (mirrors op.compute_tau via op_jax.Ros2JAX.compute_tau).
-        tau_new = _photo_mod.compute_tau_jax(s.y, dz, photo_data)
+        tau_new = _photo_mod.compute_tau_jax(s.y, s.dz, photo_data)
 
         # Two-stream RT. `s.dflux_u` is the prior call's value (matches
         # op.py:2694's dflux_u-as-it-stood-before-the-up-sweep).
@@ -412,7 +396,7 @@ def _make_photo_branch(photo_static: _PhotoStatic):
 
 
 # ---------------------------------------------------------------------------
-# Atm-refresh branch factory (Phase 10.3)
+# Atm-refresh branch factory
 # ---------------------------------------------------------------------------
 def _make_atm_refresh_branch(refresh_static: _atm_refresh_mod.AtmRefreshStatic):
     """Build a closure `atm_refresh(s) -> s_with_geom_updated`.
@@ -440,7 +424,7 @@ def _make_atm_refresh_branch(refresh_static: _atm_refresh_mod.AtmRefreshStatic):
 
 
 # ---------------------------------------------------------------------------
-# Conden branch factory (Phase 10.4)
+# Conden branch factory
 # ---------------------------------------------------------------------------
 def _make_conden_branch(conden_static: _conden_mod.CondenStatic):
     """Build a closure `conden_branch(s) -> s_with_k_and_y_updated`.
@@ -497,7 +481,7 @@ class _Statics(NamedTuple):
     dt_max:           float
     batch_max_retries:int           # safety cap on inner retries per accepted step
 
-    # Phase 10.5 convergence + termination
+    # Convergence + termination
     conv_step:               int           # ring buffer length (vulcan_cfg.conv_step)
     count_min:               int
     count_max:               int
@@ -514,8 +498,8 @@ class _Statics(NamedTuple):
     n_0:                     jnp.ndarray   # (nz,) — atm.n_0 for the (y - y_old)/n_0 ratio
     Kzz:                     jnp.ndarray   # (nz-1,) — for slope_min recomputation each step
 
-    # Phase 10.5 photo / adaptive-rtol cadence (statics; the dynamic part
-    # rides in the carry as s.update_photo_frq / s.rtol / s.loss_criteria).
+    # Photo / adaptive-rtol cadence (statics; the dynamic part rides in the
+    # carry as s.update_photo_frq / s.rtol / s.loss_criteria).
     use_photo:                bool
     use_atm_refresh:          bool
     use_conden:               bool
@@ -526,11 +510,20 @@ class _Statics(NamedTuple):
     rtol_min:                 float
     rtol_max:                 float
     initial_loss_criteria:    float
+    adapt_rtol_dec_period:     int
+    adapt_rtol_inc_period:     int
+    adapt_rtol_dec:           float
+    adapt_rtol_inc:           float
+    adapt_rtol_loss_mul:      float
+    adapt_rtol_inc_loss_thresh: float
+    photo_switch_longdy_thresh:   float
+    photo_switch_longdydt_thresh: float
+    hycean_pin_time:          float
 
-    # Phase 10.6 — ion charge balance + fix-all-bot post-step clamp.
-    # `use_ion` / `use_fix_all_bot` are Python bools so the body branches
-    # at trace time. When the corresponding feature is off, `charge_arr`
-    # / `bottom_n` are zero-filled placeholders that the body never reads.
+    # Ion charge balance + fix-all-bot post-step clamp. `use_ion` /
+    # `use_fix_all_bot` are Python bools so the body branches at trace time.
+    # When the corresponding feature is off, `charge_arr` / `bottom_n` are
+    # zero-filled placeholders that the body never reads.
     use_ion:                  bool
     e_idx:                    int           # species index of 'e' (0 if use_ion=False)
     charge_arr:               jnp.ndarray   # (ni,) — compo[i]['e'] over charge_list, 0 elsewhere
@@ -554,7 +547,7 @@ class _Statics(NamedTuple):
     fix_species_sat_mix:      jnp.ndarray   # (n_fix_species, nz)
     fix_species_wholecol:     jnp.ndarray   # (n_fix_species,) bool
 
-    # Phase 15: save_evolution time-series capture (op.py:save_step).
+    # save_evolution time-series capture (op.py:save_step).
     # When `save_evolution=True`, the body appends (y_next, t_next) to the
     # `y_evo` / `t_evo` buffers every `save_evo_frq` accepted steps, up to
     # `save_evo_n_max` total. _unpack_state then publishes the populated
@@ -598,7 +591,7 @@ def _make_runner(net, statics: _Statics,
       6. **ring-buffer append** (on accept; ring_idx = accept_count_next % conv_step)
       7. **conv** — recomputes longdy / longdydt against the ring (`op.conv`,
          op.py:1018-1066)
-      8. **adaptive rtol** (op.py:836-852, gated `accept_count_next % {10,1000} == 0`)
+      8. **adaptive rtol** (op.py:836-852, gated on the pre-save count)
       9. **photo-frequency switch** (op.py:819-823, when longdy/longdydt drop
          below the threshold)
 
@@ -651,6 +644,15 @@ def _make_runner(net, statics: _Statics,
     use_adapt_rtol = statics.use_adapt_rtol
     rtol_min = statics.rtol_min
     rtol_max = statics.rtol_max
+    adapt_rtol_dec_period = int(statics.adapt_rtol_dec_period)
+    adapt_rtol_inc_period = int(statics.adapt_rtol_inc_period)
+    adapt_rtol_dec = float(statics.adapt_rtol_dec)
+    adapt_rtol_inc = float(statics.adapt_rtol_inc)
+    adapt_rtol_loss_mul = float(statics.adapt_rtol_loss_mul)
+    adapt_rtol_inc_loss_thresh = float(statics.adapt_rtol_inc_loss_thresh)
+    photo_switch_longdy_thresh = float(statics.photo_switch_longdy_thresh)
+    photo_switch_longdydt_thresh = float(statics.photo_switch_longdydt_thresh)
+    hycean_pin_time = float(statics.hycean_pin_time)
     use_ion_static = statics.use_ion
     e_idx_static = statics.e_idx
     charge_arr_static = statics.charge_arr
@@ -779,7 +781,7 @@ def _make_runner(net, statics: _Statics,
         is_converged = is_converged & (s.aflux_change < jnp.float64(flux_cri))
 
         ready = (s.t > jnp.float64(trun_min)) & (s.accept_count > jnp.int32(count_min))
-        # Phase 16 chunk cap: if the chunked driver set `s.chunk_target` to
+        # Chunk cap: if the chunked driver set `s.chunk_target` to
         # `(start_count + chunk_size)`, terminate when we've accumulated
         # that many accepted steps. For single-shot runs the seed value
         # `count_max + 1` makes this branch dormant.
@@ -788,10 +790,10 @@ def _make_runner(net, statics: _Statics,
         return jnp.logical_not(terminate)
 
     def body_fn(s: JaxIntegState, atm_static_):
-        # Photo (Phase 10.2): gated `retry_count==0` so reject loops don't
-        # re-fire it, and `accept_count % update_photo_frq == 0` matches
-        # op.py:825's cadence. The carry holds the dynamic update_photo_frq
-        # so the ini→final switch (op.py:819-823) takes effect mid-run.
+        # Photo: gated `retry_count==0` so reject loops don't re-fire it, and
+        # `accept_count % update_photo_frq == 0` matches op.py:825's cadence.
+        # The carry holds the dynamic update_photo_frq so the ini→final
+        # switch (op.py:819-823) takes effect mid-run.
         if photo_branch is not None:
             photo_due = ((s.retry_count == jnp.int32(0))
                          & (jnp.mod(s.accept_count, s.update_photo_frq)
@@ -799,8 +801,8 @@ def _make_runner(net, statics: _Statics,
                          & jnp.bool_(use_photo_static))
             s = jax.lax.cond(photo_due, photo_branch, lambda ss: ss, s)
 
-        # Atm refresh (Phase 10.3): same retry_count==0 gate; cadence
-        # `update_frq` is static (op.py:904).
+        # Atm refresh: same retry_count==0 gate; cadence `update_frq`
+        # is static (op.py:904).
         if atm_refresh_branch is not None:
             refresh_due = ((s.retry_count == jnp.int32(0))
                            & (jnp.mod(s.accept_count, jnp.int32(update_frq))
@@ -826,7 +828,7 @@ def _make_runner(net, statics: _Statics,
         # Clip (op.py:2450-2473) + recompute ymix + atom_loss.
         sol_clip, ymix_new, small_y_inc, nega_y_inc = clip_fn(sol, s.ymix)
         atom_loss_new = _compute_atom_loss(sol_clip, compo_arr, atom_ini_arr)
-        delta = agg_delta_fn(sol_clip, delta_arr, ymix_new)
+        delta = agg_delta_fn(sol_clip, delta_arr, s.ymix)
 
         # step_ok criteria (op.py:2492-2496) — uses dynamic s.rtol so
         # adaptive-rtol updates take effect on the very next step.
@@ -853,18 +855,13 @@ def _make_runner(net, statics: _Statics,
         dt_used_for_t = jnp.where(force_accept, jnp.float64(dt_min), s.dt)
         t_next = jnp.where(do_accept, s.t + dt_used_for_t, s.t)
 
-        # dt for the next attempt — uses dynamic s.rtol (Phase 10.5).
-        dt_after_normal = _step_size(s.dt, delta, s.rtol,
-                                     dt_var_min, dt_var_max, dt_min, dt_max)
-        dt_after_force = _step_size(jnp.float64(dt_min), delta, s.rtol,
-                                    dt_var_min, dt_var_max, dt_min, dt_max)
-        dt_next = jnp.where(force_accept, dt_after_force,
-                            jnp.where(accept, dt_after_normal, next_dt_if_reject))
-
-        # Conden branch (Phase 10.4 — op.py:856-902).
+        # Conden branch (op.py:856-902). Master gates on entry-time `var.t`
+        # (save_step advances `var.t` AFTER conden runs), so use `s.t` here,
+        # not `t_next`. Otherwise conden fires one iteration earlier than
+        # master at the boundary step crossing `start_conden_time`.
         if conden_branch is not None:
             s_post = s._replace(y=sol_clip, ymix=ymix_new)
-            in_conden_window = t_next >= jnp.float64(start_conden_time)
+            in_conden_window = s.t >= jnp.float64(start_conden_time)
             fire_conden = (do_accept
                            & in_conden_window
                            & ~s.fix_species_started
@@ -876,7 +873,7 @@ def _make_runner(net, statics: _Statics,
                 trigger_fix = (do_accept
                                & ~s.fix_species_started
                                & in_conden_window
-                               & (t_next > jnp.float64(stop_conden_time))
+                               & (s.t > jnp.float64(stop_conden_time))
                                & jnp.bool_(use_conden_static))
                 s_post = jax.lax.cond(
                     trigger_fix, _activate_fix_species, lambda ss: ss, s_post,
@@ -909,7 +906,7 @@ def _make_runner(net, statics: _Statics,
         else:
             sol_balanced = sol_balanced_full
 
-        # Ion charge balance (Phase 10.6 — op.py:3001-3007). With charge_arr[i]
+        # Ion charge balance (op.py:3001-3007). With charge_arr[i]
         # = compo[i]['e'] for i in charge_list (and 0 for the 'e' column
         # itself), `e[:] = -dot(y, charge_arr)` enforces zero net charge per
         # layer. Static branch: skipped at trace time when use_ion=False so
@@ -918,7 +915,7 @@ def _make_runner(net, statics: _Statics,
             e_density = -jnp.einsum("zi,i->z", sol_balanced, charge_arr_static)
             sol_balanced = sol_balanced.at[:, e_idx_static].set(e_density)
 
-        # fix-all-bot post-step clamp (Phase 10.6 — op.py:3050-3051). Bottom
+        # fix-all-bot post-step clamp (op.py:3050-3051). Bottom
         # layer pinned to chemical-EQ mixing ratios captured at OuterLoop
         # init, multiplied by the static n_0[0]. Static branch.
         if use_fix_all_bot_static:
@@ -937,7 +934,7 @@ def _make_runner(net, statics: _Statics,
         # `accept` so rejected attempts don't spuriously fire the
         # snapshot, and on `~h2he_pinned` so it only fires once.
         if use_fix_H2He_static:
-            trip = accept & (~s.h2he_pinned) & (s.t > jnp.float64(1e6))
+            trip = accept & (~s.h2he_pinned) & (s.t > jnp.float64(hycean_pin_time))
             h2_mix_snap = jnp.where(trip, s.ymix[0, h2_idx_static], s.h2he_mix[0])
             he_mix_snap = jnp.where(trip, s.ymix[0, he_idx_static], s.h2he_mix[1])
             h2he_mix_next = jnp.stack([h2_mix_snap, he_mix_snap])
@@ -987,7 +984,7 @@ def _make_runner(net, statics: _Statics,
         y_time_ring_new = s.y_time_ring.at[ring_idx].set(y_next)
         t_time_ring_new = s.t_time_ring.at[ring_idx].set(t_next)
 
-        # Phase 15: save_evolution per-step capture. Append (y_next, t_next)
+        # save_evolution per-step capture. Append (y_next, t_next)
         # to (y_evo, t_evo) every save_evo_frq accepted steps until the
         # buffer is full. When save_evolution=False the closure-time gate
         # is False, so the body branch compiles out entirely.
@@ -1033,34 +1030,47 @@ def _make_runner(net, statics: _Statics,
         longdydt_next = jnp.where(do_accept, longdydt_new_val, s.longdydt)
 
         # Adaptive rtol (op.py:836-852). Only fires on accepted steps; the
-        # cadence gates use the post-accept count.
-        max_atom_loss = jnp.max(jnp.abs(atom_loss_next))
-        rtol_base = jnp.where(trigger_fix, jnp.float64(post_conden_rtol), s.rtol)
+        # cadence gates use the pre-save count (`para.count` before
+        # `save_step` increments it in upstream VULCAN). Period/multiplier
+        # constants come from vulcan_cfg.adapt_rtol_*.
+        max_atom_loss = jnp.max(jnp.abs(atom_loss_new))
         do_dec = (jnp.bool_(use_adapt_rtol)
                   & do_accept
-                  & ~trigger_fix
-                  & (jnp.mod(accept_count_next, jnp.int32(10)) == jnp.int32(0))
+                  & (jnp.mod(s.accept_count, jnp.int32(adapt_rtol_dec_period))
+                     == jnp.int32(0))
                   & (max_atom_loss >= s.loss_criteria))
-        rtol_dec = jnp.maximum(rtol_base * jnp.float64(0.75), jnp.float64(rtol_min))
-        loss_crit_dec = s.loss_criteria * jnp.float64(2.0)
-        rtol_after_dec = jnp.where(do_dec, rtol_dec, rtol_base)
+        rtol_dec = jnp.maximum(s.rtol * jnp.float64(adapt_rtol_dec),
+                               jnp.float64(rtol_min))
+        loss_crit_dec = s.loss_criteria * jnp.float64(adapt_rtol_loss_mul)
+        rtol_after_dec = jnp.where(do_dec, rtol_dec, s.rtol)
         loss_criteria_after_dec = jnp.where(do_dec, loss_crit_dec, s.loss_criteria)
 
         do_inc = (jnp.bool_(use_adapt_rtol)
                   & do_accept
-                  & ~trigger_fix
-                  & (jnp.mod(accept_count_next, jnp.int32(1000)) == jnp.int32(0))
-                  & (accept_count_next > jnp.int32(0))
-                  & (max_atom_loss < jnp.float64(2e-4)))
-        rtol_inc = jnp.minimum(rtol_after_dec * jnp.float64(1.25),
+                  & (jnp.mod(s.accept_count, jnp.int32(adapt_rtol_inc_period))
+                     == jnp.int32(0))
+                  & (s.accept_count > jnp.int32(0))
+                  & (max_atom_loss < jnp.float64(adapt_rtol_inc_loss_thresh)))
+        rtol_inc = jnp.minimum(rtol_after_dec * jnp.float64(adapt_rtol_inc),
                                jnp.float64(rtol_max))
-        rtol_next = jnp.where(do_inc, rtol_inc, rtol_after_dec)
+        rtol_adapt = jnp.where(do_inc, rtol_inc, rtol_after_dec)
+        rtol_next = jnp.where(trigger_fix, jnp.float64(post_conden_rtol), rtol_adapt)
 
-        # Photo-frequency ini→final switch (op.py:819-823).
+        # Step-size control runs after adaptive rtol and condensation in
+        # upstream VULCAN (op.py:836-923), so use the post-update tolerance.
+        dt_after_normal = _step_size(s.dt, delta, rtol_next,
+                                     dt_var_min, dt_var_max, dt_min, dt_max)
+        dt_after_force = _step_size(jnp.float64(dt_min), delta, rtol_next,
+                                    dt_var_min, dt_var_max, dt_min, dt_max)
+        dt_next = jnp.where(force_accept, dt_after_force,
+                            jnp.where(accept, dt_after_normal, next_dt_if_reject))
+
+        # Photo-frequency ini→final switch (op.py:819-823). Thresholds come
+        # from vulcan_cfg.photo_switch_*; defaults match master inline values.
         switch_to_final = (jnp.bool_(use_photo_static)
                            & ~s.is_final_photo_frq
-                           & (longdy_next < jnp.float64(yconv_min) * 10.0)
-                           & (longdydt_next < jnp.float64(1e-6)))
+                           & (longdy_next < jnp.float64(photo_switch_longdy_thresh))
+                           & (longdydt_next < jnp.float64(photo_switch_longdydt_thresh)))
         update_photo_frq_next = jnp.where(switch_to_final,
                                           jnp.int32(final_update_photo_frq),
                                           s.update_photo_frq)
@@ -1108,12 +1118,11 @@ def _make_runner(net, statics: _Statics,
 
     @jax.jit
     def runner(state: JaxIntegState, atm_static: AtmStatic):
-        # Phase 10.5: the runner is one-shot. cond_fn checks the full
-        # convergence + count_max + runtime termination criterion; body_fn
-        # gates photo / atm_refresh / conden / adaptive rtol / photo-freq
-        # switch internally. No per-batch counter reset needed — the
-        # carry's accept_count / nega_count / etc. accumulate across the
-        # entire integration.
+        # The runner is one-shot. `cond_fn` checks the full convergence +
+        # count_max + runtime termination criterion; `body_fn` gates photo /
+        # atm_refresh / conden / adaptive rtol / photo-freq switch internally.
+        # No per-batch counter reset needed — the carry's accept_count /
+        # nega_count / etc. accumulate across the entire integration.
         return jax.lax.while_loop(
             cond_fn,
             lambda s: body_fn(s, atm_static),
@@ -1124,7 +1133,7 @@ def _make_runner(net, statics: _Statics,
 
 
 # ---------------------------------------------------------------------------
-# OuterLoop class — standalone replacement for op.Integration (Phase 10.6)
+# OuterLoop class — standalone replacement for op.Integration
 # ---------------------------------------------------------------------------
 class OuterLoop:
     """Standalone outer-integration driver. The runner is one-shot per
@@ -1132,10 +1141,10 @@ class OuterLoop:
     step (with internal retries), photo / atm-refresh / conden updates,
     ring-buffered convergence, and adaptive rtol.
 
-    Phase 10.6 dropped the `op.Integration` parent class; the small bits of
-    parent-class behaviour we still need — atol/mtol pulled from cfg, the
-    `f_dy` post-run diagnostic — are inlined below. There is no NumPy hot
-    path anywhere in the per-step code.
+    `OuterLoop` has no `op.Integration` parent — it inlines the small bits
+    of parent-class behaviour the runner still needs (atol/mtol pulled from
+    cfg, the `f_dy` post-run diagnostic). There is no NumPy hot path
+    anywhere in the per-step code.
     """
 
     def __init__(self, odesolver, output):
@@ -1188,8 +1197,11 @@ class OuterLoop:
         self._runner = None
         self._statics = None
         self._photo_static = None    # populated by _ensure_runner if use_photo
-        self._refresh_static = None  # populated by _ensure_runner (Phase 10.3)
+        self._refresh_static = None  # populated by _ensure_runner
         self._conden_static = None   # populated by _ensure_runner if use_condense
+        # Live UI dispatcher (live_plot / live_flux / save_movie / flux_movie).
+        # Created lazily in `_run_chunked` only when at least one flag is on.
+        self._live_ui = None
         # Hydrostatic balance: True ⇒ only gas columns get rebalanced
         # (use_condense=True). For HD189 (use_condense=False) all columns
         # are rebalanced.
@@ -1209,6 +1221,7 @@ class OuterLoop:
         self._photo_static = None
         self._refresh_static = None
         self._conden_static = None
+        self._live_ui = None
 
     # -----------------------------------------------------------------
     # Internal helpers
@@ -1216,13 +1229,13 @@ class OuterLoop:
     def _build_statics(self, var, atm) -> _Statics:
         """Pack scalar configs and per-run arrays into the closure inputs.
 
-        Phase-10.5 statics include the convergence + termination tunables
-        (`conv_step`, `count_min`, `count_max`, `runtime`, `trun_min`,
-        `st_factor`, `yconv_cri` / `yconv_min`, `slope_cri`, `flux_cri`,
-        `mtol_conv`), the conv-side masks (`conver_ignore_mask`,
-        `condense_zero_conv_mask`), the static atmosphere arrays needed by
-        the in-runner conv (`n_0`, `Kzz` for slope_min recomputation), the
-        photo-frequency cadence tunables, and the rtol bounds.
+        Statics include the convergence + termination tunables (`conv_step`,
+        `count_min`, `count_max`, `runtime`, `trun_min`, `st_factor`,
+        `yconv_cri` / `yconv_min`, `slope_cri`, `flux_cri`, `mtol_conv`),
+        the conv-side masks (`conver_ignore_mask`, `condense_zero_conv_mask`),
+        the static atmosphere arrays needed by the in-runner conv (`n_0`,
+        `Kzz` for slope_min recomputation), the photo-frequency cadence
+        tunables, and the rtol bounds.
         """
         ni = _NETWORK.ni
         atom_ini_arr = np.asarray(
@@ -1246,9 +1259,9 @@ class OuterLoop:
                 if sp in _NETWORK.species_idx:
                     cond_zero_conv_np[:, _NETWORK.species_idx[sp]] = True
 
-        # Phase 10.6 — ion charge balance + fix-all-bot. Both static masks
-        # are degenerate (zeros) when their cfg flag is off; the body's
-        # Python `if use_*_static:` skips them at trace time.
+        # Ion charge balance + fix-all-bot. Both static masks are degenerate
+        # (zeros) when their cfg flag is off; the body's Python
+        # `if use_*_static:` skips them at trace time.
         use_ion = bool(vulcan_cfg.use_ion)
         if use_ion:
             charge_list = list(getattr(var, "charge_list", []))
@@ -1361,6 +1374,22 @@ class OuterLoop:
             rtol_min=float(getattr(vulcan_cfg, "rtol_min", 0.0)),
             rtol_max=float(getattr(vulcan_cfg, "rtol_max", 1.0)),
             initial_loss_criteria=float(getattr(self, "loss_criteria", 0.0005)),
+            adapt_rtol_dec_period=int(getattr(vulcan_cfg, "adapt_rtol_dec_period", 10)),
+            adapt_rtol_inc_period=int(getattr(vulcan_cfg, "adapt_rtol_inc_period", 1000)),
+            adapt_rtol_dec=float(getattr(vulcan_cfg, "adapt_rtol_dec", 0.75)),
+            adapt_rtol_inc=float(getattr(vulcan_cfg, "adapt_rtol_inc", 1.25)),
+            adapt_rtol_loss_mul=float(getattr(vulcan_cfg, "adapt_rtol_loss_mul", 2.0)),
+            adapt_rtol_inc_loss_thresh=float(
+                getattr(vulcan_cfg, "adapt_rtol_inc_loss_thresh", 2e-4)
+            ),
+            photo_switch_longdy_thresh=float(
+                getattr(vulcan_cfg, "photo_switch_longdy_thresh",
+                        float(vulcan_cfg.yconv_min) * 10.0)
+            ),
+            photo_switch_longdydt_thresh=float(
+                getattr(vulcan_cfg, "photo_switch_longdydt_thresh", 1e-6)
+            ),
+            hycean_pin_time=float(getattr(vulcan_cfg, "hycean_pin_time", 1e6)),
             use_ion=use_ion,
             e_idx=int(e_idx),
             charge_arr=jnp.asarray(charge_np),
@@ -1407,7 +1436,7 @@ class OuterLoop:
         gas_mask_jnp = jnp.asarray(gas_mask_np)
 
         # condense_zero_mask (nz, ni) — True where delta should be zeroed.
-        # Phase 10.1 only handles use_condense=True via condense_sp + non_gas_sp;
+        # Only fires when `use_condense=True` (via condense_sp + non_gas_sp);
         # default HD189 has both empty so the mask is all False.
         cond_mask_np = np.zeros((nz, ni), dtype=bool)
         if vulcan_cfg.use_condense:
@@ -1445,11 +1474,10 @@ class OuterLoop:
         if not vulcan_cfg.use_photo:
             return None
 
-        # Phase 22e: derive everything from the dense `PhotoStaticInputs`
-        # pytree. If the solver doesn't have one yet (test sites that
-        # construct `Ros2JAX()` without wiring), use the same lazy
-        # builder Ros2JAX itself uses so the static is built once and
-        # cached.
+        # Derive everything from the dense `PhotoStaticInputs` pytree. If the
+        # solver doesn't have one yet (test sites that construct `Ros2JAX()`
+        # without wiring), use the same lazy builder Ros2JAX itself uses so
+        # the static is built once and cached.
         odesolver = self.odesolver
         photo_static = getattr(odesolver, "_photo_static", None)
         if photo_static is None and hasattr(odesolver, "_ensure_photo_static"):
@@ -1562,16 +1590,16 @@ class OuterLoop:
 
     def _build_conden_static(self, var, atm, gas_mask_jnp
                              ) -> Optional[_conden_mod.CondenStatic]:
-        """Pack the Phase 10.4 conden tables into a `CondenStatic`, or None.
+        """Pack the conden tables into a `CondenStatic`, or None.
 
         Returns None when `use_condense=False` (HD189 path) — the runner
         omits the conden branch entirely. Otherwise enumerates
         `var.conden_re_list` and looks up each reaction's gas-phase
         species + saturation profile + diffusion coefficient + per-particle
-        mass / radius / density. Reactions whose species is in
+        mass / radius / density. H2O/NH3 reactions whose species is in
         `vulcan_cfg.use_relax` get `coeff_per_re = 0` so
         `update_conden_rates` writes zero rates for them (matches the
-        `var.k[re] = 0` short-circuit at op.py:1124-1126).
+        `var.k[re] = 0` short-circuits at op.py:1124-1126 and 1156-1158).
 
         H2O / NH3 relax blocks are populated only when the corresponding
         species appears in `vulcan_cfg.use_relax`; otherwise the static
@@ -1630,9 +1658,10 @@ class OuterLoop:
             r_p = float(atm.r_p[condensate])
             rho_p = float(atm.rho_p[condensate])
             coeff = m / (rho_p * r_p ** 2)
-            # use_relax short-circuit (op.py:1124-1126): the relax kernel
-            # handles the mass redistribution; conden rates stay 0.
-            if gas_sp in relax_set:
+            # use_relax short-circuit exists only on upstream H2O/NH3
+            # branches (op.py:1124-1126, 1156-1158). Other condensates,
+            # including H2SO4, still use their condensation-rate rows.
+            if gas_sp in {"H2O", "NH3"} and gas_sp in relax_set:
                 coeff = 0.0
             # Dg = atm.Dzz[:, sp_idx] with [0] reused at the bottom (op.py:1138).
             Dzz_col = np.asarray(atm.Dzz[:, sp_idx], dtype=np.float64)
@@ -1730,46 +1759,30 @@ class OuterLoop:
             gas_indx_mask=gas_mask_jnp,
         )
 
-    @staticmethod
-    def _pack_k_arr(var, nr: int, nz: int) -> jnp.ndarray:
-        """Return a `(nr+1, nz)` jnp view of `var.k_arr` after a shape check.
-
-        Phase 22d: `var.k` (the dict keyed 1..nr) is gone; the dense array
-        has been the source of truth since the rate parser ran. The shape
-        check is cheap insurance — if anything desyncs it raises here
-        rather than silently feeding the wrong shape into the JIT'd
-        runner.
-        """
-        k_arr = np.asarray(var.k_arr, dtype=np.float64)
-        if k_arr.shape != (nr + 1, nz):
-            raise ValueError(
-                f"var.k_arr shape {k_arr.shape} != expected ({nr+1}, {nz})"
-            )
-        return jnp.asarray(k_arr)
-
     def _atom_dict_to_arr(self, d: dict) -> np.ndarray:
         return np.asarray(
             [float(d.get(a, 0.0)) for a in self._atom_order],
             dtype=np.float64,
         )
 
-    def _atom_arr_to_dict(self, arr) -> dict:
-        return {a: float(arr[i]) for i, a in enumerate(self._atom_order)}
+    def _initial_photo_carry_from_runstate(self, rs) -> dict:
+        """Build the initial photo carry from a RunState slice.
 
-    def _initial_photo_carry(self, var, atm) -> dict:
-        """Build the initial values for the photo fields of JaxIntegState.
-
-        When use_photo=True, reads the seed values from var.{tau,aflux,...}
-        (populated by the pre-loop one-shot Python compute_tau / compute_flux
-        / compute_J in `vulcan_jax.py`). When use_photo=False, returns
-        placeholder (1, 1) zero arrays — the runner ignores them.
+        `rs.rate.k` carries the dense reaction-rate table; `rs.photo_runtime.*`
+        carries `tau / aflux / sflux / dflux_*`; nbin is derived from
+        `tau.shape[1]`.
         """
-        nz = atm.Tco.shape[0]
+        nz = int(rs.atm.Tco.shape[0])
         nr = _NETWORK.nr
+        k_arr = jnp.asarray(rs.rate.k, dtype=jnp.float64)
+        if k_arr.shape != (nr + 1, nz):
+            raise ValueError(
+                f"rs.rate.k shape {k_arr.shape} != expected ({nr+1}, {nz})"
+            )
         if self._photo_static is None:
             tiny = jnp.zeros((1, 1), dtype=jnp.float64)
             return dict(
-                k_arr=self._pack_k_arr(var, nr, nz),
+                k_arr=k_arr,
                 tau=tiny, aflux=tiny, sflux=tiny,
                 dflux_d=tiny, dflux_u=tiny, prev_aflux=tiny,
                 aflux_change=jnp.float64(0.0),
@@ -1777,74 +1790,52 @@ class OuterLoop:
                 J_br_T=jnp.zeros((0, nz), dtype=jnp.float64),
                 Jion_br=jnp.zeros((0, nz), dtype=jnp.float64),
             )
-        nbin = int(var.nbin)
+        pr = rs.photo_runtime
         n_br = int(self._photo_static.cross_J.shape[0])
         n_br_T = int(self._photo_static.cross_J_T.shape[0])
         n_ion_br = int(self._photo_static.cross_Jion.shape[0])
-        prev_aflux = (var.prev_aflux if hasattr(var, "prev_aflux")
-                      else np.zeros((nz, nbin)))
-        # If pre-loop compute_J wasn't called, J_br placeholders are zeros;
-        # the first photo branch firing will populate them from aflux.
         return dict(
-            k_arr=self._pack_k_arr(var, nr, nz),
-            tau=jnp.asarray(var.tau, dtype=jnp.float64),
-            aflux=jnp.asarray(var.aflux, dtype=jnp.float64),
-            sflux=jnp.asarray(var.sflux, dtype=jnp.float64),
-            dflux_d=jnp.asarray(var.dflux_d, dtype=jnp.float64),
-            dflux_u=jnp.asarray(var.dflux_u, dtype=jnp.float64),
-            prev_aflux=jnp.asarray(prev_aflux, dtype=jnp.float64),
-            aflux_change=jnp.float64(float(getattr(var, "aflux_change", 0.0))),
+            k_arr=k_arr,
+            tau=jnp.asarray(pr.tau, dtype=jnp.float64),
+            aflux=jnp.asarray(pr.aflux, dtype=jnp.float64),
+            sflux=jnp.asarray(pr.sflux, dtype=jnp.float64),
+            dflux_d=jnp.asarray(pr.dflux_d, dtype=jnp.float64),
+            dflux_u=jnp.asarray(pr.dflux_u, dtype=jnp.float64),
+            prev_aflux=jnp.asarray(pr.prev_aflux, dtype=jnp.float64),
+            aflux_change=jnp.float64(float(pr.aflux_change)),
             J_br=jnp.zeros((n_br, nz), dtype=jnp.float64),
             J_br_T=jnp.zeros((n_br_T, nz), dtype=jnp.float64),
             Jion_br=jnp.zeros((n_ion_br, nz), dtype=jnp.float64),
         )
 
-    def _initial_atm_carry(self, atm) -> dict:
-        """Build the initial values for the Phase 10.3 atm-refresh carry fields.
-
-        Seeded from the atmosphere as set up by `f_mu_dz` + `mol_diff` in
-        the pre-loop. The refresh branch overwrites these every `update_frq`
-        accepted steps; in between, the body iteration reads them straight
-        from the carry.
-        """
+    def _initial_atm_carry_from_runstate(self, rs) -> dict:
+        """Build the initial atm-refresh carry from a RunState slice."""
         return dict(
-            g=jnp.asarray(atm.g, dtype=jnp.float64),
-            mu=jnp.asarray(atm.mu, dtype=jnp.float64),
-            Hp=jnp.asarray(atm.Hp, dtype=jnp.float64),
-            dz=jnp.asarray(atm.dz, dtype=jnp.float64),
-            zco=jnp.asarray(atm.zco, dtype=jnp.float64),
-            dzi=jnp.asarray(atm.dzi, dtype=jnp.float64),
-            Hpi=jnp.asarray(atm.Hpi, dtype=jnp.float64),
-            top_flux=jnp.asarray(atm.top_flux, dtype=jnp.float64),
-            vs=jnp.asarray(atm.vs, dtype=jnp.float64),
+            g=jnp.asarray(rs.atm.g, dtype=jnp.float64),
+            mu=jnp.asarray(rs.atm.mu, dtype=jnp.float64),
+            Hp=jnp.asarray(rs.atm.Hp, dtype=jnp.float64),
+            dz=jnp.asarray(rs.atm.dz, dtype=jnp.float64),
+            zco=jnp.asarray(rs.atm.zco, dtype=jnp.float64),
+            dzi=jnp.asarray(rs.atm.dzi, dtype=jnp.float64),
+            Hpi=jnp.asarray(rs.atm.Hpi, dtype=jnp.float64),
+            top_flux=jnp.asarray(rs.atm.top_flux, dtype=jnp.float64),
+            vs=jnp.asarray(rs.atm.vs, dtype=jnp.float64),
         )
 
-    def _initial_conv_carry(self, var, atm) -> dict:
-        """Build the initial values for the Phase 10.5 conv / history fields.
+    def _initial_conv_carry_from_runstate(self, rs) -> dict:
+        """Build the initial conv-history carry from a RunState slice.
 
-        - `y_time_ring` / `t_time_ring`: zero-filled (conv_step, nz, ni) /
-          (conv_step,) — the body fills them as steps accept. The cond_fn
-          waits for `accept_count > count_min` before acting on conv, which
-          gives the ring time to populate.
-        - `longdy` / `longdydt`: seeded from `var.longdy` / `var.longdydt`
-          (typically 1.0 and 1.0 at fresh-start).
-        - `rtol`: starts at `vulcan_cfg.rtol`; updated in-body by adaptive
-          rtol logic.
-        - `loss_criteria`: starts at `self.loss_criteria` (default 0.0005);
-          doubles every time adaptive rtol fires the decrease branch.
-        - `update_photo_frq`: starts at `ini_update_photo_frq`; flips to
-          `final_update_photo_frq` once longdy/longdydt drop below the
-          op.py:819-823 thresholds.
+        Pulls `longdy / longdydt` from `rs.step`.
         """
-        nz = atm.Tco.shape[0]
+        nz = int(rs.atm.Tco.shape[0])
         ni = _NETWORK.ni
         conv_step = int(vulcan_cfg.conv_step)
         ini_frq = int(getattr(vulcan_cfg, "ini_update_photo_frq", 1))
         return dict(
             y_time_ring=jnp.zeros((conv_step, nz, ni), dtype=jnp.float64),
             t_time_ring=jnp.zeros((conv_step,), dtype=jnp.float64),
-            longdy=jnp.float64(float(getattr(var, "longdy", 1.0))),
-            longdydt=jnp.float64(float(getattr(var, "longdydt", 1.0))),
+            longdy=jnp.float64(float(rs.step.longdy)),
+            longdydt=jnp.float64(float(rs.step.longdydt)),
             rtol=jnp.float64(float(vulcan_cfg.rtol)),
             loss_criteria=jnp.float64(
                 float(getattr(self, "loss_criteria", 0.0005))
@@ -1853,49 +1844,55 @@ class OuterLoop:
             is_final_photo_frq=jnp.bool_(False),
         )
 
-    def _pack_state(self, var, para, atm) -> JaxIntegState:
-        """Build the initial JaxIntegState from current var/para/atm."""
-        photo_fields = self._initial_photo_carry(var, atm)
-        atm_fields = self._initial_atm_carry(atm)
-        conv_fields = self._initial_conv_carry(var, atm)
-        nz = atm.Tco.shape[0]
+    def _pack_state_from_runstate(self, rs) -> JaxIntegState:
+        """Build the initial JaxIntegState from a fully-populated RunState.
+
+        The runner reads its entry state from a typed `RunState` rather
+        than the legacy `(var, para, atm)` triple. Static metadata (atom
+        ordering, fix-species mapping) lives on the `OuterLoop` instance.
+        """
+        photo_fields = self._initial_photo_carry_from_runstate(rs)
+        atm_fields = self._initial_atm_carry_from_runstate(rs)
+        conv_fields = self._initial_conv_carry_from_runstate(rs)
+        nz = int(rs.atm.Tco.shape[0])
         ni = _NETWORK.ni
         n_fix = int(self._statics.fix_species_idx.shape[0])
-        fix_started = bool(getattr(para, "fix_species_start", False))
+        fix_started = bool(rs.params.fix_species_start)
         fix_y_init = np.zeros((nz, ni), dtype=np.float64)
         fix_mask_init = np.zeros((nz, ni), dtype=bool)
         fix_pfix_idx_init = np.zeros((n_fix,), dtype=np.int32)
-        if self._statics.use_fix_species and hasattr(var, "fix_y"):
-            for i, sp in enumerate(vulcan_cfg.fix_species):
+        if (self._statics.use_fix_species
+                and rs.fix_species is not None
+                and len(rs.fix_species.fix_species) > 0):
+            fix_y_arr = np.asarray(rs.fix_species.fix_y, dtype=np.float64)
+            coldtrap = np.asarray(rs.fix_species.conden_min_lev, dtype=np.int32)
+            for i, sp in enumerate(rs.fix_species.fix_species):
                 sp_idx = _NETWORK.species_idx[sp]
-                fix_y_init[:, sp_idx] = np.asarray(var.fix_y.get(sp, np.zeros(nz)), dtype=np.float64)
+                fix_y_init[:, sp_idx] = fix_y_arr[i]
                 if fix_started:
                     if self._statics.fix_species_from_coldtrap_lev:
-                        pfix = int(getattr(atm, "conden_min_lev", {}).get(sp, 0))
+                        pfix = int(coldtrap[i])
                         fix_mask_init[:pfix, sp_idx] = True
                         fix_pfix_idx_init[i] = pfix
                     else:
                         fix_mask_init[:, sp_idx] = True
                         fix_pfix_idx_init[i] = nz
         return JaxIntegState(
-            y=jnp.asarray(var.y, dtype=jnp.float64),
-            y_prev=jnp.asarray(var.y_prev if hasattr(var, "y_prev") and var.y_prev is not None else var.y,
-                               dtype=jnp.float64),
-            ymix=jnp.asarray(var.ymix, dtype=jnp.float64),
-            dt=jnp.asarray(float(var.dt), dtype=jnp.float64),
-            t=jnp.asarray(float(var.t), dtype=jnp.float64),
-            delta=jnp.asarray(float(getattr(para, "delta", 0.0)), dtype=jnp.float64),
-            accept_count=jnp.int32(int(para.count)),
+            y=jnp.asarray(rs.step.y, dtype=jnp.float64),
+            y_prev=jnp.asarray(rs.step.y_prev, dtype=jnp.float64),
+            ymix=jnp.asarray(rs.step.ymix, dtype=jnp.float64),
+            dt=jnp.asarray(float(rs.step.dt), dtype=jnp.float64),
+            t=jnp.asarray(float(rs.step.t), dtype=jnp.float64),
+            delta=jnp.asarray(float(rs.params.delta), dtype=jnp.float64),
+            accept_count=jnp.int32(int(rs.params.count)),
             retry_count=jnp.int32(0),
-            atom_loss=jnp.asarray(self._atom_dict_to_arr(var.atom_loss),
-                                  dtype=jnp.float64),
-            atom_loss_prev=jnp.asarray(self._atom_dict_to_arr(var.atom_loss_prev),
-                                       dtype=jnp.float64),
-            nega_count=jnp.int32(int(getattr(para, "nega_count", 0))),
-            loss_count=jnp.int32(int(getattr(para, "loss_count", 0))),
-            delta_count=jnp.int32(int(getattr(para, "delta_count", 0))),
-            small_y=jnp.float64(float(getattr(para, "small_y", 0.0))),
-            nega_y=jnp.float64(float(getattr(para, "nega_y", 0.0))),
+            atom_loss=jnp.asarray(rs.atoms.atom_loss, dtype=jnp.float64),
+            atom_loss_prev=jnp.asarray(rs.atoms.atom_loss_prev, dtype=jnp.float64),
+            nega_count=jnp.int32(int(rs.params.nega_count)),
+            loss_count=jnp.int32(int(rs.params.loss_count)),
+            delta_count=jnp.int32(int(rs.params.delta_count)),
+            small_y=jnp.float64(float(rs.params.small_y)),
+            nega_y=jnp.float64(float(rs.params.nega_y)),
             **photo_fields,
             **atm_fields,
             **conv_fields,
@@ -1907,7 +1904,7 @@ class OuterLoop:
             # live ymix when (use_fix_H2He=True) & (~pinned) & (t > 1e6).
             h2he_pinned=jnp.bool_(False),
             h2he_mix=jnp.zeros((2,), dtype=jnp.float64),
-            # save_evolution buffers (Phase 15). Allocated to the cfg's
+            # save_evolution buffers. Allocated to the cfg's
             # `save_evo_n_max` when on; length-1 placeholder when off.
             y_evo=jnp.zeros(
                 (int(self._statics.save_evo_n_max), nz, ni),
@@ -1919,37 +1916,151 @@ class OuterLoop:
             ),
             evo_idx=jnp.int32(0),
             # chunk_target seed = INT32_MAX disables the chunk cap, so
-            # single-shot __call__ behaves exactly as pre-Phase-16. The
+            # single-shot __call__ runs without an early chunk return. The
             # chunked driver mutates this between chunks; the seed is
             # only used when the driver doesn't run.
             chunk_target=jnp.int32(2**30),
         )
 
+    def _pack_state(self, var, para, atm) -> JaxIntegState:
+        """Legacy entry point: build JaxIntegState from `(var, para, atm)`.
+
+        Thin wrapper around `runstate_from_store` +
+        `_pack_state_from_runstate`. Every read flows through the typed
+        `RunState` slice.
+        """
+        rs = _state_mod.runstate_from_store(var, atm, para)
+        return self._pack_state_from_runstate(rs)
+
+    def _unpack_state_to_runstate(self, state: JaxIntegState, rs_entry):
+        """Build a fresh `RunState` from the runner's final JaxIntegState.
+
+        `_unpack_state` flows through this constructor + `runstate_to_store`.
+        The static atm fields (pco, Tco, Kzz, n_0, ms, alpha, ...) are
+        preserved verbatim from `rs_entry.atm`; only the dynamic refresh
+        slots (g, mu, Hp, dz, dzi, zco, Hpi, top_flux, vs) come from the
+        carry. Step / params / atoms / photo_runtime / fix_species are
+        rebuilt from the carry against the entry-time ordering captured
+        in `rs_entry`.
+        """
+        atm_out = rs_entry.atm._replace(
+            g=jnp.asarray(state.g, dtype=jnp.float64),
+            mu=jnp.asarray(state.mu, dtype=jnp.float64),
+            Hp=jnp.asarray(state.Hp, dtype=jnp.float64),
+            dz=jnp.asarray(state.dz, dtype=jnp.float64),
+            zco=jnp.asarray(state.zco, dtype=jnp.float64),
+            dzi=jnp.asarray(state.dzi, dtype=jnp.float64),
+            Hpi=jnp.asarray(state.Hpi, dtype=jnp.float64),
+            top_flux=jnp.asarray(state.top_flux, dtype=jnp.float64),
+            vs=jnp.asarray(state.vs, dtype=jnp.float64),
+        )
+
+        rate_out = rs_entry.rate._replace(
+            k=jnp.asarray(state.k_arr, dtype=jnp.float64),
+        )
+
+        photo_out = rs_entry.photo  # not mutated by the runner
+
+        # Slice the populated prefix of the save_evolution ring; when
+        # save_evolution=False, evo_idx stays 0 and the slice is empty.
+        evo_n = int(state.evo_idx)
+        y_evo_out = jnp.asarray(state.y_evo[:evo_n], dtype=jnp.float64)
+        t_evo_out = jnp.asarray(state.t_evo[:evo_n], dtype=jnp.float64)
+
+        step_out = _state_mod.StepInputs(
+            y=jnp.asarray(state.y, dtype=jnp.float64),
+            y_prev=jnp.asarray(state.y_prev, dtype=jnp.float64),
+            ymix=jnp.asarray(state.ymix, dtype=jnp.float64),
+            t=float(state.t),
+            dt=float(state.dt),
+            longdy=float(state.longdy),
+            longdydt=float(state.longdydt),
+            y_evo=y_evo_out,
+            t_evo=t_evo_out,
+        )
+
+        params_out = _state_mod.ParamInputs(
+            count=int(state.accept_count),
+            nega_count=int(state.nega_count),
+            loss_count=int(state.loss_count),
+            delta_count=int(state.delta_count),
+            delta=float(state.delta),
+            small_y=float(state.small_y),
+            nega_y=float(state.nega_y),
+            fix_species_start=bool(state.fix_species_started),
+        )
+
+        atom_loss_arr = np.asarray(state.atom_loss, dtype=np.float64)
+        atom_sum_arr = (atom_loss_arr + 1.0) * np.asarray(
+            self._statics.atom_ini_arr, dtype=np.float64
+        )
+        atoms_out = _state_mod.AtomInputs(
+            atom_order=tuple(self._atom_order),
+            atom_ini=jnp.asarray(self._statics.atom_ini_arr, dtype=jnp.float64),
+            atom_loss=jnp.asarray(atom_loss_arr),
+            atom_loss_prev=jnp.asarray(state.atom_loss_prev, dtype=jnp.float64),
+            atom_sum=jnp.asarray(atom_sum_arr),
+        )
+
+        if self._photo_static is not None:
+            photo_runtime_out = _state_mod.PhotoRuntimeInputs(
+                tau=jnp.asarray(state.tau, dtype=jnp.float64),
+                aflux=jnp.asarray(state.aflux, dtype=jnp.float64),
+                sflux=jnp.asarray(state.sflux, dtype=jnp.float64),
+                dflux_d=jnp.asarray(state.dflux_d, dtype=jnp.float64),
+                dflux_u=jnp.asarray(state.dflux_u, dtype=jnp.float64),
+                prev_aflux=jnp.asarray(state.prev_aflux, dtype=jnp.float64),
+                aflux_change=float(state.aflux_change),
+            )
+        else:
+            photo_runtime_out = None
+
+        nz = int(rs_entry.atm.Tco.shape[0])
+        fix_species_cfg = list(getattr(vulcan_cfg, "fix_species", []) or [])
+        if fix_species_cfg:
+            fix_y_full = np.asarray(state.fix_y, dtype=np.float64)
+            fix_y_per_sp = np.zeros((len(fix_species_cfg), nz), dtype=np.float64)
+            for i, sp in enumerate(fix_species_cfg):
+                fix_y_per_sp[i] = fix_y_full[:, _NETWORK.species_idx[sp]]
+            if self._statics.fix_species_from_coldtrap_lev:
+                pfix_np = np.asarray(state.fix_pfix_idx, dtype=np.int32)
+            else:
+                pfix_np = np.zeros((len(fix_species_cfg),), dtype=np.int32)
+            fix_species_out = _state_mod.FixSpeciesInputs(
+                fix_species=tuple(fix_species_cfg),
+                fix_y=jnp.asarray(fix_y_per_sp),
+                conden_min_lev=jnp.asarray(pfix_np),
+            )
+        else:
+            fix_species_out = _state_mod.FixSpeciesInputs(
+                fix_species=(),
+                fix_y=jnp.zeros((0, nz), dtype=jnp.float64),
+                conden_min_lev=jnp.zeros((0,), dtype=jnp.int32),
+            )
+
+        return _state_mod.RunState(
+            atm=atm_out,
+            rate=rate_out,
+            photo=photo_out,
+            step=step_out,
+            params=params_out,
+            atoms=atoms_out,
+            photo_runtime=photo_runtime_out,
+            fix_species=fix_species_out,
+            metadata=rs_entry.metadata,
+            photo_static=rs_entry.photo_static,
+        )
+
     def _unpack_state(self, state: JaxIntegState, var, para, atm) -> None:
-        """Write the post-runner JAX state back into the var/para/atm store objects."""
-        var.y = np.asarray(state.y, dtype=np.float64)
-        var.y_prev = np.asarray(state.y_prev, dtype=np.float64)
-        var.ymix = np.asarray(state.ymix, dtype=np.float64)
-        var.dt = float(state.dt)
-        var.t = float(state.t)
-        var.atom_loss = self._atom_arr_to_dict(np.asarray(state.atom_loss))
-        var.atom_loss_prev = self._atom_arr_to_dict(np.asarray(state.atom_loss_prev))
-        # atom_sum is a derived quantity used for diagnostics elsewhere.
-        atom_sum_arr = (np.asarray(state.atom_loss) + 1.0) * np.asarray(self._statics.atom_ini_arr)
-        for i, a in enumerate(self._atom_order):
-            var.atom_sum[a] = float(atom_sum_arr[i])
-        para.delta = float(state.delta)
-        # Counters now accumulate inside the JAX runner across the entire
-        # integration (Phase 10.5), so write them through directly. The
-        # carry was seeded with the entry-time values in `_pack_state`,
-        # which preserves any prior counters from a partial run.
-        para.count = int(state.accept_count)
-        para.nega_count = int(state.nega_count)
-        para.loss_count = int(state.loss_count)
-        para.delta_count = int(state.delta_count)
-        para.small_y = float(state.small_y)
-        para.nega_y = float(state.nega_y)
-        para.fix_species_start = bool(state.fix_species_started)
+        """Write the post-runner JAX state back into the var/para/atm store
+        objects. Routes through a synthesized `RunState` and
+        `runstate_to_store`; the var/cfg side effects that don't fit the
+        typed pytree (var.J_sp dict, var.y_time/t_time list, conden
+        k_arr, vulcan_cfg.use_fix_sp_bot/rtol mutation) follow.
+        """
+        rs_entry = _state_mod.runstate_from_store(var, atm, para)
+        rs_out = self._unpack_state_to_runstate(state, rs_entry)
+        _state_mod.runstate_to_store(rs_out, var, atm, para)
 
         # Hycean H2/He pin diagnostic (op.py:2938-2944). Mirror master's
         # vulcan_cfg mutation so any downstream tooling that reads
@@ -1961,25 +2072,16 @@ class OuterLoop:
             existing.setdefault("He", float(h2he_mix_arr[1]))
             vulcan_cfg.use_fix_sp_bot = existing
 
-        # Phase 10.5 conv fields — write back into var so the .vul output
-        # and any downstream Python diagnostics see the final values.
-        var.longdy = float(state.longdy)
-        var.longdydt = float(state.longdydt)
         # rtol may have moved adaptively inside the runner; reflect it in
         # the global cfg for parity with op.Integration.__call__.
         if self._statics.use_adapt_rtol:
             vulcan_cfg.rtol = float(state.rtol)
+
         # Rebuild var.y_time / var.t_time chronologically from the ring
-        # buffer. The ring stores the most recent min(accept_count,
-        # conv_step) accepted (y, t) pairs at slots
-        # ((accept_count - n) % conv_step) for n = conv_step..1.
+        # buffer (most recent min(accept_count, conv_step) entries).
         self._unpack_ring(state, var)
 
-        # Phase 15: when save_evolution=True, the runner captured a fresh
-        # (y_evo, t_evo) trajectory at save_evo_frq cadence into a fixed-
-        # size buffer. Override var.y_time / var.t_time with that prefix
-        # so legacy_io.save_out picks them up unmodified (the master-style
-        # `[::fq]` re-slice is removed since the runner already pre-sliced).
+        # save_evolution overrides the ring with the captured buffer prefix.
         if self._statics.save_evolution:
             n_evo = int(state.evo_idx)
             y_evo_arr = np.asarray(state.y_evo, dtype=np.float64)[:n_evo]
@@ -1987,48 +2089,18 @@ class OuterLoop:
             var.y_time = y_evo_arr
             var.t_time = t_evo_arr
 
-        # Phase 10.2 photo unpack (only when use_photo=True).
+        # Photo dict-view synthesis (only when use_photo=True).
+        # var.tau/aflux/sflux/dflux_*/prev_aflux/aflux_change/k_arr already
+        # written by `runstate_to_store(rs_out, ...)`; J_sp is rebuilt from
+        # the J_br arrays here because it lives outside the typed slice.
         if self._photo_static is not None:
-            var.tau = np.asarray(state.tau, dtype=np.float64)
-            var.aflux = np.asarray(state.aflux, dtype=np.float64)
-            var.sflux = np.asarray(state.sflux, dtype=np.float64)
-            var.dflux_d = np.asarray(state.dflux_d, dtype=np.float64)
-            var.dflux_u = np.asarray(state.dflux_u, dtype=np.float64)
-            var.prev_aflux = np.asarray(state.prev_aflux, dtype=np.float64)
-            var.aflux_change = float(state.aflux_change)
             self._unpack_J_sp(state, var)
             self._unpack_k(state, var)
 
-        # Phase 10.4 conden k unpack: snapshot the conden-updated rate rows
-        # from `state.k_arr` into `var.k_arr` (Phase 22d retired the legacy
-        # `var.k` dict; the .vul writer synthesizes the dict view at pickle
-        # time).
+        # Conden k unpack — same as photo: write the conden-updated rate
+        # rows from the carry's k_arr.
         if self._conden_static is not None:
             self._unpack_conden_k(state, var)
-
-        # Phase 10.3 atmosphere geometry unpack: write back to atm so any
-        # downstream Python paths (output writers, diagnostics, eventual
-        # condensation in 10.4) see the freshest geometry.
-        atm.g = np.asarray(state.g, dtype=np.float64)
-        atm.mu = np.asarray(state.mu, dtype=np.float64)
-        atm.Hp = np.asarray(state.Hp, dtype=np.float64)
-        atm.dz = np.asarray(state.dz, dtype=np.float64)
-        atm.zco = np.asarray(state.zco, dtype=np.float64)
-        atm.dzi = np.asarray(state.dzi, dtype=np.float64)
-        atm.Hpi = np.asarray(state.Hpi, dtype=np.float64)
-        atm.top_flux = np.asarray(state.top_flux, dtype=np.float64)
-        atm.vs = np.asarray(state.vs, dtype=np.float64)
-
-        if self._statics.use_fix_species:
-            fix_y_np = np.asarray(state.fix_y, dtype=np.float64)
-            var.fix_y = {
-                sp: fix_y_np[:, _NETWORK.species_idx[sp]].copy()
-                for sp in vulcan_cfg.fix_species
-            }
-            if self._statics.fix_species_from_coldtrap_lev:
-                pfix_np = np.asarray(state.fix_pfix_idx, dtype=np.int32)
-                for sp, pfix in zip(vulcan_cfg.fix_species, pfix_np.tolist()):
-                    atm.conden_min_lev[sp] = int(pfix)
 
     def _unpack_J_sp(self, state: JaxIntegState, var) -> None:
         """Rebuild `var.J_sp` dict from carry's J_br / J_br_T arrays.
@@ -2067,12 +2139,12 @@ class OuterLoop:
 
     def _unpack_k(self, state: JaxIntegState, var) -> None:
         """Snapshot photo-updated rate rows from `state.k_arr` into
-        `var.k_arr`. Phase 22d: a full-array snapshot replaces the per-row
-        dict writes; rows that weren't touched inside the runner are equal
-        to the initial `var.k_arr` so the overwrite is idempotent for them
-        and authoritative for the rows the photo branch updated. The
-        legacy `{i: array(nz)}` dict view is synthesized at `.vul` write
-        time by `legacy_io.Output.save_out`.
+        `var.k_arr`. A full-array snapshot replaces per-row dict writes; rows
+        that weren't touched inside the runner are equal to the initial
+        `var.k_arr` so the overwrite is idempotent for them and authoritative
+        for the rows the photo branch updated. The legacy `{i: array(nz)}`
+        dict view is synthesized at `.vul` write time by
+        `legacy_io.Output.save_out`.
         """
         var.k_arr = np.asarray(state.k_arr, dtype=np.float64)
 
@@ -2085,11 +2157,11 @@ class OuterLoop:
         is `slots[(accept_count - L + i) % conv_step for i in 0..L-1]`,
         where L = min(accept_count, conv_step).
 
-        Phase 10.5 trade-off: var.y_time only contains the LAST conv_step
-        entries instead of the full per-step trajectory. This is the
-        single-shot-runner cost — keeping the full history would require
-        an io_callback per step, which defeats the purpose. Users who need
-        full trajectory output can downsample at the analysis stage or
+        Trade-off: var.y_time only contains the LAST conv_step entries
+        instead of the full per-step trajectory. This is the single-shot
+        runner's cost — keeping the full history would require an
+        io_callback per step, defeating the purpose. Users who need full
+        trajectory output can downsample at the analysis stage or
         increase conv_step.
         """
         accept_count = int(state.accept_count)
@@ -2110,7 +2182,7 @@ class OuterLoop:
         var.y_time = [ring_y[i] for i in order]
         var.t_time = [ring_t[i] for i in order]
         # atom_loss_time is per-step diagnostic; we only have the FINAL
-        # atom_loss in the carry (Phase 10.5 doesn't ring it). Use the
+        # atom_loss in the carry (the runner doesn't ring it). Use the
         # final value padded over L entries so plot scripts that index
         # into the list don't index-error.
         final_atom_loss = list(np.asarray(state.atom_loss).tolist())
@@ -2118,10 +2190,10 @@ class OuterLoop:
 
     def _unpack_conden_k(self, state: JaxIntegState, var) -> None:
         """Snapshot conden-updated rate rows from `state.k_arr` into
-        `var.k_arr`. Phase 22d: full-array overwrite; conden rows updated
-        inside the runner are reflected verbatim, others retain their
-        pre-runner values. The legacy `{i: array(nz)}` dict view is
-        synthesized at `.vul` write time by `legacy_io.Output.save_out`.
+        `var.k_arr`. Full-array overwrite; conden rows updated inside the
+        runner are reflected verbatim, others retain their pre-runner
+        values. The legacy `{i: array(nz)}` dict view is synthesized at
+        `.vul` write time by `legacy_io.Output.save_out`.
         """
         var.k_arr = np.asarray(state.k_arr, dtype=np.float64)
 
@@ -2153,21 +2225,32 @@ class OuterLoop:
         return var
 
     # -----------------------------------------------------------------
-    # Phase 16: chunked driver — interleaves the JIT'd runner with
-    # host-side progress hooks. Phase 19 dropped the matplotlib
-    # live-plot / live-flux / movie callbacks; only `print_prog`
-    # remains as a host-side per-chunk hook.
+    # Chunked driver — interleaves the JIT'd runner with host-side
+    # progress hooks. Live-plot / live-flux / movie callbacks were
+    # removed; only `print_prog` remains as a per-chunk host hook.
     # -----------------------------------------------------------------
     def _run_chunked(self, init_state, atm_static, var, para, atm):
-        """Run the integration in `print_prog_num`-sized chunks so the host
-        can call `print_prog` between chunks.
+        """Run the integration in chunked steps so the host can fire the
+        `print_prog` and live-UI hooks between chunks.
 
-        Termination has the same semantics as the single-shot path
-        (count_max / runtime / converged); the chunk cap exists only to
-        give the host a place to print progress. Bit-equivalence to the
-        single-shot path is asserted by `tests/test_chunked_runner.py`.
+        Chunk size is `vulcan_cfg.live_plot_frq` when any live-output
+        flag is set (so cadence matches master's `para.count %
+        live_plot_frq == 0` predicate exactly), otherwise
+        `vulcan_cfg.print_prog_num`. Termination has the same semantics
+        as the single-shot path (count_max / runtime / converged); the
+        chunk cap exists only to give the host a place to fire hooks.
+        Bit-equivalence to the single-shot path is asserted by
+        `tests/test_chunked_runner.py`.
         """
-        chunk_size = max(int(getattr(vulcan_cfg, "print_prog_num", 100)), 1)
+        from live_ui import any_live_flag_on, LiveUI
+
+        live_on = any_live_flag_on(vulcan_cfg)
+        if live_on:
+            chunk_size = max(int(getattr(vulcan_cfg, "live_plot_frq", 10)), 1)
+            if self._live_ui is None:
+                self._live_ui = LiveUI()
+        else:
+            chunk_size = max(int(getattr(vulcan_cfg, "print_prog_num", 100)), 1)
         count_max_static = int(self._statics.count_max)
         runtime_static = float(self._statics.runtime)
         use_print_prog = bool(getattr(vulcan_cfg, "use_print_prog", False))
@@ -2194,36 +2277,61 @@ class OuterLoop:
             if terminated_for_real:
                 return state
 
-            # Sync state to host for the print_prog hook.
+            # Sync state to host for the per-chunk hooks.
             self._unpack_state(state, var, para, atm)
             if use_print_prog:
                 if (not hasattr(para, "where_varies_most")
                         or para.where_varies_most is None):
                     para.where_varies_most = np.zeros_like(var.y)
                 self.output.print_prog(var, para)
+            if live_on:
+                self._live_ui.dispatch(var, atm, para)
 
     # -----------------------------------------------------------------
     # Outer Python orchestration (drop-in for op.Integration.__call__)
     # -----------------------------------------------------------------
-    def __call__(self, var, atm, para, make_atm):
+    def __call__(self, *args):
         """Run the integration to convergence / runtime / count cap.
 
-        Phase 10.5+: a single JIT'd JAX runner call replaces the Python
-        `while not stop(): one_step()` loop. Termination, photo frequency
-        switching, adaptive rtol, ring-buffered convergence, condensation,
-        atmosphere refresh, ion charge balance (10.6), and fix-all-bot
-        post-step clamping (10.6) all happen inside the runner; this
-        method only handles pre-loop setup, the device call(s), and
-        post-run unpacking + final-state diagnostics.
+        `__call__` is polymorphic — it accepts either a typed
+        `state.RunState` or the legacy `(var, atm, para, make_atm)` triple.
+        The RunState path is the canonical entry point: `integ(rs)` runs
+        the full integration, returns a fresh `RunState`, and reads every
+        static metadata field off `rs.metadata`. The legacy `(var, atm,
+        para)` arguments are no longer required for the RunState path but
+        are still accepted for back-compat with hybrid oracle tests.
 
-        Phase 16/19: when `use_chunked_runner=True`, the integration
-        runs in chunks of `print_prog_num` accepted steps so the host
-        can call `print_prog` between chunks. Otherwise it is
-        single-shot. Both paths are bit-equivalent on the final state.
-        Phase 19 dropped the matplotlib live-plot / live-flux / movie
-        callbacks; only `print_prog` remains as a per-chunk hook.
+        Both paths produce identical numerics; only the entry/exit
+        boundary differs.
         """
-        del make_atm  # captured into _refresh_static at init (Phase 10.3)
+        if args and isinstance(args[0], _state_mod.RunState):
+            rs = args[0]
+            var = args[1] if len(args) > 1 else None
+            atm = args[2] if len(args) > 2 else None
+            para = args[3] if len(args) > 3 else None
+            return self._call_runstate(rs, var, atm, para)
+        var, atm, para, make_atm = args[:4]
+        return self._call_legacy(var, atm, para, make_atm)
+
+    def _call_legacy(self, var, atm, para, make_atm):
+        """Legacy entry point: integrate while mutating `(var, atm, para)`.
+
+        A single JIT'd JAX runner call replaces the Python
+        `while not stop(): one_step()` loop. Termination, photo-frequency
+        switching, adaptive rtol, ring-buffered convergence, condensation,
+        atmosphere refresh, ion charge balance, and fix-all-bot post-step
+        clamping all happen inside the runner; this method only handles
+        pre-loop setup, the device call(s), and post-run unpacking +
+        final-state diagnostics.
+
+        When `use_chunked_runner=True`, the integration runs in chunks of
+        `print_prog_num` accepted steps so the host can call `print_prog`
+        between chunks. Otherwise it is single-shot. Both paths are
+        bit-equivalent on the final state. Live-plot / live-flux / movie
+        callbacks were removed; only `print_prog` remains as a per-chunk
+        host hook.
+        """
+        del make_atm  # captured into _refresh_static at OuterLoop init
         validate_runtime_config(vulcan_cfg)
         self.loss_criteria = 0.0005
 
@@ -2235,18 +2343,21 @@ class OuterLoop:
         atm_static = make_atm_static(atm, ni, nz)
         init_state = self._pack_state(var, para, atm)
 
-        # Phase 16/19: chunked execution is opt-in via the explicit
-        # `use_chunked_runner` cfg flag. When on, the integration runs
-        # in `print_prog_num`-sized chunks so the host can fire
-        # `print_prog` between chunks. Off (default), the runner is
-        # single-shot.
-        use_chunked = bool(getattr(vulcan_cfg, "use_chunked_runner", False))
+        # Chunked execution is opt-in via the explicit `use_chunked_runner`
+        # cfg flag, or implicit when any live-output flag is on (the
+        # host needs to read state between chunks to drive the live UI).
+        # Off (default), the runner is single-shot.
+        from live_ui import any_live_flag_on
+        use_chunked = (
+            bool(getattr(vulcan_cfg, "use_chunked_runner", False))
+            or any_live_flag_on(vulcan_cfg)
+        )
 
         if use_chunked:
             final_state = self._run_chunked(init_state, atm_static, var,
                                              para, atm)
         else:
-            # Single JAX runner call (Phase 10.5+ path).
+            # Single JAX runner call.
             final_state = self._runner(init_state, atm_static)
         self._unpack_state(final_state, var, para, atm)
 
@@ -2289,3 +2400,136 @@ class OuterLoop:
             self.output.print_end_msg(var, para)
         elif para.end_case in (2, 3):
             self.output.print_unconverged_msg(var, para, para.end_case)
+
+    def _call_runstate(self, rs: "_state_mod.RunState", var=None, atm=None, para=None):
+        """RunState entry point: integrate from a typed `RunState` and
+        return a fresh `RunState`.
+
+        `var` / `atm` / `para` are optional. When omitted, the static
+        metadata reads (`Ti`, `gas_indx`, `pref_indx`, `gs`,
+        `charge_list`, `conden_re_list`, `Rf`, `n_branch`, `ion_branch`,
+        `photo_sp`, `ion_sp`, `start_time`) come from `rs.metadata`; a
+        `legacy_view(rs)` shim drives the `_build_*_static` helpers and
+        `make_atm_static`. The legacy positional args are accepted for
+        back-compat with the `integ(rs, var, atm, para)` signature.
+        """
+        validate_runtime_config(vulcan_cfg)
+        self.loss_criteria = 0.0005
+
+        # When called as `integ(rs)`, derive a legacy-shaped shim from the
+        # RunState so the existing `_build_*_static` helpers and
+        # `make_atm_static` keep working without explicit var/atm/para
+        # references.
+        if var is None or atm is None:
+            var, atm, _shim_para = _state_mod.legacy_view(rs)
+            if para is None:
+                para = _shim_para
+
+        # If the runstate carries a pre-built `PhotoStaticInputs` pytree
+        # (produced by `with_pre_loop_setup`), wire it onto the solver so
+        # `_build_photo_static` doesn't try to rebuild from the
+        # `legacy_view`'s var.cross* dict surface (which the shim no
+        # longer carries).
+        if rs.photo_static is not None and getattr(self.odesolver, "_photo_static", None) is None:
+            self.odesolver._photo_static = rs.photo_static
+
+        self._ensure_runner(var, atm)
+        ni = _NETWORK.ni
+        nz = int(rs.atm.Tco.shape[0])
+
+        atm_static = make_atm_static(atm, ni, nz)
+        init_state = self._pack_state_from_runstate(rs)
+
+        from live_ui import any_live_flag_on
+        use_chunked = (
+            bool(getattr(vulcan_cfg, "use_chunked_runner", False))
+            or any_live_flag_on(vulcan_cfg)
+        )
+        if use_chunked:
+            # Chunked driver still needs legacy `(var, para, atm)` for
+            # the per-chunk hooks. Reuse the caller's `para` (it
+            # carries `start_time`) and let the chunked driver mutate
+            # it in place; the final RunState is rebuilt on return so
+            # the caller gets a typed result regardless.
+            final_state = self._run_chunked(init_state, atm_static, var,
+                                             para, atm)
+        else:
+            final_state = self._runner(init_state, atm_static)
+
+        rs_out = self._unpack_state_to_runstate(final_state, rs)
+
+        # End-of-run printing — same predicates as the legacy path,
+        # reading from the synthesised RunState rather than mutating
+        # the legacy containers.
+        count = int(rs_out.params.count)
+        t_now = float(rs_out.step.t)
+        end_case = (
+            3 if count > vulcan_cfg.count_max
+            else 2 if t_now > vulcan_cfg.runtime
+            else 1
+        )
+        if end_case == 3:
+            print("Integration not completed...\nMaximal allowed steps "
+                  f"exceeded ({vulcan_cfg.count_max})!")
+        elif end_case == 2:
+            print("Integration not completed...\nMaximal allowed runtime "
+                  f"exceeded ({vulcan_cfg.runtime} sec)!")
+        else:
+            print(f"Integration successful with {count} steps and "
+                  f"long dy, long dydt = {rs_out.step.longdy}, "
+                  f"{rs_out.step.longdydt}\n"
+                  f"Actinic flux change: "
+                  f"{(rs_out.photo_runtime.aflux_change if rs_out.photo_runtime is not None else 0.0):.2E}")
+
+        # The summary printers expect a legacy `(var, para)` pair —
+        # build a thin shim from the RunState. They only read counters
+        # and atom_loss, plus var.t / var.longdy / var.longdydt /
+        # var.dt. `start_time` flows from the legacy `para` reference
+        # passed in (a static field; not part of the RunState schema).
+        var_shim, para_shim = self._summary_shim(rs_out)
+        para_shim.start_time = (
+            float(getattr(para, "start_time", _now()))
+            if para is not None else _now()
+        )
+        para_shim.end_case = end_case
+
+        if vulcan_cfg.use_print_prog:
+            if not hasattr(para_shim, "where_varies_most") or para_shim.where_varies_most is None:
+                para_shim.where_varies_most = np.zeros_like(np.asarray(rs_out.step.y))
+            self.output.print_prog(var_shim, para_shim)
+
+        if end_case == 1:
+            self.output.print_end_msg(var_shim, para_shim)
+        elif end_case in (2, 3):
+            self.output.print_unconverged_msg(var_shim, para_shim, end_case)
+
+        return rs_out
+
+    def _summary_shim(self, rs):
+        """Build a minimal legacy-shape stand-in for the post-run prints.
+
+        `print_end_msg` / `print_unconverged_msg` / `print_prog` only
+        read counters and atom_loss, plus var.t / var.dt / var.longdy /
+        var.longdydt. Compose a SimpleNamespace-style shim from the
+        RunState slot rather than synthesising a full `store.Variables`.
+        """
+        import types
+        var = types.SimpleNamespace(
+            t=float(rs.step.t),
+            dt=float(rs.step.dt),
+            longdy=float(rs.step.longdy),
+            longdydt=float(rs.step.longdydt),
+            atom_loss={
+                a: float(np.asarray(rs.atoms.atom_loss)[i])
+                for i, a in enumerate(rs.atoms.atom_order)
+            },
+            y=np.asarray(rs.step.y),
+        )
+        para = types.SimpleNamespace(
+            count=int(rs.params.count),
+            nega_count=int(rs.params.nega_count),
+            loss_count=int(rs.params.loss_count),
+            delta_count=int(rs.params.delta_count),
+            where_varies_most=None,
+        )
+        return var, para

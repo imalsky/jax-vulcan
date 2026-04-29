@@ -22,31 +22,14 @@ warnings.filterwarnings("ignore")
 
 
 def _setup_hd189_state():
-    from atm_setup import Atm
-    from ini_abun import InitialAbun
     import chem
-    import legacy_io as op
     import network
-    import store
     import vulcan_cfg
+    # Build the typed pre-loop state and shim into legacy form.
+    from state import RunState, legacy_view
 
-    data_var = store.Variables()
-    data_atm = store.AtmData()
-    make_atm = Atm()
-    data_atm = make_atm.f_pico(data_atm)
-    data_atm = make_atm.load_TPK(data_atm)
-    if vulcan_cfg.use_condense:
-        make_atm.sp_sat(data_atm)
-    rate = op.ReadRate()
-    data_var = rate.read_rate(data_var, data_atm)
-    import rates as _rates_mod
-    _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
-    ini = InitialAbun()
-    data_var = ini.ini_y(data_var, data_atm)
-    data_var = ini.ele_sum(data_var)
-    data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
-    make_atm.mol_diff(data_atm)
-    make_atm.BC_flux(data_atm)
+    rs = RunState.with_pre_loop_setup(vulcan_cfg)
+    data_var, data_atm, _ = legacy_view(rs)
     data_var.dt = 1e-10
     net = chem.to_jax(network.parse_network(vulcan_cfg.network))
     return data_var, data_atm, net

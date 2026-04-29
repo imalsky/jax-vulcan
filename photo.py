@@ -1,20 +1,4 @@
-"""JAX-friendly photochemistry: optical depth, two-stream RT, J-rate computation.
-
-Mirrors `op.py:compute_tau` (lines 2583-2603), `compute_flux` (2606-2742),
-and `compute_J` (2754-2790).
-
-Design:
-  - VULCAN stores cross-sections as Python dicts keyed by species name (and
-    sometimes (species, branch_index)). For JAX, we pre-stack these into
-    fixed-shape tensors at startup via `pack_photo_data`, then operate on
-    those tensors inside JIT'd kernels.
-  - `compute_tau_jax` uses `jnp.cumsum` for the top-down accumulation,
-    replacing VULCAN's explicit Python `for j in range(nz-1, -1, -1)` loop.
-  - `compute_flux_jax` uses two `jax.lax.scan`s for the down/up flux
-    propagation, matching the upstream two-stream recursion.
-  - `compute_J_jax` / `compute_Jion_jax` are tensor contractions plus the
-    same two-bin-spacing trapezoid integration as upstream VULCAN.
-"""
+"""JAX photochemistry: optical depth, two-stream RT, J-rate computation."""
 
 from __future__ import annotations
 
@@ -29,8 +13,6 @@ jax.config.update("jax_enable_x64", True)
 
 class PhotoData(NamedTuple):
     """Pre-stacked cross-section arrays for JAX photochem.
-
-    All arrays are jnp; species lookups are done at startup via index arrays.
 
     Fields:
       absp_idx:     (n_absp,)              int   - species indices for absorbers
@@ -50,17 +32,7 @@ class PhotoData(NamedTuple):
 
 
 def photo_data_from_static(static, species_list) -> PhotoData:
-    """Phase 22e: build the runtime `PhotoData` from a `PhotoStaticInputs`.
-
-    `species_list` carries the network species ordering (typically
-    `chem_funs.spec_list`); the returned `PhotoData` indexes into that
-    list via `absp_idx` / `absp_T_idx` / `scat_idx`.
-
-    `static.absp_cross` carries one row per species in `static.absp_sp`
-    (which is `photo_sp + ion_sp`, T-dep included). We slice out the
-    non-T-dep subset for the runtime kernel's `absp_cross` and the
-    T-dep subset for `absp_T_cross`.
-    """
+    """Build the runtime `PhotoData` from a `PhotoStaticInputs`."""
     T_cross_sp = set(static.absp_T_sp)
     absp_sp_non_T = [sp for sp in static.absp_sp if sp not in T_cross_sp]
     absp_T_sp_list = list(static.absp_T_sp)
@@ -78,10 +50,9 @@ def photo_data_from_static(static, species_list) -> PhotoData:
         absp_idx = np.zeros((0,), dtype=np.int64)
         absp_cross = jnp.zeros((0, nbin), dtype=jnp.float64)
 
-    # absp_T_cross: pass through as-is. The static carries the correct
-    # `(n_T, nz, nbin)` shape (with n_T == 0 when there are no T-dep
-    # absorbers but nz still set from atm.Tco), so rebuilding here would
-    # only lose the layer-count metadata the comparison tests expect.
+    # absp_T_cross passes through as-is: the static carries the correct
+    # (n_T, nz, nbin) shape (with n_T == 0 when there are no T-dep absorbers
+    # but nz still set), and rebuilding here would lose the layer-count metadata.
     if absp_T_sp_list:
         absp_T_idx = np.array(
             [species_list.index(sp) for sp in absp_T_sp_list], dtype=np.int64,
@@ -121,14 +92,10 @@ def compute_tau_jax(y: jnp.ndarray, dz: jnp.ndarray, photo: PhotoData) -> jnp.nd
     Returns:
         tau:     (nz+1, nbin) staggered. tau[nz] = 0 (top boundary), tau[0]
                               is the total column.
-
-    Mirrors op.compute_tau exactly:
-        tau[j] = sum over species (y[j,sp] * dz[j] * cross[sp]) + tau[j+1]
     """
     nz, ni = y.shape
     nbin = photo.absp_cross.shape[1]
 
-    # Per-layer absorbing contribution: shape (nz, nbin)
     if photo.absp_idx.shape[0] > 0:
         abs_per_layer = jnp.einsum(
             "js,sb->jb", y[:, photo.absp_idx], photo.absp_cross
@@ -137,7 +104,6 @@ def compute_tau_jax(y: jnp.ndarray, dz: jnp.ndarray, photo: PhotoData) -> jnp.nd
         abs_per_layer = jnp.zeros((nz, nbin))
 
     if photo.absp_T_idx.shape[0] > 0:
-        # T-dependent: cross is (n_absp_T, nz, nbin)
         absT_per_layer = jnp.sum(
             y[:, photo.absp_T_idx][:, :, None] * photo.absp_T_cross.transpose(1, 0, 2),
             axis=1,
@@ -150,10 +116,8 @@ def compute_tau_jax(y: jnp.ndarray, dz: jnp.ndarray, photo: PhotoData) -> jnp.nd
         ) * dz[:, None]
         abs_per_layer = abs_per_layer + scat_per_layer
 
-    # Cumulative top-down: tau[j] = sum from j to nz-1 of contributions
-    # jnp.cumsum gives 0..j, so flip first to get top-down.
+    # cumsum gives bottom-up partial sums; flip to obtain top-down accumulation.
     tau_no_top = jnp.flip(jnp.cumsum(jnp.flip(abs_per_layer, axis=0), axis=0), axis=0)
-    # Append zero at the top (tau[nz] = 0)
     tau = jnp.concatenate([tau_no_top, jnp.zeros((1, nbin))], axis=0)
     return tau
 
@@ -168,34 +132,25 @@ def compute_flux_jax(
     ymix: jnp.ndarray,          # (nz, ni) for w0 computation
     photo: PhotoData,
     bins: jnp.ndarray,          # (nbin,) wavelength bins (nm)
-    mu_zenith: float,           # cos(sl_angle), VULCAN converts to -cos
+    mu_zenith: float,
     edd: float,
     ag0: float,
     hc: float,                  # h*c in erg*nm
-    dflux_u_prev: jnp.ndarray,  # (nz+1, nbin) prior up-flux; pass zeros on first call
-    ag0_is_zero: bool = True,   # static: select between two-stream branches
+    dflux_u_prev: jnp.ndarray,  # (nz+1, nbin); pass zeros on first call
+    ag0_is_zero: bool = True,
 ):
     """Two-stream Eddington radiative transfer.
 
-    Mirrors `op.compute_flux` (lines 2606-2742) bit-for-bit when
-    `dflux_u_prev` is threaded through (the prior call's `dflux_u`). VULCAN's
-    down sweep at line 2694 reads var.dflux_u[j] *as it stood after the
-    previous call*, since the up sweep that overwrites it runs second. To
-    replicate exactly, callers pass the dflux_u from the previous compute_flux
-    call as `dflux_u_prev`. On the very first call, `dflux_u_prev = zeros`
-    (which is also how VULCAN initializes `var.dflux_u`).
-
-    Implementation: vectorized matrix coefficients + two `jax.lax.scan`s for
-    the down/up flux recursion.
+    The down sweep reads dflux_u as it stood after the previous call (since
+    the up sweep that overwrites it runs second). Callers must thread the
+    prior call's dflux_u through `dflux_u_prev`; on the first call, pass zeros.
     """
     mu_ang = -1.0 * mu_zenith
     nz_plus1, nbin = tau.shape
     nz = nz_plus1 - 1
 
-    # delta_tau (length nz) -- between successive layers
-    delta_tau = tau[:-1] - tau[1:]    # (nz, nbin)
+    delta_tau = tau[:-1] - tau[1:]
 
-    # Single-scattering albedo from current ymix
     if photo.absp_idx.shape[0] > 0:
         tot_abs = jnp.einsum("js,sb->jb", ymix[:, photo.absp_idx], photo.absp_cross)
     else:
@@ -215,14 +170,11 @@ def compute_flux_jax(
     w0 = jnp.where(jnp.isnan(w0), 0.0, w0)
     w0 = jnp.minimum(w0, 1.0 - 1e-8)
 
-    # Direct beam (Beer's law). Upstream op.py writes this as
-    # `exp(-tau / cos(arccos(-mu_ang)))` — same value as `exp(tau / mu_ang)`
-    # since `cos(arccos(x)) = x` and mu_ang = -mu_zenith, so -mu_ang ∈ [0,1]
-    # is in the valid arccos range. We drop the trig pair.
+    # Direct beam: exp(-tau / cos(arccos(-mu_ang))) simplifies to exp(tau / mu_ang)
+    # because cos(arccos(x)) = x for x in [0, 1] and -mu_ang lies in that range.
     sflux = sflux_top[None, :] * jnp.exp(tau / mu_ang)
     dir_flux = sflux * (-mu_ang)
 
-    # Transmission and matrix coefficients (vectorized over nz, nbin)
     if ag0_is_zero:
         tran = jnp.exp(-1.0 / edd * (1.0 - w0) ** 0.5 * delta_tau)
         zeta_p = 0.5 * (1.0 + (1.0 - w0) ** 0.5)
@@ -248,40 +200,31 @@ def compute_flux_jax(
 
     ll = jnp.clip(ll, -1e10, 1e10)
 
-    chi = zeta_m ** 2 * tran ** 2 - zeta_p ** 2          # (nz, nbin)
+    chi = zeta_m ** 2 * tran ** 2 - zeta_p ** 2
     xi = zeta_p * zeta_m * (1.0 - tran ** 2)
     phi = (zeta_m ** 2 - zeta_p ** 2) * tran
 
     i_u = phi * g_p * dir_flux[:-1] - (xi * g_m + chi * g_p) * dir_flux[1:]
     i_d = phi * g_m * dir_flux[1:] - (chi * g_m + xi * g_p) * dir_flux[:-1]
 
-    # Down recursion via lax.scan (j from nz-1 down to 0)
-    # dflux_d[j] = 1/chi[j] * (phi[j] * dflux_d[j+1] - xi[j] * dflux_u[j] + i_d[j]/mu_ang)
-    # `dflux_u[j]` here refers to the PRIOR call's value (var.dflux_u as-is
-    # before the up sweep overwrites it) -- this is how VULCAN's loop is
-    # written (op.py:2694). On the first call, dflux_u_prev should be zeros.
-
-    dflux_d_top = jnp.zeros(nbin)    # boundary: zero diffuse flux at TOA
+    dflux_d_top = jnp.zeros(nbin)
 
     def down_step(carry, j):
-        dflux_u_j = dflux_u_prev[j]   # prior call's dflux_u, matching op.py:2694
-        dflux_d_jp1 = carry            # this is dflux_d[j+1]
+        # dflux_u_j is the prior call's dflux_u, not the current up sweep's value.
+        dflux_u_j = dflux_u_prev[j]
+        dflux_d_jp1 = carry
         dflux_d_j = (1.0 / chi[j]) * (
             phi[j] * dflux_d_jp1 - xi[j] * dflux_u_j + i_d[j] / mu_ang
         )
         return dflux_d_j, dflux_d_j
 
-    # Iterate j from nz-1 down to 0
     js_down = jnp.arange(nz - 1, -1, -1)
     _, dflux_d_seq = jax.lax.scan(down_step, dflux_d_top, js_down)
-    # dflux_d_seq is in reverse order: [dflux_d[nz-1], ..., dflux_d[0]]
     dflux_d = jnp.concatenate(
         [dflux_d_seq[::-1], dflux_d_top[None]], axis=0
-    )   # (nz+1, nbin); dflux_d[nz] = top boundary = 0
+    )
 
-    # Up recursion (j from 1 to nz)
-    # dflux_u[j] = 1/chi[j-1] * (phi[j-1] * dflux_u[j-1] - xi[j-1] * dflux_d[j] + i_u[j-1]/mu_ang)
-    dflux_u_bot = jnp.zeros(nbin)   # boundary: zero upward at surface
+    dflux_u_bot = jnp.zeros(nbin)
 
     def up_step(carry, j):
         dflux_u_jm1 = carry
@@ -292,9 +235,8 @@ def compute_flux_jax(
 
     js_up = jnp.arange(1, nz + 1)
     _, dflux_u_seq = jax.lax.scan(up_step, dflux_u_bot, js_up)
-    dflux_u = jnp.concatenate([dflux_u_bot[None], dflux_u_seq], axis=0)   # (nz+1, nbin)
+    dflux_u = jnp.concatenate([dflux_u_bot[None], dflux_u_seq], axis=0)
 
-    # Layer-center average flux
     ave_dir_flux = 0.5 * (sflux[:-1] + sflux[1:])
     tot_flux = (
         ave_dir_flux
@@ -327,14 +269,7 @@ class PhotoJData(NamedTuple):
 
 
 def photo_J_data_from_static(static) -> PhotoJData:
-    """Phase 22e: build the runtime photolysis `PhotoJData` from a
-    `PhotoStaticInputs`. Pure selector; no `var` argument.
-
-    `static.din12_indx` must be `>= 0` (set after `read_sflux` via
-    `static.with_din12_indx(...)`); a negative value indicates the
-    pytree was used before the `read_sflux` step that fixes the
-    bin-spacing transition index.
-    """
+    """Build the runtime photolysis `PhotoJData` from a `PhotoStaticInputs`."""
     if int(static.din12_indx) < 0:
         raise ValueError(
             "PhotoStaticInputs.din12_indx is -1; call "
@@ -353,12 +288,7 @@ def photo_J_data_from_static(static) -> PhotoJData:
 
 
 def photo_ion_data_from_static(static) -> PhotoJData:
-    """Phase 22e: build the runtime photoionization `PhotoJData` from a
-    `PhotoStaticInputs`. Pure selector; no `var` argument.
-
-    `cross_J_T` is empty by construction -- upstream `compute_Jion`
-    has no T-dependent branch.
-    """
+    """Build the runtime photoionization `PhotoJData` from a `PhotoStaticInputs`."""
     if int(static.din12_indx) < 0:
         raise ValueError(
             "PhotoStaticInputs.din12_indx is -1; call "
@@ -385,14 +315,11 @@ def _compute_J_inner(aflux, cross_J, cross_J_T, din12_indx, dbin1, dbin2):
     flux1 = aflux[:, :din12_indx]
     flux2 = aflux[:, din12_indx:]
 
-    # Non-T branches: cross_J shape (n_br, nbin)
     if cross_J.shape[0] > 0:
         c1 = cross_J[:, :din12_indx]
         c2 = cross_J[:, din12_indx:]
-        # Sum (rectangular) + trapezoid endpoint correction
-        # J_per_br[nbr, nz] = sum_b (flux[nz, b] * cross[nbr, b]) * dbin
+        # Trapezoid integration written as rectangle sum minus half the endpoints.
         J1 = jnp.einsum("jb,nb->nj", flux1, c1) * dbin1
-        # Trapezoid correction subtracts half of endpoints
         J1 = J1 - 0.5 * (
             flux1[:, 0][None] * c1[:, 0][:, None]
             + flux1[:, -1][None] * c1[:, -1][:, None]
@@ -402,15 +329,13 @@ def _compute_J_inner(aflux, cross_J, cross_J_T, din12_indx, dbin1, dbin2):
             flux2[:, 0][None] * c2[:, 0][:, None]
             + flux2[:, -1][None] * c2[:, -1][:, None]
         ) * dbin2
-        J_br = J1 + J2          # (n_br, nz)
+        J_br = J1 + J2
     else:
         J_br = jnp.zeros((0, nz))
 
-    # T-dependent branches: cross_J_T shape (n_br_T, nz, nbin)
     if cross_J_T.shape[0] > 0:
         cT1 = cross_J_T[:, :, :din12_indx]
         cT2 = cross_J_T[:, :, din12_indx:]
-        # J[nbr, nz] = sum_b flux[nz, b] * cross_T[nbr, nz, b] * dbin
         JT1 = jnp.sum(flux1[None] * cT1, axis=2) * dbin1
         JT1 = JT1 - 0.5 * (
             flux1[:, 0][None] * cT1[:, :, 0]
@@ -432,10 +357,6 @@ def compute_J_jax(aflux: jnp.ndarray, photo_J: PhotoJData):
     """Compute J-rates per (species, branch) via wavelength integration.
 
     Returns a dict keyed by (species, branch) -> jnp.ndarray of shape (nz,).
-    Same schema as VULCAN's `var.J_sp`. Used by `op_jax.Ros2JAX.compute_J` for
-    the pre-loop one-shot setup. Inside the JAX body of `outer_loop.OuterLoop`,
-    use `compute_J_jax_flat` instead — returns flat arrays so .at[].set()
-    can write the rates into `k_arr` without a Python dict round-trip.
     """
     J_br, J_br_T = _compute_J_inner(
         aflux, photo_J.cross_J, photo_J.cross_J_T,
@@ -457,12 +378,7 @@ def compute_Jion_jax(aflux: jnp.ndarray, photo_ion: PhotoJData):
 
 @_partial(jax.jit, static_argnames=("din12_indx",))
 def compute_J_jax_flat(aflux, cross_J, cross_J_T, din12_indx, dbin1, dbin2):
-    """Flat-output version of compute_J_jax: returns (J_br, J_br_T) arrays.
-
-    Avoids the Python dict that compute_J_jax builds at line 410 — that
-    dict is opaque to JIT and forces a host round-trip if it's the boundary.
-    `outer_loop._make_photo_branch` calls this and feeds J_br / J_br_T
-    straight into `update_k_with_J` via .at[].set().
+    """Flat-output compute_J_jax: returns (J_br, J_br_T) arrays.
 
     Args:
         aflux:         (nz, nbin)         actinic flux
@@ -507,17 +423,14 @@ def _pack_branch_to_k_index_map(branch_keys, rate_index, remove_list):
 def pack_J_to_k_index_map(photo_J, var, vulcan_cfg):
     """Build static index arrays mapping each branch to its `var.k` reaction index.
 
-    Returns a tuple of four (n_br,) arrays plus their T-branch counterparts:
+    Returns four (n_br,) arrays plus their T-branch counterparts:
         branch_re_idx     int64 — reaction index in k_arr (1..nr); 0 if inactive
         branch_active     bool  — True if this branch should write into k_arr
         branch_T_re_idx   int64 — same, for T-dep branches
         branch_T_active   bool
 
-    A branch is "inactive" if it's missing from `var.pho_rate_index` or its
-    reaction index is in `vulcan_cfg.remove_list`. Inactive branches are
-    handled at update time by writing the existing k_arr[0] value into
-    k_arr[branch_re_idx], which is a no-op as long as inactive entries point
-    at index 0 (an unused slot since reactions are 1-indexed).
+    Inactive entries point at index 0 (an unused slot, since reactions are
+    1-indexed) so the scatter shape stays static.
     """
     re_idx, active = _pack_branch_to_k_index_map(
         photo_J.branch_keys,
@@ -548,28 +461,20 @@ def update_k_with_J(k_arr, J_br, J_br_T,
                     f_diurnal):
     """Write per-branch J-rates into k_arr via .at[].set().
 
-    Mirrors the inner loop of `op.compute_J` (op.py:2787-2789):
-        var.k[var.pho_rate_index[(sp, nbr)]] = var.J_sp[(sp, nbr)] * f_diurnal
-
-    Inactive branches (active mask False) leave k_arr unchanged at their
-    re_idx slot. Implementation detail: the .at[].set() writes for inactive
-    branches are aimed at index 0 (k_arr[0] is unused; reactions are 1-indexed)
-    AND the value is set to the existing k_arr[0] — a self-assignment that
-    leaves k_arr untouched. This keeps the scatter shape static.
+    Inactive branches (active mask False) write k_arr[0] back into k_arr[0],
+    a self-assignment that keeps the scatter shape static.
     """
     J_br_scaled = J_br * f_diurnal
     J_br_T_scaled = J_br_T * f_diurnal
 
-    # For inactive entries, write k_arr[0] back to k_arr[0] — true no-op.
     safe_J_br = jnp.where(branch_active[:, None],
                           J_br_scaled,
                           k_arr[0][None, :])
     safe_J_br_T = jnp.where(branch_T_active[:, None],
                             J_br_T_scaled,
                             k_arr[0][None, :])
-    # Single fused scatter: non-T and T-dep branch index sets are partitioned
-    # at pack time (disjoint by construction), so we can concatenate and write
-    # in one .at[].set() call. Saves one scatter dispatch per photo update.
+    # Non-T and T-dep branch index sets are partitioned at pack time (disjoint
+    # by construction), so concatenate and write in one fused scatter.
     combined_idx = jnp.concatenate([branch_re_idx, branch_T_re_idx], axis=0)
     combined_J = jnp.concatenate([safe_J_br, safe_J_br_T], axis=0)
     return k_arr.at[combined_idx].set(combined_J)

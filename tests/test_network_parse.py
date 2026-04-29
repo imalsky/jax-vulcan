@@ -11,6 +11,8 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
+import pytest  # noqa: E402  (used by @pytest.mark.master_serial)
+
 # Make VULCAN-JAX importable when run from any cwd
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -107,6 +109,7 @@ def main() -> int:
     return 0 if ok else 1
 
 
+@pytest.mark.master_serial
 def test_main():
     """Pytest wrapper. `main()` returns 0 on success; convert to an
     assertion so `pytest tests/` collects and runs this script."""

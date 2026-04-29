@@ -1,4 +1,4 @@
-"""Validate VULCAN-JAX initial-abundance pipeline (Phase 21).
+"""Validate VULCAN-JAX initial-abundance pipeline.
 
 Coverage matrix over `ini_mix ∈ {EQ, const_mix, vulcan_ini, table,
 const_lowT}`:
@@ -60,13 +60,20 @@ def _cfg_overrides(**kwargs):
 def _build_hd189_atm():
     """Return `(data_var, data_atm, make_atm)` after `load_TPK` (and
     `sp_sat` if condense is on). Caller takes a deep copy if it plans
-    to mutate cfg before calling `InitialAbun.ini_y`."""
+    to mutate cfg before calling `InitialAbun.ini_y`.
+
+    Callers of this helper only need the partial setup (`f_pico` +
+    `load_TPK`) — full `RunState.with_pre_loop_setup` would also run rate
+    parsing / FastChem / photo cross-section reads which the parametrized
+    mode tests don't use; using the private `state._Variables` /
+    `_AtmData` containers keeps this lightweight.
+    """
     from atm_setup import Atm
-    import store
+    from state import _Variables, _AtmData
     import vulcan_cfg
 
-    data_var = store.Variables()
-    data_atm = store.AtmData()
+    data_var = _Variables()
+    data_atm = _AtmData()
     make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
@@ -268,14 +275,14 @@ def test_charge_list_no_ions():
 def main() -> int:
     from atm_setup import Atm
     from ini_abun import InitialAbun
-    import store
+    from state import _Variables, _AtmData
     import vulcan_cfg
     import chem_funs as cf_jax
 
     print(f"VULCAN-JAX chem_funs: ni={cf_jax.ni} nr={cf_jax.nr}, ini_mix={vulcan_cfg.ini_mix}")
 
-    data_var = store.Variables()
-    data_atm = store.AtmData()
+    data_var = _Variables()
+    data_atm = _AtmData()
     make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
@@ -360,6 +367,7 @@ def main() -> int:
     return 0 if ok else 1
 
 
+@pytest.mark.master_serial
 def test_zzz_main_eq_vs_master():
     """EQ-mode bit-exact gate against VULCAN-master.
 

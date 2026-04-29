@@ -218,6 +218,7 @@ def main() -> int:
     return 0 if ok else 1
 
 
+@pytest.mark.master_serial
 def test_main():
     """Pytest wrapper. This test does a deliberate VULCAN-master ↔
     VULCAN-JAX module-table swap (see `sys.modules.pop` block in

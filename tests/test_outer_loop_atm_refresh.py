@@ -1,13 +1,13 @@
-"""Validate Phase 10.3: atm refresh + hydrostatic balance inside the JAX
-runner agree with the Python-side `op.Integration.update_mu_dz` /
+"""Validate that atm refresh + hydrostatic balance inside the JAX runner
+agree with the Python-side `op.Integration.update_mu_dz` /
 `update_phi_esc` + `var.y = n_0 * var.ymix` baseline.
 
 Builds the HD189 reference state and runs the atm-refresh branch *both* ways:
 
   (A) via `op.Integration.update_mu_dz` / `update_phi_esc` writing into atm,
-      followed by Python `var.y = n_0 * var.ymix` (the pre-Phase-10.3 path).
+      followed by Python `var.y = n_0 * var.ymix`.
 
-  (B) via the Phase 10.3 atm-refresh branch closed over by
+  (B) via the in-runner atm-refresh branch closed over by
       `outer_loop._make_atm_refresh_branch`, with hydrostatic balance applied
       inside `body_fn` of the JAX runner.
 
@@ -55,45 +55,15 @@ REFRESH_RTOL = 1e-13
 
 def main() -> int:
     import vulcan_cfg
-    import store, op, op_jax, outer_loop
+    import op, op_jax, outer_loop
     from atm_setup import Atm
-    from ini_abun import InitialAbun
+    from state import RunState, legacy_view
 
     # --- Build HD189 reference state ---
-    data_var = store.Variables()
-    data_atm = store.AtmData()
-    data_para = store.Parameters()
-
+    rs = RunState.with_pre_loop_setup(vulcan_cfg)
+    data_var, data_atm, data_para = legacy_view(rs)
     make_atm = Atm()
     output = op.Output()
-    data_atm = make_atm.f_pico(data_atm)
-    data_atm = make_atm.load_TPK(data_atm)
-    rate = op.ReadRate()
-    data_var = rate.read_rate(data_var, data_atm)
-    data_var = rate.rev_rate(data_var, data_atm)
-    data_var = rate.remove_rate(data_var)
-    # Phase 22d: VULCAN-JAX's runner reads `var.k_arr` (dense), not the
-    # legacy `var.k` dict. Master's rate-parser populates the dict; bridge
-    # it into the dense surface for VULCAN-JAX's path.
-    import network as _net_mod
-    import rates as _rates_mod
-    _net = _net_mod.parse_network(vulcan_cfg.network)
-    nz_local = int(data_atm.Tco.shape[0])
-    data_var.k_arr = _rates_mod.k_array_from_dict(_net, data_var.k, nz=nz_local)
-    ini_abun = InitialAbun()
-    data_var = ini_abun.ini_y(data_var, data_atm)
-    data_var = ini_abun.ele_sum(data_var)
-    data_atm = make_atm.f_mu_dz(data_var, data_atm, output)
-    make_atm.mol_diff(data_atm)
-    make_atm.BC_flux(data_atm)
-
-    if vulcan_cfg.use_photo:
-        # `_ensure_runner` builds the photo branch too, which needs var.nbin
-        # and friends; do the photo pre-loop here even though the test only
-        # exercises the refresh branch.
-        import photo_setup as _photo_setup
-        _photo_setup.populate_photo_arrays(data_var, data_atm)
-        make_atm.read_sflux(data_var, data_atm)
 
     # Perturb ymix slightly so the refresh produces non-trivial deltas
     # vs the initial state (otherwise mu_post == mu_pre and it's not a
@@ -126,7 +96,10 @@ def main() -> int:
     y_A = var_A.y.copy()
 
     # --- Path B: atm-refresh branch + hydrostatic balance via JAX runner ---
-    integ = outer_loop.OuterLoop(op_jax.Ros2JAX(), output)
+    solver_B = op_jax.Ros2JAX()
+    if vulcan_cfg.use_photo and rs.photo_static is not None:
+        solver_B._photo_static = rs.photo_static
+    integ = outer_loop.OuterLoop(solver_B, output)
     integ._ensure_runner(data_var, data_atm)
 
     # Use the standalone atm refresh branch on a packed initial state:
@@ -180,6 +153,7 @@ def main() -> int:
     return 0 if ok else 1
 
 
+@pytest.mark.master_serial
 def test_main():
     """Pytest wrapper. `main()` returns 0 on success; convert to an
     assertion so `pytest tests/` collects and runs this script."""

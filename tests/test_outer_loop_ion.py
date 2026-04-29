@@ -1,4 +1,4 @@
-"""Phase 10.6 — ion charge balance kernel.
+"""Ion charge balance kernel inside the runner.
 
 The body's post-step ion clamp is:
 

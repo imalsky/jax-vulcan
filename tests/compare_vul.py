@@ -25,7 +25,7 @@ This rewrite makes the comparison strictly apples-to-apples:
    ``1e-10``). The headline is the median of that, not the worst-case
    relerr on trace species. This is the standard metric used elsewhere
    in this workspace (see ``vulcan-emulator`` ``mean_abs_log10_error``)
-   and matches the per-component agreement table in ``STATUS.md``.
+   and matches the per-component agreement table in ``README.md``.
 4. **Mass conservation side-by-side.** ``atom_loss`` is normalized
    against the same ``y_ini`` for both runs, so it remains meaningful
    even when ``t`` diverges; reporting it gives a sanity check that's
@@ -41,7 +41,6 @@ from __future__ import annotations
 
 import argparse
 import pickle
-import sys
 from pathlib import Path
 
 import numpy as np

@@ -74,7 +74,6 @@ def main() -> int:
     sys.path.insert(0, str(ROOT))
 
     import network as net_mod
-    import gibbs as gibbs_mod
     import chem as chem_mod
     import jax.numpy as jnp
 
@@ -144,10 +143,25 @@ def main() -> int:
     return 0 if ok else 1
 
 
+@pytest.mark.master_serial
 def test_main():
-    """Pytest wrapper. `main()` returns 0 on success; convert to an
-    assertion so `pytest tests/` collects and runs this script."""
-    assert main() == 0
+    """Pytest wrapper. This test does a deliberate VULCAN-master ↔
+    VULCAN-JAX module-table swap (see `sys.modules.pop` block in
+    `main()`) which only works from a cold Python start. Under pytest
+    the modules are already cached from prior tests, and the pop forks
+    a fresh `vulcan_cfg` object that poisons later tests' captured
+    references. Run `main()` in a fresh subprocess and assert the exit
+    code — same pattern as `test_diffusion` / `test_ros2_step`."""
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve())],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, (
+        f"subprocess exited {result.returncode}\n"
+        f"--- stdout ---\n{result.stdout}\n"
+        f"--- stderr ---\n{result.stderr}"
+    )
 
 
 if __name__ == "__main__":

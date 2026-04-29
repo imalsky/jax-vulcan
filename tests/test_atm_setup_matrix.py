@@ -1,13 +1,10 @@
-"""Phase 20: per-cfg parametrized coverage of `atm_setup` JAX kernels.
+"""Per-cfg parametrized coverage of `atm_setup` JAX kernels.
 
-The original `tests/test_build_atm.py` compares the HD189 default cfg's
-full pipeline against VULCAN-master and skips cleanly if the master
-sibling is absent. This file complements that with **standalone**
-coverage of every cfg branch that HD189 alone misses:
+Standalone coverage of every cfg branch that HD189 alone misses:
 
   - `atm_type ∈ {isothermal, analytical, file}` (vulcan_ini / table
-    require a prior .vul / synthetic table — covered by Phase 21 once
-    the saved-state setup matures).
+    require a prior .vul / synthetic table; covered by the
+    `test_ini_abun.py` matrix).
   - `atm_base ∈ {H2, N2, O2, CO2}` exercising `compute_mol_diff`.
   - `Kzz_prof ∈ {const, JM16, Pfunc, file}`.
   - `vz_prof ∈ {const, file}` with `use_vz=True`.

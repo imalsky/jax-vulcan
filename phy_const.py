@@ -1,5 +1,13 @@
+"""Physical constants (CGS) shared across VULCAN-JAX modules.
+
+Values match VULCAN-master's `phy_const.py` byte-for-byte; sourced from
+the astropy package (http://docs.astropy.org/en/stable/index.html) so
+oracle comparisons against master are bit-exact at the constants layer.
+Re-exported by `chem_funs.py` for convenience.
+"""
+
 ### Physical const (in cgs)
-# values taken from the astropy package (http://docs.astropy.org/en/stable/index.html) 
+# values taken from the astropy package (http://docs.astropy.org/en/stable/index.html)
 kb = 1.38064852E-16    #Boltzmann constant (erg K^-1)
 Navo = 6.02214086E+23  #Avogadro's number 
 #The universal gas constant R = kb * Navo and the specific gas constant = R_uni/molar mass)

@@ -1,16 +1,16 @@
-"""Smoke test for outer_loop.OuterLoop (Phase 10.1).
+"""Smoke test for outer_loop.OuterLoop.
 
 Runs 50 accepted Ros2 steps end-to-end on the HD189 reference state and
 asserts:
     1. count progressed exactly 50 (no silent retries lost / counted as accept)
     2. atom_loss agrees with VULCAN-master's tracked baseline
-       (1.95e-4 per atom; STATUS.md "End-to-end 50-step HD189 — 1.59e-10")
+       (1.95e-4 per atom; the end-to-end 50-step HD189 oracle is the 1.59e-10
+       relative-difference reference).
     3. no force-accept / nega / loss / delta retries fired (HD189 is smooth)
     4. dt advanced from 1e-10 (dttry) to ~1e-3 (typical 50-step HD189)
 
-This is the "did the JAX outer loop break the established baseline" test —
-fast (~10s including JIT compile) and the canonical smoke test for any
-future Phase 10.x change to outer_loop.py.
+The canonical "did anything break the established baseline" smoke test
+for any change to outer_loop.py — fast (~10s including JIT compile).
 """
 from __future__ import annotations
 
@@ -20,7 +20,6 @@ import time
 import warnings
 from pathlib import Path
 
-import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -29,10 +28,10 @@ sys.path.insert(0, str(ROOT))
 warnings.filterwarnings("ignore")
 
 
-# Per-atom atom_loss target: matches STATUS.md "atom_loss matches to all four
-# significant figures". Tolerance set to 5% of the value so the test is
-# robust to small JAX-vs-NumPy reduction-order differences while still
-# catching real regressions (e.g. a 10x atom_loss blowup).
+# Per-atom atom_loss target: matches the established VULCAN-master
+# baseline to four significant figures. Tolerance set to 5% of the value
+# so the test is robust to small JAX-vs-NumPy reduction-order differences
+# while still catching real regressions (e.g. a 10x atom_loss blowup).
 EXPECTED_ATOM_LOSS = 1.95e-4
 ATOM_LOSS_RTOL = 0.05
 
@@ -57,39 +56,19 @@ def main() -> int:
     vulcan_cfg.use_live_plot = False
     vulcan_cfg.use_live_flux = False
 
-    import store, op_jax
-    import rates as _rates_mod
+    import op_jax
     from atm_setup import Atm
-    from ini_abun import InitialAbun
+    from state import RunState, legacy_view
 
-    data_var = store.Variables()
-    data_atm = store.AtmData()
-    data_para = store.Parameters()
+    rs = RunState.with_pre_loop_setup(vulcan_cfg)
+    data_var, data_atm, data_para = legacy_view(rs)
     data_para.start_time = time.time()
     make_atm = Atm()
     output = op.Output()
 
-    data_atm = make_atm.f_pico(data_atm)
-    data_atm = make_atm.load_TPK(data_atm)
-    rate = op.ReadRate()
-    data_var = rate.read_rate(data_var, data_atm)
-    _network = _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
-    ini_abun = InitialAbun()
-    data_var = ini_abun.ini_y(data_var, data_atm)
-    data_var = ini_abun.ele_sum(data_var)
-    data_atm = make_atm.f_mu_dz(data_var, data_atm, output)
-    make_atm.mol_diff(data_atm)
-    make_atm.BC_flux(data_atm)
-
     solver = op_jax.Ros2JAX()
-    if vulcan_cfg.use_photo:
-        import photo_setup as _photo_setup
-        _photo_setup.populate_photo_arrays(data_var, data_atm)
-        make_atm.read_sflux(data_var, data_atm)
-        solver.compute_tau(data_var, data_atm)
-        solver.compute_flux(data_var, data_atm)
-        solver.compute_J(data_var, data_atm)
-        _rates_mod.apply_photo_remove(vulcan_cfg, data_var, _network, data_atm)
+    if vulcan_cfg.use_photo and rs.photo_static is not None:
+        solver._photo_static = rs.photo_static
 
     integ = outer_loop.OuterLoop(solver, output)
     solver.naming_solver(data_para)
@@ -103,7 +82,7 @@ def main() -> int:
     print(f"  count={data_para.count}, t={data_var.t:.3e}, dt={data_var.dt:.3e}")
     print(f"  retry counters: nega={data_para.nega_count}, "
           f"loss={data_para.loss_count}, delta={data_para.delta_count}")
-    print(f"  atom_loss: " + " ".join(
+    print("  atom_loss: " + " ".join(
         f"{a}={v:.3e}" for a, v in data_var.atom_loss.items()
     ))
 

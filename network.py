@@ -107,6 +107,7 @@ class Network:
     network_path: str
 
     def species_index(self, sp: str) -> int:
+        """Return the 0-based column index of species `sp` in `(nz, ni)` arrays."""
         return self.species_idx[sp]
 
 

@@ -58,9 +58,9 @@ def main() -> int:
         k_arr=np.zeros((10, aflux.shape[0]), dtype=np.float64),
     )
 
-    # Phase 22e: hand the synthetic ion-cross arrays to Ros2JAX through
-    # a minimal PhotoStaticInputs so its lazy `_ensure_photo_static`
-    # doesn't try to read a full pre-loop state off the SimpleNamespace.
+    # Hand the synthetic ion-cross arrays to Ros2JAX through a minimal
+    # PhotoStaticInputs so its lazy `_ensure_photo_static` doesn't try to
+    # read a full pre-loop state off the SimpleNamespace.
     import jax.numpy as jnp
     from state import PhotoStaticInputs
     nbin = aflux.shape[1]

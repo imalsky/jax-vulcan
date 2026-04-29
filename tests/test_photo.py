@@ -33,15 +33,20 @@ warnings.filterwarnings("ignore")
 def main() -> int:
     import jax.numpy as jnp
     import vulcan_cfg
-    import store
     from atm_setup import Atm
     from ini_abun import InitialAbun
     import op
     import photo as photo_mod
+    # The private `state._Variables` / `_AtmData` containers are reached
+    # in here because hybrid oracle tests need master's pipeline to mutate
+    # a single shared `(var, atm)` — e.g. master's `make_bins_read_cross`
+    # writes `var.cross[sp]` dicts that the JAX side's
+    # `_build_photo_static_dense` then reads.
+    from state import _Variables, _AtmData
 
     # === Set up state with photochemistry ===
-    data_var = store.Variables()
-    data_atm = store.AtmData()
+    data_var = _Variables()
+    data_atm = _AtmData()
     make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)
@@ -73,14 +78,14 @@ def main() -> int:
     import chem_funs
     species_list = chem_funs.spec_list
 
-    # Phase 22e: build the dense `PhotoStaticInputs` and derive the
-    # runtime `PhotoData` from it; master's `make_bins_read_cross`
-    # above already populated the dicts master's compute_tau needs.
+    # Build the dense `PhotoStaticInputs` and derive the runtime
+    # `PhotoData` from it; master's `make_bins_read_cross` above already
+    # populated the dicts master's compute_tau needs.
     import photo_setup
     static = photo_setup._build_photo_static_dense(data_var, data_atm)
     static = static.with_din12_indx(int(data_var.sflux_din12_indx))
     photo_data = photo_mod.photo_data_from_static(static, species_list)
-    print(f"\nPacked photo data:")
+    print("\nPacked photo data:")
     print(f"  absp species (non-T):  {photo_data.absp_idx.shape[0]}")
     print(f"  absp species (T-dep):  {photo_data.absp_T_idx.shape[0]}")
     print(f"  scat species:          {photo_data.scat_idx.shape[0]}")
@@ -174,6 +179,7 @@ def main() -> int:
     return 0 if ok else 1
 
 
+@pytest.mark.master_serial
 def test_main():
     """Pytest wrapper. `main()` returns 0 on success; convert to an
     assertion so `pytest tests/` collects and runs this script."""

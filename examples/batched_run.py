@@ -30,31 +30,17 @@ def main():
     import jax.numpy as jnp
 
     import vulcan_cfg
-    import store
-    from atm_setup import Atm
-    from ini_abun import InitialAbun
-    import op
-    import op_jax
+    import chem_funs
     import jax_step as js_mod
+    # Build the canonical HD189 pre-loop state via the typed constructor
+    # and derive a `(var, atm, _)` shim for the legacy attribute access
+    # this example does (`data_var.y`, `data_atm.*`).
+    from state import RunState, legacy_view
 
     # Set up the canonical state
     print("Setting up base atmosphere...")
-    data_var = store.Variables()
-    data_atm = store.AtmData()
-    make_atm = Atm()
-    data_atm = make_atm.f_pico(data_atm)
-    data_atm = make_atm.load_TPK(data_atm)
-    if vulcan_cfg.use_condense:
-        make_atm.sp_sat(data_atm)
-    rate = op.ReadRate()
-    data_var = rate.read_rate(data_var, data_atm)
-    data_var = rate.rev_rate(data_var, data_atm)
-    ini = InitialAbun()
-    data_var = ini.ini_y(data_var, data_atm)
-    data_var = ini.ele_sum(data_var)
-    data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
-    make_atm.mol_diff(data_atm)
-    make_atm.BC_flux(data_atm)
+    rs = RunState.with_pre_loop_setup(vulcan_cfg)
+    data_var, data_atm, _ = legacy_view(rs)
     nz, ni = data_var.y.shape
 
     atm_static = js_mod.make_atm_static(data_atm, ni, nz)
@@ -82,7 +68,7 @@ def main():
     t0 = time.time()
     sol_batch, delta_batch = vstep(
         jnp.asarray(y_batch), jnp.asarray(k_batch),
-        1e-10, atm_static, op_jax._NET_JAX,
+        1e-10, atm_static, chem_funs._NET_JAX,
     )
     sol_batch.block_until_ready()
     print(f"  first call (compile + execute): {time.time() - t0:.1f}s")
@@ -93,21 +79,21 @@ def main():
     for _ in range(n_iter):
         sol_batch, delta_batch = vstep(
             jnp.asarray(y_batch), jnp.asarray(k_batch),
-            1e-10, atm_static, op_jax._NET_JAX,
+            1e-10, atm_static, chem_funs._NET_JAX,
         )
         sol_batch.block_until_ready()
     t_per_call = (time.time() - t0) / n_iter * 1000
 
-    print(f"\nBatched timing:")
+    print("\nBatched timing:")
     print(f"  Per vmap call (batch of {BATCH}): {t_per_call:.1f} ms")
     print(f"  Per atmosphere:                  {t_per_call/BATCH:.1f} ms")
-    print(f"  Single-atmosphere reference:     ~160 ms")
+    print("  Single-atmosphere reference:     ~160 ms")
     print(f"  Speedup factor (batched):        {160 * BATCH / t_per_call:.2f}x")
 
-    print(f"\nNote: on multi-CPU machines, set XLA_FLAGS to expose more devices:")
+    print("\nNote: on multi-CPU machines, set XLA_FLAGS to expose more devices:")
     print(f"  XLA_FLAGS=--xla_force_host_platform_device_count={BATCH} python {sys.argv[0]}")
-    print(f"and switch from jax.vmap to jax.pmap to actually parallelize across")
-    print(f"physical cores. On GPU, vmap parallelizes natively.")
+    print("and switch from jax.vmap to jax.pmap to actually parallelize across")
+    print("physical cores. On GPU, vmap parallelizes natively.")
 
 
 if __name__ == "__main__":

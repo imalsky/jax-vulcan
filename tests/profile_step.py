@@ -17,49 +17,19 @@ warnings.filterwarnings("ignore")
 
 
 def _setup_hd189_state():
-    from atm_setup import Atm
-    from ini_abun import InitialAbun
     import chem
-    import legacy_io as op
     import network
-    import op_jax
-    import store
     import vulcan_cfg
+    from state import RunState, legacy_view
 
-    data_var = store.Variables()
-    data_atm = store.AtmData()
-    make_atm = Atm()
-    data_atm = make_atm.f_pico(data_atm)
-    data_atm = make_atm.load_TPK(data_atm)
-    if vulcan_cfg.use_condense:
-        make_atm.sp_sat(data_atm)
-    rate = op.ReadRate()
-    data_var = rate.read_rate(data_var, data_atm)
-    import rates as _rates_mod
-    _network = _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
-    ini = InitialAbun()
-    data_var = ini.ini_y(data_var, data_atm)
-    data_var = ini.ele_sum(data_var)
-    data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
-    make_atm.mol_diff(data_atm)
-    make_atm.BC_flux(data_atm)
-    if vulcan_cfg.use_photo:
-        import photo_setup as _photo_setup
-        _photo_setup.populate_photo_arrays(data_var, data_atm)
-        make_atm.read_sflux(data_var, data_atm)
-        solver = op_jax.Ros2JAX()
-        solver.compute_tau(data_var, data_atm)
-        solver.compute_flux(data_var, data_atm)
-        solver.compute_J(data_var, data_atm)
-        if vulcan_cfg.use_ion:
-            solver.compute_Jion(data_var, data_atm)
-        _rates_mod.apply_photo_remove(vulcan_cfg, data_var, _network, data_atm)
+    rs = RunState.with_pre_loop_setup(vulcan_cfg)
+    data_var, data_atm, _data_para = legacy_view(rs)
     net = chem.to_jax(network.parse_network(vulcan_cfg.network))
     return data_var, data_atm, net
 
 
 def _pack_k_arr(var, nr: int, nz: int) -> np.ndarray:
-    """Phase 22d: read the dense `(nr+1, nz)` array directly off `var.k_arr`."""
+    """Read the dense `(nr+1, nz)` array directly off `var.k_arr`."""
     out = np.asarray(var.k_arr, dtype=np.float64)
     if out.shape != (nr + 1, nz):
         raise ValueError(f"var.k_arr shape {out.shape} != expected ({nr+1}, {nz})")

@@ -1,10 +1,9 @@
-"""One-shot fixture generator for Phase 22e photo-setup tests.
+"""One-shot fixture generator for the photo-setup tests.
 
-Run me on the green pre-22e tree to refresh the npz baselines, then
-commit the npz files and never run this again unless the maintainer
-explicitly asks. The Phase 22e fixture is the only oracle once
-`make_bins_read_cross` is gone, so any regeneration must be justified
-in the PR description.
+Run on a green tree to refresh the npz baselines, commit them, and
+never run again unless the maintainer explicitly asks. The dense
+`PhotoStaticInputs` pytree is the only oracle for the photo-setup
+tests; any regeneration must be justified in the PR description.
 
 Produces two fixtures under `tests/data/`:
   - `photo_setup_hd189_baseline.npz`    HD189 default (T_cross_sp=[],
@@ -29,7 +28,6 @@ Usage:
 
 from __future__ import annotations
 
-import copy
 import os
 import sys
 from pathlib import Path
@@ -42,13 +40,18 @@ sys.path.insert(0, str(ROOT))
 
 
 def _build_state_through_read_rate():
-    """Run the pre-photo VULCAN setup and return (var, atm)."""
-    import legacy_io as op
-    import store
-    from atm_setup import Atm
+    """Run the pre-photo VULCAN setup and return (var, atm).
 
-    data_var = store.Variables()
-    data_atm = store.AtmData()
+    `_build_photo_static_dense` reads dict attrs that `read_rate` writes
+    onto `var`, so this helper wires them up directly via the private
+    legacy classes (`state._Variables` / `_AtmData`).
+    """
+    import legacy_io as op
+    from atm_setup import Atm
+    from state import _Variables, _AtmData
+
+    data_var = _Variables()
+    data_atm = _AtmData()
     make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
     data_atm = make_atm.load_TPK(data_atm)

@@ -1,6 +1,6 @@
-"""JAX-native initial-abundance setup (Phase 21).
+"""JAX-native initial-abundance setup.
 
-Replaces the SciPy/NumPy `InitialAbun` class from `build_atm.py`. All
+JAX rewrite of VULCAN-master's SciPy/NumPy `InitialAbun` class. All
 five `ini_mix` modes are supported:
 
 - `EQ`         — FastChem equilibrium (subprocess + parsed output)
@@ -10,21 +10,25 @@ five `ini_mix` modes are supported:
 - `const_lowT` — solve the 5-mol H2/H2O/CH4/He/NH3 system via JAX Newton
 
 The `InitialAbun` class is a thin facade matching `atm_setup.Atm`'s
-pattern from Phase 20: it preserves the legacy mutation contract on
-`data_var` / `data_atm` so the runner and existing call sites keep
-working unchanged. `compute_initial_abundance` returns a typed
-`IniAbunOutputs` pytree for new callers.
+pattern: it preserves the legacy mutation contract on `data_var` /
+`data_atm` so the runner and existing call sites keep working unchanged.
+`compute_initial_abundance` returns a typed `IniAbunOutputs` pytree for
+new callers.
 
 FastChem invariants (per `pytest.ini`): inputs and output paths under
 `fastchem_vulcan/` are fixed and the subprocess call is preserved
-byte-for-byte; serial test execution remains required because
-`vulcan_EQ.dat` is rewritten in place.
+byte-for-byte. `_run_fastchem` wraps the call in an `fcntl.flock`
+sentinel so concurrent invocations (e.g. `pytest -n auto` or multiple
+worker processes) serialize on the FastChem block instead of racing
+on the shared `input/` and `output/` files.
 """
 
 from __future__ import annotations
 
+import fcntl
 import pickle
 import subprocess
+from pathlib import Path
 from shutil import copyfile
 
 import jax
@@ -37,6 +41,21 @@ from composition import compo, compo_row, compo_array, species, atom_list as _CO
 from state import IniAbunOutputs
 
 jax.config.update("jax_enable_x64", True)
+
+
+# Anchor every FastChem path to the source location, not cwd. Pytest
+# subprocesses, spawned scripts, and the chunked driver may be invoked
+# from different working directories; hard-anchoring keeps every worker
+# locking and writing to the same `fastchem_vulcan/` instance under the
+# VULCAN-JAX tree (cross-process serialisation otherwise breaks silently
+# when two workers resolve `fastchem_vulcan/.fastchem_lock` to different
+# files).
+_FC_DIR = (Path(__file__).resolve().parent / "fastchem_vulcan").resolve()
+_FC_SENTINEL = _FC_DIR / ".fastchem_lock"
+_FC_INPUT = _FC_DIR / "input"
+_FC_OUTPUT = _FC_DIR / "output"
+_FC_VULCAN_TP = _FC_INPUT / "vulcan_TP" / "vulcan_TP.dat"
+_FC_VULCAN_EQ = _FC_OUTPUT / "vulcan_EQ.dat"
 
 
 # ---------------------------------------------------------------------------
@@ -57,22 +76,6 @@ def _abun_lowT_residual(x, O_H, C_H, He_H, N_H):
     f3 = x3 - coupling * C_H
     f4 = x4 - coupling * He_H
     f5 = x5 - coupling * N_H
-    return jnp.stack([f1, f2, f3, f4, f5])
-
-
-def _abun_highT_residual(x, O_H, C_H, He_H, N_H):  # noqa: F841 — parity helper
-    """4-mol residual: H2 / H2O / CO / He / N2.
-
-    Currently unused by `ini_y` (master only dispatches `abun_lowT`);
-    kept for parity with VULCAN-master's `InitialAbun.abun_highT`.
-    """
-    x1, x2, x3, x4, x5 = x[0], x[1], x[2], x[3], x[4]
-    coupling = 2.0 * x1 + 2.0 * x2
-    f1 = x1 + x2 + x3 + x4 - 1.0
-    f2 = x2 + x3 - coupling * O_H
-    f3 = x3 - coupling * C_H
-    f4 = x4 - coupling * He_H
-    f5 = x5 * 2.0 - coupling * N_H
     return jnp.stack([f1, f2, f3, f4, f5])
 
 
@@ -128,18 +131,36 @@ def _run_fastchem(data_atm) -> None:
 
     Direct port of `InitialAbun.ini_fc` — paths and `subprocess.check_call`
     invocation are preserved byte-for-byte. FastChem writes to fixed
-    paths; serial test execution remains required (see `pytest.ini`).
+    paths under `fastchem_vulcan/output/`. The input write + binary invoke
+    + output read are wrapped in an `fcntl.flock` exclusive lock on a
+    sentinel file so concurrent test workers (e.g. `pytest -n auto`)
+    serialize naturally instead of racing on the shared input / output
+    files. The lock is released as soon as the output is read; the
+    binary stays cheap (sub-second) so contention is not a runtime
+    concern.
     """
-    solar_ele = "fastchem_vulcan/input/solar_element_abundances.dat"
+    _FC_DIR.mkdir(exist_ok=True)
+    _FC_SENTINEL.touch(exist_ok=True)
+    with open(_FC_SENTINEL, "r") as lock_f:
+        fcntl.flock(lock_f, fcntl.LOCK_EX)
+        try:
+            _run_fastchem_locked(data_atm)
+        finally:
+            fcntl.flock(lock_f, fcntl.LOCK_UN)
+
+
+def _run_fastchem_locked(data_atm) -> None:
+    """Inner FastChem driver — assumes caller holds the cross-process lock."""
+    solar_ele = _FC_INPUT / "solar_element_abundances.dat"
     if vulcan_cfg.use_ion is True:
         copyfile(
-            "fastchem_vulcan/input/parameters_ion.dat",
-            "fastchem_vulcan/input/parameters.dat",
+            _FC_INPUT / "parameters_ion.dat",
+            _FC_INPUT / "parameters.dat",
         )
     else:
         copyfile(
-            "fastchem_vulcan/input/parameters_wo_ion.dat",
-            "fastchem_vulcan/input/parameters.dat",
+            _FC_INPUT / "parameters_wo_ion.dat",
+            _FC_INPUT / "parameters.dat",
         )
 
     with open(solar_ele, "r") as f:
@@ -178,10 +199,11 @@ def _run_fastchem(data_atm) -> None:
                     line = sp + "\t" + "{0:.4f}".format(new_ratio) + "\n"
                 new_str += line
 
-        with open("fastchem_vulcan/input/element_abundances_vulcan.dat", "w") as fout:
+        with open(_FC_INPUT / "element_abundances_vulcan.dat", "w") as fout:
             fout.write(new_str)
 
-    with open("fastchem_vulcan/input/vulcan_TP/vulcan_TP.dat", "w") as fout:
+    _FC_VULCAN_TP.parent.mkdir(parents=True, exist_ok=True)
+    with open(_FC_VULCAN_TP, "w") as fout:
         ost = "#p (bar)    T (K)\n"
         for n, p in enumerate(data_atm.pco):
             ost += "{:.3e}".format(p / 1.0e6) + "\t" + "{:.1f}".format(data_atm.Tco[n]) + "\n"
@@ -192,7 +214,7 @@ def _run_fastchem(data_atm) -> None:
         subprocess.check_call(
             ["./fastchem input/config.input"],
             shell=True,
-            cwd="fastchem_vulcan/",
+            cwd=str(_FC_DIR),
         )
     except Exception:
         print("\n FastChem cannot run properly. Try compile it by running make under /fastchem_vulcan\n")
@@ -207,14 +229,36 @@ def _build_charge_list_if_ion(charge_list: list[str]) -> None:
 
 
 def _load_eq_y(data_atm) -> tuple[np.ndarray, list[str]]:
-    """Run FastChem and parse `vulcan_EQ.dat` into a `(nz, ni)` y array."""
-    _run_fastchem(data_atm)
-    fc = np.genfromtxt(
-        "fastchem_vulcan/output/vulcan_EQ.dat",
-        names=True,
-        dtype=None,
-        skip_header=0,
-    )
+    """Run FastChem and parse `vulcan_EQ.dat` into a `(nz, ni)` y array.
+
+    The FastChem invoke + output read are serialised across workers
+    via the cross-process `fastchem_vulcan/.fastchem_lock` sentinel so
+    concurrent pytest workers never read another worker's
+    `vulcan_EQ.dat`. Holding the lock through the read also stops a
+    later worker from clobbering the output before this worker
+    finishes parsing it.
+    """
+    _FC_DIR.mkdir(exist_ok=True)
+    _FC_SENTINEL.touch(exist_ok=True)
+    with open(_FC_SENTINEL, "r") as lock_f:
+        fcntl.flock(lock_f, fcntl.LOCK_EX)
+        try:
+            _run_fastchem_locked(data_atm)
+            fc = np.genfromtxt(
+                _FC_VULCAN_EQ,
+                names=True,
+                dtype=None,
+                skip_header=0,
+            )
+            # Remove the output file while we still hold the lock so a
+            # concurrent worker can't have its freshly-written output
+            # clobbered by our cleanup mid-read.
+            try:
+                _FC_VULCAN_EQ.unlink()
+            except FileNotFoundError:
+                pass
+        finally:
+            fcntl.flock(lock_f, fcntl.LOCK_UN)
     nz_ = len(data_atm.pco)
     y = np.zeros((nz_, chem_funs.ni), dtype=np.float64)
     gas_tot = np.asarray(data_atm.M)
@@ -231,11 +275,6 @@ def _load_eq_y(data_atm) -> tuple[np.ndarray, list[str]]:
         if vulcan_cfg.use_ion is True:
             if compo[compo_row.index(sp)]["e"] != 0:
                 charge_list.append(sp)
-    subprocess.call(
-        ["rm vulcan_EQ.dat"],
-        shell=True,
-        cwd="fastchem_vulcan/output/",
-    )
     return y, charge_list
 
 
@@ -447,17 +486,13 @@ def compute_initial_abundance(data_atm) -> IniAbunOutputs:
 
 class InitialAbun:
     """Facade preserving the legacy `data_var` / `data_atm` mutation
-    contract (matches `atm_setup.Atm`'s pattern from Phase 20).
+    contract (matches `atm_setup.Atm`'s pattern).
 
-    `ini_y` and `ele_sum` write the same fields as the legacy class
-    so existing call sites (`vulcan_jax.py`, `tests/conftest.py`,
-    several test scripts) keep working unchanged.
+    `ini_y` and `ele_sum` write the same fields as VULCAN-master's
+    `InitialAbun` so existing call sites keep working unchanged.
     """
 
     def __init__(self):
-        # Initial guess kept for parity with master; the JAX Newton uses
-        # the same starting point inside `_load_const_lowT_y`.
-        self.ini_m = [0.9, 0.1, 0.0, 0.0, 0]
         self.atom_list = vulcan_cfg.atom_list
 
     def ini_y(self, data_var, data_atm):

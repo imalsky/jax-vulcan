@@ -39,16 +39,19 @@ warnings.filterwarnings("ignore")
 
 def main() -> int:
     import vulcan_cfg                       # noqa: E402
-    import store                            # noqa: E402
     from atm_setup import Atm               # noqa: E402
     import op                               # noqa: E402
+    # The private `state._Variables` / `_AtmData` containers are reached
+    # in here because this oracle test feeds master's `op.ReadRate.read_rate`,
+    # which writes the `var.k` dict surface.
+    from state import _Variables, _AtmData  # noqa: E402
 
     import network as net_mod               # VULCAN-JAX
     import rates as rates_mod               # VULCAN-JAX
 
     # === 1. Run VULCAN setup until var.k is populated ===
-    data_var = store.Variables()
-    data_atm = store.AtmData()
+    data_var = _Variables()
+    data_atm = _AtmData()
 
     make_atm = Atm()
     data_atm = make_atm.f_pico(data_atm)
@@ -139,6 +142,7 @@ def main() -> int:
     return 1
 
 
+@pytest.mark.master_serial
 def test_main():
     """Pytest wrapper. `main()` returns 0 on success; convert to an
     assertion so `pytest tests/` collects and runs this script."""
