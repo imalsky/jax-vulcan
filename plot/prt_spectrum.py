@@ -31,7 +31,6 @@ sys.path.insert(0, '../') # including the upper level of directory for the path 
 
 import numpy as np 
 import matplotlib.pyplot as plt
-import matplotlib.legend as lg
 import vulcan_cfg
 try: from PIL import Image
 except ImportError: 
@@ -45,7 +44,6 @@ import os
 import shutil
 import pandas as pd
 from petitRADTRANS import Radtrans
-from petitRADTRANS.retrieval import util as prt_util
 
 # swtich for plot
 if '-h' in sys.argv: use_height = True

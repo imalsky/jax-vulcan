@@ -3,16 +3,13 @@
 Each `tests/test_*.py` retains its existing `def main()` script entry
 point and adds a thin `def test_main(): assert main() == 0` wrapper so
 `pytest tests/` collects and runs them. This conftest pins working
-directory and `sys.path` once per session.
+directory and keeps the VULCAN-JAX root as the only normal import root.
 
 VULCAN-master sibling: VULCAN-JAX is standalone; the upstream repo
 serves as an *optional* validation oracle. If `../VULCAN-master/` is
-present, it gets appended to sys.path so the 10 oracle tests
-(test_rates, test_chem, test_diffusion, test_diffusion_variants,
-test_photo, test_photo_wired, test_ros2_step, test_gibbs,
-test_step_control, test_outer_loop_atm_refresh) can `import op` and
-compare. If absent, those tests skip cleanly — the rest of the suite
-is unaffected.
+present, oracle tests run their master comparisons in fresh subprocesses
+and add the sibling path only inside those subprocesses. If absent, those
+tests skip cleanly — the rest of the suite is unaffected.
 
 The `hd189_state` fixture provides a per-test deep copy of the HD189
 pre-loop state (Variables, AtmData, Parameters) built once per session
@@ -24,6 +21,7 @@ the canonical migration pattern.
 from __future__ import annotations
 
 import copy
+import fcntl as _fcntl
 import os
 import sys
 import warnings
@@ -35,15 +33,23 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 VULCAN_MASTER = ROOT.parent / "VULCAN-master"
+ROOT_STR = str(ROOT)
+VULCAN_MASTER_STR = str(VULCAN_MASTER)
+
+
+def _restore_sys_path() -> None:
+    """Keep VULCAN-JAX first and remove sibling-master path leakage."""
+    cleaned = [
+        path for path in sys.path
+        if path not in (ROOT_STR, VULCAN_MASTER_STR)
+    ]
+    sys.path[:] = [ROOT_STR, *cleaned]
+
 
 # Make sure VULCAN-JAX is importable regardless of where pytest was launched.
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+_restore_sys_path()
 
-# VULCAN-master is optional — only append when present.
 HAS_VULCAN_MASTER = VULCAN_MASTER.is_dir()
-if HAS_VULCAN_MASTER and str(VULCAN_MASTER) not in sys.path:
-    sys.path.append(str(VULCAN_MASTER))
 
 # Many tests assume cwd == ROOT for relative paths in vulcan_cfg.py.
 os.chdir(ROOT)
@@ -63,8 +69,14 @@ def vulcan_master_op():
             f"VULCAN-master not present at {VULCAN_MASTER}; "
             "oracle test skipped (VULCAN-JAX is standalone)."
         )
-    import op
-    return op
+    old_path = list(sys.path)
+    try:
+        sys.path.insert(0, VULCAN_MASTER_STR)
+        sys.modules.pop("op", None)
+        import op
+        return op
+    finally:
+        sys.path[:] = old_path
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +114,6 @@ _VCFG_REBIND_TARGETS = (
     "legacy_io",
     "outer_loop",
     "state",
-    "store",
     "atm_setup",
     "ini_abun",
     "photo_setup",
@@ -117,17 +128,22 @@ _VCFG_REBIND_TARGETS = (
 # Tests that insert `../VULCAN-master/` at the front of `sys.path` and
 # `import op` (e.g. `test_gibbs`, `test_chem`, `test_diffusion`,
 # `test_oracle_*`) rebind `sys.modules["op"]` / `sys.modules["build_atm"]`
-# etc. to VULCAN-master's incompatible classes. The guard restores the
-# canonical VULCAN-JAX entries on every teardown so subsequent tests get
-# the right modules.
+# etc. to VULCAN-master's incompatible classes. The guard drops master-only
+# modules and restores the canonical VULCAN-JAX entries on every teardown so
+# subsequent tests get the right modules.
 #
 # VULCAN-JAX has no `store.py`; the legacy mutable containers live in
 # `state._Variables` / `_AtmData` / `_Parameters`. Any `import store`
 # resolves uniquely to VULCAN-master's `store.py` (when present on
 # sys.path), so the conftest does not pin a canonical `store` module.
-_VULCAN_JAX_MODULE_NAMES = (
+_MASTER_ONLY_MODULE_NAMES = (
     "op",
     "build_atm",
+    "store",
+)
+
+_VULCAN_JAX_MODULE_NAMES = (
+    "legacy_io",
     "chem_funs",
     "network",
     "rates",
@@ -136,7 +152,46 @@ _VULCAN_JAX_MODULE_NAMES = (
     "atm_setup",
     "ini_abun",
     "photo_setup",
+    "outer_loop",
+    "state",
+    "jax_step",
+    "op_jax",
+    "composition",
 )
+
+
+def _module_is_under(mod: Any, root: Path) -> bool:
+    """Return True when a loaded module came from `root`."""
+    module_file = getattr(mod, "__file__", None)
+    if module_file is None:
+        return False
+    try:
+        Path(module_file).resolve().relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return True
+
+
+def _restore_import_state(snap: dict | None = None) -> None:
+    """Restore VULCAN-JAX import roots and drop sibling-master modules."""
+    _restore_sys_path()
+    for name in _MASTER_ONLY_MODULE_NAMES:
+        mod = sys.modules.get(name)
+        if mod is not None and _module_is_under(mod, VULCAN_MASTER):
+            sys.modules.pop(name, None)
+    if snap is None:
+        return
+    for name, mod in snap.get("modules", {}).items():
+        if sys.modules.get(name) is not mod:
+            sys.modules[name] = mod
+
+
+def _clear_jax_caches() -> None:
+    """Clear JAX compilation caches when strict test isolation requests it."""
+    jax_mod = sys.modules.get("jax")
+    clear = getattr(jax_mod, "clear_caches", None)
+    if clear is not None:
+        clear()
 
 
 def _snapshot_cfg_attrs(cfg_module) -> dict:
@@ -160,15 +215,15 @@ def _snapshot_cfg_attrs(cfg_module) -> dict:
 @pytest.fixture(scope="session", autouse=True)
 def _cfg_snapshot_session():
     """Capture the canonical `vulcan_cfg` module + a deep-copy of every
-    public attribute, plus the canonical VULCAN-JAX `store` / `op` /
-    `chem_funs` etc. module objects. Yields a dict that `_cfg_guard`
-    reads on each teardown.
+    public attribute, plus canonical VULCAN-JAX module objects. Yields a
+    dict that `_cfg_guard` reads on each teardown.
 
     Runs once per session before any test imports `vulcan_cfg`. We import
     via `legacy_io` so that the canonical anchor is the same module
     object the production import graph uses (legacy_io captures it at
     its top-level `import vulcan_cfg`).
     """
+    _restore_import_state()
     import legacy_io as _io
     canonical = _io.vulcan_cfg
     sys.modules["vulcan_cfg"] = canonical
@@ -201,9 +256,7 @@ def _restore_cfg(snap: dict) -> None:
     # `../VULCAN-master/` at the front of sys.path and re-import these
     # names (e.g. test_gibbs) rebind the entries to incompatible
     # upstream copies; the guard puts them back.
-    for name, mod in snap.get("modules", {}).items():
-        if sys.modules.get(name) is not mod:
-            sys.modules[name] = mod
+    _restore_import_state(snap)
     # Step 1: rebind sys.modules + every captured reference if the module
     # got forked since the snapshot.
     current = sys.modules.get("vulcan_cfg")
@@ -237,15 +290,23 @@ def _restore_cfg(snap: dict) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _cfg_guard(_cfg_snapshot_session):
+def _cfg_guard(request, _cfg_snapshot_session):
     """Restore canonical `vulcan_cfg` state after every test.
 
     Detects two failure modes:
       - sys.modules.pop("vulcan_cfg") forks (test_chem-style) → rebind.
       - per-test attribute mutations (count_max, rtol, use_fix_*) → restore.
     """
-    yield
-    _restore_cfg(_cfg_snapshot_session)
+    strict = request.node.get_closest_marker("strict_isolation") is not None
+    if strict:
+        _restore_cfg(_cfg_snapshot_session)
+        _clear_jax_caches()
+    try:
+        yield
+    finally:
+        _restore_cfg(_cfg_snapshot_session)
+        if strict:
+            _clear_jax_caches()
 
 
 # ---------------------------------------------------------------------------
@@ -266,8 +327,6 @@ def _cfg_guard(_cfg_snapshot_session):
 # master access across pytest workers. Other tests run in parallel
 # unaffected.
 # ---------------------------------------------------------------------------
-
-import fcntl as _fcntl
 
 _MASTER_LOCK = ROOT / "tests" / ".master_lock"
 
@@ -292,6 +351,11 @@ def pytest_configure(config):
         "markers",
         "master_serial: serialize across pytest-xdist workers via "
         "tests/.master_lock for tests that read or write VULCAN-master.",
+    )
+    config.addinivalue_line(
+        "markers",
+        "strict_isolation: restore VULCAN-JAX import/config state and clear "
+        "JAX caches before and after the test.",
     )
 
 

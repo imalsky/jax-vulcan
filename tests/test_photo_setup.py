@@ -21,6 +21,7 @@ import warnings
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -54,7 +55,12 @@ def _build_state_through_read_rate():
     return data_var, data_atm
 
 
-def _check_static_against_fixture(static, fixture_path: Path) -> None:
+def _check_static_against_fixture(
+    static,
+    fixture_path: Path,
+    *,
+    expected_T_sp: tuple[str, ...] = (),
+) -> None:
     """Bit-exact compare every dense array in `static` to its fixture entry."""
     fx = np.load(fixture_path)
 
@@ -64,6 +70,28 @@ def _check_static_against_fixture(static, fixture_path: Path) -> None:
     assert int(static.nbin) == int(fx["nbin"])
     assert float(static.dbin1) == float(fx["dbin1"])
     assert float(static.dbin2) == float(fx["dbin2"])
+    assert tuple(static.absp_T_sp) == expected_T_sp
+    assert tuple(static.absp_T_sp) == tuple(
+        sp for sp in static.absp_sp if sp in expected_T_sp
+    )
+    assert {f"cross__{sp}" for sp in static.absp_sp} == {
+        key for key in fx.files if key.startswith("cross__")
+    }
+    assert {f"cross_T__{sp}" for sp in static.absp_T_sp} == {
+        key for key in fx.files if key.startswith("cross_T__")
+    }
+    assert {f"cross_J__{sp}__{br}" for sp, br in static.branch_keys} == {
+        key for key in fx.files if key.startswith("cross_J__")
+    }
+    assert {f"cross_J_T__{sp}__{br}" for sp, br in static.branch_T_keys} == {
+        key for key in fx.files if key.startswith("cross_J_T__")
+    }
+    assert {f"cross_scat__{sp}" for sp in static.scat_sp} == {
+        key for key in fx.files if key.startswith("cross_scat__")
+    }
+    assert {f"cross_Jion__{sp}__{br}" for sp, br in static.ion_branch_keys} == {
+        key for key in fx.files if key.startswith("cross_Jion__")
+    }
 
     for i, sp in enumerate(static.absp_sp):
         np.testing.assert_allclose(
@@ -136,18 +164,17 @@ def test_photo_setup_matches_baseline_fixture():
     )
 
 
-def test_photo_setup_matches_T_dep_fixture():
+@pytest.mark.strict_isolation
+def test_photo_setup_matches_T_dep_fixture(monkeypatch):
     """HD189 with T_cross_sp=['CO2','H2O','NH3'] patched on."""
     import photo_setup
     import vulcan_cfg
 
-    saved_T_cross_sp = list(vulcan_cfg.T_cross_sp)
-    vulcan_cfg.T_cross_sp = ["CO2", "H2O", "NH3"]
-    try:
-        var, atm = _build_state_through_read_rate()
-        static = photo_setup._build_photo_static_dense(var, atm)
-        _check_static_against_fixture(
-            static, FIXTURE_DIR / "photo_setup_hd189_T_dep.npz",
-        )
-    finally:
-        vulcan_cfg.T_cross_sp = saved_T_cross_sp
+    monkeypatch.setattr(vulcan_cfg, "T_cross_sp", ["CO2", "H2O", "NH3"])
+    var, atm = _build_state_through_read_rate()
+    static = photo_setup._build_photo_static_dense(var, atm)
+    _check_static_against_fixture(
+        static,
+        FIXTURE_DIR / "photo_setup_hd189_T_dep.npz",
+        expected_T_sp=("CO2", "H2O", "NH3"),
+    )

@@ -10,7 +10,6 @@ import vulcan_cfg
 import numpy as np
 from matplotlib import pyplot as plt
 from scipy import interpolate
-import csv, ast
 try: from PIL import Image
 except ImportError: 
     try: import Image

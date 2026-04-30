@@ -9,10 +9,9 @@ const_lowT}`:
 - `test_const_lowT_matches_scipy` — JAX Newton vs `scipy.optimize.fsolve`
   on a grid of elemental ratios.
 - `test_charge_list_no_ions` — `use_ion=False` → empty `charge_list`.
-- `test_main` — EQ-mode HD189 fork against VULCAN-master (bit-exact gate;
-  runs LAST because it pops `vulcan_cfg` / `store` / `chem_funs` from
-  `sys.modules` to load the upstream copies, which would corrupt any
-  later test in the same file).
+- `test_zzz_main_eq_vs_master` — EQ-mode HD189 fork against VULCAN-master
+  (bit-exact gate; runs in a subprocess so the upstream imports cannot
+  pollute the pytest worker).
 """
 from __future__ import annotations
 
@@ -29,6 +28,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
+VULCAN_MASTER = ROOT.parent / "VULCAN-master"
 
 warnings.filterwarnings("ignore")
 
@@ -265,11 +265,9 @@ def test_charge_list_no_ions():
 # ---------------------------------------------------------------------------
 # EQ-mode HD189 fork against VULCAN-master (bit-exact gate).
 #
-# This test MUST run last in the file because it pops `vulcan_cfg`,
-# `store`, `chem_funs`, and `build_atm` from `sys.modules` and inserts
-# `../VULCAN-master/` at the head of `sys.path`. Any subsequent test in
-# the same file that does `import store` would then get master's `store`
-# instead of VULCAN-JAX's.
+# This comparison mutates `sys.modules` and inserts `../VULCAN-master/`
+# at the head of `sys.path`, so the pytest wrapper below runs it in a
+# fresh Python process.
 # ---------------------------------------------------------------------------
 
 def main() -> int:
@@ -303,7 +301,6 @@ def main() -> int:
 
     for mod_name in ("build_atm", "store", "chem_funs", "vulcan_cfg"):
         sys.modules.pop(mod_name, None)
-    VULCAN_MASTER = ROOT.parent / "VULCAN-master"
     if not VULCAN_MASTER.is_dir():
         print("SKIP: VULCAN-master sibling not present; bit-exact oracle unavailable.")
         return 0
@@ -371,11 +368,24 @@ def main() -> int:
 def test_zzz_main_eq_vs_master():
     """EQ-mode bit-exact gate against VULCAN-master.
 
-    Named with `zzz` so pytest collects (and runs) it after every other
-    test in this file — this test pollutes `sys.modules` and would
-    otherwise break the per-mode tests above.
+    The implementation intentionally swaps in VULCAN-master modules, so
+    run it in a fresh subprocess and assert the exit code.
     """
-    assert main() == 0
+    if not VULCAN_MASTER.is_dir():
+        pytest.skip(
+            f"VULCAN-master oracle absent at {VULCAN_MASTER}; "
+            "this comparison test requires the upstream sibling repo."
+        )
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve())],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, (
+        f"subprocess exited {result.returncode}\n"
+        f"--- stdout ---\n{result.stdout}\n"
+        f"--- stderr ---\n{result.stderr}"
+    )
 
 
 if __name__ == "__main__":

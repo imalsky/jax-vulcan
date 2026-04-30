@@ -20,6 +20,8 @@ import time
 import warnings
 from pathlib import Path
 
+import pytest
+
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -128,6 +130,7 @@ def main() -> int:
     return 0 if ok else 1
 
 
+@pytest.mark.strict_isolation
 def test_main():
     """Pytest wrapper. `main()` returns 0 on success; convert to an
     assertion so `pytest tests/` collects and runs this script."""

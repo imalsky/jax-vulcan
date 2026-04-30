@@ -1,7 +1,6 @@
 # ruff: noqa
 import numpy as np 
 import matplotlib.pyplot as plt
-import matplotlib.legend as lg
 #import vulcan_cfg
 try: from PIL import Image
 except ImportError: 
@@ -48,4 +47,3 @@ plt.savefig('../../plot/' + plot_name + '.eps')
 plot = Image.open('../../plot/' + plot_name + '.png')
 plot.show()
 #else: plt.show()
-

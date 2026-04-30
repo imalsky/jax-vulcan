@@ -1,0 +1,8 @@
+[tool.ruff.lint.per-file-ignores]
+"examples/grad_implicit_example.py" = ["E402"]
+"examples/grad_jvp_example.py" = ["E402"]
+"tests/test_block_thomas.py" = ["E402"]
+"tests/test_block_thomas_diag.py" = ["E402"]
+"tests/test_photo_ion.py" = ["E402"]
+"tests/test_steady_state_grad.py" = ["E402"]
+"vulcan_jax.py" = ["E402"]

@@ -47,7 +47,9 @@ def main() -> int:
         print("SKIP: vulcan_cfg.use_photo=False; nothing to validate.")
         return 0
 
-    import legacy_io as op, op_jax, outer_loop
+    import legacy_io as op
+    import op_jax
+    import outer_loop
     from state import RunState, legacy_view
 
     # --- Build HD189 reference state with the photo pre-loop (as

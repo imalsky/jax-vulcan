@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-VULCAN-JAX is a JAX-accelerated port of [VULCAN](https://github.com/exoclime/VULCAN) (Tsai et al. 2017/2021), the photochemical-kinetics solver for exoplanet atmospheres. The goal is one codebase that runs on CPU and GPU, is fully vectorized (jit + vmap), is scientifically equivalent to VULCAN-master, and is clean — no dead code, no legacy fallbacks, no magic numbers outside `vulcan_cfg.py`.
+VULCAN-JAX is a JAX-accelerated port of [VULCAN](https://github.com/exoclime/VULCAN) (Tsai et al. 2017/2021), the photochemical-kinetics solver for exoplanet atmospheres. The goal is one codebase that runs on CPU and GPU, has tested JIT + vmap support on the per-step kernels, is scientifically equivalent to VULCAN-master, and is clean — no dead code, no legacy fallbacks, no magic numbers outside `vulcan_cfg.py`.
 
 **Scope rule.** Port all of master's physics; don't try to add an oracle test for every config knob. Every live runtime branch in master has a JAX implementation already; "live but non-default" config paths (`ini_mix in {EQ, vulcan_ini, table, const_mix, const_lowT}`, all `atm_type` / `Kzz_prof` / `vz_prof` / `atm_base` variants, `use_moldiff` / `use_vm_mol` / `use_settling` / `use_topflux` / `use_botflux` / `use_fix_sp_bot` / `use_fix_H2He` / `use_sat_surfaceH2O`, every photo + ion knob, every supported condensation species, the four live-UI flags) are implemented but not exhaustively cross-tested vs master. By policy we do not chase that test breadth — if a non-default branch is wrong, we'll find out when it's used. Genuinely dead-in-master paths (non-Ros2 solvers, `naming_solver()`'s commented-out `solver_fix_all_bot` selection) are intentionally not ported.
 
@@ -18,7 +18,7 @@ The legacy mutable container classes (`Variables` / `AtmData` / `Parameters`) li
 
 Setup methods are JAX-native: `atm_setup.py` exposes pure functions for every `Atm.*` method (`compute_pico` / `analytical_TP_H14` / `load_TPK` / `compute_mean_mass` / `compute_mu_dz_g` / `compute_settling_velocity` / `compute_mol_diff` / `read_bc_flux` / `compute_sat_p` / `read_sflux_binned`); `ini_abun.py` does the same for `InitialAbun.*` and the 5 `ini_mix` modes (`EQ` / `const_mix` / `vulcan_ini` / `table` / `const_lowT`). Both `Atm` and `InitialAbun` survive as thin facades that mutate `data_var` / `data_atm` for the legacy call sites. `composition.py` extracted the `compo` / `compo_row` / `species` data tables plus a precomputed `(ni, n_atoms)` `compo_array`. The host-side stellar-flux read lives in `state.load_stellar_flux(cfg)`. There is no `build_atm.py`.
 
-`../VULCAN-master/` is the upstream reference. When present, it serves as an *optional* validation oracle: 10 tests compare JAX outputs against upstream's NumPy reference (`op.diffdf`, `op.Ros2.solver`, `chem_funs.symjac`, etc.) and skip cleanly with a clear reason when the sibling is absent. Do not refactor it.
+`../VULCAN-master/` is the upstream reference. When present, it serves as an *optional* validation oracle: master-comparison tests compare JAX outputs against upstream's NumPy reference (`op.diffdf`, `op.Ros2.solver`, `chem_funs.symjac`, etc.) and skip cleanly with a clear reason when the sibling is absent. These tests run their master imports in subprocesses so the pytest worker's import state stays on VULCAN-JAX. Do not refactor the sibling repo.
 
 `../vulcan-emulator/` is an unrelated transformer-surrogate project. Out of scope for this repo.
 
@@ -38,13 +38,13 @@ Direct binary if scripts need it: `/opt/homebrew/Caskroom/miniforge/base/envs/vu
 ```bash
 python vulcan_jax.py                                            # forward model (HD189 by default)
 JAX_PLATFORM_NAME=gpu python vulcan_jax.py                      # GPU, no code changes
-XLA_FLAGS=--xla_force_host_platform_device_count=8 python vulcan_jax.py  # multi-CPU for vmap/pmap
+XLA_FLAGS=--xla_force_host_platform_device_count=8 python vulcan_jax.py  # multi-CPU devices for vmap tests
 
-pytest tests/                                                    # full suite
-pytest tests/ -n auto                                            # parallel-safe
+python -m pytest tests -q --tb=short -ra                         # full suite
+python -m pytest tests -n auto -q --tb=short -ra                  # parallel-safe
                                                                  # (FastChem serialises
                                                                  # via fcntl.flock)
-pytest tests/ -k "ros2 or block_thomas"                          # filter
+python -m pytest tests -k "ros2 or block_thomas"                  # filter
 
 ruff check .                                                     # lint
 ruff format .                                                    # format
@@ -115,7 +115,7 @@ See `README.md` for the JAX↔master numerical-agreement table and the capabilit
 
 The acceptance target is **scientific parity**, not byte-for-byte master parity. Overall abundance accuracy, atom conservation, convergence behavior, and physically meaningful diagnostics matter more than exact step ordering or exact pickle byte identity. GPU-specific test failures may be deferred, but ordinary CPU failures are blockers until classified as fixture drift, known tolerated numerical drift, or real regressions. Efficiency work should focus on the hot path inside the JIT'd runner; host-side setup, readers, and one-shot output are not priorities unless they affect hot-path runtime, memory, or differentiability promises.
 
-The local test suite is **mostly green with two known full-suite-only flakes**: every individual test and every reasonable subset passes (108 passed + 3 skipped); a clean `pytest tests/` from a cold start currently lands at 106 passed + 2 failed + 3 skipped on this host. The two failures — `test_outer_loop_smoke::test_main` and `test_photo_setup::test_photo_setup_matches_T_dep_fixture` — pass in isolation, in the immediate-neighbours subset, and in any partial-suite subset I've tried; they only emerge once the full ~111-test suite has accumulated state. Bisection at 14 min/run hasn't isolated a single offender, suggesting cumulative drift rather than one bad neighbour. Skips are GPU-parity (no GPU on this host) and two `H2O_l_s not in HD189 network` config-matrix sub-cases. The earlier Earth-oracle / HD189-smoke / T_dep-photo_setup failures were closed by:
+The local test suite is green from a clean process: `pytest tests/` is expected to report 108 passed and 3 skipped on this CPU host. The documented skips are GPU parity (no GPU on this host) and two `H2O_l_s not in HD189 network` config-matrix sub-cases. The former full-suite-only failures in `test_outer_loop_smoke::test_main` and `test_photo_setup::test_photo_setup_matches_T_dep_fixture` were test-isolation bugs: VULCAN-master oracle tests now run in subprocesses, `tests/conftest.py` keeps VULCAN-JAX as the only normal import root, and the `strict_isolation` marker restores import/config state plus clears JAX caches around the two fragile tests. Earlier Earth-oracle / HD189-smoke / T_dep-photo_setup failures were closed by:
 
 - **Atmosphere refresh ordering moved to match `op.py:904-906`.** The refresh now fires at the *end* of an accepted iteration (after conden, before hydrostatic balance) using the post-conden `ymix`/`y`, instead of at the top of the next iteration with the carry's stale ymix. The next iteration's `jax_ros2_step` picks up the refreshed `(g, dzi, Hpi, top_flux)` from the carry. `tests/test_outer_loop_atm_refresh.py` continues to validate the kernel itself in isolation via `_make_atm_refresh_branch`. Earth/HD209/Jupiter oracle baselines were regenerated against the new ordering (master subprocess can't validate Earth — `make_chem_funs.py` fails on the SNCHO_full network with "OH not in list" — so the baselines are now JAX↔JAX consistency snapshots, which is what they have always been; the comparison-against-master story has been broken upstream the whole time).
 
@@ -165,7 +165,7 @@ Condensation has two separate layers that should not be confused. `atm_setup.com
 
 ## JAX / NumPy boundary (differentiability scope)
 
-The hot-path runtime is fully JAX. Everything inside the `OuterLoop` `lax.while_loop` (chemistry RHS / Jacobian, diffusion, block-Thomas, photo kernels, condensation, atm-refresh) is `jit`/`vmap`/`jvp`/`vjp` compatible. `state.py` defines the pre-loop input pytrees (`AtmInputs`/`RateInputs`/`PhotoInputs`/`PhotoStaticInputs`/`IniAbunOutputs`/`RunState`) — anything fed into the runner via these pytrees is differentiable.
+The hot-path runtime is fully JAX. The kernels used inside the `OuterLoop` `lax.while_loop` (chemistry RHS / Jacobian, diffusion, block-Thomas, photo kernels, condensation, atm-refresh) are `jit`/`vmap`/`jvp`/`vjp` compatible, while the runner itself supports forward-mode AD through `lax.while_loop` and reverse-mode through `steady_state_grad.py`'s implicit steady-state API. `state.py` defines the pre-loop input pytrees (`AtmInputs`/`RateInputs`/`PhotoInputs`/`PhotoStaticInputs`/`IniAbunOutputs`/`RunState`) — values supplied as JAX arrays through these pytrees are on the differentiable runtime surface.
 
 **Some setup-time code stays NumPy.** It is host-side, runs once, and is not on any AD path. The maintainer has decided not to port these to JAX (no hot-path benefit, real bit-exactness risk in some cases):
 
@@ -195,7 +195,7 @@ Validation not done for this surface: no downstream third-party tool corpus beyo
 
 ## Test discipline
 
-**Current state:** `pytest tests/` is green (108 passed, 3 skipped — GPU-parity skip + two H2O_l_s-not-in-HD189-network sub-cases). Most files use a thin `def test_main(): assert main() == 0` wrapper around their existing script-style `main()`; three tests (`test_chem`, `test_diffusion`, `test_ros2_step`) wrap the script as a subprocess because they do a deliberate VULCAN-master ↔ VULCAN-JAX module-table swap that only works from a cold Python start. The suite includes `compute_Jion` coverage, vendored example-config setup coverage, Earth/Jupiter/HD209 20-step matched-step oracles, `.vul` output-schema coverage, and an optional CPU↔GPU parity test that skips cleanly on CPU-only hosts. `tests/conftest.py` carries `_cfg_snapshot_session` + `_cfg_guard` autouse fixtures that snapshot/restore `vulcan_cfg` attributes and rebind canonical VULCAN-JAX module objects (`op`, `chem_funs`, etc.) after every test — so tests that insert `../VULCAN-master/` at the front of `sys.path` (e.g. `test_gibbs`) don't pollute later tests' `sys.modules`. `ini_abun._load_eq_y` serialises FastChem invocations via `fcntl.flock` so `pytest -n auto` is safe.
+**Current state:** `pytest tests/` is green (108 passed, 3 skipped — GPU-parity skip + two H2O_l_s-not-in-HD189-network sub-cases). Most files use a thin `def test_main(): assert main() == 0` wrapper around their existing script-style `main()`; VULCAN-master oracle comparisons run the script as a subprocess because they deliberately import or path-inject upstream modules. The suite includes `compute_Jion` coverage, vendored example-config setup coverage, Earth/Jupiter/HD209 20-step matched-step oracles, `.vul` output-schema coverage, and an optional CPU↔GPU parity test that skips cleanly on CPU-only hosts. `tests/conftest.py` carries `_cfg_snapshot_session` + `_cfg_guard` autouse fixtures that snapshot/restore `vulcan_cfg` attributes, restore canonical VULCAN-JAX modules, and drop sibling-master path/module leakage after every test. Tests marked `strict_isolation` also restore before the test and call `jax.clear_caches()` before and after. `ini_abun._load_eq_y` serialises FastChem invocations via `fcntl.flock` so `pytest -n auto` is safe.
 
 A function is "important enough to test" if any of these are true:
 - It's on the per-step hot path (`chem_rhs`, `chem_jac`, `block_thomas`, `apply_diffusion`, photo kernels, `jax_ros2_step`).

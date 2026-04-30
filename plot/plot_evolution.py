@@ -4,7 +4,6 @@ sys.path.insert(0, '../') # including the upper level of directory for the path 
 
 import numpy as np 
 import matplotlib.pyplot as plt
-import matplotlib.legend as lg
 import vulcan_cfg
 try: from PIL import Image
 except ImportError: 

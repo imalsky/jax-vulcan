@@ -47,4 +47,5 @@ for lm in lmd_array:
     ost += "{0:<14s}".format(str(lm)) + "{:.3E}".format(cross(lm, n_ref[sp], n_indx[sp](lm) , King[sp](lm))) +'\n'
 
 ost = ost[:-1]
-with open(sp + '_rayleigh.txt', 'w') as f: f.write(ost)
+with open(sp + '_rayleigh.txt', 'w') as f:
+    f.write(ost)

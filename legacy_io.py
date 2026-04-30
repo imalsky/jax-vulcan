@@ -130,7 +130,7 @@ class ReadRate(object):
 
                 # skip common lines and blank lines
                 # ========================================================================================
-                if not line.startswith("#") and line.strip() and special_re == False and conden_re == False and photo_re == False and ion_re == False: # if not starts
+                if not line.startswith("#") and line.strip() and not special_re and not conden_re and not photo_re and not ion_re: # if not starts
 
                     Rf[i] = line.partition('[')[-1].rpartition(']')[0].strip()
                     li = line.partition(']')[-1].strip()
@@ -141,16 +141,16 @@ class ReadRate(object):
                     E[i] = float(columns[2])
 
                     # switching to trimolecular reactions (len(columns) > 3 for those with high-P limit rates)
-                    if re_tri == True and re_tri_k0 == False:
+                    if re_tri and not re_tri_k0:
                         a_inf[i] = float(columns[3])
                         n_inf[i] = float(columns[4])
                         E_inf[i] = float(columns[5])
                         list_tri.append(i)
 
                     k0 = a[i] * Tco**n[i] * np.exp(-E[i]/Tco)
-                    if re_tri == False:
+                    if not re_tri:
                         k[i] = k0
-                    elif re_tri == True and len(columns) >= 6:
+                    elif re_tri and len(columns) >= 6:
                         # 3-body with high-pressure limit (Lindemann)
                         k_inf_val = a_inf[i] * Tco**n_inf[i] * np.exp(-E_inf[i]/Tco)
                         k[i] = k0 / (1 + k0 * M / k_inf_val)
@@ -161,7 +161,7 @@ class ReadRate(object):
                     i += 2
                     # end if not
                  # ========================================================================================
-                elif special_re == True and line.strip() and not line.startswith("#"):
+                elif special_re and line.strip() and not line.startswith("#"):
 
                     Rindx[i] = int(line.partition('[')[0].strip())
                     Rf[i] = line.partition('[')[-1].rpartition(']')[0].strip()
@@ -182,7 +182,7 @@ class ReadRate(object):
 
 
                 # Testing condensation
-                elif conden_re == True and line.strip() and not line.startswith("#"):
+                elif conden_re and line.strip() and not line.startswith("#"):
                     Rindx[i] = int(line.partition('[')[0].strip())
                     Rf[i] = line.partition('[')[-1].rpartition(']')[0].strip()
 
@@ -193,7 +193,7 @@ class ReadRate(object):
                     i += 2
 
                 # setting photo dissociation reactions to zeros
-                elif photo_re == True and line.strip() and not line.startswith("#"):
+                elif photo_re and line.strip() and not line.startswith("#"):
 
                     k[i] = np.zeros(nz)
                     Rf[i] = line.partition('[')[-1].rpartition(']')[0].strip()
@@ -213,7 +213,7 @@ class ReadRate(object):
                     i += 2
 
                 # setting photo ionization reactions to zeros
-                elif ion_re == True and line.strip() and not line.startswith("#"):
+                elif ion_re and line.strip() and not line.startswith("#"):
 
                     k[i] = np.zeros(nz)
                     Rf[i] = line.partition('[')[-1].rpartition(']')[0].strip()
@@ -238,7 +238,8 @@ class ReadRate(object):
         # var.conden_re_list, var.special_re, var.stop_rev_indx).
 
         var.photo_sp = set(photo_sp)
-        if vulcan_cfg.use_ion == True: var.ion_sp = set(ion_sp)
+        if vulcan_cfg.use_ion:
+            var.ion_sp = set(ion_sp)
 
         return var
 
@@ -611,8 +612,10 @@ class Output(object):
 
         output_dir, out_name, plot_dir = vulcan_cfg.output_dir, vulcan_cfg.out_name, vulcan_cfg.plot_dir
 
-        if not os.path.exists(output_dir): os.makedirs(output_dir)
-        if not os.path.exists(plot_dir): os.makedirs(plot_dir)
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+        if not os.path.exists(plot_dir):
+            os.makedirs(plot_dir)
 
         if os.path.isfile(output_dir+out_name):
             print ('Warning... the output file: ' + str(out_name) + ' already exists.\n')
@@ -640,7 +643,7 @@ class Output(object):
         print (para.loss_count)
         print ('delta rejected counter:')
         print (para.delta_count)
-        if getattr(vulcan_cfg, 'use_shark', False) == True:
+        if getattr(vulcan_cfg, 'use_shark', False):
             print ("It's a long journey to this shark planet. Don't stop bleeding.")
         print ('------ Live long and prosper \\V/ ------')
 
@@ -679,7 +682,8 @@ class Output(object):
         # copy the vulcan_cfg.py file
         with open('vulcan_cfg.py' ,'r') as f:
             cfg_str = f.read()
-        with open(dname + '/' + output_dir + "cfg_" + out_name[:-3] + "txt", 'w') as f: f.write(cfg_str)
+        with open(dname + '/' + output_dir + "cfg_" + out_name[:-3] + "txt", 'w') as f:
+            f.write(cfg_str)
 
     def save_out(self, *args, **kwargs):
         """Write the `.vul` pickle output.
@@ -767,14 +771,14 @@ class Output(object):
                 var_save[key] = photo_dicts[key]
             else:
                 var_save[key] = getattr(var, key)
-        if vulcan_cfg.save_evolution == True:
+        if vulcan_cfg.save_evolution:
             # The runner already captured y_time/t_time at save_evo_frq cadence;
             # don't slice [::fq] again here.
             for key in var.var_evol_save:
                 var_save[key] = getattr(var, key)
 
         with open(output_file, 'wb') as outfile:
-            if vulcan_cfg.output_humanread == True: # human-readable form, less efficient
+            if vulcan_cfg.output_humanread: # human-readable form, less efficient
                 outfile.write(str({'variable': var_save, 'atm': vars(atm), 'parameter': vars(para)}))
             else:
                 pickle.dump( {'variable': var_save, 'atm': vars(atm), 'parameter': vars(para) }, outfile, protocol=4)
@@ -793,7 +797,7 @@ class Output(object):
         plt.figure('mixing ratios')
         for color_index, sp in enumerate(vulcan_cfg.plot_spec):
             color = colors[color_index % len(colors)]
-            if vulcan_cfg.plot_height == False:
+            if not vulcan_cfg.plot_height:
                 plt.plot(ymix[:, species.index(sp)], atm.pco/1.e6,
                          color=color, label=sp)
                 plt.gca().set_yscale('log')
@@ -850,7 +854,7 @@ class Output(object):
         plot_dir = vulcan_cfg.plot_dir
         fig, ax1 = plt.subplots()
         ax2 = ax1.twiny()
-        if vulcan_cfg.plot_height == False:
+        if not vulcan_cfg.plot_height:
             ax1.semilogy(atm.Tco, atm.pco/1.e6, c='black')
             ax2.loglog(atm.Kzz, atm.pico[1:-1]/1.e6, c='k', ls='--')
             plt.gca().invert_yaxis()

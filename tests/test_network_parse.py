@@ -21,10 +21,16 @@ import network as net_mod  # noqa: E402
 
 # Make VULCAN-master importable for chem_funs and vulcan_cfg
 VULCAN_MASTER = ROOT.parent / "VULCAN-master"
-sys.path.insert(0, str(VULCAN_MASTER))
+if not VULCAN_MASTER.is_dir():
+    pytest.skip(
+        f"VULCAN-master oracle absent at {VULCAN_MASTER}; "
+        "this comparison test requires the upstream sibling repo.",
+        allow_module_level=True,
+    )
 
 
 def main() -> int:
+    sys.path.insert(0, str(VULCAN_MASTER))
     import vulcan_cfg  # noqa: E402  (imports relative to current dir)
 
     network_path = ROOT / vulcan_cfg.network
@@ -111,9 +117,17 @@ def main() -> int:
 
 @pytest.mark.master_serial
 def test_main():
-    """Pytest wrapper. `main()` returns 0 on success; convert to an
-    assertion so `pytest tests/` collects and runs this script."""
-    assert main() == 0
+    """Run the master comparison in a fresh Python process."""
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve())],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, (
+        f"subprocess exited {result.returncode}\n"
+        f"--- stdout ---\n{result.stdout}\n"
+        f"--- stderr ---\n{result.stderr}"
+    )
 
 
 if __name__ == "__main__":

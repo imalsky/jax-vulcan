@@ -4,7 +4,6 @@ sys.path.insert(0, '../') # including the upper level of directory for the path 
 
 import numpy as np 
 import matplotlib.pyplot as plt
-import matplotlib.legend as lg
 import vulcan_cfg
 try: from PIL import Image
 except ImportError: 
@@ -129,4 +128,4 @@ new_str = '# WL(nm)    Flux(ergs/cm**2/s/nm)\n'
 for i,ld in enumerate(bins):
     new_str += '{:<8.3f}'.format(float(ld)) + "{:>12.2E}".format(sflux_top[i]) + '\n'
 new_str = new_str[:-1]
-with open('epseri_01nm.txt', 'w+') as f: f.write(new_str)  
+with open('epseri_01nm.txt', 'w+') as f: f.write(new_str)

@@ -45,7 +45,6 @@ if not VULCAN_MASTER.is_dir():
         "this comparison test requires the upstream sibling repo.",
         allow_module_level=True,
     )
-sys.path.append(str(VULCAN_MASTER))
 
 warnings.filterwarnings("ignore")
 
@@ -54,8 +53,11 @@ REFRESH_RTOL = 1e-13
 
 
 def main() -> int:
+    sys.path.append(str(VULCAN_MASTER))
     import vulcan_cfg
-    import op, op_jax, outer_loop
+    import op
+    import op_jax
+    import outer_loop
     from atm_setup import Atm
     from state import RunState, legacy_view
 
@@ -155,9 +157,17 @@ def main() -> int:
 
 @pytest.mark.master_serial
 def test_main():
-    """Pytest wrapper. `main()` returns 0 on success; convert to an
-    assertion so `pytest tests/` collects and runs this script."""
-    assert main() == 0
+    """Run the master comparison in a fresh Python process."""
+    import subprocess
+    result = subprocess.run(
+        [sys.executable, str(Path(__file__).resolve())],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0, (
+        f"subprocess exited {result.returncode}\n"
+        f"--- stdout ---\n{result.stdout}\n"
+        f"--- stderr ---\n{result.stderr}"
+    )
 
 
 if __name__ == "__main__":

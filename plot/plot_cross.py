@@ -7,7 +7,6 @@ Created on Mon Oct 16 10:29:09 2017
 """
 import numpy as np
 from matplotlib import pyplot as plt
-import csv, ast
 try: from PIL import Image
 except ImportError: 
     try: import Image

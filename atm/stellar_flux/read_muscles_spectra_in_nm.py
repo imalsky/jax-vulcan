@@ -11,7 +11,6 @@ In SIMBAD, mas = 0.001 arcsec:
 import numpy as np
 import scipy
 from astropy.io import fits
-from astropy.table import Table
 
 au = 1.4959787E13  # cm
 r_sun = 6.957E10 # cm

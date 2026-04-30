@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial as _partial
 from typing import NamedTuple
 
 import jax
@@ -120,9 +121,6 @@ def compute_tau_jax(y: jnp.ndarray, dz: jnp.ndarray, photo: PhotoData) -> jnp.nd
     tau_no_top = jnp.flip(jnp.cumsum(jnp.flip(abs_per_layer, axis=0), axis=0), axis=0)
     tau = jnp.concatenate([tau_no_top, jnp.zeros((1, nbin))], axis=0)
     return tau
-
-
-from functools import partial as _partial
 
 
 @_partial(jax.jit, static_argnames=("ag0_is_zero",))

@@ -73,12 +73,16 @@ def _make_synthetic_problem():
     is_three_body = np.zeros(nr + 1, dtype=bool)
 
     # R1: 0 -> A  (zeroth-order source: reactant slots all PAD/stoich=0)
-    product_idx[1, 0] = 0;  product_stoich[1, 0] = 1.0
+    product_idx[1, 0] = 0
+    product_stoich[1, 0] = 1.0
     # R3: A -> B
-    reactant_idx[3, 0] = 0; reactant_stoich[3, 0] = 1.0
-    product_idx[3, 0] = 1;  product_stoich[3, 0] = 1.0
+    reactant_idx[3, 0] = 0
+    reactant_stoich[3, 0] = 1.0
+    product_idx[3, 0] = 1
+    product_stoich[3, 0] = 1.0
     # R5: B -> 0  (sink: product slots all PAD/stoich=0)
-    reactant_idx[5, 0] = 1; reactant_stoich[5, 0] = 1.0
+    reactant_idx[5, 0] = 1
+    reactant_stoich[5, 0] = 1.0
 
     net = NetworkArrays(
         ni=ni, nr=nr,
@@ -222,8 +226,10 @@ def main() -> int:
     ]
     print(f"Finite-difference check on {len(nonzero_idx)} entries...")
     for i, z in nonzero_idx:
-        k_plus = np.asarray(k_arr0).copy(); k_plus[i, z] += eps
-        k_minus = np.asarray(k_arr0).copy(); k_minus[i, z] -= eps
+        k_plus = np.asarray(k_arr0).copy()
+        k_plus[i, z] += eps
+        k_minus = np.asarray(k_arr0).copy()
+        k_minus[i, z] -= eps
         # Re-Newton each side; use loss directly (no AD).
         y_p, _, _ = _newton_solve(y_init, jnp.asarray(k_plus), atm, net)
         y_m, _, _ = _newton_solve(y_init, jnp.asarray(k_minus), atm, net)

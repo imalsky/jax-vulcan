@@ -13,7 +13,8 @@ num_br = 2
 
 outstr = '# Branching ratios for '+molecule+' -> (1)SO + O  (2)S+ O2  nm  from PhiDRates\n'
 outstr += '# lambda '
-for i in range(1,num_br+1): outstr += "{:>12}".format(', br_ratio_' + str(i))
+for i in range(1, num_br + 1):
+    outstr += "{:>12}".format(', br_ratio_' + str(i))
 outstr += '\n'
 
 # Lambda  Total   SO/O     S/O2     SO2band  SO2+    

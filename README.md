@@ -2,13 +2,13 @@
 
 A JAX-accelerated, differentiable port of [VULCAN](https://github.com/exoclime/VULCAN) — the photochemical-kinetics solver for exoplanet atmospheres (Tsai et al. 2017, 2021).
 
-VULCAN-JAX runs supported VULCAN calculations with the same configuration files, input data, and public `.vul` output schema as the upstream NumPy code, but the entire integration loop is JAX-accelerated and end-to-end differentiable. The hot path is a single JIT-compiled `lax.while_loop` running on CPU or GPU; the runtime is **standalone** — `python vulcan_jax.py` runs end-to-end with no `../VULCAN-master/` sibling required.
+VULCAN-JAX runs supported VULCAN calculations with the same configuration files, input data, and public `.vul` output schema as the upstream NumPy code. The hot path is a single JIT-compiled `lax.while_loop` running on CPU or GPU; the runtime is **standalone** — `python vulcan_jax.py` runs end-to-end with no `../VULCAN-master/` sibling required.
 
 **Why use VULCAN-JAX over upstream VULCAN?**
-- **~6× faster** per accepted step on CPU; even larger on GPU (architecture is GPU-ready, no code changes needed).
-- **Differentiable**: forward- and reverse-mode AD across rates, atmospheric structure, boundary fluxes, photo cross sections, and initial conditions, with O(1) memory in step count via implicit-function-theorem reverse-mode.
+- **3.4× faster** for the HD189 Ros2 step on this CPU host in the latest `benchmarks/bench_step.py` run in the `vulcan` env.
+- **Differentiable where the runtime is JAX**: forward-mode through the runner; reverse-mode through implicit steady-state gradients; raw readers and FastChem remain host-side.
 - **Same config format and `.vul` output**: VULCAN's `plot_py/` scripts and downstream tooling work unmodified.
-- **Vectorizable**: `vmap` over batched inputs (e.g. parameter sweeps).
+- **Vectorizable**: tested `vmap` support for per-step batched inputs (e.g. parameter sweeps).
 
 ---
 
@@ -181,7 +181,7 @@ rs = RunState.with_pre_loop_setup(vulcan_cfg)
 # rs.metadata      — host-side static (Rf strings, photo_sp, gas_indx, ...)
 ```
 
-Every leaf in `rs.atm` / `rs.rate` / `rs.photo_static` / `rs.ini_abun` is a JAX array, so anything fed through this pytree is differentiable.
+Every leaf in `rs.atm` / `rs.rate` / `rs.photo_static` / `rs.ini_abun` is a JAX array. Inputs supplied through these pytrees are on the differentiable runtime surface; raw file readers and FastChem are host-side setup.
 
 #### Running the integration
 
@@ -470,16 +470,14 @@ VULCAN-JAX/
 
 ## Benchmarks
 
-Per-step kernel timing on the HD189 reference state (CPU, single-threaded, on this Mac):
+Per-step kernel timing on the HD189 reference state from `python benchmarks/bench_step.py` (CPU, single-threaded, on this Mac):
 
 | Step | Master (NumPy) | VULCAN-JAX | Speedup |
 |---|---:|---:|---:|
-| Single Ros2 step (photo + chem + diffusion + block-Thomas) | 126.0 ms | **22.6 ms** | **5.6×** |
-| 50-step OuterLoop smoke (HD189) | — | 39.4 ms / accepted step | — |
-| Full HD189 to convergence (with `conver_ignore` populated) | 168 s | **33 s** | **5.1×** |
-| Full HD209 to convergence | 168 s | 71 s | 2.4× |
+| Single Ros2 step (photo + chem + diffusion + block-Thomas) | 152.3 ms | **45.1 ms** | **3.4×** |
+| 50-step OuterLoop cached call (HD189) | — | 49.6 ms / accepted step | — |
 
-Per-step speedup is consistent (~5–6×) regardless of planet. Wall-time speedup depends on whether the convergence detector takes the same path on both branches (see [Numerical notes](#numerical-notes)).
+Wall-time speedup depends on whether the convergence detector takes the same path on both branches (see [Numerical notes](#numerical-notes)); rerun the benchmark locally before quoting a number for another machine.
 
 **GPU**: the architecture is fully `jit` / `vmap` compatible; setting `JAX_PLATFORM_NAME=gpu` runs on GPU with no code changes. Not measured on this host (CPU-only machine), but architectural overhead at scale is dominated by the chemistry RHS and block-Thomas solver, both of which are designed to vectorize.
 
@@ -589,7 +587,7 @@ With `loss_eps = 0.1`, neither code rejects the per-step ulp drift. A 2-3× long
 # Run on GPU (no code changes)
 JAX_PLATFORM_NAME=gpu python vulcan_jax.py
 
-# Enable JAX device-level parallelism for vmap/pmap on multi-core CPU
+# Enable multiple host CPU devices for tested vmap workflows
 XLA_FLAGS=--xla_force_host_platform_device_count=8 python vulcan_jax.py
 ```
 
@@ -600,11 +598,12 @@ For batched parameter sweeps (e.g. running 16 atmospheres at once with different
 ## Running tests
 
 ```bash
-pytest tests/                  # full suite (~14 min). 108 pass + 3 skip
+python -m pytest tests -q --tb=short -ra   # full suite. 108 passed + 3 skipped
                                # on a clean CPU-only run.
-pytest tests/ -n auto          # parallel-safe (FastChem invocations
+python -m pytest tests -n auto -q --tb=short -ra
+                               # parallel-safe (FastChem invocations
                                # serialise via fcntl.flock).
-pytest tests/ -k "ros2 or block_thomas"   # filter
+python -m pytest tests -k "ros2 or block_thomas"   # filter
 python tests/test_foo.py       # individual scripts run standalone
 ```
 

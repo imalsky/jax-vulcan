@@ -9,7 +9,6 @@ sys.path.insert(0, '../') # including the upper level of directory for the path 
 import vulcan_cfg
 import numpy as np
 from matplotlib import pyplot as plt
-import csv, ast
 try: from PIL import Image
 except ImportError: 
     try: import Image
