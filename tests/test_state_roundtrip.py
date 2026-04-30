@@ -102,6 +102,42 @@ def test_roundtrip_field_set_complete(hd189_state):
         )
 
 
+def test_runstate_output_parameter_schema(hd189_state):
+    """RunState-backed `.vul` output exposes VULCAN-master parameter keys."""
+    import legacy_io
+    import vulcan_cfg
+    from state import runstate_from_store
+
+    rs = runstate_from_store(hd189_state.var, hd189_state.atm, hd189_state.para)
+    _, _, param = legacy_io._synthesize_save_dicts(
+        rs,
+        vulcan_cfg,
+        photo_static=getattr(hd189_state.solver, "_photo_static", None),
+    )
+
+    expected = {
+        "nega_y",
+        "small_y",
+        "delta",
+        "count",
+        "nega_count",
+        "loss_count",
+        "delta_count",
+        "end_case",
+        "solver_str",
+        "switch_final_photo_frq",
+        "where_varies_most",
+        "pic_count",
+        "fix_species_start",
+        "tableau20",
+        "start_time",
+    }
+    assert expected <= set(param), f"missing parameter keys: {expected - set(param)}"
+    assert param["solver_str"] == "solver"
+    assert np.asarray(param["where_varies_most"]).shape == hd189_state.var.y.shape
+    assert len(param["tableau20"]) == 20
+
+
 def test_load_stellar_flux_no_photo():
     """`load_stellar_flux(cfg)` returns an empty payload when use_photo=False
     so callers can call it unconditionally."""

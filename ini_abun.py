@@ -1,26 +1,18 @@
 """JAX-native initial-abundance setup.
 
-JAX rewrite of VULCAN-master's SciPy/NumPy `InitialAbun` class. All
-five `ini_mix` modes are supported:
+Five `ini_mix` modes:
+- `EQ`         FastChem equilibrium (subprocess + parsed output)
+- `const_mix`  apply a per-species mixing dict from cfg
+- `vulcan_ini` restore composition from a previous `.vul` file
+- `table`      read a per-layer mixing-ratio table
+- `const_lowT` solve the 5-mol H2/H2O/CH4/He/NH3 system via JAX Newton
 
-- `EQ`         — FastChem equilibrium (subprocess + parsed output)
-- `const_mix`  — apply a per-species mixing dict from cfg
-- `vulcan_ini` — restore composition from a previous `.vul` file
-- `table`      — read a per-layer mixing-ratio table
-- `const_lowT` — solve the 5-mol H2/H2O/CH4/He/NH3 system via JAX Newton
+`compute_initial_abundance` returns a typed `IniAbunOutputs`. The
+`InitialAbun` class is a legacy facade that mutates `data_var`/`data_atm`.
 
-The `InitialAbun` class is a thin facade matching `atm_setup.Atm`'s
-pattern: it preserves the legacy mutation contract on `data_var` /
-`data_atm` so the runner and existing call sites keep working unchanged.
-`compute_initial_abundance` returns a typed `IniAbunOutputs` pytree for
-new callers.
-
-FastChem invariants (per `pytest.ini`): inputs and output paths under
-`fastchem_vulcan/` are fixed and the subprocess call is preserved
-byte-for-byte. `_run_fastchem` wraps the call in an `fcntl.flock`
-sentinel so concurrent invocations (e.g. `pytest -n auto` or multiple
-worker processes) serialize on the FastChem block instead of racing
-on the shared `input/` and `output/` files.
+FastChem subprocess calls are serialised via `fcntl.flock` so
+`pytest -n auto` and concurrent drivers don't race on the shared
+`fastchem_vulcan/input/` and `output/` files.
 """
 
 from __future__ import annotations
@@ -43,13 +35,9 @@ from state import IniAbunOutputs
 jax.config.update("jax_enable_x64", True)
 
 
-# Anchor every FastChem path to the source location, not cwd. Pytest
-# subprocesses, spawned scripts, and the chunked driver may be invoked
-# from different working directories; hard-anchoring keeps every worker
-# locking and writing to the same `fastchem_vulcan/` instance under the
-# VULCAN-JAX tree (cross-process serialisation otherwise breaks silently
-# when two workers resolve `fastchem_vulcan/.fastchem_lock` to different
-# files).
+# Anchor FastChem paths to the source location (not cwd) so concurrent
+# workers invoked from different directories all flock on the same
+# sentinel and write to the same input/output files.
 _FC_DIR = (Path(__file__).resolve().parent / "fastchem_vulcan").resolve()
 _FC_SENTINEL = _FC_DIR / ".fastchem_lock"
 _FC_INPUT = _FC_DIR / "input"
@@ -58,16 +46,11 @@ _FC_VULCAN_TP = _FC_INPUT / "vulcan_TP" / "vulcan_TP.dat"
 _FC_VULCAN_EQ = _FC_OUTPUT / "vulcan_EQ.dat"
 
 
-# ---------------------------------------------------------------------------
-# Pure JAX kernels
-# ---------------------------------------------------------------------------
-
 def _abun_lowT_residual(x, O_H, C_H, He_H, N_H):
     """5-mol residual: H2 / H2O / CH4 / He / NH3.
 
-    Mirrors `InitialAbun.abun_lowT` from VULCAN-master verbatim. The
-    sum constraint (f1) only includes x1..x4; NH3 (x5) participates in
-    the H/C/O/He/N balance equations only.
+    The sum constraint (f1) only includes x1..x4; NH3 (x5) participates
+    in the H/C/O/He/N balance equations only.
     """
     x1, x2, x3, x4, x5 = x[0], x[1], x[2], x[3], x[4]
     coupling = 2.0 * x1 + 2.0 * x2 + 4.0 * x3 + 3.0 * x5
@@ -113,32 +96,12 @@ def _jax_newton(residual_fn, m0, args, max_iter=50, tol=1e-12):
 
 
 def compute_atom_ini(y, compo_arr=compo_array):
-    """Stoichiometric sum over species: `atom_ini[a] = Σ_i compo[i,a] * Σ_z y[z,i]`.
-
-    Replaces the per-atom Python loop in `InitialAbun.ele_sum` with a
-    single `einsum`. `y` is `(nz, ni)`; `compo_arr` is `(ni, n_atoms)`
-    in `composition.atom_list` order. Returns a `(n_atoms,)` JAX array.
-    """
+    """`atom_ini[a] = Σ_i compo[i,a] * Σ_z y[z,i]`. y (nz, ni), compo_arr (ni, n_atoms)."""
     return jnp.einsum("zi,ia->a", y, compo_arr)
 
 
-# ---------------------------------------------------------------------------
-# Mode dispatch (host-side I/O + numpy assembly)
-# ---------------------------------------------------------------------------
-
 def _run_fastchem(data_atm) -> None:
-    """Write FastChem inputs and invoke the binary.
-
-    Direct port of `InitialAbun.ini_fc` — paths and `subprocess.check_call`
-    invocation are preserved byte-for-byte. FastChem writes to fixed
-    paths under `fastchem_vulcan/output/`. The input write + binary invoke
-    + output read are wrapped in an `fcntl.flock` exclusive lock on a
-    sentinel file so concurrent test workers (e.g. `pytest -n auto`)
-    serialize naturally instead of racing on the shared input / output
-    files. The lock is released as soon as the output is read; the
-    binary stays cheap (sub-second) so contention is not a runtime
-    concern.
-    """
+    """Write FastChem inputs and invoke the binary, holding the cross-process lock."""
     _FC_DIR.mkdir(exist_ok=True)
     _FC_SENTINEL.touch(exist_ok=True)
     with open(_FC_SENTINEL, "r") as lock_f:
@@ -150,7 +113,7 @@ def _run_fastchem(data_atm) -> None:
 
 
 def _run_fastchem_locked(data_atm) -> None:
-    """Inner FastChem driver — assumes caller holds the cross-process lock."""
+    """Inner FastChem driver. Caller must already hold the flock."""
     solar_ele = _FC_INPUT / "solar_element_abundances.dat"
     if vulcan_cfg.use_ion is True:
         copyfile(
@@ -229,14 +192,10 @@ def _build_charge_list_if_ion(charge_list: list[str]) -> None:
 
 
 def _load_eq_y(data_atm) -> tuple[np.ndarray, list[str]]:
-    """Run FastChem and parse `vulcan_EQ.dat` into a `(nz, ni)` y array.
+    """Run FastChem and parse `vulcan_EQ.dat` into `(nz, ni)`.
 
-    The FastChem invoke + output read are serialised across workers
-    via the cross-process `fastchem_vulcan/.fastchem_lock` sentinel so
-    concurrent pytest workers never read another worker's
-    `vulcan_EQ.dat`. Holding the lock through the read also stops a
-    later worker from clobbering the output before this worker
-    finishes parsing it.
+    Invoke + read + cleanup all happen inside one flock so a concurrent
+    worker can't clobber the output mid-read.
     """
     _FC_DIR.mkdir(exist_ok=True)
     _FC_SENTINEL.touch(exist_ok=True)
@@ -250,9 +209,8 @@ def _load_eq_y(data_atm) -> tuple[np.ndarray, list[str]]:
                 dtype=None,
                 skip_header=0,
             )
-            # Remove the output file while we still hold the lock so a
-            # concurrent worker can't have its freshly-written output
-            # clobbered by our cleanup mid-read.
+            # Unlink under the lock so we can't strip another worker's
+            # freshly-written output before they parse it.
             try:
                 _FC_VULCAN_EQ.unlink()
             except FileNotFoundError:
@@ -363,17 +321,12 @@ _MODE_DISPATCH = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Condense + finalisation (matches master byte-for-byte)
-# ---------------------------------------------------------------------------
-
 def _apply_condense(y: np.ndarray, data_atm) -> np.ndarray:
-    """Apply the `use_condense` block from master `ini_y` (lines 213-257).
+    """Apply the `use_condense` initial-cold-trap clip.
 
     Mutates `data_atm.sat_mix` / `data_atm.conden_min_lev` and (for
-    H2O+sat-surface mode) `vulcan_cfg.use_fix_sp_bot`. Returns the
-    (potentially clipped) `y` so the cold-trap saturation cap reaches
-    the caller for the subsequent `ymix` recomputation.
+    H2O + `use_sat_surfaceH2O`) `vulcan_cfg.use_fix_sp_bot`. Returns
+    the clipped `y` so the caller can recompute ymix.
     """
     if vulcan_cfg.use_condense is not True:
         return y
@@ -391,9 +344,8 @@ def _apply_condense(y: np.ndarray, data_atm) -> np.ndarray:
                     "\nThe fixed surface water is now reset by condensation and humidity to "
                     + str(vulcan_cfg.use_fix_sp_bot[sp])
                 )
-                # Master writes ymix[:,H2O] = sat_mix[0] then y[:,H2O] = ymix*n_0,
-                # but the ymix write is overwritten by the final renormalisation;
-                # only the y replacement survives, so just update local y.
+                # The ymix write is overwritten by the final renormalisation;
+                # only the y replacement survives, so just update y here.
                 y[:, sp_idx] = data_atm.sat_mix[sp][0] * data_atm.n_0
 
         if vulcan_cfg.use_ini_cold_trap is True:
@@ -440,18 +392,12 @@ def _compute_ymix(y: np.ndarray) -> np.ndarray:
     return y / ysum
 
 
-# ---------------------------------------------------------------------------
-# Top-level pure compute + facade
-# ---------------------------------------------------------------------------
-
 def compute_initial_abundance(data_atm) -> IniAbunOutputs:
     """Run the configured `ini_mix` mode and return a typed pytree.
 
-    Side effect: when `use_condense=True`, the legacy `data_atm`
-    container is mutated (saturation profiles, cold-trap min level,
-    optional surface-H2O override) — these are inherently dict-of-
-    species side-channels that the runner consumes via legacy reads.
-    The pytree carries the gas-phase composition only.
+    Side effect: when `use_condense=True`, the legacy `data_atm` container
+    is mutated (saturation profiles, cold-trap min level, optional surface
+    H2O override). The pytree carries the gas-phase composition only.
     """
     mix = vulcan_cfg.ini_mix
     if mix not in _MODE_DISPATCH:
@@ -485,12 +431,7 @@ def compute_initial_abundance(data_atm) -> IniAbunOutputs:
 
 
 class InitialAbun:
-    """Facade preserving the legacy `data_var` / `data_atm` mutation
-    contract (matches `atm_setup.Atm`'s pattern).
-
-    `ini_y` and `ele_sum` write the same fields as VULCAN-master's
-    `InitialAbun` so existing call sites keep working unchanged.
-    """
+    """Legacy-mutation facade matching `atm_setup.Atm`'s pattern."""
 
     def __init__(self):
         self.atom_list = vulcan_cfg.atom_list
@@ -508,8 +449,8 @@ class InitialAbun:
         atoms_jax = compute_atom_ini(jnp.asarray(data_var.y))
         atoms_np = np.asarray(atoms_jax)
         loss_ex = list(getattr(vulcan_cfg, "loss_ex", []))
-        # cfg.atom_list is a subset (possibly reordered) of composition.atom_list;
-        # look up each cfg atom's column in compo_array.
+        # cfg.atom_list may reorder/subset composition.atom_list; look up the
+        # column for each cfg atom by name in compo_array.
         for atom in self.atom_list:
             if atom in loss_ex:
                 continue

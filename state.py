@@ -125,6 +125,10 @@ class ParamInputs(NamedTuple):
     delta:             float
     small_y:           float
     nega_y:            float
+    end_case:          int
+    switch_final_photo_frq: bool
+    pic_count:         int
+    where_varies_most: jnp.ndarray  # shape: (nz, ni)
     fix_species_start: bool
 
 
@@ -236,7 +240,7 @@ class RunState(NamedTuple):
         rs = _build_pre_loop_runstate(cfg)
         return rs._replace(
             step=_fresh_step_inputs(rs),
-            params=_fresh_param_inputs(),
+            params=_fresh_param_inputs(rs),
             atoms=_fresh_atom_inputs(rs),
             photo_runtime=_fresh_photo_runtime(rs),
         )
@@ -389,6 +393,20 @@ def _atom_arr_to_dict(arr, atom_order) -> dict:
     return {a: float(arr[i]) for i, a in enumerate(atom_order)}
 
 
+def _master_tableau20() -> list[tuple[float, float, float]]:
+    """Return VULCAN-master's normalized Tableau 20 plotting palette."""
+    colors = [
+        (31, 119, 180), (255, 127, 14), (44, 160, 44), (214, 39, 40),
+        (148, 103, 189), (140, 86, 75), (227, 119, 194),
+        (127, 127, 127), (188, 189, 34), (23, 190, 207),
+        (174, 199, 232), (255, 187, 120), (152, 223, 138),
+        (255, 152, 150), (197, 176, 213), (196, 156, 148),
+        (247, 182, 210), (199, 199, 199), (219, 219, 141),
+        (158, 218, 229),
+    ]
+    return [(r / 255.0, g / 255.0, b / 255.0) for r, g, b in colors]
+
+
 def runstate_from_store(var, atm, para) -> RunState:
     """Snapshot the full runner-input state of `(var, atm, para)`.
 
@@ -424,6 +442,15 @@ def runstate_from_store(var, atm, para) -> RunState:
         delta=float(getattr(para, "delta", 0.0)),
         small_y=float(getattr(para, "small_y", 0.0)),
         nega_y=float(getattr(para, "nega_y", 0.0)),
+        end_case=int(getattr(para, "end_case", 0)),
+        switch_final_photo_frq=bool(
+            getattr(para, "switch_final_photo_frq", False)
+        ),
+        pic_count=int(getattr(para, "pic_count", 0)),
+        where_varies_most=jnp.asarray(
+            getattr(para, "where_varies_most", np.zeros((nz, ni))),
+            dtype=jnp.float64,
+        ),
         fix_species_start=bool(getattr(para, "fix_species_start", False)),
     )
 
@@ -520,6 +547,14 @@ def runstate_to_store(state: RunState, var, atm, para) -> None:
         para.delta = float(state.params.delta)
         para.small_y = float(state.params.small_y)
         para.nega_y = float(state.params.nega_y)
+        para.end_case = int(state.params.end_case)
+        para.switch_final_photo_frq = bool(state.params.switch_final_photo_frq)
+        para.pic_count = int(state.params.pic_count)
+        para.where_varies_most = np.asarray(
+            state.params.where_varies_most,
+            dtype=np.float64,
+        )
+        para.tableau20 = _master_tableau20()
         para.fix_species_start = bool(state.params.fix_species_start)
 
     if state.atoms is not None:
@@ -673,10 +708,15 @@ def _fresh_step_inputs(rs: RunState) -> StepInputs:
     )
 
 
-def _fresh_param_inputs() -> ParamInputs:
+def _fresh_param_inputs(rs: RunState) -> ParamInputs:
+    nz = int(rs.atm.Tco.shape[0])
+    ni = int(chem_funs.ni)
     return ParamInputs(
         count=0, nega_count=0, loss_count=0, delta_count=0,
-        delta=0.0, small_y=0.0, nega_y=0.0, fix_species_start=False,
+        delta=0.0, small_y=0.0, nega_y=0.0,
+        end_case=0, switch_final_photo_frq=False, pic_count=0,
+        where_varies_most=jnp.zeros((nz, ni), dtype=jnp.float64),
+        fix_species_start=False,
     )
 
 
@@ -832,6 +872,15 @@ def legacy_view(rs: RunState):
         para.delta = float(rs.params.delta)
         para.small_y = float(rs.params.small_y)
         para.nega_y = float(rs.params.nega_y)
+        para.end_case = int(rs.params.end_case)
+        para.solver_str = 'solver'
+        para.switch_final_photo_frq = bool(rs.params.switch_final_photo_frq)
+        para.pic_count = int(rs.params.pic_count)
+        para.where_varies_most = np.asarray(
+            rs.params.where_varies_most,
+            dtype=np.float64,
+        )
+        para.tableau20 = _master_tableau20()
         para.fix_species_start = bool(rs.params.fix_species_start)
     if md is not None:
         para.start_time = float(md.start_time)
@@ -1001,4 +1050,6 @@ class _Parameters(object):
         self.solver_str = ''
         self.switch_final_photo_frq = False
         self.where_varies_most = np.zeros((_nz, _ni))
+        self.pic_count = 0
         self.fix_species_start = False
+        self.tableau20 = _master_tableau20()

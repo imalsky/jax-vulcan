@@ -131,7 +131,7 @@ def k_dict_from_array(net: Network, k_arr: np.ndarray) -> dict:
 
 
 def k_array_from_dict(net: Network, k_dict: dict, nz: int) -> np.ndarray:
-    """Inverse of `k_dict_from_array` -- pack a VULCAN dict into a (nr+1, nz) array."""
+    """Pack a `{i: array(nz)}` dict into a (nr+1, nz) ndarray."""
     out = np.zeros((net.nr + 1, nz), dtype=np.float64)
     for i, vec in k_dict.items():
         if 1 <= i <= net.nr:
@@ -139,29 +139,11 @@ def k_array_from_dict(net: Network, k_dict: dict, nz: int) -> np.ndarray:
     return out
 
 
-# ---------------------------------------------------------------------------
-# Low-T caps + remove_list + end-to-end build
-# ---------------------------------------------------------------------------
-
 def apply_lowT_caps(
     net: Network, k: np.ndarray, T: np.ndarray, M: np.ndarray
 ) -> np.ndarray:
-    """Cap the post-Lindemann rate of three hardcoded reactions below their T
-    thresholds. Mirrors `legacy_io.ReadRate.lim_lowT_rates` (which itself
-    mirrors upstream `op.py:320-342`).
-
-    Args:
-        net: parsed Network.
-        k:   (nr+1, nz) rate array; only forward slots are read/written here.
-        T:   (nz,) temperatures.
-        M:   (nz,) total third-body number density (`atm.M`).
-
-    Returns:
-        New (nr+1, nz) array with caps applied where T is below the cap
-        threshold. Always operates -- the caller is responsible for gating
-        on `cfg.use_lowT_limit_rates` (the default cfg has it False; only
-        the Jupiter cfg switches it on).
-    """
+    """Apply three Moses+2005 low-T rate caps. Caller gates on
+    `cfg.use_lowT_limit_rates` (only the Jupiter cfg sets it)."""
     k = np.asarray(k, dtype=np.float64).copy()
     T = np.asarray(T, dtype=np.float64)
     M = np.asarray(M, dtype=np.float64)
@@ -171,18 +153,16 @@ def apply_lowT_caps(
             continue
         rf = net.Rf.get(i, "")
         if rf == _LOWT_CAP_RXN_CH3:
-            # Moses+2005 low-T Lindemann cap: k0=6e-29, kinf=2.06e-10*T^-0.4
+            # Moses+2005 cap: k0=6e-29, kinf=2.06e-10*T^-0.4 (Lindemann form).
             T_mask = T <= 277.5
             k0 = 6.0e-29
             kinf = 2.06e-10 * T**-0.4
             cap = k0 / (1.0 + k0 * M / kinf)
             k[i] = np.where(T_mask, cap, k[i])
         elif rf == _LOWT_CAP_RXN_C2H4:
-            T_mask = T <= 300.0
-            k[i] = np.where(T_mask, 3.7e-30, k[i])
+            k[i] = np.where(T <= 300.0, 3.7e-30, k[i])
         elif rf == _LOWT_CAP_RXN_C2H5:
-            T_mask = T <= 200.0
-            k[i] = np.where(T_mask, 2.49e-27, k[i])
+            k[i] = np.where(T <= 200.0, 2.49e-27, k[i])
 
     return k
 
@@ -190,13 +170,8 @@ def apply_lowT_caps(
 def apply_remove_list(
     net: Network, k: np.ndarray, remove_list: Iterable[int] | None
 ) -> np.ndarray:
-    """Zero rows in `remove_list`. Mirrors `legacy_io.ReadRate.remove_rate`.
-
-    Important: this zeros literally what is in `remove_list`. It does not
-    auto-zero a paired forward/reverse partner. Upstream's typical usage is
-    to pass pairs (e.g. `[1, 2]`) so both ends are zeroed; passing a lone
-    forward leaves the reverse intact (matching upstream).
-    """
+    """Zero the rows in `remove_list`. No auto-pairing: passing a lone
+    forward leaves its reverse intact."""
     k = np.asarray(k, dtype=np.float64).copy()
     if not remove_list:
         return k
@@ -208,64 +183,33 @@ def apply_remove_list(
 
 
 def build_rate_array(cfg, net: Network, atm, nasa9_coeffs: np.ndarray) -> np.ndarray:
-    """End-to-end rate-array build: forward -> (lowT caps) -> reverse -> remove.
+    """End-to-end rate build: forward → (lowT caps) → reverse via Gibbs → remove.
 
-    Args:
-        cfg: vulcan_cfg-style module/object exposing `use_lowT_limit_rates`
-            and `remove_list`.
-        net: parsed Network.
-        atm: atmosphere container exposing `Tco` (nz,) and `M` (nz,).
-        nasa9_coeffs: (ni, 2, 10) NASA-9 coefficient table from
-            `gibbs.load_nasa9`.
-
-    Returns:
-        (nr+1, nz) `np.ndarray`. Index 0 is unused (1-based reaction
-        indexing). Reverse slots beyond `net.stop_rev_indx` are zero.
-
-    Bit-exact (<=1e-13) replacement for the legacy
-    `read_rate -> lim_lowT_rates -> rev_rate -> remove_rate` chain in
-    `vulcan_jax.py:97-104`.
+    Index 0 is unused (1-based reactions); reverse slots beyond
+    `net.stop_rev_indx` are zero.
     """
-    # Late import to avoid a top-level cycle (gibbs.compute_all_k imports
-    # rates.compute_forward_k).
+    # Late import: gibbs.compute_all_k → rates.compute_forward_k cycle.
     from gibbs import K_eq_array, fill_reverse_k, gibbs_sp_vector
 
     T = np.asarray(atm.Tco, dtype=np.float64)
     M = np.asarray(atm.M, dtype=np.float64)
 
-    # 1. Forward rates (Arrhenius / Lindemann / Troe).
     k = compute_forward_k(net, T, M)
 
-    # 2. Optional low-T caps (Jupiter cfg sets the flag on; HD189 does not).
     if bool(getattr(cfg, "use_lowT_limit_rates", False)):
         k = apply_lowT_caps(net, k, T, M)
 
-    # 3. Reverse rates from Gibbs. Pass `remove_list=None` so this routine
-    #    does NOT auto-zero forward/reverse pairs; we apply remove_list in
-    #    its own pass below to match legacy semantics exactly.
+    # Pass `remove_list=None` here; we apply remove_list in its own pass
+    # to match legacy semantics (no auto fwd/rev pairing).
     g_sp = gibbs_sp_vector(nasa9_coeffs, T)
     K_eq = K_eq_array(net, g_sp, T)
     k = fill_reverse_k(net, k, K_eq, remove_list=None)
 
-    # 4. Literal remove pass: zero only the entries in `cfg.remove_list`.
-    k = apply_remove_list(net, k, getattr(cfg, "remove_list", None))
+    return apply_remove_list(net, k, getattr(cfg, "remove_list", None))
 
-    return k
-
-
-# ---------------------------------------------------------------------------
-# Convenience: one-shot rate setup helpers for tests + production.
-# ---------------------------------------------------------------------------
 
 def setup_var_k(cfg, var, atm) -> Network:
-    """Parse network, load NASA-9 coeffs, build dense `var.k_arr`. Returns
-    the parsed Network for callers that need it.
-
-    Replaces the legacy `read_rate -> rev_rate -> remove_rate
-    [-> lim_lowT_rates]` chain. The legacy `read_rate` is still required
-    upstream of this call for metadata population (`var.Rf`,
-    `var.pho_rate_index`, `var.n_branch`, `var.photo_sp`, ...).
-    """
+    """Parse network, load NASA-9 coeffs, write `var.k_arr`. Returns the Network."""
     from gibbs import load_nasa9
     from network import parse_network
 
@@ -279,9 +223,7 @@ def setup_var_k(cfg, var, atm) -> Network:
 
 
 def apply_photo_remove(cfg, var, network: Network, atm) -> None:
-    """After `compute_J` (and optionally `compute_Jion`) has overwritten
-    `var.k_arr` rows for photodissociation slots, apply `cfg.remove_list`
-    on the dense array.
-    """
-    del atm  # accepted for legacy call-shape compatibility; unused
+    """Re-apply `cfg.remove_list` after `compute_J`/`compute_Jion` has
+    overwritten the photolysis rows of `var.k_arr`."""
+    del atm
     var.k_arr = apply_remove_list(network, var.k_arr, cfg.remove_list)

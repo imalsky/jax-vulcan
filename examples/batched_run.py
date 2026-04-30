@@ -21,7 +21,6 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 sys.path.insert(0, str(ROOT))
-sys.path.append(str(ROOT.parent / "VULCAN-master"))
 warnings.filterwarnings("ignore")
 
 

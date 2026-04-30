@@ -1,41 +1,19 @@
 """Implicit-function-theorem gradients of the converged photochemical state.
 
-`outer_loop.OuterLoop` runs to convergence inside a `jax.lax.while_loop`,
-which JAX supports for `jvp` / `jacfwd` but NOT for `vjp` / `grad`. So
-end-to-end reverse-mode AD through the integration is blocked.
-
-The converged state `y*` satisfies the algebraic system
-
-    f(y*, theta) = 0     where  f(y, theta) = chem_rhs(y, theta) + diffusion(y)
-
-so the implicit function theorem gives
+`outer_loop.OuterLoop`'s `lax.while_loop` supports `jvp`/`jacfwd` but not
+`vjp`/`grad`. The converged state `y*` satisfies `f(y*, theta) = 0`, so
 
     ∂y*/∂theta = -(∂f/∂y)^{-1} (∂f/∂theta)
 
-and the VJP of any loss `L = L(y*)` w.r.t. theta is
+and the cotangent VJP becomes
 
     ∂L/∂theta = -((∂f/∂y)^{-T} v) · (∂f/∂theta)
 
-where `v = ∂L/∂y* = cotangent`. We need (1) one block-tridiagonal solve of
-the *transposed* Jacobian and (2) one VJP through `f` w.r.t. theta. The
-existing `solver.block_thomas_diag_offdiag` handles (1); `jax.vjp` handles
-(2). The forward integration runs as today (unchanged); we just attach a
-`custom_vjp` whose backward bypasses the non-differentiable runner.
-
-**Memory: O(1) in step count.** Compute per gradient: 1 forward integration
-+ 1 block-tridiagonal solve + 1 VJP through `f`. Standard pattern; same
-shape as `diffrax.SteadyStateEvent`, `equinox.implicit_diff`, etc.
-
-Caveat: the gradient accuracy is bounded by `||f(y*, theta)||`, which in
-turn is bounded by the runner's convergence criterion. With `yconv_cri =
-0.01` the relative residual is O(1e-2); for tighter gradient accuracy
-lower `yconv_cri` (slower forward run, more accurate gradient).
-
-Today this module exposes a `differentiable_steady_state` that the user
-calls with an already-converged `y_star`. Wiring it directly into the
-runner's output (so `loss(theta) = L(OuterLoop(theta).run())` gradient
-goes through the implicit formula automatically) is a thin further wrap
-— see `examples/grad_implicit_example.py`.
+This module exposes a `differentiable_steady_state` that wraps the
+integrator with a `jax.custom_vjp`: the backward pass does one
+transposed block-tridiagonal solve plus one VJP through `f`, bypassing
+the runner. Memory is O(1) in step count; gradient accuracy is bounded
+by the forward residual `||f(y*, theta)||` (i.e. `yconv_cri`).
 """
 from __future__ import annotations
 
@@ -82,7 +60,7 @@ class SteadyStateInputs(NamedTuple):
 
 
 def build_steady_state_inputs(k_arr: jnp.ndarray, atm: AtmStatic) -> SteadyStateInputs:
-    """Lift a runtime `AtmStatic` plus `k_arr` into the differentiable API."""
+    """Pack a runtime `AtmStatic` plus `k_arr` into the differentiable API."""
     return SteadyStateInputs(
         k_arr=k_arr,
         Kzz=atm.Kzz,
@@ -159,22 +137,10 @@ def steady_state_residual(
     net: NetworkArrays,
     grav: DiffGrav | None = None,
 ) -> jnp.ndarray:
-    """Compute f(y, k_arr) = chem_rhs(y) + diffusion(y) at the given state.
+    """f(y, k_arr) = chem_rhs(y) + diffusion(y). At convergence ||f|| → 0.
 
-    At convergence ``f(y*, k_arr) = 0``. The residual norm is the right
-    diagnostic to check whether the implicit-function gradient will be
-    accurate (smaller residual ⇒ more accurate gradient).
-
-    Args:
-        y:     (nz, ni)        species number densities.
-        k_arr: (nr+1, nz)      reaction-rate table (1-indexed; row 0 unused).
-        atm:   AtmStatic       atmosphere (T-P / Kzz / Dzz / etc.).
-        net:   NetworkArrays   parsed network (stoichiometry).
-        grav:  optional DiffGrav from `compute_diff_grav(atm)`. Recomputed
-               if not supplied; caller can pass it to skip the rebuild.
-
-    Returns:
-        (nz, ni) residual.
+    The residual norm bounds implicit-gradient accuracy. `grav` is recomputed
+    if not supplied; callers can pass it to skip the rebuild.
     """
     return steady_state_residual_inputs(
         y,
@@ -185,11 +151,9 @@ def steady_state_residual(
 
 
 def _build_jacobian_blocks(y, k_arr, atm, net):
-    """Return (diag, sup_d, sub_d) such that J_y = ∂f/∂y at y is the block-
-    tridiagonal matrix with `diag` (full dense per layer), and `sup_d` / `sub_d`
-    diagonal-in-species off-diagonals. Compatible with
-    `block_thomas_diag_offdiag`.
-    """
+    """Return (diag, sup_d, sub_d) for J_y = ∂f/∂y in the format
+    `block_thomas_diag_offdiag` expects (dense diag, diagonal-in-species
+    super/sub)."""
     grav = compute_diff_grav(atm)
     A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, _ = _build_diff_coeffs_jax(
         y, atm, grav,
@@ -324,64 +288,42 @@ def differentiable_steady_state(
     atm: AtmStatic,
     net: NetworkArrays,
 ) -> jnp.ndarray:
-    """Treat ``y_star`` as the converged state of `f(y*, k_arr) = 0` and
-    expose it as a differentiable function of ``k_arr``.
+    """Expose `y_star` as a differentiable function of `k_arr` via the
+    implicit-function theorem.
 
-    Forward: returns ``y_star`` unchanged. The user supplies it from any
-    convergent forward solver (typically `outer_loop.OuterLoop`).
-
-    Backward (custom_vjp): uses the implicit-function theorem so
-    ``jax.grad(loss)(k_arr)`` correctly accounts for the implicit
-    dependence of ``y*`` on ``k_arr`` — without backpropagating through
-    the non-differentiable `lax.while_loop` in the runner.
-
-    Args:
-        k_arr:  (nr+1, nz)  rate-constant table (differentiable).
-        y_star: (nz, ni)    converged number densities (the forward "answer").
-        atm:    AtmStatic   non-differentiable atmosphere snapshot.
-        net:    NetworkArrays  non-differentiable network.
-
-    Returns:
-        (nz, ni) y_star, with `custom_vjp` attached so reverse-mode AD
-        through the returned tensor uses the implicit gradient formula.
+    Forward returns y_star unchanged; backward uses the IFT so
+    `jax.grad(loss)(k_arr)` accounts for the implicit dependence of y*
+    on k_arr without backpropagating through the runner's while_loop.
     """
     inputs = build_steady_state_inputs(k_arr, atm)
     return differentiable_steady_state_inputs(inputs, y_star, net)
 
 
 def _ss_fwd(k_arr, y_star, atm, net):
-    """custom_vjp forward: stash residuals for the backward pass."""
     return y_star, (k_arr, y_star)
 
 
 def _ss_bwd(atm, net, res, v):
-    """custom_vjp backward: implicit-function-theorem cotangent.
+    """Implicit-function-theorem backward.
 
-    Solve J_y^T λ = v (transposed block-tridiagonal solve), then
-    cot_k = -(∂f/∂k)^T λ via jax.vjp.
-
-    Transpose of a block-tridiag with diag-only off-diagonals: the
-    diagonal blocks transpose individually, and the super/sub diagonals
-    *swap* (still diagonal-in-species). See module docstring for the
-    derivation.
+    Solve J_y^T λ = v, then cot_k = -(∂f/∂k)^T λ via jax.vjp. For our
+    block-tridiag with diagonal-in-species off-diagonals, transposing
+    swaps super and sub but keeps them diagonal.
     """
     k_arr, y_star = res
     diag, sup_d, sub_d = _build_jacobian_blocks(y_star, k_arr, atm, net)
 
     diag_T = jnp.transpose(diag, (0, 2, 1))
-    # super of J^T = sub of J; sub of J^T = super of J.
     lambda_ = block_thomas_diag_offdiag(diag_T, sub_d, sup_d, v)
 
-    # Cotangent w.r.t. k_arr: VJP of f at (y_star, k_arr) along λ.
-    # Diffusion piece is k-independent so it drops out of the VJP.
+    # Diffusion is k-independent so the f-VJP only sees chem_rhs.
     def f_of_k(k):
         return chem_rhs(y_star, atm.M, k, net)
     _, vjp_fn = jax.vjp(f_of_k, k_arr)
     (cot_k,) = vjp_fn(lambda_)
 
-    # Implicit formula: ∂y*/∂k = -(∂f/∂y)^{-1} (∂f/∂k); the negative sign
-    # is folded in here. We return zeros for y_star (treated as a constant
-    # for AD purposes — the user supplied it from an external solver).
+    # The minus sign comes from ∂y*/∂k = -(∂f/∂y)^{-1} (∂f/∂k). y_star
+    # is treated as constant — it comes from an external solver.
     return (-cot_k, jnp.zeros_like(y_star))
 
 

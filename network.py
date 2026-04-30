@@ -1,28 +1,16 @@
-"""Parse a VULCAN reaction-network text file into a typed, JAX-friendly Network.
+"""Parse a VULCAN reaction-network text file into a typed Network.
 
-The network format mirrors VULCAN-master (see make_chem_funs.read_network and
-op.ReadRate.read_rate). Forward reactions are at odd parser-indices 1, 3, 5,...
-and each has a reverse slot at i+1 -- reverse rates are filled in later from
-Gibbs energies. Reverse computation stops at `stop_rev_indx` (the file's
-`# reverse stops` marker), so condensation and photo reactions never get
-reverses.
+Forward reactions sit at odd parser-indices (1, 3, 5, ...) with a reverse
+slot at i+1; reverse rates are filled in later from NASA-9 Gibbs energies.
+Reverse computation stops at `stop_rev_indx`, so condensation, photo,
+ion, and radiative-recombination reactions never get a reverse slot.
 
-Sections recognized (in the order they appear in the file):
-  Two-body                        -> Arrhenius A T^B exp(-C/T)
-  3-body w/ k_inf  (after `# 3-body`)
-                                  -> Lindemann-Hinshelwood falloff,
-                                     k = k0 / (1 + k0*M/k_inf)
-  3-body w/o k_inf                -> k = A T^B exp(-C/T)
-  special                         -> hardcoded rate (only OH+CH3+M -> CH3OH+M)
-  condensation                    -> k = 0 (driven by saturation logic later)
-  radiative                       -> radiative recombination (rare)
-  photo                           -> k = 0 initially; J-rates set every photo update
-  ionisation                      -> like photo but for ions
+Sections in file order: two-body, 3-body w/ k_inf (Lindemann), 3-body
+w/o k_inf, special (hardcoded), condensation, radiative recombination,
+photo, ionisation.
 
-Species ordering follows the order species are first encountered while parsing
-the network, with any config-only species (for example inert boundary species
-such as Ar) appended afterwards. `chem_funs.spec_list` is built from this same
-parser, so the runtime stays internally consistent.
+Species ordering follows first appearance in the network, then any
+cfg-only species (e.g. inert Ar) appended.
 """
 
 from __future__ import annotations
@@ -47,10 +35,11 @@ _SECTION_ION = "ion"
 
 @dataclass(frozen=True)
 class Network:
-    """Parsed reaction network. All arrays use 1-based reaction indexing
-    (entries [0] are unused) to match VULCAN conventions; i.e. `nr` is the
-    number of reaction *slots* including reverses, and arrays have shape
-    [nr+1, ...].
+    """Parsed reaction network.
+
+    All arrays use 1-based reaction indexing (entries [0] are unused).
+    `nr` is the total number of slots including reverses; arrays have
+    leading shape [nr+1, ...].
     """
 
     species: tuple[str, ...]
@@ -142,10 +131,10 @@ def _parse_eq(eq: str) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
 
 
 def _detect_section(line: str, _current: str) -> str | None:
-    """Return new section name if `line` is a section marker, else None.
+    """Return a new section name if `line` is a section marker, else None.
 
-    Order matters: '# 3-body reactions without high-pressure rates' must be
-    matched before '# 3-body'.
+    Order matters: '# 3-body reactions without high-pressure rates' must
+    match before '# 3-body'.
     """
     s = line.lstrip()
     if s.startswith("# 3-body reactions without high-pressure rates"):
@@ -209,13 +198,11 @@ def parse_network(network_path: str | Path) -> Network:
     """Parse a VULCAN network file. See module docstring."""
     network_path = str(network_path)
 
-    # Pass 1: walk the file in order, collect reactions with their section.
-    # Build species ordering as encountered (mirrors make_chem_funs).
     species_order: list[str] = []
     species_idx: dict[str, int] = {}
 
     section: str = _SECTION_TWO_BODY
-    parser_i = 1                       # 1, 3, 5, ... for forward reactions
+    parser_i = 1                       # forwards: 1, 3, 5, ...
     stop_rev_indx: int | None = None
     conden_indx: int | None = None
     radiative_indx: int | None = None
@@ -229,8 +216,7 @@ def parse_network(network_path: str | Path) -> Network:
     ion_rate_index: dict[tuple[str, int], int] = {}
     ion_branch: dict[str, int] = {}
 
-    # Per-reaction collected data. Use lists indexed by parser-i//2.
-    forward_records: list[dict] = []  # one entry per forward reaction
+    forward_records: list[dict] = []
     Rf_text: dict[int, str] = {}
     Rindx_map: dict[int, int] = {}
 
@@ -248,8 +234,7 @@ def parse_network(network_path: str | Path) -> Network:
             if not line.strip():
                 continue
 
-            # Section markers (order matters; check before reverse-stops since
-            # they all start with '#').
+            # Section markers must be checked before the # reverse-stops marker.
             new_sec = _detect_section(line, section)
             if new_sec is not None:
                 section = new_sec
@@ -268,12 +253,10 @@ def parse_network(network_path: str | Path) -> Network:
                 stop_rev_indx = parser_i
                 continue
             if stripped.startswith("#"):
-                continue  # ordinary comment
+                continue
 
             m = _RE_LINE.match(line)
             if m is None:
-                # Not a reaction line and not a recognized section marker.
-                # Most likely a stray header row -- skip silently.
                 continue
 
             file_id_str, eq, tail = m.group(1), m.group(2), m.group(3)
@@ -281,11 +264,10 @@ def parse_network(network_path: str | Path) -> Network:
             eq = eq.strip()
             reactants, products = _parse_eq(eq)
 
-            # Intern species (preserves first-seen order, skips M)
             for _stoich, sp in reactants + products:
                 _intern_species(sp)
 
-            # Build stoichiometry (collapsed: collect species -> stoich, dropping M)
+            # Collapse species → stoich (M dropped here; tracked via has_M_*).
             r_collapsed: dict[int, float] = {}
             for stoich, sp in reactants:
                 if sp == "M":
@@ -301,17 +283,16 @@ def parse_network(network_path: str | Path) -> Network:
                     p_collapsed.get(species_idx[sp], 0.0) + float(stoich)
                 )
 
-            # Track whether M appears in reactants and products separately;
-            # asymmetric dissociation reactions (e.g. HNCO + M -> H + NCO) have
-            # M only on one side, so forward and reverse get different M-factors.
+            # Asymmetric dissociation (e.g. HNCO + M → H + NCO) has M only
+            # on the reactant side; forward and reverse get different
+            # M-factors. Track each side independently.
             has_M_reac = any(sp == "M" for _, sp in reactants)
             has_M_prod = any(sp == "M" for _, sp in products)
-            has_M = has_M_reac or has_M_prod   # kept for legacy compatibility
+            has_M = has_M_reac or has_M_prod
 
-            # Parse Arrhenius / aux columns from `tail`. We only need the
-            # numeric prefix; trailing text is references / temperature info.
+            # Parse the numeric prefix of `tail` (Arrhenius / aux); the
+            # rest of `tail` is reference / temperature commentary.
             cols = tail.split()
-            # Find longest prefix of cols that parses as floats
             num_cols: list[float] = []
             for c in cols:
                 try:
@@ -365,18 +346,16 @@ def parse_network(network_path: str | Path) -> Network:
     for sp in _configured_extra_species():
         _intern_species(sp)
 
-    # Total reaction slots = parser_i - 1 (last forward) + 1 (its reverse) = parser_i.
-    # Since parser_i has been bumped past the last one, the last forward is at
-    # parser_i - 2 and its reverse is at parser_i - 1. So nr = parser_i - 1.
+    # parser_i has been bumped past the last reverse → nr = parser_i - 1.
     nr = parser_i - 1
     ni = len(species_order)
 
     if stop_rev_indx is None:
-        # Older networks may omit `# reverse stops`; assume reverses are
-        # computed for everything before the photo section.
+        # Older networks may omit `# reverse stops`; default: reverses are
+        # computed up to the photo section.
         stop_rev_indx = photo_indx if photo_indx is not None else nr + 1
     if conden_indx is None:
-        conden_indx = nr + 1   # sentinel: no condensation reactions
+        conden_indx = nr + 1
     if radiative_indx is None:
         radiative_indx = nr + 1
     if photo_indx is None:
@@ -384,7 +363,6 @@ def parse_network(network_path: str | Path) -> Network:
     if ion_indx is None:
         ion_indx = nr + 1
 
-    # Build padded stoichiometry tables.
     max_reac = max(
         (len(rec["reactants_collapsed"]) for rec in forward_records),
         default=1,
@@ -396,10 +374,10 @@ def parse_network(network_path: str | Path) -> Network:
     max_reac = max(max_reac, 1)
     max_prod = max(max_prod, 1)
 
-    PAD = ni  # pad index points at y[ni]=1 (no-op multiplier / no-op segment)
+    PAD = ni  # pad → y[ni]=1; no-op multiplier and segment_sum drops the slot.
 
-    # Both arrays must accommodate forward AND reverse reactions, so the
-    # reactant slot of a reverse reaction holds the forward's products.
+    # Reverse reactions store the forward's products in their reactant slot,
+    # so both directions need to fit in the same `max_terms` width.
     max_terms = max(max_reac, max_prod)
     reactant_idx = np.full((nr + 1, max_terms), PAD, dtype=np.int64)
     product_idx = np.full((nr + 1, max_terms), PAD, dtype=np.int64)
@@ -425,14 +403,12 @@ def parse_network(network_path: str | Path) -> Network:
     for rec in forward_records:
         i = rec["parser_i"]
         is_forward[i] = True
-        # Stoichiometry (forward)
         for k_slot, (sp_idx, stoich) in enumerate(rec["reactants_collapsed"].items()):
             reactant_idx[i, k_slot] = sp_idx
             reactant_stoich[i, k_slot] = stoich
         for k_slot, (sp_idx, stoich) in enumerate(rec["products_collapsed"].items()):
             product_idx[i, k_slot] = sp_idx
             product_stoich[i, k_slot] = stoich
-        # Reverse: reactants <-> products
         ir = i + 1
         is_forward[ir] = False
         for k_slot, (sp_idx, stoich) in enumerate(rec["products_collapsed"].items()):
@@ -442,10 +418,9 @@ def parse_network(network_path: str | Path) -> Network:
             product_idx[ir, k_slot] = sp_idx
             product_stoich[ir, k_slot] = stoich
 
-        # Forward gets M if reactants had M; reverse gets M if forward
-        # products had M (= reverse reactants now have M). Asymmetric
-        # dissociations like `HNCO + M -> H + NCO` have M-only-on-LHS so the
-        # reverse rate is bimolecular without M.
+        # Asymmetric dissociation: forward and reverse can differ in M
+        # (e.g. `HNCO + M → H + NCO` has M on the LHS only, so the reverse
+        # is bimolecular without M).
         is_three_body[i] = rec["has_M_reac"]
         is_three_body[ir] = rec["has_M_prod"]
 
@@ -464,11 +439,10 @@ def parse_network(network_path: str | Path) -> Network:
             is_radiative[ir] = True
         if sec == _SECTION_PHOTO:
             is_photo[i] = True
-            # No reverse for photo (handled by stop_rev_indx)
+            # Photo has no reverse — guarded via stop_rev_indx.
         if sec == _SECTION_ION:
             is_ion[i] = True
 
-        # Arrhenius parameters
         cols = rec["num_cols"]
         if sec in (_SECTION_TWO_BODY, _SECTION_THREE_BODY_KINF, _SECTION_THREE_BODY_NO_KINF):
             if len(cols) >= 3:
@@ -518,7 +492,7 @@ def parse_network(network_path: str | Path) -> Network:
 
 
 def summarize(net: Network) -> str:
-    """Quick human-readable summary."""
+    """Human-readable summary of a parsed Network."""
     lines = [
         f"Network: {net.network_path}",
         f"  ni = {net.ni} species",

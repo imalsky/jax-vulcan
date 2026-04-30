@@ -72,6 +72,7 @@ class LiveUI:
         if live_plot or save_movie:
             self.update_mix(var, atm, para,
                             save_movie=save_movie, show=live_plot)
+            setattr(para, "pic_count", self.pic_count)
 
         if (live_flux or flux_movie) and bool(getattr(vulcan_cfg, "use_photo", False)):
             self.update_flux(var, atm, para,

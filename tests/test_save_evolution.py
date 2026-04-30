@@ -7,7 +7,8 @@ trajectory directly at the configured cadence into a fixed-size buffer.
 
 This test runs HD189 with `save_evolution=True, save_evo_frq=10` for
 `count_max=50` accepted steps and asserts:
-  1. `var.t_time` has the expected length: `count_max // save_evo_frq` (5).
+  1. `var.t_time` has the expected length:
+     `ceil((count_max + 1) / save_evo_frq)` (6).
   2. `var.t_time` is monotonic.
   3. `var.y_time[i]` snapshot for each i ≥ 1 is a valid (nz, ni) array
      with no NaN / inf.
@@ -72,7 +73,12 @@ def main() -> int:
     outer_loop.vulcan_cfg = vulcan_cfg
     save_evo_frq = 10
     count_max = 50
-    expected_n = count_max // save_evo_frq  # 5
+    # Master runs `count_max + 1` save_steps (op.py:1083 uses `>`, not `>=`),
+    # then post-slices `var.y_time[::save_evo_frq]`, so the kept length is
+    # `ceil((count_max + 1) / save_evo_frq)` = (count_max + save_evo_frq)
+    # // save_evo_frq. For (50, 10) that's 6 entries (indices 0,10,20,30,
+    # 40,50 of y_time[0..50]).
+    expected_n = (count_max + save_evo_frq) // save_evo_frq  # 6
 
     original_save_evo = getattr(vulcan_cfg, "save_evolution", False)
     original_frq = getattr(vulcan_cfg, "save_evo_frq", 1)

@@ -1,10 +1,10 @@
 # VULCAN-JAX
 
-A JAX-accelerated, drop-in compatible port of [VULCAN](https://github.com/exoclime/VULCAN), the chemical-kinetics code for exoplanet atmospheres.
+A JAX-accelerated port of [VULCAN](https://github.com/exoclime/VULCAN), the chemical-kinetics code for exoplanet atmospheres, with compatible CLI/config inputs and public `.vul` outputs for the supported Ros2 runtime.
 
-VULCAN-JAX runs the same calculation as VULCAN — same configuration files, same input data, same `.vul` output schema — but the entire integration loop is JAX-accelerated. The runtime is standalone inside this tree: the master non-code runtime inputs under `atm/` and `thermo/`, the full `thermo/photo_cross/` tree, the vendored `cfg_examples/`, and the FastChem runtime payload needed for `ini_mix = 'EQ'` are present locally. The hot path is JAX-only, and the upstream tree is used only as an optional oracle.
+VULCAN-JAX runs supported Ros2 VULCAN calculations with the same configuration files, input data, and public `.vul` output schema, but the entire integration loop is JAX-accelerated. The runtime is standalone inside this tree: the master non-code runtime inputs under `atm/` and `thermo/`, the full `thermo/photo_cross/` tree, the vendored `cfg_examples/`, and the FastChem runtime payload needed for `ini_mix = 'EQ'` are present locally. The hot path is JAX-only, and the upstream tree is used only as an optional oracle.
 
-**Scope.** The goal is to port all the physics of VULCAN-master, not to add a parity test for every config knob. Every live runtime branch in master has a JAX implementation; proving each non-default branch with an oracle test is *not* a project goal. If a non-default branch is wrong, we'll find out by running it. See "Live but non-default config paths" below for the inventory.
+**Scope.** The goal is to port all live physics in VULCAN-master, not to preserve every internal implementation detail or add a parity test for every config knob. Every live runtime branch in master has a JAX implementation; proving each non-default branch with an oracle test is *not* a project goal. The intentionally unsupported surfaces are dead/commented master paths, replaced compatibility APIs, host-side readers as differentiable code, and byte-for-byte pickle identity. See "Port status" and "Live but non-default config paths" below for the inventory.
 
 The pre-loop input + runner state is a single typed pytree (`state.RunState`). `python vulcan_jax.py` is a 90-line driver that does `runstate = RunState.with_pre_loop_setup(cfg)` → `runstate = integ(runstate)` → `output.save_out(runstate, dname)`. The legacy mutable container classes (`Variables` / `AtmData` / `Parameters`) live in `state.py` as private `_Variables` / `_AtmData` / `_Parameters` and are scratch inside the constructor; new code should consume `RunState` directly via the typed slots (`rs.atm.*`, `rs.rate.k`, `rs.step.y`, `rs.atoms.atom_loss`, `rs.metadata.Rf`, …).
 
@@ -14,7 +14,7 @@ The pre-loop input + runner state is a single typed pytree (`state.RunState`). `
 cd VULCAN-JAX/
 
 # 1. Edit vulcan_cfg.py exactly as you would VULCAN-master's. Same format.
-#    Defaults: HD189 with the SNCHO_photo_network_2025 chemical network.
+#    Defaults: HD189 with the NCHO_photo_network.txt chemical network.
 #    Additional vendored presets live in cfg_examples/ for Earth, Jupiter,
 #    HD189, and HD209.
 
@@ -80,6 +80,25 @@ Current measured timings from the checked-in benchmark/profile scripts on the HD
 - local `OuterLoop` 50-step smoke: `~39.4 ms/accepted step`
 
 The main wins are the analytical chemistry Jacobian, diagonal-aware block-tridiagonal factorization reuse, and pre-baked y-independent diffusion terms.
+
+## Port status
+
+The JAX port covers the live physics and runtime behavior used by VULCAN-master's Ros2 path:
+
+- **Pre-loop setup**: VULCAN-format config loading, network parsing, forward/reverse rate setup, atmosphere construction, five initial-abundance modes, photo cross-section preprocessing, stellar-flux binning, and FastChem-backed `ini_mix = 'EQ'`.
+- **Runtime physics**: Ros2 integration, chemistry RHS/Jacobian, eddy and molecular diffusion, settling, top/bottom fluxes, fixed-species clamps, photochemistry, ion chemistry, atmosphere refresh, hydrostatic balance, condensation/cold-trap relaxation, adaptive step retry, adaptive tolerance, photo-frequency switching, and convergence/termination.
+- **Runtime outputs**: `save_evolution`, progress printing, host-side live plotting/movie hooks, VULCAN-compatible `.vul` top-level dictionaries, synthesized photo/ion diagnostics, and the master public `parameter` keys including `end_case`, `where_varies_most`, `switch_final_photo_frq`, `pic_count`, and `tableau20`.
+- **Transform surface**: per-step kernels support `jit`, `vmap`, `jvp`, and `vjp`; the converged-state reverse-mode route is the implicit-AD API in `steady_state_grad.py`.
+
+The following are intentionally not ported or not promised:
+
+- **Non-Ros2 solvers** such as `SemiEU` / `SparSemiEU`; these are commented-out or dead paths in master.
+- **SymPy code generation APIs** (`chem_funs.symjac`, `chem_funs.neg_symjac`, and a real `make_chem_funs.py` regeneration path). Production uses the JAX analytical Jacobian instead.
+- **Exact `ReadRate.make_bins_read_cross` public-method compatibility**. Runtime cross sections live in dense `PhotoStaticInputs`; legacy dicts are synthesized only for `.vul` output.
+- **FastChem internals**. FastChem remains an external subprocess, matching master.
+- **Differentiability through raw file readers**. CSV/table/photo/network readers are host-side setup; construct typed pytrees directly when gradients through those inputs are needed.
+- **Byte-identical output files or identical transient step histories**. The contract is the same public keys, shapes, dtypes, and plot-script compatibility, not identical pickle bytes or dict insertion history.
+- **Exhaustive oracle validation for every config combination**. Non-default branches are implemented, but not all Cartesian products are cross-tested against master.
 
 ## Differentiability
 
@@ -192,13 +211,15 @@ VULCAN-JAX/
 
 ## Differences from VULCAN-master
 
-VULCAN-JAX is a drop-in replacement for VULCAN-master with two categories of intentional divergence:
+VULCAN-JAX is compatible with VULCAN-master's CLI/config workflow and public `.vul` outputs for the supported Ros2 runtime, with two categories of intentional divergence:
 
 **Live UI is host-side, fired between JIT'd step batches.** Master fires `op.Output.plot_update` and `op.Output.plot_flux_update` from inside its Python step loop. The JAX integration runs as a single JIT'd `lax.while_loop` on device, so when any of `use_live_plot` / `use_live_flux` / `use_save_movie` / `use_flux_movie` is set, the runner switches to chunked execution: chunks of `vulcan_cfg.live_plot_frq` accepted steps, with `live_ui.LiveUI` reading the legacy `(var, atm, para)` view between chunks. Cadence is behavior-faithful — master updates after every `live_plot_frq` accepted steps; the chunk boundary is the same predicate. Movie frames land in `vulcan_cfg.movie_dir` (mixing-ratio) and `plot/movie/` (flux). The validator only rejects `use_live_flux=True` without `use_photo=True` (no diffuse fluxes without photochemistry).
 
 **Solver scope**: only `ode_solver = "Ros2"` is supported. `vulcan_jax.py` raises `NotImplementedError` on any other solver (master's `op.py` carries Ros2 plus commented-out SemiEU / SparSemiEU stubs).
 
 **JAX-native chemistry pipeline**: `chem_funs.py` is a hand-written JAX module that re-exports `ni` / `nr` / `spec_list` / `Gibbs` / `chemdf` etc. from `network.py` + `gibbs.py` + `chem.py`. No SymPy code generator; `make_chem_funs.py` is a no-op shim that exits cleanly. The `-n` flag on `vulcan_jax.py` is accepted as a no-op for upstream compatibility.
+
+**Output schema compatibility**: `legacy_io.Output.save_out` writes the same public top-level `.vul` dictionaries (`variable`, `atm`, `parameter`) consumed by VULCAN's `plot_py/` scripts and downstream tooling. RunState-backed saves synthesize legacy dict surfaces for photo/ion diagnostics and publish the master public `Parameters` keys. The writer does not attempt byte-for-byte pickle identity with master.
 
 **JAX-only configuration knobs** added on top of master's surface:
 - `batch_steps` — accepted Ros2 steps per JAX runner call. Held at 1; the single-shot runner makes this a no-op in production.
@@ -226,7 +247,7 @@ These are the choices you should know about before you read the code:
 
 ## Validation
 
-VULCAN-JAX is **numerically equivalent** to VULCAN-master at every measurable level:
+VULCAN-JAX is **numerically equivalent** to VULCAN-master for the validated components below:
 
 | Layer | Agreement |
 |---|---|
@@ -244,7 +265,18 @@ VULCAN-JAX is **numerically equivalent** to VULCAN-master at every measurable le
 | `conden` / `h2o_relax` / `nh3_relax` (vs numpy ref) | 0 (bit-exact) |
 | End-to-end 50-step run (HD189) | 1.59e-10 |
 
+Additional validation already in the test suite covers vendored example-config setup, Earth/Jupiter/HD209 20-step regression oracles, HD189 smoke integration, `save_evolution`, `.vul` output schema, `compute_Jion`, `vmap` consistency, forward-mode AD, and the implicit steady-state gradient path.
+
 **Known per-term floor in `chem_rhs`** (~1e-4 relerr for CH2_1, HC3N, HCCO at certain layers): the JAX path uses `jnp.prod(y**stoich)` while VULCAN-master uses SymPy-emitted `y[A] * y[B] * y[C]`. The two differ by ~1 ulp per multiply; with ~7K production/loss terms cancelling down to ~1e2 the ulp drift accumulates to ~1e-4 absolute. This is a real, measurable disagreement vs VULCAN-master. Closing it requires a SymPy-faithful codegen and pays a ~14× per-call cost on the per-step hot path, which is **WONTFIX** by maintainer policy — the trade is net-negative for the project. Document the difference, do not try to close it. The Jacobian (`chem_jac_analytical`) is unaffected since it has much less per-entry cancellation.
+
+Validation that has **not** been done:
+
+- No exhaustive Cartesian-product oracle sweep over every non-default config knob listed below.
+- No GPU parity run on this CPU-only host; the GPU test skips when no GPU is available.
+- No long-to-convergence VULCAN-master oracle for every vendored example config.
+- No exhaustive validation of arbitrary custom chemical networks beyond parser/schema tests and the bundled example networks.
+- No validation of gradients through raw file readers or FastChem internals, because those are intentionally host-side setup steps.
+- No support/validation for invalid master configurations that the validator rejects, such as `use_ion=True` without `use_photo=True`, `use_live_flux=True` without `use_photo=True`, or `fix_species` without condensation.
 
 ## GPU / multi-CPU
 
@@ -276,10 +308,12 @@ Genuinely dead in master and **not** ported: non-Ros2 ODE solvers (`SemiEU` etc.
 ## Tests
 
 ```bash
-pytest tests/                  # 109 pass + 1 skip on a current CPU-only run
-                               # with ../VULCAN-master/ present. test_backend_parity
-                               # skips cleanly without a GPU. Upstream-comparison
-                               # tests skip cleanly when ../VULCAN-master/ is absent.
+pytest tests/                  # 108 pass + 3 skip on a current CPU-only run.
+                               # The 3 skips are test_backend_parity (no GPU)
+                               # and 2 config-matrix sub-cases that require
+                               # H2O_l_s in the network (HD189 doesn't have it).
+                               # Upstream-comparison tests skip cleanly when
+                               # ../VULCAN-master/ is absent.
 pytest tests/ -n auto          # parallel-safe (FastChem invocations serialise
                                # via fcntl.flock).
 python tests/test_foo.py       # individual scripts still work standalone
