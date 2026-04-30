@@ -149,8 +149,9 @@ flux_atol = 1. # the tol for actinc flux (# photons cm-2 s-1 nm-1)
 conver_ignore = ['C6H6', 'C2H2', 'C6H5', 'C2H', 'C2H4', 'C2H5', 'C2H6', 'C3H2', 'C3H3', 'C4H5', 'CH2NH', 'CH3NH2', 'H2CCO'] # heavy hydrocarbons that sit on the chem_rhs ULP cancellation floor and stall convergence; safe to exclude for hot-Jupiter bulk-chemistry runs
 
 # ====== Setting up numerical parameters for Ros2 ODE solver ====== 
-rtol = 0.2             # relative tolerence for adjusting the stepsize 
+rtol = 0.2             # relative tolerence for adjusting the stepsize
 post_conden_rtol = 0.1 # switched to this value after fix_species_time
+use_adapt_rtol = False # adapt rtol based on atom-loss diagnostics
 
 # ====== Setting up for ouwtput and plotting ======
 # plotting:

@@ -71,7 +71,6 @@ class ReadRate(object):
 
         special_re = False
         conden_re = False
-        recomb_re = False
         photo_re = False
         ion_re = False
 
@@ -106,7 +105,6 @@ class ReadRate(object):
                     re_tri_k0 = False
                     special_re = False
                     conden_re = False
-                    recomb_re = True
                     var.recomb_indx = i
 
                 elif line.startswith("# photo"):
@@ -114,7 +112,6 @@ class ReadRate(object):
                     re_tri_k0 = False
                     special_re = False # turn off reading in the special form
                     conden_re = False
-                    recomb_re = False
                     photo_re = True
                     var.photo_indx = i
 
@@ -123,7 +120,6 @@ class ReadRate(object):
                     re_tri_k0 = False
                     special_re = False # turn off reading in the special form
                     conden_re = False
-                    recomb_re = False
                     photo_re = False
                     ion_re = True
                     var.ion_indx = i
@@ -150,9 +146,6 @@ class ReadRate(object):
                         n_inf[i] = float(columns[4])
                         E_inf[i] = float(columns[5])
                         list_tri.append(i)
-
-                    if columns[-1].strip() == 'He': re_He = i
-                    elif columns[-1].strip() == 'ex1': re_CH3OH = i
 
                     k0 = a[i] * Tco**n[i] * np.exp(-E[i]/Tco)
                     if re_tri == False:

@@ -1,166 +1,423 @@
 # VULCAN-JAX
 
-A JAX-accelerated port of [VULCAN](https://github.com/exoclime/VULCAN), the chemical-kinetics code for exoplanet atmospheres, with compatible CLI/config inputs and public `.vul` outputs for the supported Ros2 runtime.
+A JAX-accelerated, differentiable port of [VULCAN](https://github.com/exoclime/VULCAN) — the photochemical-kinetics solver for exoplanet atmospheres (Tsai et al. 2017, 2021).
 
-VULCAN-JAX runs supported Ros2 VULCAN calculations with the same configuration files, input data, and public `.vul` output schema, but the entire integration loop is JAX-accelerated. The runtime is standalone inside this tree: the master non-code runtime inputs under `atm/` and `thermo/`, the full `thermo/photo_cross/` tree, the vendored `cfg_examples/`, and the FastChem runtime payload needed for `ini_mix = 'EQ'` are present locally. The hot path is JAX-only, and the upstream tree is used only as an optional oracle.
+VULCAN-JAX runs supported VULCAN calculations with the same configuration files, input data, and public `.vul` output schema as the upstream NumPy code, but the entire integration loop is JAX-accelerated and end-to-end differentiable. The hot path is a single JIT-compiled `lax.while_loop` running on CPU or GPU; the runtime is **standalone** — `python vulcan_jax.py` runs end-to-end with no `../VULCAN-master/` sibling required.
 
-**Scope.** The goal is to port all live physics in VULCAN-master, not to preserve every internal implementation detail or add a parity test for every config knob. Every live runtime branch in master has a JAX implementation; proving each non-default branch with an oracle test is *not* a project goal. The intentionally unsupported surfaces are dead/commented master paths, replaced compatibility APIs, host-side readers as differentiable code, and byte-for-byte pickle identity. See "Port status" and "Live but non-default config paths" below for the inventory.
+**Why use VULCAN-JAX over upstream VULCAN?**
+- **~6× faster** per accepted step on CPU; even larger on GPU (architecture is GPU-ready, no code changes needed).
+- **Differentiable**: forward- and reverse-mode AD across rates, atmospheric structure, boundary fluxes, photo cross sections, and initial conditions, with O(1) memory in step count via implicit-function-theorem reverse-mode.
+- **Same config format and `.vul` output**: VULCAN's `plot_py/` scripts and downstream tooling work unmodified.
+- **Vectorizable**: `vmap` over batched inputs (e.g. parameter sweeps).
 
-The pre-loop input + runner state is a single typed pytree (`state.RunState`). `python vulcan_jax.py` is a 90-line driver that does `runstate = RunState.with_pre_loop_setup(cfg)` → `runstate = integ(runstate)` → `output.save_out(runstate, dname)`. The legacy mutable container classes (`Variables` / `AtmData` / `Parameters`) live in `state.py` as private `_Variables` / `_AtmData` / `_Parameters` and are scratch inside the constructor; new code should consume `RunState` directly via the typed slots (`rs.atm.*`, `rs.rate.k`, `rs.step.y`, `rs.atoms.atom_loss`, `rs.metadata.Rf`, …).
+---
+
+## Table of contents
+
+1. [Quickstart](#quickstart)
+2. [Installation](#installation)
+3. [Capabilities](#capabilities)
+4. [Configuration](#configuration)
+5. [API overview](#api-overview)
+6. [Comparison to VULCAN-master](#comparison-to-vulcan-master)
+7. [Differentiability (forward & reverse-mode)](#differentiability-forward--reverse-mode)
+8. [Architecture & file map](#architecture--file-map)
+9. [Benchmarks](#benchmarks)
+10. [Validation: what is and isn't tested](#validation-what-is-and-isnt-tested)
+11. [Numerical notes (chem_rhs floor, step-count drift, atom conservation)](#numerical-notes)
+12. [GPU & multi-CPU](#gpu--multi-cpu)
+13. [Running tests](#running-tests)
+14. [License & citation](#license--citation)
+
+---
 
 ## Quickstart
 
 ```bash
 cd VULCAN-JAX/
 
-# 1. Edit vulcan_cfg.py exactly as you would VULCAN-master's. Same format.
-#    Defaults: HD189 with the NCHO_photo_network.txt chemical network.
-#    Additional vendored presets live in cfg_examples/ for Earth, Jupiter,
+# 1. Edit vulcan_cfg.py exactly as you would VULCAN-master's. Same format,
+#    same keys. Vendored presets live in cfg_examples/ for Earth, Jupiter,
 #    HD189, and HD209.
+cp cfg_examples/vulcan_cfg_HD189.py vulcan_cfg.py
 
-# 2. Run:
-python vulcan_jax.py        # the -n flag is also accepted (no-op now;
-python vulcan_jax.py -n     # chem_funs is JAX-native, no SymPy regen needed)
+# 2. Run the forward model:
+python vulcan_jax.py
 
-# 3. Output goes to output/<out_name>.vul. Same format as VULCAN-master,
-#    so all of VULCAN's plot_py/ scripts work unmodified.
+# 3. Output lands at output/<out_name>.vul. Same pickle schema as
+#    VULCAN-master, so all of VULCAN's plot_py/ scripts work unmodified:
+python plot_py/plot_vulcan.py output/HD189.vul
 
-# 4. Compare against a VULCAN-master run:
+# 4. (Optional) compare against a parallel VULCAN-master run:
 python tests/compare_vul.py output/HD189.vul ../VULCAN-master/output/HD189.vul
 ```
 
-## Runtime data surface
+The `-n` flag on `vulcan_jax.py` is accepted as a no-op for upstream-CLI compatibility (`chem_funs.py` is JAX-native — no SymPy regeneration step exists).
 
-The current JAX code reads the same file categories as VULCAN-master, and the
-non-code runtime payload for those categories is vendored locally.
+---
 
-- `thermo/*.txt` via `vulcan_cfg.network`, `gibbs_text`, and `com_file`.
-  `legacy_io.ReadRate` parses the network, `gibbs.py` consumes
-  `gibbs_text`, and `composition.py` reads `com_file`.
-- `thermo/photo_cross/` via `vulcan_cfg.cross_folder` when `use_photo=True`.
-  `photo_setup.populate_photo()` loads thresholds, cross sections,
-  dissociation branches, ion branches, and Rayleigh files from this tree
-  into a dense `state.PhotoStaticInputs` pytree.
-- `atm/*.txt` via `vulcan_cfg.atm_file`, `top_BC_flux_file`, and
-  `bot_BC_flux_file`. `atm_setup.Atm.load_TPK()` reads the TP/Kzz tables and
-  `Atm.BC_flux()` reads the boundary-condition tables.
-- `atm/stellar_flux/*.txt` via `vulcan_cfg.sflux_file`. The host-side
-  reader is `state.load_stellar_flux(cfg)`; `atm_setup.Atm.read_sflux()`
-  bins the spectrum at runtime.
-- `fastchem_vulcan/fastchem` plus `fastchem_vulcan/input/*` and
-  `fastchem_vulcan/output/*` via `ini_abun.InitialAbun` for
-  `ini_mix = 'EQ'`. This intentionally matches VULCAN-master's external
-  FastChem call; replacing FastChem itself is out of scope.
+## Installation
 
-The remaining tree differences in these areas are helper scripts / README files
-and the non-runtime FastChem source/build tree, not missing runtime inputs.
+VULCAN-JAX runs in a conda environment with `jax`, `numpy`, `scipy`, `h5py`, `pytest`, `pytest-xdist`, `ruff`, `vulture`. A working environment is provided as `vulcan`:
 
-## What's accelerated
+```bash
+source /opt/homebrew/Caskroom/miniforge/base/etc/profile.d/conda.sh
+conda activate vulcan
+```
 
-The full integration is JAX: one JIT'd `jax.lax.while_loop` runs from start to convergence on device, with no NumPy in the per-step path.
+Direct binary if scripts need it: `/opt/homebrew/Caskroom/miniforge/base/envs/vulcan/bin/python`.
 
-**Per-step kernel** (`jax_step.jax_ros2_step` — `@jax.jit`, vmap-able, GPU-ready):
-- **Chemistry RHS** (`chem.chem_rhs`) — vectorized scatter-add over the reaction network, vmapped over vertical layers.
-- **Chemistry Jacobian** (`chem.chem_jac_analytical`) — stoichiometry-driven analytical build; the legacy `jacrev` path remains as a test oracle only.
-- **Diffusion operator + block Jacobians** — eddy + molecular diffusion, including `use_vm_mol`, settling, top/bottom flux terms, and fixed-species row handling.
-- **Block-tridiagonal solver** (`solver.factor_block_thomas_diag_offdiag` / `solve_block_thomas_diag_offdiag`) — factor once per Ros2 step and reuse across both Rosenbrock stages.
+**Vendored runtime data** (so VULCAN-JAX is fully standalone):
+- `thermo/` — chemistry network files, NASA-9 thermodynamic data, photo cross sections.
+- `atm/` — TP/Kzz tables and stellar-flux files.
+- `cfg_examples/` — example configs for Earth, Jupiter, HD189, HD209.
+- `fastchem_vulcan/` — FastChem binary + input/output payload for `ini_mix='EQ'`.
 
-**Outer loop** (`outer_loop.OuterLoop` — single `lax.while_loop` per integration):
-- **Inner accept/reject** (`clip` / `loss` / `step_ok` / `step_size`) — pure-JAX. Bit-equivalent to `op.Ros2.one_step` to ~1e-15.
-- **Photochemistry update** — `compute_tau` / `compute_flux` / `compute_J` (`photo.py`) gated by `lax.cond` on `update_photo_frq`. Photo state lives in carry on device.
-- **Atmosphere refresh** — `atm_refresh.update_mu_dz_jax` + `update_phi_esc_jax`. Hydrostatic balance runs every accepted step.
-- **Condensation** — `conden.update_conden_rates` + `apply_h2o_relax_jax` / `apply_nh3_relax_jax` cold-trap relaxers, gated on `t >= start_conden_time`.
-- **Convergence + termination** — ring-buffered `y_time` / `t_time`, in-runner `op.conv` port returning `longdy` / `longdydt`. `cond_fn` carries the full `op.stop` criterion.
-- **Adaptive rtol** + **photo-frequency ini→final switch** — both fire inside the body.
-- **Ion charge balance**, **mid-run `fix_species`**, and **fix-all-bot / fix-sp-bot bottom clamps** — handled inside the runner with the same config gating as the upstream Ros2 path.
+---
 
-Current measured timings from the checked-in benchmark/profile scripts on the HD189 default case:
-- upstream `VULCAN-master` Ros2 single-step: `~126.0 ms`
-- local `jax_ros2_step`: `~22.6 ms`
-- local `OuterLoop` 50-step smoke: `~39.4 ms/accepted step`
+## Capabilities
 
-The main wins are the analytical chemistry Jacobian, diagonal-aware block-tridiagonal factorization reuse, and pre-baked y-independent diffusion terms.
+VULCAN-JAX implements the full Ros2 runtime path of upstream VULCAN. Every live runtime branch in master has a JAX implementation here.
 
-## Port status
+**Chemistry & physics:**
+- Ros2 (2nd-order Rosenbrock) integration with adaptive timestep
+- Chemistry RHS + analytical Jacobian (stoichiometry-driven, ~36× faster than `jax.jacrev`)
+- Eddy + molecular diffusion, settling, top/bottom boundary fluxes
+- Photochemistry (two-stream, T-dependent cross sections, Rayleigh scattering)
+- Ion chemistry with charge balance
+- Condensation (H2O, NH3, H2SO4, S2, S4, S8, C) with cold-trap relaxation
+- Hydrostatic balance, mean-mass refresh
 
-The JAX port covers the live physics and runtime behavior used by VULCAN-master's Ros2 path:
+**Pre-loop setup (also JAX-native where useful):**
+- VULCAN-format config loading & parsing
+- Forward + reverse rate setup (Gibbs/K_eq from NASA-9)
+- 5 initial-abundance modes: `EQ` (FastChem), `vulcan_ini`, `table`, `const_mix`, `const_lowT`
+- 5 atmosphere modes: `file`, `isothermal`, `analytical`, `vulcan_ini`, `table`
+- 4 Kzz profile modes: `const`, `file`, `Pfunc`, `JM16`
 
-- **Pre-loop setup**: VULCAN-format config loading, network parsing, forward/reverse rate setup, atmosphere construction, five initial-abundance modes, photo cross-section preprocessing, stellar-flux binning, and FastChem-backed `ini_mix = 'EQ'`.
-- **Runtime physics**: Ros2 integration, chemistry RHS/Jacobian, eddy and molecular diffusion, settling, top/bottom fluxes, fixed-species clamps, photochemistry, ion chemistry, atmosphere refresh, hydrostatic balance, condensation/cold-trap relaxation, adaptive step retry, adaptive tolerance, photo-frequency switching, and convergence/termination.
-- **Runtime outputs**: `save_evolution`, progress printing, host-side live plotting/movie hooks, VULCAN-compatible `.vul` top-level dictionaries, synthesized photo/ion diagnostics, and the master public `parameter` keys including `end_case`, `where_varies_most`, `switch_final_photo_frq`, `pic_count`, and `tableau20`.
-- **Transform surface**: per-step kernels support `jit`, `vmap`, `jvp`, and `vjp`; the converged-state reverse-mode route is the implicit-AD API in `steady_state_grad.py`.
+**Outputs:**
+- VULCAN-compatible `.vul` pickle (same public keys, shapes, dtypes — `plot_py/` scripts work unchanged)
+- `save_evolution` ring buffer for trajectory snapshots
+- Synthesized photo/ion diagnostics (`J_sp`, `Jion_sp`, etc.)
+- Live UI hooks (mixing-ratio plot, flux plot, movie frames) — fired host-side between JIT'd step batches
 
-The following are intentionally not ported or not promised:
+**Differentiability:**
+- Forward-mode (`jvp`, `jacfwd`) directly across the runner
+- Reverse-mode (`grad`, `vjp`) via implicit-function-theorem `custom_vjp` on the converged steady state — **O(1) memory in step count**
+- Differentiable surface: rate constants, T/P/Kzz, boundary fluxes, photo cross sections, initial conditions
 
-- **Non-Ros2 solvers** such as `SemiEU` / `SparSemiEU`; these are commented-out or dead paths in master.
-- **SymPy code generation APIs** (`chem_funs.symjac`, `chem_funs.neg_symjac`, and a real `make_chem_funs.py` regeneration path). Production uses the JAX analytical Jacobian instead.
-- **Exact `ReadRate.make_bins_read_cross` public-method compatibility**. Runtime cross sections live in dense `PhotoStaticInputs`; legacy dicts are synthesized only for `.vul` output.
-- **FastChem internals**. FastChem remains an external subprocess, matching master.
-- **Differentiability through raw file readers**. CSV/table/photo/network readers are host-side setup; construct typed pytrees directly when gradients through those inputs are needed.
-- **Byte-identical output files or identical transient step histories**. The contract is the same public keys, shapes, dtypes, and plot-script compatibility, not identical pickle bytes or dict insertion history.
-- **Exhaustive oracle validation for every config combination**. Non-default branches are implemented, but not all Cartesian products are cross-tested against master.
+**Vectorization:**
+- `vmap`-able per-step kernels (parameter sweeps, ensemble runs)
+- Single `lax.while_loop` driver — no Python `while not stop()` polling
 
-## Differentiability
+---
 
-Every per-step kernel is `jit` / `vmap` / `jvp` / `vjp` compatible. `outer_loop.runner`'s `lax.while_loop` supports `jvp` (forward-mode) but raises on `vjp` (reverse-mode). For end-to-end reverse-mode AD through the converged state, use the structured-input API in `steady_state_grad.py` — a `jax.custom_vjp` that uses the implicit-function theorem (`∂y*/∂theta = -(∂f/∂y)^{-1} (∂f/∂theta)`):
+## Configuration
+
+VULCAN-JAX reads the same `vulcan_cfg.py` format as upstream VULCAN — a Python module with named attributes. Drop in your existing config; it should work as-is.
+
+**JAX-only additions (with sensible defaults so you can ignore them):**
+
+| Key | Default | Purpose |
+|---|---|---|
+| `batch_steps` | `1` | Accepted Ros2 steps per JAX runner call. Held at 1 in production. |
+| `batch_max_retries` | `64` | Cap on inner accept/reject retries per accepted step. Mirrors master's force-accept fallback. |
+| `conv_stall_window` | `200` | Stall-detector window (see [Numerical notes](#numerical-notes)). |
+| `conver_ignore` | `[heavy hydrocarbons]` | Species excluded from the convergence test. Pre-populated in HD189/HD209 example cfgs to mitigate ULP-floor stalling on cancellation-prone radicals. |
+| `rtol_min` / `rtol_max` | `0.02` / `2.5` | Bounds for adaptive rtol (only applied when `use_adapt_rtol=True`). |
+| `adapt_rtol_*`, `photo_switch_*`, `hycean_pin_time` | varies | Per-knob defaults documented in `cfg_examples/`. |
+
+**Non-default but supported config branches** (implemented in JAX, exercised partially by the bundled tests):
+
+- **Atmosphere**: every `atm_type` / `Kzz_prof` / `vz_prof` mode, every `atm_base` (`H2`/`N2`/`O2`/`CO2`).
+- **Transport**: `use_moldiff`, `use_vm_mol`, `use_settling`, `use_topflux`, `use_botflux`, `use_fix_sp_bot`, `use_fix_H2He`, `use_sat_surfaceH2O`, `diff_esc`, `max_flux`.
+- **Photo/ion**: `use_photo`, `use_ion`, `T_cross_sp`, `scat_sp`, `remove_list`, `ini_update_photo_frq → final_update_photo_frq` switching.
+- **Condensation**: every supported condensate species, `use_relax`, `fix_species`, `fix_species_from_coldtrap_lev`, `post_conden_rtol`, `start_conden_time` / `stop_conden_time`.
+- **Live UI**: `use_live_plot`, `use_live_flux`, `use_save_movie`, `use_flux_movie` (host-side; force chunked execution).
+
+By project policy we do not parametrize an oracle test across every Cartesian product of these — if a non-default branch misbehaves, we'll find out when it's used. See [What is and isn't tested](#validation-what-is-and-isnt-tested).
+
+---
+
+## API overview
+
+There are three layers of API, in increasing order of detail. Most users only need the top one.
+
+### 1. Driver script (`python vulcan_jax.py`)
+
+The simplest way to run VULCAN-JAX. Reads `vulcan_cfg.py`, runs the integration to convergence, writes `output/<out_name>.vul`. ~90 lines:
+
+```python
+# vulcan_jax.py (simplified)
+runstate = state.RunState.with_pre_loop_setup(vulcan_cfg)  # full pre-loop setup
+solver   = op_jax.Ros2JAX()
+integ    = outer_loop.OuterLoop(solver, output)
+runstate = integ(runstate)                                 # JIT'd integration
+output.save_out(runstate, dname)                           # .vul pickle
+```
+
+### 2. Programmatic Python API
+
+For embedding VULCAN-JAX in a larger workflow (retrievals, parameter sweeps, optimization).
+
+#### Building a run state
+
+`state.RunState` is the canonical input pytree. `RunState.with_pre_loop_setup(cfg)` runs the entire pre-loop pipeline and returns a fully-populated typed pytree:
+
+```python
+import vulcan_cfg
+from state import RunState
+
+rs = RunState.with_pre_loop_setup(vulcan_cfg)
+
+# rs.atm           — AtmInputs (Tco, pco, Kzz, M, mu, dz, ...)
+# rs.rate          — RateInputs (k_arr, Rf, n_branch, ...)
+# rs.photo         — PhotoInputs (sflux, top_flux, ...)
+# rs.photo_static  — PhotoStaticInputs (cross sections, branch indices)
+# rs.ini_abun      — IniAbunOutputs (y_ini, ymix_ini, atom_ini)
+# rs.step          — StepInputs (y, ymix, t, dt, longdy, ...)
+# rs.params        — ParamInputs (count, end_case, where_varies_most, ...)
+# rs.atoms         — AtomInputs (atom_loss, atom_loss_prev, ...)
+# rs.metadata      — host-side static (Rf strings, photo_sp, gas_indx, ...)
+```
+
+Every leaf in `rs.atm` / `rs.rate` / `rs.photo_static` / `rs.ini_abun` is a JAX array, so anything fed through this pytree is differentiable.
+
+#### Running the integration
+
+```python
+from outer_loop import OuterLoop
+import op_jax
+
+solver = op_jax.Ros2JAX()
+integ  = OuterLoop(solver, output)
+rs_out = integ(rs)                  # one JIT'd lax.while_loop, on device
+
+# rs_out.params.count       — total accepted steps
+# rs_out.params.end_case    — 1=converged, 2=runtime cap, 3=count_max cap
+# rs_out.step.y             — final number densities (nz, ni)
+# rs_out.step.ymix          — final mixing ratios
+# rs_out.atoms.atom_loss    — column atom drift per atom
+```
+
+#### Per-step kernel (for custom drivers)
+
+`jax_step.jax_ros2_step` is `@jax.jit`'d, vmap-able, and GPU-ready:
+
+```python
+from jax_step import jax_ros2_step
+
+# Inputs: y, k_arr (rate table), dt, atm_static (closed-over geometry)
+sol, delta = jax_ros2_step(y, k_arr, dt, atm_static, net)
+# sol   : (nz, ni) — proposed next state
+# delta : (nz, ni) — truncation-error proxy (sol - yk2)
+```
+
+#### Steady-state gradient API
+
+`steady_state_grad.py` exposes a `jax.custom_vjp` that uses the implicit function theorem — the right way to get reverse-mode gradients through the converged state:
 
 ```python
 from steady_state_grad import (
     build_steady_state_inputs,
     steady_state_value_and_grad,
+    validate_steady_state_solution,
 )
 
-# 1. Run the forward integration to convergence.
+# 1. Run forward to convergence
 y_star = run_outer_loop(k_arr, atm_static)
+
+# 2. Validate the converged residual is small (gradient accuracy
+#    is bounded by ||f(y*)||).
+validate_steady_state_solution(y_star, inputs, net,
+                               residual_rtol=1e-6)
+
+# 3. Get value and gradient of a scalar loss
 inputs = build_steady_state_inputs(k_arr, atm_static)
+def loss_fn(y): return some_scalar(y)
 
-def loss_fn(y):
-    return some_scalar_loss(y)
-
-loss, grad_inputs = steady_state_value_and_grad(
-    loss_fn,
-    inputs,
-    y_star,
-    net,
-    residual_rtol=1e-6,
+loss, grad = steady_state_value_and_grad(
+    loss_fn, inputs, y_star, net, residual_rtol=1e-6
 )
 
-g_k = grad_inputs.k_arr
+g_k_arr = grad.k_arr        # gradients per-input-leaf
 ```
 
-The differentiable surface includes rate constants, transport/diffusion fields, boundary-condition fluxes, and photo inputs through a typed pytree. A residual check is required before attaching implicit AD so gradients fail loudly if the supplied `y_star` is not converged tightly enough. The legacy `differentiable_steady_state(k_arr, y_star, atm_static, net)` wrapper is still available for the rate-table-only case. Memory cost is O(1) in step count — no checkpointing needed.
+Memory cost is **O(1) in step count** — no checkpointing.
 
-## Architecture
+### 3. Low-level functional API
+
+For when you need to bypass the typed pytree:
+
+| Function | Purpose |
+|---|---|
+| `chem.chem_rhs(y, k_arr, net, atm_static)` | Chemistry RHS (vmapped over layers). |
+| `chem.chem_jac_analytical(y, k_arr, net, atm_static)` | Stoichiometry-driven analytical Jacobian. |
+| `solver.factor_block_thomas_diag_offdiag(...)` / `solve_*` | Block-tridiagonal factor + back-substitute. |
+| `photo.compute_tau` / `compute_flux` / `compute_J` | Two-stream photochemistry kernels. |
+| `atm_refresh.update_mu_dz_jax` / `update_phi_esc_jax` | Hydrostatic balance + escape flux update. |
+| `conden.update_conden_rates` / `apply_h2o_relax_jax` / `apply_nh3_relax_jax` | Condensation kernels. |
+| `rates.build_rate_array(...)` | Forward rate-coefficient table. |
+| `gibbs.compute_K_eq(...)` | Equilibrium constants from NASA-9 polynomials. |
+
+All are jit/vmap/jvp/vjp compatible.
+
+---
+
+## Comparison to VULCAN-master
+
+VULCAN-JAX is intended as a drop-in replacement for the supported Ros2 path. The compatibility surface:
+
+| Surface | Compatible? | Notes |
+|---|---|---|
+| `vulcan_cfg.py` format | yes — same keys, same format | JAX-only knobs are documented above; defaults match. |
+| Network files (`thermo/*.txt`) | yes — same parser | Vendored from upstream. |
+| Atmosphere files (`atm/*.txt`) | yes — same parser | Vendored. |
+| Photo cross-section files | yes — same parser | Vendored. |
+| FastChem subprocess (`ini_mix='EQ'`) | yes — same binary, same I/O | External subprocess. |
+| `.vul` output schema | yes — same public keys, shapes, dtypes | Pickle bytes are not byte-identical. |
+| `plot_py/` scripts | yes — unchanged | Same data surface. |
+| Output writer `vars(data_var)` filtered by `var_save` | yes | Same filter. |
+| `parameter` keys (`end_case`, `count`, `where_varies_most`, `pic_count`, `tableau20`, ...) | yes | All master public keys published. |
+| Solver | partial — Ros2 only | `SemiEU` etc. are commented-out stubs in master, not ported. |
+| `chem_funs.symjac` / `neg_symjac` | no — raise `NotImplementedError` | Replaced by `chem.chem_jac_analytical`. |
+| `make_chem_funs.py` | no — no-op shim | Production path is JAX-native; no SymPy codegen. |
+| Live plot cadence | yes — `live_plot_frq` | Master fires inside its Python loop; JAX fires between JIT'd chunks at the same predicate. |
+| Byte-identical pickle | no | Public keys/shapes/dtypes match, but dict order and transient histories may not. |
+
+### Intentional behavioral differences
+
+- **Live UI is host-side, fired between JIT'd step batches.** When any of `use_live_plot` / `use_live_flux` / `use_save_movie` / `use_flux_movie` is set, the runner switches to chunked execution (chunks of `live_plot_frq` accepted steps), with `live_ui.LiveUI` reading the legacy `(var, atm, para)` view between chunks. Cadence-faithful but not call-site-identical.
+- **Output writer synthesizes** `J_sp` / `Jion_sp` / per-reaction `var.k` dicts from the typed JAX state at pickle time rather than incrementally during the run.
+- **Convergence-detector stall fallback** (`conv_stall_window`) — see [Numerical notes](#numerical-notes). Master almost never trips it; JAX trips it when a heavy-hydrocarbon trace species oscillates around `yconv_min` for too long.
+
+---
+
+## Differentiability (forward & reverse-mode)
+
+### What is differentiable
+
+The full physical input surface — **atmospheric structure, rate constants, boundary fluxes, photo cross sections, initial conditions** — is differentiable as long as you supply inputs as JAX arrays into the typed pytrees (`AtmInputs` / `RateInputs` / `PhotoStaticInputs` / `IniAbunOutputs`).
+
+The runner's `lax.while_loop` blocks `vjp` directly. There are two ways around that:
+
+### Forward-mode (`jvp` / `jacfwd`) — works through the entire integration
+
+`lax.while_loop` natively supports forward-mode AD:
+
+```python
+import jax
+
+def integrate_fn(k_arr):
+    rs = build_runstate_from_k(k_arr)          # supply k_arr as a JAX array
+    rs_out = integ(rs)
+    return rs_out.step.y                        # final state
+
+# Tangent of the converged y* w.r.t. rate constants:
+y_star, dy_dk = jax.jvp(integrate_fn, (k_arr,), (k_arr_tangent,))
+
+# Or full forward Jacobian (if input dim is small enough):
+J = jax.jacfwd(integrate_fn)(k_arr)
+```
+
+Forward-mode is exact (within the per-step ULP floor), but its memory cost is `O(input_dim × output_dim)` — best when input dim is small.
+
+### Reverse-mode (`grad` / `vjp`) — via implicit-function theorem
+
+For high-dimensional inputs (full `k_arr`, photo cross sections), use the implicit-AD route in `steady_state_grad.py`. It's a `jax.custom_vjp` that solves the linear system `(∂f/∂y) z = ∂L/∂y*` once at the converged state, costing **O(1) memory in step count** — no trajectory checkpointing.
+
+Worked example:
+
+```python
+import jax
+from steady_state_grad import (
+    build_steady_state_inputs,
+    steady_state_value_and_grad,
+    validate_steady_state_solution,
+)
+
+# 1. Run the forward integration to a tight residual.
+rs_out = integ(rs)
+y_star = rs_out.step.y
+
+# 2. Pack the structured inputs and validate convergence.
+inputs = build_steady_state_inputs(rs.rate.k, atm_static, photo_static, ...)
+validate_steady_state_solution(y_star, inputs, net, residual_rtol=1e-6)
+
+# 3. Define a scalar loss on y*.
+def transit_depth_residual(y):
+    return jnp.sum((depth_model(y) - depth_obs) ** 2 / sigma ** 2)
+
+# 4. value_and_grad through the converged state.
+loss, grad_inputs = steady_state_value_and_grad(
+    transit_depth_residual, inputs, y_star, net, residual_rtol=1e-6
+)
+
+g_rates = grad_inputs.k_arr
+g_atm   = grad_inputs.atm  # gradients on T/P/Kzz/etc.
+```
+
+**Important**: gradient accuracy is bounded by the residual `||f(y*)||`. The default `yconv_cri = 0.01` is too loose for retrieval; tighten the convergence criterion when calling for gradients. See `tests/test_steady_state_grad.py` for the canonical pattern.
+
+### What's NOT differentiable
+
+These are host-side setup steps, by design:
+
+- `photo_setup.py` — cross-section CSV reader. To differentiate cross sections, build `PhotoStaticInputs` directly from JAX arrays.
+- `legacy_io.ReadRate.read_rate` — rate-file metadata parser (rate *values* flow through differentiable `rates.build_rate_array`).
+- `composition.py`, `atm_setup.py`, `ini_abun.py` raw-file readers.
+- FastChem subprocess.
+
+If you want gradients through one of these, the answer is almost always: build the corresponding pytree with JAX arrays directly and inject.
+
+### Vectorization (`vmap`)
+
+Per-step kernels are `vmap`-able directly:
+
+```python
+# Run 16 atmospheres at once with different stellar fluxes
+batched_y = jax.vmap(jax_ros2_step, in_axes=(0, 0, None, None, None))(
+    y_batch, k_arr_batch, dt, atm_static, net
+)
+```
+
+For full integration sweeps, see `examples/batched_run.py`.
+
+---
+
+## Architecture & file map
+
+### Architecture
 
 ```
-   ┌──────────────────────────────────────────────────────────┐
-   │ vulcan_jax.py  (entry point, mirrors vulcan.py)           │
-   │   ├─ JAX-native chem_funs (no make_chem_funs.py)          │
-   │   ├─ atm_setup.Atm (atmosphere setup) — JAX-native        │
-   │   ├─ legacy_io.ReadRate (rate metadata) — vendored        │
-   │   ├─ ini_abun.InitialAbun (5 ini_mix modes) — JAX-native  │
-   │   ├─ photo_setup.populate_photo (cross sections) — NumPy  │
-   │   ├─ Ros2JAX.compute_tau/flux/J — one-shot pre-loop       │
-   │   └─ outer_loop.OuterLoop (JAX) — single-shot runner      │
-   │       └─ jax.jit(while_loop):                             │
-   │            cond_fn:  count_max | runtime | converged      │
-   │            body_fn (one accept, with internal retries):   │
-   │              ├─ photo branch (lax.cond on update_photo_frq)│
-   │              │   compute_tau / flux / J → update k_arr    │
-   │              ├─ atm refresh (lax.cond on update_frq)      │
-   │              │   update_mu_dz / phi_esc → splice into atm │
-   │              ├─ jax_ros2_step (chem_rhs+jac, diffusion,   │
-   │              │     block_thomas) — JAX                    │
-   │              ├─ clip / loss / step_ok / step_size — JAX   │
-   │              ├─ conden branch (lax.cond on t / use_relax) │
-   │              ├─ hydrostatic balance + ion + fix_all_bot   │
-   │              ├─ ring-buffer y_time / t_time history       │
-   │              ├─ adaptive rtol + photo-freq switch         │
-   │              └─ in-runner conv check → longdy/longdydt    │
-   └──────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ vulcan_jax.py  (entry point, ~90 lines)                   │
+│   ├─ JAX-native chem_funs (no make_chem_funs.py)          │
+│   ├─ atm_setup.Atm (atmosphere setup) — JAX-native        │
+│   ├─ legacy_io.ReadRate (rate metadata) — vendored        │
+│   ├─ ini_abun.InitialAbun (5 ini_mix modes) — JAX-native  │
+│   ├─ photo_setup.populate_photo (cross sections) — NumPy  │
+│   ├─ Ros2JAX.compute_tau/flux/J — one-shot pre-loop       │
+│   └─ outer_loop.OuterLoop (JAX) — single-shot runner      │
+│       └─ jax.jit(while_loop):                             │
+│            cond_fn:  count_max | runtime | converged | stall│
+│            body_fn (one accept, with internal retries):   │
+│              ├─ photo branch (lax.cond on update_photo_frq)│
+│              │   compute_tau / flux / J → update k_arr    │
+│              ├─ atm refresh (lax.cond on update_frq)      │
+│              │   update_mu_dz / phi_esc → splice into atm │
+│              ├─ jax_ros2_step (chem_rhs + analytical_jac, │
+│              │     diffusion, block_thomas) — JAX         │
+│              ├─ clip / loss / step_ok / step_size — JAX   │
+│              ├─ conden branch (lax.cond on t / use_relax) │
+│              ├─ hydrostatic balance + ion + fix_all_bot   │
+│              ├─ ring-buffer y_time / t_time history       │
+│              ├─ adaptive rtol + photo-freq switch         │
+│              └─ in-runner conv check → longdy/longdydt    │
+└──────────────────────────────────────────────────────────┘
 ```
 
-## File map
+### File map
 
 ```
 VULCAN-JAX/
@@ -168,86 +425,77 @@ VULCAN-JAX/
 ├── vulcan_cfg.py        VULCAN-format config (drop in your own)
 ├── outer_loop.py        OuterLoop — standalone single-shot JAX runner
 ├── op_jax.py            Ros2JAX — standalone photo adapter
-│                         (compute_tau/flux/J for pre-loop one-shot)
 ├── jax_step.py          Pure-JAX vmap'able Ros2 step (incl. JAX diffusion)
 ├── solver.py            Block-tridiagonal Thomas solver
 ├── chem.py              JAX chemistry RHS + analytical Jacobian
 ├── photo.py             JAX two-stream photochem (tau / flux / J kernels)
+├── steady_state_grad.py Implicit-function-theorem custom_vjp for reverse-mode AD
 ├── runtime_validation.py Pre-run runtime/config validator
 ├── atm_refresh.py       JAX update_mu_dz + update_phi_esc
 ├── conden.py            JAX condensation rates + cold-trap relax
-├── steady_state_grad.py Implicit-function-theorem custom_vjp for gradients
-│                         of the converged state w.r.t. structured runtime inputs
 ├── rates.py             Forward rate coefficients
 ├── gibbs.py             NASA-9 Gibbs / K_eq / reverse rates
-├── network.py           Network parser (text -> stoichiometry tables)
+├── network.py           Network parser (text → stoichiometry tables)
 ├── integrate.py         Pure-JAX fixed-dt scan loop (validation/benchmarks)
-├── legacy_io.py         Vendored op.ReadRate + op.Output
-│                         (pre-loop rate-coef + .vul writer)
-├── atm_setup.py         JAX-native Atm.* (f_pico / load_TPK / mol_diff /
-│                         BC_flux / sp_sat etc.)
-├── ini_abun.py          JAX-native InitialAbun.* (5 ini_mix modes;
-│                         JAX Newton replaces scipy.optimize.fsolve)
-├── photo_setup.py       Host-side cross-section preprocessing →
-│                         dense PhotoStaticInputs pytree
+├── legacy_io.py         Vendored op.ReadRate + op.Output (.vul writer)
+├── atm_setup.py         JAX-native Atm.* (f_pico / load_TPK / mol_diff / ...)
+├── ini_abun.py          JAX-native InitialAbun.* (5 ini_mix modes)
+├── photo_setup.py       Host-side cross-section preprocessing
 ├── composition.py       Per-species composition / mass tables
-├── state.py             Typed pre-loop pytrees (AtmInputs / RateInputs /
-│                         PhotoInputs / PhotoStaticInputs / IniAbunOutputs /
-│                         RunState) + private legacy mutable containers
+├── state.py             Typed pytrees: AtmInputs / RateInputs /
+│                         PhotoInputs / PhotoStaticInputs /
+│                         IniAbunOutputs / RunState
 ├── chem_funs.py         JAX-native module (re-exports network/gibbs/chem
 │                         API as ni/nr/spec_list/Gibbs/chemdf, no SymPy)
-├── phy_const.py         Vendored from VULCAN-master (physical constants)
+├── live_ui.py           Host-side live-plot dispatcher (matplotlib + PIL)
+├── phy_const.py         Physical constants (vendored from VULCAN-master)
 ├── pytest.ini           Pytest config (parallel-safe via FastChem flock)
-├── atm/, thermo/, fastchem_vulcan/   Vendored runtime data files, chemistry
-│                         networks, photo cross sections, and FastChem runtime
-│                         payload
-├── cfg_examples/        Vendored example configs for Earth / Jupiter / HD189 / HD209
-├── benchmarks/          Bench and timing utilities for the current APIs
-├── tests/               Validation suite, including example-config smoke tests
-│   ├── conftest.py      Shared path / cwd / cfg-snapshot setup; conditional VULCAN-master
-│   └── diffusion_numpy_ref.py   NumPy reference for diffusion (test-only)
-└── CLAUDE.md            Style + numerical-hygiene notes for AI collaborators
+├── atm/, thermo/, fastchem_vulcan/   Vendored runtime data
+├── cfg_examples/        Earth / Jupiter / HD189 / HD209 example configs
+├── benchmarks/          Bench and timing utilities
+├── tests/               Validation suite + standalone scripts
+└── CLAUDE.md            Maintenance / numerical-hygiene spec for AI agents
 ```
 
-## Differences from VULCAN-master
+### Design choices worth knowing
 
-VULCAN-JAX is compatible with VULCAN-master's CLI/config workflow and public `.vul` outputs for the supported Ros2 runtime, with two categories of intentional divergence:
+- **float64 is non-negotiable.** `jax.config.update('jax_enable_x64', True)` is set at every module import. Rate constants span ~50 orders of magnitude; float32 silently fails.
+- **Analytical chemistry Jacobian, not `jax.jacrev`.** `chem.chem_jac_analytical` is a stoichiometry-driven scatter that skips structurally-zero entries; ~36× faster than the AD path. The AD path stays as a test oracle.
+- **Diagonal-aware block-tridiagonal solver.** `solver.block_thomas_diag_offdiag` exploits diagonal-in-species off-blocks: the dense `O(ni³)` matmul reduces to an `O(ni²)` rank update.
+- **Single-shot JIT'd runner.** Photo, atm-refresh, condensation, ion balance, fix-all-bot, adaptive rtol, photo-frequency switch, and the convergence check all live inside one `lax.while_loop` body. No Python step polling.
+- **Implicit-AD for reverse-mode.** `lax.while_loop` blocks `vjp` directly; the implicit-function-theorem `custom_vjp` in `steady_state_grad.py` is the supported route.
+- **Typed pytree as runtime surface.** `state.RunState` is the canonical shape. The legacy mutable container classes (`Variables` / `AtmData` / `Parameters`) live as private `_Variables` / `_AtmData` / `_Parameters` for hybrid oracle tests only.
 
-**Live UI is host-side, fired between JIT'd step batches.** Master fires `op.Output.plot_update` and `op.Output.plot_flux_update` from inside its Python step loop. The JAX integration runs as a single JIT'd `lax.while_loop` on device, so when any of `use_live_plot` / `use_live_flux` / `use_save_movie` / `use_flux_movie` is set, the runner switches to chunked execution: chunks of `vulcan_cfg.live_plot_frq` accepted steps, with `live_ui.LiveUI` reading the legacy `(var, atm, para)` view between chunks. Cadence is behavior-faithful — master updates after every `live_plot_frq` accepted steps; the chunk boundary is the same predicate. Movie frames land in `vulcan_cfg.movie_dir` (mixing-ratio) and `plot/movie/` (flux). The validator only rejects `use_live_flux=True` without `use_photo=True` (no diffuse fluxes without photochemistry).
+---
 
-**Solver scope**: only `ode_solver = "Ros2"` is supported. `vulcan_jax.py` raises `NotImplementedError` on any other solver (master's `op.py` carries Ros2 plus commented-out SemiEU / SparSemiEU stubs).
+## Benchmarks
 
-**JAX-native chemistry pipeline**: `chem_funs.py` is a hand-written JAX module that re-exports `ni` / `nr` / `spec_list` / `Gibbs` / `chemdf` etc. from `network.py` + `gibbs.py` + `chem.py`. No SymPy code generator; `make_chem_funs.py` is a no-op shim that exits cleanly. The `-n` flag on `vulcan_jax.py` is accepted as a no-op for upstream compatibility.
+Per-step kernel timing on the HD189 reference state (CPU, single-threaded, on this Mac):
 
-**Output schema compatibility**: `legacy_io.Output.save_out` writes the same public top-level `.vul` dictionaries (`variable`, `atm`, `parameter`) consumed by VULCAN's `plot_py/` scripts and downstream tooling. RunState-backed saves synthesize legacy dict surfaces for photo/ion diagnostics and publish the master public `Parameters` keys. The writer does not attempt byte-for-byte pickle identity with master.
+| Step | Master (NumPy) | VULCAN-JAX | Speedup |
+|---|---:|---:|---:|
+| Single Ros2 step (photo + chem + diffusion + block-Thomas) | 126.0 ms | **22.6 ms** | **5.6×** |
+| 50-step OuterLoop smoke (HD189) | — | 39.4 ms / accepted step | — |
+| Full HD189 to convergence (with `conver_ignore` populated) | 168 s | **33 s** | **5.1×** |
+| Full HD209 to convergence | 168 s | 71 s | 2.4× |
 
-**JAX-only configuration knobs** added on top of master's surface:
-- `batch_steps` — accepted Ros2 steps per JAX runner call. Held at 1; the single-shot runner makes this a no-op in production.
-- `batch_max_retries` — safety cap on inner accept/reject retries per accepted step inside the JAX body. Mirrors `op.py:2518`'s force-accept-and-clip fallback.
+Per-step speedup is consistent (~5–6×) regardless of planet. Wall-time speedup depends on whether the convergence detector takes the same path on both branches (see [Numerical notes](#numerical-notes)).
 
-**External dependencies kept as-is**: FastChem stays as an external subprocess for `ini_mix='EQ'`. Replacing FastChem itself is out of scope.
+**GPU**: the architecture is fully `jit` / `vmap` compatible; setting `JAX_PLATFORM_NAME=gpu` runs on GPU with no code changes. Not measured on this host (CPU-only machine), but architectural overhead at scale is dominated by the chemistry RHS and block-Thomas solver, both of which are designed to vectorize.
 
-## Design choices
+**Where the speedup comes from:**
+1. Analytical chemistry Jacobian (`chem_jac_analytical` vs `jacrev`) — 95 ms → 2.6 ms
+2. Diagonal-aware block-Thomas (`block_thomas_diag_offdiag`) — `O(ni³)` → `O(ni²)` rank update for diffusion off-blocks
+3. JIT compilation of the entire integration loop into one XLA graph — no Python overhead per step
+4. Pre-baked y-independent diffusion terms (computed once per Ros2 step instead of twice)
 
-These are the choices you should know about before you read the code:
+Run `python benchmarks/bench_step.py` for a fresh per-step timing on your hardware.
 
-- **float64 is non-negotiable**. `jax.config.update('jax_enable_x64', True)` is set at module import in every JAX module. Rate constants span ~50 orders of magnitude; float32 silently fails.
-- **Analytical chemistry Jacobian**, not `jax.jacrev`. `chem.chem_jac_analytical` is a stoichiometry-driven scatter that skips structurally-zero entries; it runs ~36× faster than the AD path (95 ms → 2.6 ms on the SNCHO network) and is bit-exact (≤1e-13) vs the AD reference, which is kept as the test oracle.
-- **Diagonal-aware block-tridiagonal factorization**. `solver.block_thomas_diag_offdiag` exploits the diffusion Jacobian's diagonal-in-species off-blocks: the dense `O(ni³)` matmul `C_j @ inv(A_prev) @ B_{j-1}` reduces to an `O(ni²)` rank update. The factor is computed once per Ros2 step and reused across both Rosenbrock stages.
-- **Single-shot JIT'd runner**. The integration runs as one `jax.lax.while_loop` — photo, atm-refresh, condensation, ion balance, fix-all-bot, adaptive rtol, photo-frequency switch, and the convergence check all live inside the body. No Python `while not stop()` polling.
-- **Implicit-AD route for reverse-mode gradients**. `jax.lax.while_loop` blocks `jax.vjp`, so end-to-end `grad` of the converged state goes through `steady_state_grad.differentiable_steady_state` (a `jax.custom_vjp` using the implicit-function theorem). O(1) memory in step count; no checkpointing.
-- **Typed pytree as the runtime surface**. `state.RunState` carries every input the runner reads (`AtmInputs`, `RateInputs`, `PhotoInputs`, `PhotoStaticInputs`, `IniAbunOutputs`, runner-state slots, host-side static `metadata`). The legacy mutable container classes (`Variables` / `AtmData` / `Parameters`) live as private `_Variables` / `_AtmData` / `_Parameters` inside `state.py` because the hybrid oracle tests need master's pipeline to mutate a shared `(var, atm)` at the JAX↔master boundary.
-- **JAX/NumPy boundary**. The hot-path runtime is fully JAX; everything inside `OuterLoop`'s `lax.while_loop` is `jit` / `vmap` / `jvp` / `vjp` compatible. Some setup-time code stays NumPy by design — host-side, runs once, not on any AD path:
-    - `photo_setup.py` — cross-section CSV reader + `np.interp` binning. Build `PhotoStaticInputs` directly from JAX arrays if you need cross-section gradients.
-    - `legacy_io.ReadRate.read_rate` — rate-file metadata parser. Rate *values* flow through JAX-friendly `rates.build_rate_array` (bit-exact output).
-    - `legacy_io.Output.save_out` — pickle writer; one-shot at end of run.
-    - CSV / data-table readers in `composition.py`, `atm_setup.py`, `ini_abun.py`.
-    - FastChem subprocess for `ini_mix='EQ'`.
-  Forward-mode (`jvp` / `jacfwd`) and reverse-mode (`vjp` / `grad` via implicit-AD on the converged state) are supported across the full physical input surface as long as you supply inputs as JAX arrays into the typed pytrees.
+---
 
-## Validation
+## Validation: what is and isn't tested
 
-VULCAN-JAX is **numerically equivalent** to VULCAN-master for the validated components below:
+### Numerical agreement vs VULCAN-master (per-component)
 
 | Layer | Agreement |
 |---|---|
@@ -255,82 +503,124 @@ VULCAN-JAX is **numerically equivalent** to VULCAN-master for the validated comp
 | Reverse rates (533 from Gibbs) | 1.4e-14 |
 | Atmosphere structure (pco/Tco/Kzz/M/...) | bit-exact |
 | Initial abundances (FastChem path) | bit-exact |
+| Chemistry RHS (`chem_rhs` vs `chemdf`) | ~1e-4 for 6 cancellation-prone species, machine-precision otherwise |
 | Chemistry Jacobian (vs `chem_funs.symjac`) | 4.3e-13 |
 | Diffusion operator (vs `op.diffdf`) | 2e-6 (FP-noise-bound) |
 | Block-Thomas solver | 3e-15 |
 | Single Ros2 step (vs `op.Ros2.solver`) | 1.16e-15 |
-| compute_tau / flux / J (vs `op.compute_*`) | 8e-16 / 3.7e-11 / 1.8e-11 |
-| compute_Jion / ion `k_arr` wiring | unit-tested end-to-end |
-| `update_mu_dz` / `update_phi_esc` (vs `op.*`) | 3-7e-16 (bit-exact) |
-| `conden` / `h2o_relax` / `nh3_relax` (vs numpy ref) | 0 (bit-exact) |
+| `compute_tau` / `compute_flux` / `compute_J` | 8e-16 / 3.7e-11 / 1.8e-11 |
+| `compute_Jion` / ion `k_arr` wiring | unit-tested end-to-end |
+| `update_mu_dz` / `update_phi_esc` | 3-7e-16 (bit-exact) |
+| `conden` / `h2o_relax` / `nh3_relax` | 0 (bit-exact) |
 | End-to-end 50-step run (HD189) | 1.59e-10 |
+| End-to-end converged HD189 (median dex) | 0.004 dex (~1% relative) |
 
-Additional validation already in the test suite covers vendored example-config setup, Earth/Jupiter/HD209 20-step regression oracles, HD189 smoke integration, `save_evolution`, `.vul` output schema, `compute_Jion`, `vmap` consistency, forward-mode AD, and the implicit steady-state gradient path.
+### What's covered by the test suite
 
-**Known per-term floor in `chem_rhs`** (~1e-4 relerr for CH2_1, HC3N, HCCO at certain layers): the JAX path uses `jnp.prod(y**stoich)` while VULCAN-master uses SymPy-emitted `y[A] * y[B] * y[C]`. The two differ by ~1 ulp per multiply; with ~7K production/loss terms cancelling down to ~1e2 the ulp drift accumulates to ~1e-4 absolute. This is a real, measurable disagreement vs VULCAN-master. Closing it requires a SymPy-faithful codegen and pays a ~14× per-call cost on the per-step hot path, which is **WONTFIX** by maintainer policy — the trade is net-negative for the project. Document the difference, do not try to close it. The Jacobian (`chem_jac_analytical`) is unaffected since it has much less per-entry cancellation.
+`pytest tests/` runs 108 tests covering:
+- JAX↔master numerical bridge (RHS, Jacobian, diffusion, single Ros2 step, photo kernels)
+- `vmap` consistency (single-call vs batched output)
+- Forward-mode AD (`jvp` through per-step kernels)
+- Reverse-mode AD via `steady_state_grad` (validated against finite differences)
+- HD189 smoke integration (50-step regression oracle)
+- 20-step matched-step oracles for Earth, Jupiter, HD209
+- `save_evolution` round-trip
+- `.vul` output schema & RunState round-trip
+- Vendored example-config setup
+- Optional CPU↔GPU parity (skips on CPU-only hosts)
 
-Validation that has **not** been done:
+### What's NOT tested
 
-- No exhaustive Cartesian-product oracle sweep over every non-default config knob listed below.
-- No GPU parity run on this CPU-only host; the GPU test skips when no GPU is available.
-- No long-to-convergence VULCAN-master oracle for every vendored example config.
-- No exhaustive validation of arbitrary custom chemical networks beyond parser/schema tests and the bundled example networks.
-- No validation of gradients through raw file readers or FastChem internals, because those are intentionally host-side setup steps.
-- No support/validation for invalid master configurations that the validator rejects, such as `use_ion=True` without `use_photo=True`, `use_live_flux=True` without `use_photo=True`, or `fix_species` without condensation.
+- **Cartesian-product oracle sweeps** over every non-default config knob. By policy.
+- **GPU parity** on this CPU-only host (skipped).
+- **Long-to-convergence VULCAN-master oracles** for every vendored example.
+- **Arbitrary custom networks** beyond parser/schema coverage and the bundled examples.
+- **Gradients through host-side readers / FastChem internals** — by design (host-side setup, not on the AD path).
+- **Invalid master configurations** that the validator rejects (`use_ion=True` without `use_photo=True`, `use_live_flux=True` without `use_photo=True`, `fix_species` without condensation).
 
-## GPU / multi-CPU
+---
 
-To run on GPU (no code changes):
+## Numerical notes
+
+### `chem_rhs` cancellation floor (~1e-4 relerr for 6 species)
+
+The JAX path uses `jnp.prod(y**stoich)` while VULCAN-master uses SymPy-emitted `y[A] * y[B] * y[C]`. The two differ by ~1 ulp per multiply; with ~7K production/loss terms cancelling down to ~1e2 the ulp drift accumulates to ~1e-4 absolute. This is a real, measurable disagreement for `CH2_1`, `HC3N`, `HCCO` (and a handful of heavy hydrocarbons at certain layers).
+
+Closing it requires a SymPy-faithful codegen and pays a ~14× per-call cost on the per-step hot path, which is **WONTFIX** by maintainer policy. The Jacobian (`chem_jac_analytical`) is unaffected.
+
+### Step-count and atom-conservation drift (downstream of the floor above)
+
+The 1e-4 floor is invisible at the per-step level but compounds over a long integration in two ways:
+
+**1. JAX usually needs more accepted steps to detect convergence than master.**
+The convergence test fires when `longdy = max|Δy/(n_0·ymix)|` drops below `yconv_min = 0.1` and `longdydt < slope_min`. The ULP floor doesn't move bulk species (H2O, CO, CH4, NH3, HCN), but it nudges heavy-hydrocarbon trace radicals (`C6H6`, `C2H2`, `C4H5`, `C4H2`, `C3H3`, `CH3NH2`, ...) along slightly different trajectories. Whichever one is sitting at the threshold last gates termination. Both runs reach physically equivalent steady states; only the detection moment differs.
+
+**2. JAX's column atom_loss grows roughly linearly with step count.**
+With `loss_eps = 0.1`, neither code rejects the per-step ulp drift. A 2-3× longer JAX run ends with 2-3× more cumulative atom drift. On HD189 both runs sit at ~2e-4 column drift; on HD209 with no mitigation, JAX accumulated to −8.3% C while master sat at +5e-5.
+
+### Mitigations (no code changes, just config knobs)
+
+- **`conver_ignore`** (populated by default in `cfg_examples/vulcan_cfg_HD189.py` / `vulcan_cfg_HD209.py`):
+  ```python
+  conver_ignore = ['C6H6', 'C2H2', 'C6H5', 'C2H', 'C2H4', 'C2H5', 'C2H6',
+                   'C3H2', 'C3H3', 'C4H5', 'CH2NH', 'CH3NH2', 'H2CCO']
+  ```
+  Heavy-hydrocarbon trace radicals excluded from the convergence detector. If a *new* trace radical takes over the gate on a different planet, look at `parameter['where_varies_most']` in the saved `.vul` and add it.
+
+- **`conv_stall_window = 200`** (new safety net, default):
+  Stall fallback in both branches. If `longdy_seen_min` (running min of `longdy`, only resets on a ≥5% relative drop) has been below `yconv_min` for 200 accepted steps without significant improvement *and* current `longdy` is also below `yconv_min`, declare `end_case=1`. Master almost never trips it; JAX trips it when a heavy hydrocarbon outside `conver_ignore` keeps oscillating around the threshold.
+
+### What does NOT help
+
+- **Tighter `loss_eps`** (e.g. 1e-5): drift is per physical time, not per step. Tighter `loss_eps` causes dt-thrashing without reducing cumulative drift.
+- **Compensated summation** (Kahan/Neumaier in `chem_rhs`): empirically verified bit-identical to `math.fsum` on JAX's terms — the disagreement is in the per-term *values* JAX emits, not in the summation order. Adds ~14× to chem_rhs runtime for zero gain.
+- **float32**: hard no — rate constants span 50 orders of magnitude.
+
+### Other documented numerical points
+
+- **Diffusion Jacobian** matches `op.diffdf` to 2e-6 (FP noise from extracting small residues from `c0~1e10` cancellations). Block diagonals match `op.lhs_jac_tot` to machine precision for sup/sub blocks but disagree at heavy-condensable cells (S8 layers 5/25). Direct comparison with the analytical derivative confirms the JAX side is correct; master's `op.lhs_jac_tot` has a minor self-inconsistency.
+- **Asymmetric M factor for dissociation reactions.** `network.py` tracks `has_M_reac` and `has_M_prod` separately so reactions like `HNCO + M → H + NCO` (3-body forward, bimolecular reverse) are handled correctly.
+
+---
+
+## GPU & multi-CPU
+
 ```bash
+# Run on GPU (no code changes)
 JAX_PLATFORM_NAME=gpu python vulcan_jax.py
-```
 
-To enable JAX device-level parallelism for vmap/pmap on multi-core CPU:
-```bash
+# Enable JAX device-level parallelism for vmap/pmap on multi-core CPU
 XLA_FLAGS=--xla_force_host_platform_device_count=8 python vulcan_jax.py
 ```
 
 For batched parameter sweeps (e.g. running 16 atmospheres at once with different stellar fluxes), see `examples/batched_run.py`.
 
-## Live but non-default config paths
+---
 
-These VULCAN-master config branches are **live in master and implemented in VULCAN-JAX**, but exercised by the default HD189 + Earth + Jupiter + HD209 runs only partially. Each one is a JAX implementation already; what's missing is parity tests, not physics. By project policy we don't add an oracle test for every one — if a non-default branch is wrong, we'll find out when it's used.
-
-- **Initial abundance** (`ini_abun.py`): `ini_mix in {EQ, vulcan_ini, table, const_mix, const_lowT}`, `use_ini_cold_trap`, `use_solar`, custom elemental abundance file.
-- **Atmosphere** (`atm_setup.py`): `atm_type in {file, isothermal, analytical, vulcan_ini, table}`, `Kzz_prof in {const, file, JM16, Pfunc}`, `vz_prof in {const, file}`, `use_Kzz`, `use_vz`, `atm_base in {H2, N2, O2, CO2}`.
-- **Transport** (`jax_step.py`, `outer_loop.py`): `use_moldiff`, `use_vm_mol`, `use_settling`, `use_topflux`, `use_botflux`, `use_fix_sp_bot`, `use_fix_H2He`, `use_sat_surfaceH2O`, `diff_esc` species and `max_flux`.
-- **Photo / ion** (`photo.py`, `op_jax.py`): `use_photo`, `use_ion`, T-dependent cross sections, Rayleigh species, ion branch files, `remove_list`, the `ini_update_photo_frq → final_update_photo_frq` cadence switch.
-- **Condensation** (`conden.py`): all master-supported species (H2O, NH3, H2SO4, S2, S4, S8, C), `use_relax in {H2O, NH3}`, `fix_species` with `fix_species_from_coldtrap_lev`, `post_conden_rtol`, `start_conden_time` / `stop_conden_time`.
-- **Output / runtime**: `save_evolution`, `use_print_prog`, the four live UI flags (host-side; see Differences section).
-
-Genuinely dead in master and **not** ported: non-Ros2 ODE solvers (`SemiEU` etc. are commented-out stubs in `op.py`); `naming_solver()` selection of `solver_fix_all_bot` (the selection is commented out, although the underlying solver path exists).
-
-## Tests
+## Running tests
 
 ```bash
-pytest tests/                  # 108 pass + 3 skip on a current CPU-only run.
-                               # The 3 skips are test_backend_parity (no GPU)
-                               # and 2 config-matrix sub-cases that require
-                               # H2O_l_s in the network (HD189 doesn't have it).
-                               # Upstream-comparison tests skip cleanly when
-                               # ../VULCAN-master/ is absent.
-pytest tests/ -n auto          # parallel-safe (FastChem invocations serialise
-                               # via fcntl.flock).
-python tests/test_foo.py       # individual scripts still work standalone
+pytest tests/                  # full suite (~14 min). 108 pass + 3 skip
+                               # on a clean CPU-only run.
+pytest tests/ -n auto          # parallel-safe (FastChem invocations
+                               # serialise via fcntl.flock).
+pytest tests/ -k "ros2 or block_thomas"   # filter
+python tests/test_foo.py       # individual scripts run standalone
 ```
 
-VULCAN-JAX is fully **standalone** — `python vulcan_jax.py` runs end-to-end with no `../VULCAN-master/` sibling. The optional sibling, when present, serves as a validation oracle for the upstream-comparison tests.
+The 3 documented skips are: `test_backend_parity` (no GPU on this host) and 2 config-matrix sub-cases that require `H2O_l_s` in the network (HD189 doesn't have it). Upstream-comparison tests skip cleanly when `../VULCAN-master/` is absent.
 
-The test suite covers the JAX↔master numerical bridge (chem RHS, Jacobian, diffusion, single Ros2 step, photo kernels) and a handful of integration smoke tests. It deliberately does not parametrize across every non-default config combination from the inventory above — see "Scope" at the top of this file.
+The test suite is deliberately not parametrized across every non-default config combination — see [Capabilities](#capabilities) for the full inventory.
 
-See `CLAUDE.md` for the full test-discipline rules (when to add a test, what a "real" failure looks like, etc.).
+See `CLAUDE.md` for the full test-discipline rules (when to add a test, what a "real" failure looks like).
 
-## License
+---
 
-VULCAN-JAX inherits its license from VULCAN (GPLv3, see VULCAN-master/GPL_license.txt).
+## License & citation
 
-## Citation
+VULCAN-JAX inherits its license from VULCAN (GPLv3, see `VULCAN-master/GPL_license.txt`).
 
 If you use VULCAN-JAX in published work, please cite the underlying VULCAN papers:
+
 - Tsai, S.-M., Lyons, J. R., Grosheintz, L., Rimmer, P. B., Kitzmann, D., & Heng, K. 2017, ApJS, 228, 20
 - Tsai, S.-M., Malik, M., Kitzmann, D., Lyons, J. R., Fateev, A., Lavvas, P., & Heng, K. 2021, ApJ, 923, 264

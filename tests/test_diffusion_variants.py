@@ -68,7 +68,6 @@ def main() -> int:
     coeffs_vm = diff_mod.build_diffusion_coeffs(data_var.y, data_atm, cfg_vm)
     diff_vm_jax = diff_mod.apply_diffusion(data_var.y, coeffs_vm)
 
-    relerr_vm = np.abs(diff_vm_jax - diff_vm_ref) / np.maximum(np.abs(diff_vm_ref), 1e-30)
     # Use absolute floor for cancellation residues
     abs_floor = 1e-12 * np.abs(diff_vm_ref).max()
     abs_diff = np.abs(diff_vm_jax - diff_vm_ref)

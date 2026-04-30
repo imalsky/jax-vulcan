@@ -105,16 +105,11 @@ def main() -> int:
     diag_d, sup_d, sub_d = diff_mod.diffusion_block_diags(coeffs, ni)
 
     # Build the full diffusion contribution to the Jacobian and compare with
-    # (lhs_ref - c0*I - chem_jac_ref).
+    # (lhs_ref - c0*I - chem_jac_ref). lhs_ref carries c0 on its diagonal
+    # already (added in op.py), so we strip c0 after subtracting chem_jac_ref
+    # to isolate the diffusion blocks.
     r = 1.0 + 1.0 / np.sqrt(2.0)
     c0 = 1.0 / (r * data_var.dt)
-    diff_jac_ref = lhs_ref - chem_jac_ref            # since chem_jac_ref already has the c0 added on diagonal? Let me check.
-
-    # Actually: lhs_ref = c0*I + neg_achemjac_with_diag_added + diff_blocks
-    #   where neg_achemjac_with_diag_added = chem_jac_ref + 0  (since diagonal already incorporated).
-    # We added c0 BEFORE calling diff_blocks subtraction in op.py.
-    # The chem_jac_ref above is `-symjac` (raw). We need to subtract c0 from
-    # the diagonal of (lhs_ref - chem_jac_ref) to isolate diffusion.
     diff_jac_only = lhs_ref - chem_jac_ref
     # Subtract c0 from the diagonal
     np.fill_diagonal(diff_jac_only, np.diag(diff_jac_only) - c0)

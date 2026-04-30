@@ -98,7 +98,6 @@ def main() -> int:
     # Sanity: how close is the converged state to f = 0?
     res = steady_state_residual(y_star, k_arr, atm_static, net_jax)
     res_norm = float(jnp.max(jnp.abs(res)))
-    res_rel_yscale = float(jnp.max(jnp.abs(res) / jnp.maximum(jnp.abs(y_star), 1e-30)))
     rhs_scale = float(jnp.max(jnp.abs(_chem_mod.chem_rhs(
         y_star, atm_static.M, k_arr, net_jax))))
     print(f"||f(y*, k)||_inf = {res_norm:.3e}, "

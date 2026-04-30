@@ -689,12 +689,16 @@ def _make_runner(net, statics: _Statics,
         )
         is_converged = is_converged & (s.aflux_change < jnp.float64(flux_cri))
 
-        # Stall fallback: longdy hasn't reached a new minimum for
-        # conv_stall_window accepted steps and is already below the loose
-        # branch's yconv_min — declare end_case=1 so we don't burn cycles
-        # waiting for one chem_rhs ULP-floored trace species to clear.
+        # Stall fallback: longdy_seen_min already crossed the loose-branch
+        # threshold AND current longdy is back near it AND no significant
+        # (>=5%) improvement for conv_stall_window accepted steps. Requires
+        # both the historical and current longdy to be below yconv_min so we
+        # don't terminate while a new species is actively evolving — only
+        # when the chem_rhs ULP-floor oscillation around the converged state
+        # has been going on long enough.
         is_stalled = (
             (s.count_since_new_min > jnp.int32(conv_stall_window))
+            & (s.longdy_seen_min < jnp.float64(yconv_min))
             & (s.longdy < jnp.float64(yconv_min))
             & (s.aflux_change < jnp.float64(flux_cri))
         )
@@ -978,15 +982,17 @@ def _make_runner(net, statics: _Statics,
             where_varies_most_new,
             s.where_varies_most,
         )
-        # Stall-detector bookkeeping: on accepted steps, update the running
-        # min of longdy and the count of accepted steps since a new minimum.
-        # Rejected steps leave both unchanged.
-        new_min_seen = do_accept & (longdy_next < s.longdy_seen_min)
+        # Stall-detector bookkeeping. We want the counter to fire when longdy
+        # is creeping along the chem_rhs ULP floor — strict less-than would let
+        # any sub-percent micro-improvement reset the counter and the stall
+        # never fires. Require a 5% relative drop to count as a new minimum.
+        significant_drop = (do_accept
+                            & (longdy_next < s.longdy_seen_min * jnp.float64(0.95)))
         longdy_seen_min_next = jnp.where(
-            new_min_seen, longdy_next, s.longdy_seen_min
+            significant_drop, longdy_next, s.longdy_seen_min
         )
         count_since_new_min_next = jnp.where(
-            new_min_seen,
+            significant_drop,
             jnp.int32(0),
             jnp.where(
                 do_accept,

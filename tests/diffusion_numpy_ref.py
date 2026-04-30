@@ -311,7 +311,6 @@ def diffusion_block_diags(coeffs: DiffusionCoeffs, ni: int):
         LHS_sup[j]   =                       -  diag(sup_d[j])
         LHS_sub[j]   =                       -  diag(sub_d[j])
     """
-    nz = coeffs.A_eddy.shape[0]
     A = coeffs.A_eddy
     B = coeffs.B_eddy
     C = coeffs.C_eddy

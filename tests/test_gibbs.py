@@ -59,7 +59,6 @@ def main() -> int:
 
     T = np.asarray(data_atm.Tco, dtype=np.float64)
     M = np.asarray(data_atm.M, dtype=np.float64)
-    nz = T.shape[0]
 
     # === 2. JAX-side computation ===
     net = net_mod.parse_network(vulcan_cfg.network)
