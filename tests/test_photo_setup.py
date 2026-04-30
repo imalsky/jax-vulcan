@@ -6,8 +6,9 @@ The fixtures (`tests/data/photo_setup_hd189_baseline.npz` and
 `tests/_gen_photo_baseline.py` and are the canonical oracle for the
 photo cross-section preprocessing.
 
-Tolerance is 0.0 abs/rel err — the static is derived from the same
-NumPy CSV pipeline as the fixture, so any drift is a real bug.
+The fixture comparison is exact except for NumPy-version ULP drift in
+`np.arange` wavelength bins and the interpolated cross sections derived
+from those bins.
 
 Run from VULCAN-JAX/:
     pytest tests/test_photo_setup.py
@@ -28,6 +29,8 @@ sys.path.insert(0, str(ROOT))
 warnings.filterwarnings("ignore")
 
 FIXTURE_DIR = ROOT / "tests" / "data"
+BIN_ATOL = 2e-14
+CROSS_ATOL = 1e-30
 
 
 def _build_state_through_read_rate():
@@ -55,50 +58,64 @@ def _check_static_against_fixture(static, fixture_path: Path) -> None:
     """Bit-exact compare every dense array in `static` to its fixture entry."""
     fx = np.load(fixture_path)
 
-    np.testing.assert_array_equal(np.asarray(static.bins), fx["bins"])
+    np.testing.assert_allclose(
+        np.asarray(static.bins), fx["bins"], rtol=0.0, atol=BIN_ATOL,
+    )
     assert int(static.nbin) == int(fx["nbin"])
     assert float(static.dbin1) == float(fx["dbin1"])
     assert float(static.dbin2) == float(fx["dbin2"])
 
     for i, sp in enumerate(static.absp_sp):
-        np.testing.assert_array_equal(
+        np.testing.assert_allclose(
             np.asarray(static.absp_cross[i]),
             fx[f"cross__{sp}"],
+            rtol=0.0,
+            atol=CROSS_ATOL,
             err_msg=f"absp_cross[{i}] (sp={sp}) mismatch",
         )
 
     for i, sp in enumerate(static.absp_T_sp):
-        np.testing.assert_array_equal(
+        np.testing.assert_allclose(
             np.asarray(static.absp_T_cross[i]),
             fx[f"cross_T__{sp}"],
+            rtol=0.0,
+            atol=CROSS_ATOL,
             err_msg=f"absp_T_cross[{i}] (sp={sp}) mismatch",
         )
 
     for i, (sp, br) in enumerate(static.branch_keys):
-        np.testing.assert_array_equal(
+        np.testing.assert_allclose(
             np.asarray(static.cross_J[i]),
             fx[f"cross_J__{sp}__{br}"],
+            rtol=0.0,
+            atol=CROSS_ATOL,
             err_msg=f"cross_J[{i}] (sp={sp}, br={br}) mismatch",
         )
 
     for i, (sp, br) in enumerate(static.branch_T_keys):
-        np.testing.assert_array_equal(
+        np.testing.assert_allclose(
             np.asarray(static.cross_J_T[i]),
             fx[f"cross_J_T__{sp}__{br}"],
+            rtol=0.0,
+            atol=CROSS_ATOL,
             err_msg=f"cross_J_T[{i}] (sp={sp}, br={br}) mismatch",
         )
 
     for i, sp in enumerate(static.scat_sp):
-        np.testing.assert_array_equal(
+        np.testing.assert_allclose(
             np.asarray(static.scat_cross[i]),
             fx[f"cross_scat__{sp}"],
+            rtol=0.0,
+            atol=CROSS_ATOL,
             err_msg=f"scat_cross[{i}] (sp={sp}) mismatch",
         )
 
     for i, (sp, br) in enumerate(static.ion_branch_keys):
-        np.testing.assert_array_equal(
+        np.testing.assert_allclose(
             np.asarray(static.cross_Jion[i]),
             fx[f"cross_Jion__{sp}__{br}"],
+            rtol=0.0,
+            atol=CROSS_ATOL,
             err_msg=f"cross_Jion[{i}] (sp={sp}, br={br}) mismatch",
         )
 

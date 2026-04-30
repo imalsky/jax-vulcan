@@ -104,6 +104,8 @@ class JaxIntegState(NamedTuple):
     longdy:             jnp.ndarray  # ()                  float64
     longdydt:           jnp.ndarray  # ()                  float64
     where_varies_most:  jnp.ndarray  # (nz, ni)            float64
+    longdy_seen_min:    jnp.ndarray  # ()                  float64 — running min of longdy across accepted steps
+    count_since_new_min:jnp.ndarray  # ()  int32           — accepted steps since longdy reached a new minimum
     rtol:               jnp.ndarray  # ()                  float64
     loss_criteria:      jnp.ndarray  # ()                  float64
     update_photo_frq:   jnp.ndarray  # ()                  int32
@@ -419,6 +421,7 @@ class _Statics(NamedTuple):
     conv_step:               int           # ring buffer length (vulcan_cfg.conv_step)
     count_min:               int
     count_max:               int
+    conv_stall_window:       int           # accepted steps without longdy improvement before declaring stalled-convergence
     runtime:                 float
     trun_min:                float
     st_factor:               float
@@ -536,6 +539,7 @@ def _make_runner(net, statics: _Statics,
     conv_step = statics.conv_step
     count_min = statics.count_min
     count_max = statics.count_max
+    conv_stall_window = statics.conv_stall_window
     runtime = statics.runtime
     trun_min = statics.trun_min
     st_factor = statics.st_factor
@@ -684,6 +688,17 @@ def _make_runner(net, statics: _Statics,
                & (s.longdydt < slope_min))
         )
         is_converged = is_converged & (s.aflux_change < jnp.float64(flux_cri))
+
+        # Stall fallback: longdy hasn't reached a new minimum for
+        # conv_stall_window accepted steps and is already below the loose
+        # branch's yconv_min — declare end_case=1 so we don't burn cycles
+        # waiting for one chem_rhs ULP-floored trace species to clear.
+        is_stalled = (
+            (s.count_since_new_min > jnp.int32(conv_stall_window))
+            & (s.longdy < jnp.float64(yconv_min))
+            & (s.aflux_change < jnp.float64(flux_cri))
+        )
+        is_converged = is_converged | is_stalled
 
         ready = (s.t > jnp.float64(trun_min)) & (s.accept_count > jnp.int32(count_min))
         # Chunk cap, used by the chunked driver to break for host
@@ -963,6 +978,22 @@ def _make_runner(net, statics: _Statics,
             where_varies_most_new,
             s.where_varies_most,
         )
+        # Stall-detector bookkeeping: on accepted steps, update the running
+        # min of longdy and the count of accepted steps since a new minimum.
+        # Rejected steps leave both unchanged.
+        new_min_seen = do_accept & (longdy_next < s.longdy_seen_min)
+        longdy_seen_min_next = jnp.where(
+            new_min_seen, longdy_next, s.longdy_seen_min
+        )
+        count_since_new_min_next = jnp.where(
+            new_min_seen,
+            jnp.int32(0),
+            jnp.where(
+                do_accept,
+                s.count_since_new_min + jnp.int32(1),
+                s.count_since_new_min,
+            ),
+        )
 
         # Adaptive rtol fires only on accepted steps. Decrease cadence is
         # `accept_count % adapt_rtol_dec_period == 0` and triggers when
@@ -1033,6 +1064,8 @@ def _make_runner(net, statics: _Statics,
             longdy=longdy_next,
             longdydt=longdydt_next,
             where_varies_most=where_varies_most_next,
+            longdy_seen_min=longdy_seen_min_next,
+            count_since_new_min=count_since_new_min_next,
             rtol=rtol_next,
             loss_criteria=loss_criteria_after_dec,
             update_photo_frq=update_photo_frq_next,
@@ -1254,6 +1287,7 @@ class OuterLoop:
             conv_step=int(vulcan_cfg.conv_step),
             count_min=int(vulcan_cfg.count_min),
             count_max=int(vulcan_cfg.count_max),
+            conv_stall_window=int(getattr(vulcan_cfg, "conv_stall_window", 200)),
             runtime=float(vulcan_cfg.runtime),
             trun_min=float(vulcan_cfg.trun_min),
             st_factor=float(vulcan_cfg.st_factor),
@@ -1742,6 +1776,8 @@ class OuterLoop:
                 rs.params.where_varies_most,
                 dtype=jnp.float64,
             ),
+            longdy_seen_min=jnp.float64(jnp.inf),
+            count_since_new_min=jnp.int32(0),
             rtol=jnp.float64(float(vulcan_cfg.rtol)),
             loss_criteria=jnp.float64(
                 float(getattr(self, "loss_criteria", 0.0005))

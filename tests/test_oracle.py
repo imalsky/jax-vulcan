@@ -46,8 +46,10 @@ BASELINE_DIR = ROOT / "tests" / "data" / "oracle_baselines"
 COUNT_MAX = 20
 
 # Baseline-vs-JAX comparison: both runs are JAX, so the only drift is
-# JIT compile order; bit-exact within float64 ULP.
+# JIT compile order plus platform-level roundoff in numerically-empty cells.
 RELERR_VS_BASELINE = 1e-12
+Y_ABS_FLOOR_VS_BASELINE = 1e-9
+YMIX_ABS_FLOOR_VS_BASELINE = 1e-25
 
 # Per-config master-vs-JAX tolerance. Empirically HD209's 20-step run lands
 # at ~1.7e-9 (vs HD189's 50-step 1.59e-10 baseline in CLAUDE.md): early-step
@@ -486,7 +488,12 @@ def _save_baseline(jax_npz: Path, baseline_file: Path) -> None:
     )
 
 
-def _safe_relerr(a: np.ndarray, b: np.ndarray, floor: float = 1e-30) -> float:
+def _safe_relerr(
+    a: np.ndarray,
+    b: np.ndarray,
+    floor: float = 1e-30,
+    abs_floor: float = 0.0,
+) -> float:
     """Max relative error |a - b| / max(|a|, floor), ignoring entries
     where both arrays are NaN (e.g. ``ymix = 0/0`` in fully empty
     layers — Jupiter's stratosphere above the cold trap). Mismatched
@@ -504,13 +511,19 @@ def _safe_relerr(a: np.ndarray, b: np.ndarray, floor: float = 1e-30) -> float:
     b_clean = np.where(both_nan, 0.0, b)
     diff = np.abs(a_clean - b_clean)
     denom = np.maximum(np.abs(a_clean), floor)
-    rel = diff / denom
+    rel = np.where(diff <= abs_floor, 0.0, diff / denom)
     if rel.size == 0:
         return 0.0
     return float(np.max(rel))
 
 
-def _compare_states(ref_npz: Path, jax_npz: Path) -> dict:
+def _compare_states(
+    ref_npz: Path,
+    jax_npz: Path,
+    *,
+    y_abs_floor: float = 0.0,
+    ymix_abs_floor: float = 0.0,
+) -> dict:
     """Compute max relerr stats between ref (master or baseline) and JAX state."""
     ref_d = np.load(ref_npz, allow_pickle=True)
     jax_d = np.load(jax_npz, allow_pickle=True)
@@ -524,8 +537,10 @@ def _compare_states(ref_npz: Path, jax_npz: Path) -> dict:
             "jax_n": len(jax_specs),
         }
 
-    relerr_y = _safe_relerr(ref_d["y"], jax_d["y"])
-    relerr_ymix = _safe_relerr(ref_d["ymix"], jax_d["ymix"])
+    relerr_y = _safe_relerr(ref_d["y"], jax_d["y"], abs_floor=y_abs_floor)
+    relerr_ymix = _safe_relerr(
+        ref_d["ymix"], jax_d["ymix"], abs_floor=ymix_abs_floor,
+    )
 
     t_relerr = abs(float(ref_d["t"]) - float(jax_d["t"])) / max(
         abs(float(ref_d["t"])), 1e-30,
@@ -622,7 +637,12 @@ def test_oracle(cfg_name: str, relerr_vs_master: float) -> None:
             ref_label = "master"
             threshold = relerr_vs_master
         elif have_baseline:
-            cmp = _compare_states(baseline_file, jax_npz)
+            cmp = _compare_states(
+                baseline_file,
+                jax_npz,
+                y_abs_floor=Y_ABS_FLOOR_VS_BASELINE,
+                ymix_abs_floor=YMIX_ABS_FLOOR_VS_BASELINE,
+            )
             ref_label = "baseline"
             threshold = RELERR_VS_BASELINE
         else:

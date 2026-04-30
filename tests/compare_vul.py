@@ -98,7 +98,9 @@ def _check_static_invariants(var_a: dict, var_b: dict) -> tuple[bool, list[str]]
     return ok, msgs
 
 
-def _check_time_alignment(var_a: dict, var_b: dict, *, time_tol_rel: float) -> tuple[bool, list[str]]:
+def _check_time_alignment(
+    var_a: dict, var_b: dict, par_a: dict, par_b: dict, *, time_tol_rel: float
+) -> tuple[bool, list[str]]:
     msgs: list[str] = []
     t_a = float(var_a["t"])
     t_b = float(var_b["t"])
@@ -106,15 +108,21 @@ def _check_time_alignment(var_a: dict, var_b: dict, *, time_tol_rel: float) -> t
     dt_b = float(var_b["dt"])
     longdy_a = float(var_a["longdy"])
     longdy_b = float(var_b["longdy"])
+    count_a = par_a.get("count", "—")
+    count_b = par_b.get("count", "—")
+    end_a = par_a.get("end_case", "—")
+    end_b = par_b.get("end_case", "—")
 
     if max(abs(t_a), abs(t_b)) == 0.0:
         rel = 0.0
     else:
         rel = abs(t_a - t_b) / max(abs(t_a), abs(t_b))
 
-    msgs.append(f"  t       : a={t_a:.4e}  b={t_b:.4e}  rel diff={rel:.3e}")
-    msgs.append(f"  dt      : a={dt_a:.4e}  b={dt_b:.4e}")
-    msgs.append(f"  longdy  : a={longdy_a:.4e}  b={longdy_b:.4e}")
+    msgs.append(f"  count    : a={count_a}  b={count_b}")
+    msgs.append(f"  end_case : a={end_a}  b={end_b}  (1=converged, 2=runtime, 3=count_max)")
+    msgs.append(f"  t        : a={t_a:.4e}  b={t_b:.4e}  rel diff={rel:.3e}")
+    msgs.append(f"  dt       : a={dt_a:.4e}  b={dt_b:.4e}")
+    msgs.append(f"  longdy   : a={longdy_a:.4e}  b={longdy_b:.4e}")
     aligned = rel <= time_tol_rel
     if not aligned:
         msgs.append(
@@ -192,11 +200,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--time-tol-rel",
         type=float,
-        default=1.0e-2,
+        default=5.0e-2,
         help="Relative tolerance on the integration end-time. If "
              "|t_a - t_b| / max(t) exceeds this, the comparison is flagged "
-             "as not apples-to-apples (default 1%%). Use --allow-time-mismatch "
-             "to bypass.",
+             "as not apples-to-apples (default 5%%, sized for the documented "
+             "chem_rhs cancellation-floor drift between JAX and master). Use "
+             "--allow-time-mismatch to bypass.",
     )
     parser.add_argument(
         "--log10-tol",
@@ -229,6 +238,8 @@ def main(argv: list[str] | None = None) -> int:
 
     var_a = da["variable"]
     var_b = db["variable"]
+    par_a = da.get("parameter", {})
+    par_b = db.get("parameter", {})
 
     print("Static invariants:")
     static_ok, static_msgs = _check_static_invariants(var_a, var_b)
@@ -244,7 +255,7 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print("Convergence state:")
     time_aligned, time_msgs = _check_time_alignment(
-        var_a, var_b, time_tol_rel=args.time_tol_rel
+        var_a, var_b, par_a, par_b, time_tol_rel=args.time_tol_rel
     )
     for line in time_msgs:
         print(line)

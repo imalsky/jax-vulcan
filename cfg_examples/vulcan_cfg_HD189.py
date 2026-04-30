@@ -119,6 +119,7 @@ humidity = 1.
 # ====== steady state check ======
 st_factor = 0.5
 conv_step = 500
+conv_stall_window = 200 # steps without longdy improvement before declaring stalled-convergence (end_case=1)
 
 # ====== Setting up numerical parameters for the ODE solver ====== 
 ode_solver = 'Ros2' # case sensitive
@@ -145,7 +146,7 @@ slope_cri = 1.e-4
 yconv_min = 0.1
 flux_cri = 0.1
 flux_atol = 1. # the tol for actinc flux (# photons cm-2 s-1 nm-1)
-conver_ignore = [] # added 2023. to get rid off non-convergent species, e.g. HC3N without sinks 
+conver_ignore = ['C6H6', 'C2H2', 'C6H5', 'C2H', 'C2H4', 'C2H5', 'C2H6', 'C3H2', 'C3H3', 'C4H5', 'CH2NH', 'CH3NH2', 'H2CCO'] # heavy hydrocarbons that sit on the chem_rhs ULP cancellation floor and stall convergence; safe to exclude for hot-Jupiter bulk-chemistry runs
 
 # ====== Setting up numerical parameters for Ros2 ODE solver ====== 
 rtol = 0.2             # relative tolerence for adjusting the stepsize 

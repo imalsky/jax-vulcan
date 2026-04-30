@@ -1,5 +1,5 @@
 # Byte-compiled / optimized
-__pycache__/
+**/__pycache__/
 *.py[codz]
 *$py.class
 *.so
@@ -14,11 +14,16 @@ dist/
 .env
 .venv
 venv/
+.envrc
+.direnv/
 
 # IDEs and editors
 .idea/
 .vscode/
 .claude/settings.local.json
+*.swp
+*.swo
+*~
 
 # Type checkers / linters / test caches
 .mypy_cache/
@@ -26,14 +31,55 @@ venv/
 .pytype/
 .pytest_cache/
 
+# Coverage
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Profiling
+*.prof
+prof/
+*.lprof
+
+# JAX / XLA caches and dumps
+.jax_cache/
+jax_cache/
+xla_dump/
+*.xla_pb
+
 # Jupyter
 .ipynb_checkpoints/
 
 # macOS
 .DS_Store
 
+# Scratch / temp files
+*.tmp
+*.bak
+*.orig
+*.rej
+
 # VULCAN simulation outputs (binary pickle, ~10+ MB each)
 *.vul
+
+# VULCAN per-run config snapshot (Output.save_out copies vulcan_cfg.py here)
+output/cfg_*.txt
+
+# Live-UI artifacts (movies / frames written next to outputs)
+output/movie_*/
+output/*_movie/
+output/*.mp4
+output/*.gif
+
+# FastChem runtime-generated files (regenerated each run by ini_abun._run_fastchem)
+fastchem_vulcan/.fastchem_lock
+fastchem_vulcan/input/parameters.dat
+fastchem_vulcan/input/element_abundances_vulcan.dat
+fastchem_vulcan/input/vulcan_TP/vulcan_TP.dat
+fastchem_vulcan/output/monitor_output.dat
+fastchem_vulcan/output/chem_species.dat
+fastchem_vulcan/output/vulcan_EQ.dat
 
 # Large scientific data formats (typically big binary arrays/tables)
 *.h5

@@ -818,7 +818,7 @@ class Output(object):
         plt.xlim(1.E-20, 1.)
         plt.legend(frameon=0, prop={'size':14}, loc=3)
         plt.xlabel("Mixing Ratios")
-        plt.savefig(plot_dir + 'mix.png')
+        plt.savefig(plot_dir + 'mix2.png')
 
         # use_live_plot keeps the figure on screen; use_PIL pops the PNG in
         # an external viewer; otherwise close so figures don't accumulate.
@@ -826,7 +826,7 @@ class Output(object):
             plt.draw()
         elif getattr(vulcan_cfg, "use_PIL", False):
             from PIL import Image
-            Image.open(plot_dir + 'mix.png').show()
+            Image.open(plot_dir + 'mix2.png').show()
             plt.close()
         else:
             plt.close()
