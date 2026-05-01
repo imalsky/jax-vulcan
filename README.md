@@ -4,11 +4,12 @@ A JAX-accelerated, differentiable port of [VULCAN](https://github.com/exoclime/V
 
 VULCAN-JAX runs supported VULCAN calculations with the same configuration files, input data, and public `.vul` output schema as the upstream NumPy code. The hot path is a single JIT-compiled `lax.while_loop` running on CPU or GPU; the runtime is **standalone** — `python vulcan_jax.py` runs end-to-end with no `../VULCAN-master/` sibling required.
 
-**Why use VULCAN-JAX over upstream VULCAN?**
-- **3.4× faster** for the HD189 Ros2 step on this CPU host in the latest `benchmarks/bench_step.py` run in the `vulcan` env.
+**Why use VULCAN-JAX over upstream VULCAN? (In dev, still checking all this)**
+- **About 3× faster** for the HD189 Ros2 step on this CPU host in the latest `benchmarks/bench_step.py` run in the `vulcan` env.
 - **Differentiable where the runtime is JAX**: forward-mode through the runner; reverse-mode through implicit steady-state gradients; raw readers and FastChem remain host-side.
 - **Same config format and `.vul` output**: VULCAN's `plot_py/` scripts and downstream tooling work unmodified.
 - **Vectorizable**: tested `vmap` support for per-step batched inputs (e.g. parameter sweeps).
+- **GPU**: Not tested, but designed for this.
 
 ---
 
@@ -58,14 +59,27 @@ The `-n` flag on `vulcan_jax.py` is accepted as a no-op for upstream-CLI compati
 
 ## Installation
 
-VULCAN-JAX runs in a conda environment with `jax`, `numpy`, `scipy`, `h5py`, `pytest`, `pytest-xdist`, `ruff`, `vulture`. A working environment is provided as `vulcan`:
+VULCAN-JAX does not require a pre-existing `vulcan` environment. On a new
+machine, clone or copy this repository, install Miniforge/Conda, then create a
+fresh Python environment from inside `VULCAN-JAX/`:
 
 ```bash
-source /opt/homebrew/Caskroom/miniforge/base/etc/profile.d/conda.sh
-conda activate vulcan
+conda create -n vulcan-jax python=3.11 -y
+conda activate vulcan-jax
+
+python -m pip install --upgrade pip
+python -m pip install jax numpy scipy h5py matplotlib pillow
+python -m pip install pytest pytest-xdist ruff vulture
 ```
 
-Direct binary if scripts need it: `/opt/homebrew/Caskroom/miniforge/base/envs/vulcan/bin/python`.
+The first `pip install` line is the runtime plus plotting stack. The second
+line is only needed for tests and development tools. For an NVIDIA GPU machine,
+install the platform-specific JAX wheel instead of plain `jax` (for example
+`jax[cuda13]` or the CUDA version recommended by the
+[JAX installation guide](https://docs.jax.dev/en/latest/installation.html)).
+
+No sibling `../VULCAN-master/` checkout is needed for normal runs. It is only
+used by optional validation tests that compare against upstream VULCAN.
 
 **Vendored runtime data** (so VULCAN-JAX is fully standalone):
 - `thermo/` — chemistry network files, NASA-9 thermodynamic data, photo cross sections.
@@ -77,7 +91,7 @@ Direct binary if scripts need it: `/opt/homebrew/Caskroom/miniforge/base/envs/vu
 
 ## Capabilities
 
-VULCAN-JAX implements the full Ros2 runtime path of upstream VULCAN. Every live runtime branch in master has a JAX implementation here.
+VULCAN-JAX implements the full Ros2 runtime path of upstream VULCAN. Every live runtime branch in master has a JAX implementation here (I think).
 
 **Chemistry & physics:**
 - Ros2 (2nd-order Rosenbrock) integration with adaptive timestep
@@ -135,7 +149,7 @@ VULCAN-JAX reads the same `vulcan_cfg.py` format as upstream VULCAN — a Python
 - **Condensation**: every supported condensate species, `use_relax`, `fix_species`, `fix_species_from_coldtrap_lev`, `post_conden_rtol`, `start_conden_time` / `stop_conden_time`.
 - **Live UI**: `use_live_plot`, `use_live_flux`, `use_save_movie`, `use_flux_movie` (host-side; force chunked execution).
 
-By project policy we do not parametrize an oracle test across every Cartesian product of these — if a non-default branch misbehaves, we'll find out when it's used. See [What is and isn't tested](#validation-what-is-and-isnt-tested).
+I haven't tested every single branch. Please let me know if you find a major difference between this and VULCAN.
 
 ---
 
@@ -390,31 +404,31 @@ For full integration sweeps, see `examples/batched_run.py`.
 ### Architecture
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│ vulcan_jax.py  (entry point, ~90 lines)                   │
-│   ├─ JAX-native chem_funs (no make_chem_funs.py)          │
-│   ├─ atm_setup.Atm (atmosphere setup) — JAX-native        │
-│   ├─ legacy_io.ReadRate (rate metadata) — vendored        │
-│   ├─ ini_abun.InitialAbun (5 ini_mix modes) — JAX-native  │
-│   ├─ photo_setup.populate_photo (cross sections) — NumPy  │
-│   ├─ Ros2JAX.compute_tau/flux/J — one-shot pre-loop       │
-│   └─ outer_loop.OuterLoop (JAX) — single-shot runner      │
-│       └─ jax.jit(while_loop):                             │
+┌─────────────────────────────────────────────────────────────┐
+│ vulcan_jax.py  (entry point, ~90 lines)                     │
+│   ├─ JAX-native chem_funs (no make_chem_funs.py)            │
+│   ├─ atm_setup.Atm (atmosphere setup) — JAX-native          │
+│   ├─ legacy_io.ReadRate (rate metadata) — vendored          │
+│   ├─ ini_abun.InitialAbun (5 ini_mix modes) — JAX-native    │
+│   ├─ photo_setup.populate_photo (cross sections) — NumPy    │
+│   ├─ Ros2JAX.compute_tau/flux/J — one-shot pre-loop         │
+│   └─ outer_loop.OuterLoop (JAX) — single-shot runner        │
+│       └─ jax.jit(while_loop):                               │
 │            cond_fn:  count_max | runtime | converged | stall│
-│            body_fn (one accept, with internal retries):   │
-│              ├─ photo branch (lax.cond on update_photo_frq)│
-│              │   compute_tau / flux / J → update k_arr    │
-│              ├─ atm refresh (lax.cond on update_frq)      │
-│              │   update_mu_dz / phi_esc → splice into atm │
-│              ├─ jax_ros2_step (chem_rhs + analytical_jac, │
-│              │     diffusion, block_thomas) — JAX         │
-│              ├─ clip / loss / step_ok / step_size — JAX   │
-│              ├─ conden branch (lax.cond on t / use_relax) │
-│              ├─ hydrostatic balance + ion + fix_all_bot   │
-│              ├─ ring-buffer y_time / t_time history       │
-│              ├─ adaptive rtol + photo-freq switch         │
-│              └─ in-runner conv check → longdy/longdydt    │
-└──────────────────────────────────────────────────────────┘
+│            body_fn (one accept, with internal retries):     │
+│              ├─ photo branch (lax.cond on update_photo_frq) │
+│              │   compute_tau / flux / J → update k_arr      │
+│              ├─ atm refresh (lax.cond on update_frq)        │
+│              │   update_mu_dz / phi_esc → splice into atm   │
+│              ├─ jax_ros2_step (chem_rhs + analytical_jac,   │
+│              │     diffusion, block_thomas) — JAX           │
+│              ├─ clip / loss / step_ok / step_size — JAX     │
+│              ├─ conden branch (lax.cond on t / use_relax)   │
+│              ├─ hydrostatic balance + ion + fix_all_bot     │
+│              ├─ ring-buffer y_time / t_time history         │
+│              ├─ adaptive rtol + photo-freq switch           │
+│              └─ in-runner conv check → longdy/longdydt      │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 ### File map
@@ -470,7 +484,7 @@ VULCAN-JAX/
 
 ## Benchmarks
 
-Per-step kernel timing on the HD189 reference state from `python benchmarks/bench_step.py` (CPU, single-threaded, on this Mac):
+Per-step kernel timing on the HD189 reference state from `python benchmarks/bench_step.py` (CPU, single-threaded):
 
 | Step | Master (NumPy) | VULCAN-JAX | Speedup |
 |---|---:|---:|---:|
@@ -544,17 +558,17 @@ Run `python benchmarks/bench_step.py` for a fresh per-step timing on your hardwa
 
 The JAX path uses `jnp.prod(y**stoich)` while VULCAN-master uses SymPy-emitted `y[A] * y[B] * y[C]`. The two differ by ~1 ulp per multiply; with ~7K production/loss terms cancelling down to ~1e2 the ulp drift accumulates to ~1e-4 absolute. This is a real, measurable disagreement for `CH2_1`, `HC3N`, `HCCO` (and a handful of heavy hydrocarbons at certain layers).
 
-Closing it requires a SymPy-faithful codegen and pays a ~14× per-call cost on the per-step hot path, which is **WONTFIX** by maintainer policy. The Jacobian (`chem_jac_analytical`) is unaffected.
+Closing it requires a SymPy-faithful codegen and pays a ~14× per-call cost on the per-step hot path. Current code is not trying to fix this. The Jacobian (`chem_jac_analytical`) is unaffected.
 
 ### Step-count and atom-conservation drift (downstream of the floor above)
 
 The 1e-4 floor is invisible at the per-step level but compounds over a long integration in two ways:
 
-**1. JAX usually needs more accepted steps to detect convergence than master.**
+**1. JAX version may need more accepted steps to detect convergence than master.**
 The convergence test fires when `longdy = max|Δy/(n_0·ymix)|` drops below `yconv_min = 0.1` and `longdydt < slope_min`. The ULP floor doesn't move bulk species (H2O, CO, CH4, NH3, HCN), but it nudges heavy-hydrocarbon trace radicals (`C6H6`, `C2H2`, `C4H5`, `C4H2`, `C3H3`, `CH3NH2`, ...) along slightly different trajectories. Whichever one is sitting at the threshold last gates termination. Both runs reach physically equivalent steady states; only the detection moment differs.
 
 **2. JAX's column atom_loss grows roughly linearly with step count.**
-With `loss_eps = 0.1`, neither code rejects the per-step ulp drift. A 2-3× longer JAX run ends with 2-3× more cumulative atom drift. On HD189 both runs sit at ~2e-4 column drift; on HD209 with no mitigation, JAX accumulated to −8.3% C while master sat at +5e-5.
+With `loss_eps = 0.1`, neither code rejects the per-step ulp drift. A 2-3× longer JAX run ends with 2-3× more cumulative atom drift. On HD189 both runs sit at ~2e-4 column drift; on HD209 with no mitigation, JAX accumulated to −8.3% C while master sat at +5e-5. I need to look into this one.
 
 ### Mitigations (no code changes, just config knobs)
 
