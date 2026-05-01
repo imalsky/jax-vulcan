@@ -4,6 +4,9 @@
 *$py.class
 *.so
 
+# Claude code
+CLAUDE.md
+
 # Distribution / packaging
 build/
 dist/
