@@ -54,6 +54,7 @@ def main() -> None:
     import jax.numpy as jnp
 
     import chem as chem_mod
+    import chem_funs
     from jax_step import (
         compute_diff_grav,
         jax_ros2_step,
@@ -100,11 +101,11 @@ def main() -> None:
     diag = diag.at[:, di, di].add(-diag_d)
     sup_neg = -sup_d
     sub_neg = -sub_d
-    rhs = chem_mod.chem_rhs(y_j, atm_static.M, k_j, net)
+    rhs = chem_funs.chem_rhs_codegen(y_j, atm_static.M, k_j)
 
     factor_jit = jax.jit(factor_block_thomas_diag_offdiag)
     solve_jit = jax.jit(solve_block_thomas_diag_offdiag)
-    rhs_jit = jax.jit(chem_mod.chem_rhs)
+    rhs_segment_jit = jax.jit(chem_mod.chem_rhs_segment_sum)
     jac_jit = jax.jit(chem_mod.chem_jac_analytical)
     step_jit = jax.jit(jax_ros2_step)
 
@@ -113,7 +114,8 @@ def main() -> None:
 
     t_pack = _timeit(lambda: _pack_k_arr(data_var, net.nr, nz), n_iter=20)
     t_atm = _timeit(lambda: make_atm_static(data_atm, ni, nz), n_iter=20)
-    t_rhs = _timeit(lambda: rhs_jit(y_j, atm_static.M, k_j, net), n_iter=20)
+    t_rhs = _timeit(lambda: chem_funs.chem_rhs_codegen(y_j, atm_static.M, k_j), n_iter=20)
+    t_rhs_segment = _timeit(lambda: rhs_segment_jit(y_j, atm_static.M, k_j, net), n_iter=20)
     t_jac = _timeit(lambda: jac_jit(y_j, atm_static.M, k_j, net), n_iter=20)
     t_factor = _timeit(lambda: factor_jit(diag, sup_neg, sub_neg), n_iter=20)
     t_solve = _timeit(lambda: solve_jit(factors, rhs), n_iter=20)
@@ -121,7 +123,8 @@ def main() -> None:
 
     print(f"pack_k_arr_ms={t_pack:.3f}")
     print(f"make_atm_static_ms={t_atm:.3f}")
-    print(f"chem_rhs_ms={t_rhs:.3f}")
+    print(f"chem_rhs_codegen_ms={t_rhs:.3f}")
+    print(f"chem_rhs_segment_sum_reference_ms={t_rhs_segment:.3f}")
     print(f"chem_jac_analytical_ms={t_jac:.3f}")
     print(f"block_thomas_factor_ms={t_factor:.3f}")
     print(f"block_thomas_solve_ms={t_solve:.3f}")

@@ -25,7 +25,7 @@ VULCAN-JAX runs supported VULCAN calculations with the same configuration files,
 8. [Architecture & file map](#architecture--file-map)
 9. [Benchmarks](#benchmarks)
 10. [Validation: what is and isn't tested](#validation-what-is-and-isnt-tested)
-11. [Numerical notes (chem_rhs floor, step-count drift, atom conservation)](#numerical-notes)
+11. [Numerical notes (chemistry RHS parity, step-count drift, atom conservation)](#numerical-notes)
 12. [GPU & multi-CPU](#gpu--multi-cpu)
 13. [Running tests](#running-tests)
 14. [License & citation](#license--citation)
@@ -53,7 +53,7 @@ python plot_py/plot_vulcan.py output/HD189.vul
 python tests/compare_vul.py output/HD189.vul ../VULCAN-master/output/HD189.vul
 ```
 
-The `-n` flag on `vulcan_jax.py` is accepted as a no-op for upstream-CLI compatibility (`chem_funs.py` is JAX-native — no SymPy regeneration step exists).
+The `-n` flag on `vulcan_jax.py` is accepted as a no-op for upstream-CLI compatibility — `make_chem_funs.build_chem_rhs(net)` runs automatically at `chem_funs` import time and caches the SymPy-faithful per-network RHS in `__pycache__/chem_rhs_codegen_<hash>.py`.
 
 ---
 
@@ -130,16 +130,24 @@ VULCAN-JAX implements the full Ros2 runtime path of upstream VULCAN. Every live 
 
 VULCAN-JAX reads the same `vulcan_cfg.py` format as upstream VULCAN — a Python module with named attributes. Drop in your existing config; it should work as-is.
 
-**JAX-only additions (with sensible defaults so you can ignore them):**
+**JAX-only additions (with sensible defaults so you can ignore them).** Every knob below is declared in `vulcan_cfg.py` and validated by `runtime_validation.py`; old user configs that don't declare them inherit the defaults via `getattr(cfg, ..., default)` for back-compat.
 
 | Key | Default | Purpose |
 |---|---|---|
-| `batch_steps` | `1` | Accepted Ros2 steps per JAX runner call. Held at 1 in production. |
-| `batch_max_retries` | `64` | Cap on inner accept/reject retries per accepted step. Mirrors master's force-accept fallback. |
+| `batch_max_retries` | `64` | Cap on inner accept/reject retries per accepted step. Mirrors master's force-accept fallback (master's `dt_min` underflow path fires at retry 14 for `dttry=1e-10`; 64 is a true safety guard). |
 | `conv_stall_window` | `200` | Stall-detector window (see [Numerical notes](#numerical-notes)). |
-| `conver_ignore` | `[heavy hydrocarbons]` | Species excluded from the convergence test. Pre-populated in HD189/HD209 example cfgs to mitigate ULP-floor stalling on cancellation-prone radicals. |
-| `rtol_min` / `rtol_max` | `0.02` / `2.5` | Bounds for adaptive rtol (only applied when `use_adapt_rtol=True`). |
-| `adapt_rtol_*`, `photo_switch_*`, `hycean_pin_time` | varies | Per-knob defaults documented in `cfg_examples/`. |
+| `conver_ignore` | `[heavy hydrocarbons]` | Species excluded from the convergence test. Pre-populated in HD189/HD209/W39b example cfgs to mitigate ULP-floor stalling on cancellation-prone radicals. |
+| `loss_ex` | `[]` | Atoms excluded from the loss-criteria check (use when an element's column inventory is dominated by a non-conservative source). |
+| `rtol_min` / `rtol_max` | `0.0` / `1.0` | Bounds for adaptive rtol (only applied when `use_adapt_rtol=True`). |
+| `adapt_rtol_dec_period` / `adapt_rtol_inc_period` | `10` / `1000` | Adaptive-rtol cadence in accepted steps. |
+| `adapt_rtol_dec` / `adapt_rtol_inc` | `0.75` / `1.25` | Multiplicative rtol decrease / increase factors. |
+| `adapt_rtol_loss_mul` | `2.0` | Loss-criteria relaxation factor on rtol decrease. |
+| `adapt_rtol_inc_loss_thresh` | `2e-4` | Max column atom_loss for an rtol increase. |
+| `step_size_safety` / `step_size_zero_delta_frac` | `0.9` / `0.01` | Adaptive Ros2 step-size safety factor and zero-delta fallback fraction. |
+| `photo_switch_longdy_thresh` / `photo_switch_longdydt_thresh` | `yconv_min*10` / `1e-6` | `update_photo_frq` ramps from `ini_*` to `final_*` when both gates trip. |
+| `hycean_pin_time` | `1e6` | After `var.t > hycean_pin_time`, H2/He are pinned via `fix_sp_bot`. |
+| `fastchem_solar_abundance_file` | `fastchem_vulcan/input/solar_element_abundances.dat` | Source file for FastChem elemental abundances. W39b sets this to the rocky-element-suppressed Lodders 2019 file so FastChem does not hide oxygen in species outside the kinetic network. |
+| `fastchem_newton_tol` / `fastchem_newton_max_iter` | `1e-12` / `50` | `_jax_newton` knobs for `ini_mix='EQ'` / `'const_lowT'`. |
 
 **Non-default but supported config branches** (implemented in JAX, exercised partially by the bundled tests):
 
@@ -265,7 +273,8 @@ For when you need to bypass the typed pytree:
 
 | Function | Purpose |
 |---|---|
-| `chem.chem_rhs(y, k_arr, net, atm_static)` | Chemistry RHS (vmapped over layers). |
+| `chem_funs.chem_rhs_codegen(y, M, k_arr)` | Production chemistry RHS, generated in VULCAN-master/SymPy-faithful term order. |
+| `chem.chem_rhs_segment_sum(y, M, k_arr, net)` | Vectorized reference RHS used for Jacobian oracles and synthetic custom-network tests. |
 | `chem.chem_jac_analytical(y, k_arr, net, atm_static)` | Stoichiometry-driven analytical Jacobian. |
 | `solver.factor_block_thomas_diag_offdiag(...)` / `solve_*` | Block-tridiagonal factor + back-substitute. |
 | `photo.compute_tau` / `compute_flux` / `compute_J` | Two-stream photochemistry kernels. |
@@ -295,7 +304,7 @@ VULCAN-JAX is intended as a drop-in replacement for the supported Ros2 path. The
 | `parameter` keys (`end_case`, `count`, `where_varies_most`, `pic_count`, `tableau20`, ...) | yes | All master public keys published. |
 | Solver | partial — Ros2 only | `SemiEU` etc. are commented-out stubs in master, not ported. |
 | `chem_funs.symjac` / `neg_symjac` | no — raise `NotImplementedError` | Replaced by `chem.chem_jac_analytical`. |
-| `make_chem_funs.py` | no — no-op shim | Production path is JAX-native; no SymPy codegen. |
+| `make_chem_funs.py` | yes — JAX codegen shim | Emits a per-network SymPy-faithful JAX RHS cache; no upstream `chem_funs.py` rewrite step is required. |
 | Live plot cadence | yes — `live_plot_frq` | Master fires inside its Python loop; JAX fires between JIT'd chunks at the same predicate. |
 | Byte-identical pickle | no | Public keys/shapes/dtypes match, but dict order and transient histories may not. |
 
@@ -502,6 +511,13 @@ Wall-time speedup depends on whether the convergence detector takes the same pat
 4. Pre-baked y-independent diffusion terms (computed once per Ros2 step instead of twice)
 
 Run `python benchmarks/bench_step.py` for a fresh per-step timing on your hardware.
+To isolate the cost of the SymPy-faithful RHS change against the previous
+implementation, run:
+
+```bash
+python benchmarks/bench_sympy_faithful.py
+# add --full-run to include a full configured vulcan_jax.py run in each tree
+```
 
 ---
 
@@ -515,7 +531,7 @@ Run `python benchmarks/bench_step.py` for a fresh per-step timing on your hardwa
 | Reverse rates (533 from Gibbs) | 1.4e-14 |
 | Atmosphere structure (pco/Tco/Kzz/M/...) | bit-exact |
 | Initial abundances (FastChem path) | bit-exact |
-| Chemistry RHS (`chem_rhs` vs `chemdf`) | ~1e-4 for 6 cancellation-prone species, machine-precision otherwise |
+| Chemistry RHS (`chem_rhs_codegen` vs `chemdf`) | <=1e-5 on significant/bulk cells; cancellation residues are tested with per-species floors |
 | Chemistry Jacobian (vs `chem_funs.symjac`) | 4.3e-13 |
 | Diffusion operator (vs `op.diffdf`) | 2e-6 (FP-noise-bound) |
 | Block-Thomas solver | 3e-15 |
@@ -554,11 +570,23 @@ Run `python benchmarks/bench_step.py` for a fresh per-step timing on your hardwa
 
 ## Numerical notes
 
-### `chem_rhs` cancellation floor (~1e-4 relerr for 6 species)
+### Chemistry RHS parity and cancellation residues
 
-The JAX path uses `jnp.prod(y**stoich)` while VULCAN-master uses SymPy-emitted `y[A] * y[B] * y[C]`. The two differ by ~1 ulp per multiply; with ~7K production/loss terms cancelling down to ~1e2 the ulp drift accumulates to ~1e-4 absolute. This is a real, measurable disagreement for `CH2_1`, `HC3N`, `HCCO` (and a handful of heavy hydrocarbons at certain layers).
+The production JAX path now uses `make_chem_funs.build_chem_rhs(net)` to emit
+per-network code in the same order as VULCAN-master's SymPy-generated
+`chemdf`: odd/even reaction pairing, stoich-repeated multiply chains,
+asymmetric third-body `M`, and products-before-reactants accumulation.
 
-Closing it requires a SymPy-faithful codegen and pays a ~14× per-call cost on the per-step hot path. Current code is not trying to fix this. The Jacobian (`chem_jac_analytical`) is unaffected.
+The old vectorized `segment_sum` RHS is still kept as
+`chem.chem_rhs_segment_sum` for Jacobian oracles and synthetic custom-network
+tests. It is not the production Ros2 RHS. On cancellation-prone trace cells,
+the two RHS implementations can still differ in relative terms because both
+are subtracting large production/loss rates down to tiny residues. Bulk and
+significant-cell agreement is guarded by tests; use
+`python tests/profile_step.py` or `python benchmarks/bench_sympy_faithful.py`
+to quantify the local speed cost on a specific machine. The analytical
+Jacobian (`chem_jac_analytical`) remains stoichiometry-driven and is
+unaffected by the codegen RHS.
 
 ### Step-count and atom-conservation drift (downstream of the floor above)
 
@@ -568,7 +596,7 @@ The 1e-4 floor is invisible at the per-step level but compounds over a long inte
 The convergence test fires when `longdy = max|Δy/(n_0·ymix)|` drops below `yconv_min = 0.1` and `longdydt < slope_min`. The ULP floor doesn't move bulk species (H2O, CO, CH4, NH3, HCN), but it nudges heavy-hydrocarbon trace radicals (`C6H6`, `C2H2`, `C4H5`, `C4H2`, `C3H3`, `CH3NH2`, ...) along slightly different trajectories. Whichever one is sitting at the threshold last gates termination. Both runs reach physically equivalent steady states; only the detection moment differs.
 
 **2. JAX's column atom_loss grows roughly linearly with step count.**
-With `loss_eps = 0.1`, neither code rejects the per-step ulp drift. A 2-3× longer JAX run ends with 2-3× more cumulative atom drift. On HD189 both runs sit at ~2e-4 column drift; on HD209 with no mitigation, JAX accumulated to −8.3% C while master sat at +5e-5. I need to look into this one.
+With `loss_eps = 0.1`, neither code rejects the per-step ulp drift. A 2-3× longer JAX run ends with 2-3× more cumulative atom drift. On HD189 both runs sit at ~2e-4 column drift. HD209 is the documented outlier: master sits at +5e-5 column C while JAX currently sits at +2.98% C after the codegen-RHS pass (down from a historical −8.3%). The drift is bulk-species (CH4 + CO carry 99% of column C inventory), not trace-radical, so `conver_ignore` extension does not help. The bound is pinned by `tests/test_outer_loop_hd209_drift.py` at 5% C / 0.5% H,O,N — large regressions trip immediately. Tightening below the current bound is open work; the dominant remaining ULP source is the chem_rhs cancellation residue on bulk C-bearing reactions.
 
 ### Mitigations (no code changes, just config knobs)
 

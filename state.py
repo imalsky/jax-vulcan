@@ -687,6 +687,24 @@ def _build_pre_loop_runstate(cfg) -> RunState:
             solver.compute_Jion(var, atm)
         _rates_mod.apply_photo_remove(cfg, var, network, atm)
 
+    # Warm up the codegen chem_rhs JIT so the first runner step doesn't
+    # stall on compile. `build_chem_rhs` is memoised; chem_funs already
+    # called it at import time, so this is a cache hit. The
+    # `block_until_ready()` call forces XLA to materialise the compile
+    # here (~3-8 s on cold disk cache, <100 ms when cached).
+    import make_chem_funs as _make_chem_funs
+    _chem_rhs = _make_chem_funs.build_chem_rhs(network)
+    _y0 = jnp.asarray(var.y, dtype=jnp.float64)
+    _M0 = jnp.asarray(atm.M, dtype=jnp.float64)
+    _k0 = jnp.asarray(var.k_arr, dtype=jnp.float64)
+    _chem_rhs(_y0, _M0, _k0).block_until_ready()
+
+    # Mirror VULCAN master's initial Integration.backup() so the first
+    # reject/force-accept path can revert to the real pre-step state.
+    var.y_prev = np.asarray(var.y, dtype=np.float64).copy()
+    var.dy_prev = np.copy(var.dy)
+    var.atom_loss_prev = var.atom_loss.copy()
+
     rs = runstate_from_store(var, atm, para)
     return rs._replace(
         metadata=_runmetadata_from_legacy(var, atm, para),

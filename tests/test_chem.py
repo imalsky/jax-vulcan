@@ -90,17 +90,32 @@ def main() -> int:
     y_j = jnp.asarray(y)
     M_j = jnp.asarray(M)
     k_j = jnp.asarray(k_full)
-    dydt_jax = np.asarray(chem_mod.chem_rhs(y_j, M_j, k_j, net_jax))
+    # Use the codegen path that the integrator actually runs. We build it
+    # against `net` (parsed from cfg_v.network) so the test isn't sensitive
+    # to JAX's default vulcan_cfg.network.
+    import make_chem_funs as mcf
+    chem_rhs_codegen = mcf.build_chem_rhs(net)
+    dydt_jax = np.asarray(chem_rhs_codegen(y_j, M_j, k_j))
 
     print(f"dydt_ref shape: {dydt_ref.shape}, dydt_jax shape: {dydt_jax.shape}")
 
+    # Per-cell mask: skip cells where |dydt| is below 1e-6 of the species's
+    # peak |dydt|. These are cancellation residues at near-zero — XLA fuses
+    # the multiply chain into FMA differently from master's NumPy `*`, so
+    # the residue differs in absolute terms but both are within ULP of zero
+    # at the species's natural scale.
+    per_species_peak = np.abs(dydt_ref).max(axis=0)
+    cell_floor = 1e-6 * np.maximum(per_species_peak[None, :], 1e-30)
+    significant = np.abs(dydt_ref) > cell_floor
     abs_tol = 1e-30
-    relerr = np.abs(dydt_jax - dydt_ref) / np.maximum(np.abs(dydt_ref), abs_tol)
-    max_relerr = relerr.max()
-    max_idx = np.unravel_index(relerr.argmax(), relerr.shape)
-    print(f"chem_rhs max relerr: {max_relerr:.3e} at "
+    relerr_full = np.abs(dydt_jax - dydt_ref) / np.maximum(np.abs(dydt_ref), abs_tol)
+    relerr = np.where(significant, relerr_full, 0.0)
+    max_relerr = float(relerr.max())
+    max_idx = np.unravel_index(int(relerr.argmax()), relerr.shape)
+    print(f"chem_rhs max relerr (cells > 1e-6 of species peak): {max_relerr:.3e} at "
           f"layer {max_idx[0]}, species {net.species[max_idx[1]]}")
     print(f"  values: jax={dydt_jax[max_idx]:.3e} ref={dydt_ref[max_idx]:.3e}")
+    print(f"  species peak |dydt|: {per_species_peak[max_idx[1]]:.3e}")
 
     # Per-species worst-error ranking
     per_species_max = relerr.max(axis=0)
@@ -132,13 +147,22 @@ def main() -> int:
             max_jac_idx = j
     print(f"chem_jac max relerr: {max_jac_relerr:.3e} at layer {max_jac_idx}")
 
-    print()
-    # chem_rhs accumulates ~30 terms per species, with nearly-cancelling
-    # production and loss for low-abundance species. VULCAN's auto-generated
-    # chemdf sums in sympy-determined order; JAX uses segment_sum's parallel
-    # tree reduction. Both are internally consistent (cf. NumPy reference,
-    # which differs from VULCAN by ~3e-5 in the same way). Allow 1e-3 here.
-    ok = (max_relerr < 1e-3) and (max_jac_relerr < 1e-6)
+    # Bulk-species pass criterion: H2O/CO2/SO/SO2/H2/CO/S/H2S — the W39b
+    # benchmark species. At ~1e-7 relative agreement this is 4 orders
+    # tighter than the original chem_rhs floor (~1e-4) that produced the
+    # 0.25-0.49 dex drift on the converged state.
+    bulk_relerr = 0.0
+    for sp in ("H2O", "CO2", "SO", "SO2", "H2", "CO", "S", "H2S"):
+        if sp in net.species_idx:
+            j = net.species_idx[sp]
+            r = float(np.abs(dydt_jax[:, j] - dydt_ref[:, j]).max() /
+                      max(np.abs(dydt_ref[:, j]).max(), 1e-30))
+            bulk_relerr = max(bulk_relerr, r)
+    print(f"bulk-species worst relerr: {bulk_relerr:.3e}")
+
+    # chem_rhs is codegen-backed (master-faithful per-reaction term order).
+    # On cells > 1e-6 of species peak, rtol=1e-5; on bulk species, 1e-5.
+    ok = (max_relerr < 1e-5) and (bulk_relerr < 1e-5) and (max_jac_relerr < 1e-6)
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 

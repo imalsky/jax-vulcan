@@ -23,7 +23,12 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from chem import chem_rhs, chem_jac_analytical, NetworkArrays
+from chem import chem_rhs_segment_sum as _chem_rhs, chem_jac_analytical, NetworkArrays
+# steady_state_grad uses the segment_sum RHS (parametric on `net`) so the
+# synthetic implicit-AD test can supply its own 2-species network. The
+# integrator's per-step trajectory uses chem_funs.chem_rhs_codegen — the
+# implicit-AD path computes ∂y*/∂theta at the converged y_star where
+# either RHS evaluates to ~0 by construction.
 from jax_step import (
     AtmStatic, DiffGrav, compute_diff_grav,
     _build_diff_coeffs_jax, _apply_diffusion_jax,
@@ -127,7 +132,7 @@ def steady_state_residual_inputs(
         y, atm, grav,
     )
     diff_at_y = _apply_diffusion_jax(y, A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, atm)
-    return chem_rhs(y, atm.M, inputs.k_arr, net) + diff_at_y
+    return _chem_rhs(y, atm.M, inputs.k_arr, net) + diff_at_y
 
 
 def steady_state_residual(
@@ -318,7 +323,7 @@ def _ss_bwd(atm, net, res, v):
 
     # Diffusion is k-independent so the f-VJP only sees chem_rhs.
     def f_of_k(k):
-        return chem_rhs(y_star, atm.M, k, net)
+        return _chem_rhs(y_star, atm.M, k, net)
     _, vjp_fn = jax.vjp(f_of_k, k_arr)
     (cot_k,) = vjp_fn(lambda_)
 

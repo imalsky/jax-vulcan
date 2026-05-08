@@ -119,14 +119,18 @@ for _ in range(20):
     solver.solver(var_tmp, data_atm, para_tmp)
 print((time.time() - t0) / 20.0 * 1000.0)
 """
-    proc = subprocess.run(
-        [sys.executable, "-c", script],
-        cwd=MASTER,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return float(proc.stdout.strip().splitlines()[-1])
+    try:
+        proc = subprocess.run(
+            [sys.executable, "-c", script],
+            cwd=MASTER,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return float(proc.stdout.strip().splitlines()[-1])
+    except (subprocess.CalledProcessError, ValueError) as exc:
+        print(f"master_ros2_step_ms_per_step=unavailable  ({exc})")
+        return None
 
 
 def _bench_jax_kernel(rs) -> float:

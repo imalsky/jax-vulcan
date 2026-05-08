@@ -43,8 +43,37 @@ def _max_relerr(a: np.ndarray, b: np.ndarray, floor: float = 1e-30) -> float:
     return float(np.max(np.abs(a - b) / np.maximum(np.abs(b), floor)))
 
 
-def test_chem_rhs_vmap_consistency() -> None:
-    """`vmap(chem_rhs)` over a batch of states agrees with single calls."""
+def test_chem_rhs_codegen_vmap_consistency() -> None:
+    """`vmap(chem_rhs_codegen)` over a batch agrees with single calls."""
+    import jax
+    import jax.numpy as jnp
+    import chem_funs
+
+    _, data_var, data_atm = _build_state()
+
+    y = jnp.asarray(data_var.y, dtype=jnp.float64)
+    M = jnp.asarray(data_atm.M, dtype=jnp.float64)
+    k_arr = jnp.asarray(data_var.k_arr, dtype=jnp.float64)
+
+    BATCH = 4
+    rng = np.random.default_rng(0)
+    y_batch = jnp.stack(
+        [y * (1.0 + 1e-6 * rng.standard_normal(y.shape)) for _ in range(BATCH)],
+        axis=0,
+    )
+
+    single = [chem_funs.chem_rhs_codegen(y_batch[b], M, k_arr) for b in range(BATCH)]
+    batched = jax.vmap(chem_funs.chem_rhs_codegen, in_axes=(0, None, None))(
+        y_batch, M, k_arr
+    )
+
+    for b in range(BATCH):
+        rel = _max_relerr(batched[b], single[b])
+        assert rel < 1e-12, f"chem_rhs_codegen vmap drift at batch {b}: relerr={rel:.3e}"
+
+
+def test_chem_rhs_segment_sum_reference_vmap_consistency() -> None:
+    """The preserved segment_sum reference RHS remains vmap-consistent."""
     import jax
     import jax.numpy as jnp
     import vulcan_cfg
@@ -66,14 +95,14 @@ def test_chem_rhs_vmap_consistency() -> None:
         axis=0,
     )
 
-    single = [chem_mod.chem_rhs(y_batch[b], M, k_arr, net_jax) for b in range(BATCH)]
-    batched = jax.vmap(chem_mod.chem_rhs, in_axes=(0, None, None, None))(
+    single = [chem_mod.chem_rhs_segment_sum(y_batch[b], M, k_arr, net_jax) for b in range(BATCH)]
+    batched = jax.vmap(chem_mod.chem_rhs_segment_sum, in_axes=(0, None, None, None))(
         y_batch, M, k_arr, net_jax
     )
 
     for b in range(BATCH):
         rel = _max_relerr(batched[b], single[b])
-        assert rel < 1e-12, f"chem_rhs vmap drift at batch {b}: relerr={rel:.3e}"
+        assert rel < 1e-12, f"segment_sum RHS vmap drift at batch {b}: relerr={rel:.3e}"
 
 
 def test_chem_jac_analytical_vmap_consistency() -> None:

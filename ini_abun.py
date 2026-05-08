@@ -38,12 +38,26 @@ jax.config.update("jax_enable_x64", True)
 # Anchor FastChem paths to the source location (not cwd) so concurrent
 # workers invoked from different directories all flock on the same
 # sentinel and write to the same input/output files.
-_FC_DIR = (Path(__file__).resolve().parent / "fastchem_vulcan").resolve()
+_ROOT = Path(__file__).resolve().parent
+_FC_DIR = (_ROOT / "fastchem_vulcan").resolve()
 _FC_SENTINEL = _FC_DIR / ".fastchem_lock"
 _FC_INPUT = _FC_DIR / "input"
 _FC_OUTPUT = _FC_DIR / "output"
 _FC_VULCAN_TP = _FC_INPUT / "vulcan_TP" / "vulcan_TP.dat"
 _FC_VULCAN_EQ = _FC_OUTPUT / "vulcan_EQ.dat"
+
+
+def _fastchem_solar_abundance_path() -> Path:
+    """Return the configured FastChem solar-element abundance source file."""
+    configured = getattr(
+        vulcan_cfg,
+        "fastchem_solar_abundance_file",
+        "fastchem_vulcan/input/solar_element_abundances.dat",
+    )
+    path = Path(str(configured)).expanduser()
+    if not path.is_absolute():
+        path = _ROOT / path
+    return path.resolve()
 
 
 def _abun_lowT_residual(x, O_H, C_H, He_H, N_H):
@@ -67,9 +81,10 @@ def _jax_newton(residual_fn, m0, args, max_iter=50, tol=1e-12):
 
     Replaces `scipy.optimize.fsolve` for the 5-element `_abun_lowT`
     system. The Jacobian is built with `jax.jacrev`; the linear solve
-    is `jnp.linalg.solve` (5x5 dense). For the standard initial guess
-    `[0.9, 0.1, 0, 0, 0]` and elemental ratios near solar, this
-    converges in ~5-10 iterations.
+    is `jnp.linalg.solve` (5x5 dense). Production callers pass
+    `max_iter` / `tol` from `vulcan_cfg.fastchem_newton_max_iter` and
+    `vulcan_cfg.fastchem_newton_tol`; the defaults here are kept for
+    direct test callers.
     """
     jac_fn = jax.jacrev(residual_fn)
 
@@ -114,7 +129,7 @@ def _run_fastchem(data_atm) -> None:
 
 def _run_fastchem_locked(data_atm) -> None:
     """Inner FastChem driver. Caller must already hold the flock."""
-    solar_ele = _FC_INPUT / "solar_element_abundances.dat"
+    solar_ele = _fastchem_solar_abundance_path()
     if vulcan_cfg.use_ion is True:
         copyfile(
             _FC_INPUT / "parameters_ion.dat",
@@ -291,8 +306,11 @@ def _load_const_lowT_y(data_atm) -> tuple[np.ndarray, list[str]]:
     He_H = float(vulcan_cfg.He_H)
     N_H = float(vulcan_cfg.N_H)
     m0 = jnp.array([0.9, 0.1, 0.0, 0.0, 0.0], dtype=jnp.float64)
+    max_iter = int(getattr(vulcan_cfg, "fastchem_newton_max_iter", 50))
+    tol = float(getattr(vulcan_cfg, "fastchem_newton_tol", 1e-12))
     ini_mol = np.asarray(_jax_newton(
         _abun_lowT_residual, m0, (O_H, C_H, He_H, N_H),
+        max_iter=max_iter, tol=tol,
     ))
 
     nz_ = vulcan_cfg.nz

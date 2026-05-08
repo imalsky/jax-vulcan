@@ -33,12 +33,6 @@ out_name =  'W39b.vul'
 #                         He=0.0838 (rel H)
 # 10x solar => C/N/O/S scaled by 10, He unchanged.
 #
-# For strict gas-only EQ parity with photochem (rocky-element-suppressed),
-# replace fastchem_vulcan/input/solar_element_abundances.dat with
-# fastchem_vulcan/input/solar_element_abundances_W39b.dat (rocky elements
-# zeroed out so fastchem doesn't sequester O in MgSiO3/FeO/etc.). Restore
-# the original file before running other configs (HD189, HD209, Earth,
-# Jupiter) — it's used by every fastchem invocation.
 use_solar = False
 O_H = 5.37E-3
 C_H = 2.95E-3
@@ -142,8 +136,8 @@ fix_species = []
 fix_species_time = 0
 fix_species_from_coldtrap_lev = True
 humidity = 1.
-use_ini_cold_trap = False        # apply cold-trap clip to ini abundances (only used when use_condense=True)
-use_sat_surfaceH2O = False       # pin surface H2O to saturation pressure (terrestrial atmospheres)
+use_ini_cold_trap = False   # apply cold-trap clip to ini abundances (only used when use_condense=True)
+use_sat_surfaceH2O = False  # pin surface H2O to saturation pressure (terrestrial atmospheres)
 
 # ====== steady state check ======
 st_factor = 0.5
@@ -161,29 +155,29 @@ runtime = 1.E22
 # 30-min wall-clock backstop (end_case=4). Tightened yconv_min (see below)
 # requires both codes to integrate the upper-atmosphere photochemistry
 # cascade, which roughly doubles master's wall time vs the loose default.
-wall_clock_max = 1800.0          # wall-clock backstop in seconds (end_case=4)
-dt_min = 1.E-14                  # minimum dt; below this the runner force-accepts
-dt_max = runtime*1e-5            # maximum dt; capped at runtime/1e5 to keep enough resolution
-dt_var_max = 2.                  # max per-step dt growth factor
-dt_var_min = 0.5                 # min per-step dt shrink factor
-count_min = 120                  # do not declare convergence before this many accepted steps
-count_max = int(3E4)              # accepted-step cap (end_case=3 if exceeded)
-atol = 1.E-1                     # absolute tolerance on number-density delta (above this, the cell counts toward delta)
-mtol = 1.E-22                    # mixing-ratio mask floor; cells below mtol drop out of delta and convergence
-mtol_conv = 1.E-20               # mixing-ratio floor for the convergence/longdy ratio
-pos_cut = 0                      # below this number-density we treat positives as zero (clip)
-nega_cut = -1.                   # above this we treat small negatives as zero (clip; wider window than pos_cut)
-loss_eps = 1e-1                  # max acceptable column atom_loss before forcing dt rejection
-yconv_cri = 0.01                 # convergence threshold on max |Δy/(n_0·ymix)| over the conv_step ring
-slope_cri = 1.e-4                # convergence threshold on longdy/dt slope
-yconv_min = 0.1                  # canonical default. Master uses 0.1 on
-                                 # W39b. The codegen chem_rhs (see
-                                 # VULCAN-JAX/CLAUDE.md "Numerical hygiene")
-                                 # would in principle allow tightening to
-                                 # 0.01, but kept at 0.1 for parity with
-                                 # master.
-flux_cri = 0.1                   # convergence threshold on relative aflux change (photo)
-flux_atol = 1.                   # absolute aflux floor for the flux change check (photons cm^-2 s^-1 nm^-1)
+wall_clock_max = 1800.0
+dt_min = 1.E-14
+dt_max = runtime*1e-5
+dt_var_max = 2.
+dt_var_min = 0.5
+count_min = 120
+count_max = int(3E4)            # canonical default
+atol = 1.E-1
+mtol = 1.E-22
+mtol_conv = 1.E-20
+pos_cut = 0
+nega_cut = -1.
+loss_eps = 1e-1
+yconv_cri = 0.01                # canonical default
+slope_cri = 1.e-4
+yconv_min = 0.1                 # canonical default. Master uses 0.1 on
+                                # W39b. The codegen chem_rhs (see
+                                # VULCAN-JAX/CLAUDE.md "Numerical hygiene")
+                                # would in principle allow tightening to
+                                # 0.01, but kept at 0.1 for parity with
+                                # master.
+flux_cri = 0.1
+flux_atol = 1.
 # Canonical heavy-hydrocarbon ULP-floor offenders (per VULCAN-JAX/CLAUDE.md
 # "Step-count and atom-conservation drift" note). Same list as the JAX
 # vulcan_cfg_HD209.py default. Don't extend without proof a *new* species is
@@ -192,63 +186,38 @@ conver_ignore = ['C6H6', 'C2H2', 'C6H5', 'C2H', 'C2H4', 'C2H5', 'C2H6',
                  'C3H2', 'C3H3', 'C4H5', 'CH2NH', 'CH3NH2', 'H2CCO']
 
 # ====== Setting up numerical parameters for Ros2 ODE solver ======
-rtol = 0.2                       # Ros2 relative truncation-error tolerance
-post_conden_rtol = 0.1           # rtol used while condensation is active (loosened for stability)
+rtol = 0.2
+post_conden_rtol = 0.1
 
-# Adaptive rtol controller (only fires when use_adapt_rtol=True). Decreases
-# rtol every adapt_rtol_dec_period accepted steps; conditionally increases
-# every adapt_rtol_inc_period accepted steps when max column atom_loss is
-# below adapt_rtol_inc_loss_thresh.
+# Adaptive rtol controller (only fires when use_adapt_rtol=True).
 use_adapt_rtol = False
-rtol_min = 0.0                   # adaptive-rtol lower clamp
-rtol_max = 1.0                   # adaptive-rtol upper clamp
-adapt_rtol_dec_period = 10       # decrease rtol every N accepted steps
-adapt_rtol_inc_period = 1000     # try to increase rtol every N accepted steps
-adapt_rtol_dec = 0.75            # multiplicative decrease factor
-adapt_rtol_inc = 1.25            # multiplicative increase factor (gated by loss threshold)
-adapt_rtol_loss_mul = 2.0        # loss-criteria relaxation factor on rtol decrease
-adapt_rtol_inc_loss_thresh = 2e-4  # max column atom_loss for an rtol increase
+rtol_min = 0.0
+rtol_max = 1.0
+adapt_rtol_dec_period = 10
+adapt_rtol_inc_period = 1000
+adapt_rtol_dec = 0.75
+adapt_rtol_inc = 1.25
+adapt_rtol_loss_mul = 2.0
+adapt_rtol_inc_loss_thresh = 2e-4
 
-# Per-step retry cap inside the JIT'd runner. Mirrors master's force-accept
-# fallback. With dttry=1e-10, master's dt_min underflow path fires at retry
-# 14; configs with dttry=1e-3 fire at retry 37. 64 keeps the cap as a true
-# safety guard while letting master's accept-criterion semantics control the
-# trajectory in all reasonable configs.
+# Per-step retry cap inside the JIT'd runner.
 batch_max_retries = 64
 
-# Adaptive Ros2 step-size knobs (`outer_loop._step_size`).
-#   h_factor = step_size_safety * (rtol/delta) ** 0.5
-# `delta == 0` substitutes step_size_zero_delta_frac * rtol for delta to
-# avoid div-by-zero and give a moderate growth factor. Both come from the
-# canonical 2nd-order Rosenbrock formulation.
+# Adaptive Ros2 step-size knobs.
 step_size_safety = 0.9
 step_size_zero_delta_frac = 0.01
 
-# Photo-frequency switch thresholds. `update_photo_frq` ramps from
-# ini_update_photo_frq to final_update_photo_frq when both gates trip:
-#   longdy < photo_switch_longdy_thresh AND longdydt < photo_switch_longdydt_thresh
+# Photo-frequency switch thresholds.
 photo_switch_longdy_thresh = yconv_min * 10.0
 photo_switch_longdydt_thresh = 1e-6
 
-# Hycean H2/He snapshot pin time. After var.t > hycean_pin_time, H2/He are
-# snapshotted to keep heavy-volatile retrievals on a stable trajectory; only
-# active when H2 is not in fix_species.
 hycean_pin_time = 1e6
-
-# Atoms excluded from the loss-criteria check (`outer_loop` and
-# `legacy_io.Output`). Empty by default; populate when an atom's column
-# inventory is dominated by a non-conservative source (e.g., escape or BC).
 loss_ex = []
 
-# FastChem-driven equilibrium initialization Newton solver
-# (`ini_abun._jax_newton`). Only used when ini_mix='EQ'.
+# FastChem-driven equilibrium init Newton solver.
 fastchem_newton_tol = 1e-12
 fastchem_newton_max_iter = 50
 
-# Optional runner controls. use_fix_all_bot pins the bottom layer mixing
-# ratios across the run (master's solver_fix_all_bot path). use_fix_H2He
-# fixes H2/He to their initial values. use_chunked_runner forces the host
-# to read state between JIT'd chunks (also auto-enabled by any live-UI flag).
 use_fix_all_bot = False
 use_fix_H2He = False
 use_chunked_runner = False

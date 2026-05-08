@@ -12,7 +12,8 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-from chem import chem_rhs, chem_jac_analytical, NetworkArrays
+from chem import chem_jac_analytical, NetworkArrays
+from chem_funs import chem_rhs_codegen as _chem_rhs
 from phy_const import kb, Navo
 from solver import (
     factor_block_thomas_diag_offdiag,
@@ -265,7 +266,7 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
     A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, _ = _build_diff_coeffs_jax(y, atm, grav)
 
     diff_at_y = _apply_diffusion_jax(y, A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, atm)
-    rhs_y = chem_rhs(y, M, k_arr, net) + diff_at_y
+    rhs_y = _chem_rhs(y, M, k_arr) + diff_at_y
     # Analytical Jacobian: ≤1e-13 vs the AD path and ~3-5× faster because it
     # skips materialising the structurally-zero entries.
     chem_J = chem_jac_analytical(y, M, k_arr, net)
@@ -303,7 +304,7 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
     yk2 = y + k1 / r
     A_eddy2, B_eddy2, C_eddy2, A_mol2, B_mol2, C_mol2, _ = _build_diff_coeffs_jax(yk2, atm, grav)
     diff_at_yk2 = _apply_diffusion_jax(yk2, A_eddy2, B_eddy2, C_eddy2, A_mol2, B_mol2, C_mol2, atm)
-    rhs_yk2 = chem_rhs(yk2, M, k_arr, net) + diff_at_yk2
+    rhs_yk2 = _chem_rhs(yk2, M, k_arr) + diff_at_yk2
     if fix_mask is not None:
         rhs_yk2 = jnp.where(fix_mask, 0.0, rhs_yk2)
 

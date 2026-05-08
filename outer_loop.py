@@ -38,6 +38,19 @@ def _now() -> float:
 jax.config.update("jax_enable_x64", True)
 
 
+# Underflow guard for `x / max(|denom|, ·)` patterns used in delta /
+# longdy / aflux-difference normalizations. Not a tuning knob — it
+# exists to keep the divisor strictly positive in cells where the
+# physical quantity is exactly zero. float64 underflow tail is ~5e-324,
+# so 1e-300 is well clear of denormals while never colliding with any
+# physically meaningful value.
+_UNDERFLOW_DENOM = 1e-300
+
+
+# Parsed once at module import — no code-generation step is needed when the
+# network changes.  Scripts (python vulcan_jax.py) always get a fresh parse.
+# Interactive / REPL use: restart Python (or reload this module) after editing
+# vulcan_cfg.network so the new network is picked up here.
 _NETWORK = _net_mod.parse_network(vulcan_cfg.network)
 _NET_JAX = _chem_mod.to_jax(_NETWORK)
 
@@ -180,15 +193,20 @@ def _compute_atom_loss(y: jnp.ndarray, compo_arr: jnp.ndarray,
 
 def _step_size(dt: jnp.ndarray, delta: jnp.ndarray,
                rtol: float, dt_var_min: float, dt_var_max: float,
-               dt_min: float, dt_max: float) -> jnp.ndarray:
+               dt_min: float, dt_max: float,
+               safety: float = 0.9,
+               zero_delta_frac: float = 0.01) -> jnp.ndarray:
     """Adaptive Ros2 dt update.
 
-    `h_factor = clip(0.9 * (rtol/delta)^0.5, dt_var_min, dt_var_max)`,
+    `h_factor = clip(safety * (rtol/delta)^0.5, dt_var_min, dt_var_max)`,
     `h_new = clip(dt * h_factor, dt_min, dt_max)`. `delta == 0` uses
-    `0.01 * rtol` to avoid div-by-zero and give a moderate growth factor.
+    `zero_delta_frac * rtol` to avoid div-by-zero and give a moderate
+    growth factor. Production callers pass `safety` and `zero_delta_frac`
+    from `vulcan_cfg.step_size_safety` / `step_size_zero_delta_frac`;
+    the defaults here are kept for direct callers (tests / standalone use).
     """
-    delta_eff = jnp.where(delta == 0.0, 0.01 * rtol, delta)
-    h_factor = 0.9 * (rtol / delta_eff) ** 0.5
+    delta_eff = jnp.where(delta == 0.0, zero_delta_frac * rtol, delta)
+    h_factor = safety * (rtol / delta_eff) ** 0.5
     h_factor = jnp.clip(h_factor, dt_var_min, dt_var_max)
     return jnp.clip(dt * h_factor, dt_min, dt_max)
 
@@ -243,7 +261,7 @@ def _make_aggregate_delta_fn(mtol: float, atol: float,
             masked = jnp.where(row_zero, 0.0, masked)
         masked = jnp.where(cond_zero, 0.0, masked)
         ratio = jnp.where(sol > 0,
-                          masked / jnp.maximum(jnp.abs(sol), 1e-300),
+                          masked / jnp.maximum(jnp.abs(sol), _UNDERFLOW_DENOM),
                           0.0)
         return jnp.max(ratio)
 
@@ -330,7 +348,7 @@ def _make_photo_branch(photo_static: _PhotoStatic):
         mask = aflux_new > flux_atol
         diff = jnp.abs(aflux_new - s.aflux)
         ratio = jnp.where(mask,
-                          diff / jnp.maximum(jnp.abs(aflux_new), 1e-300),
+                          diff / jnp.maximum(jnp.abs(aflux_new), _UNDERFLOW_DENOM),
                           0.0)
         aflux_change_new = jnp.where(jnp.any(mask), jnp.max(ratio),
                                      jnp.float64(0.0))
@@ -457,6 +475,11 @@ class _Statics(NamedTuple):
     photo_switch_longdydt_thresh: float
     hycean_pin_time:          float
 
+    # Adaptive Ros2 step-size safety factor and zero-delta fallback fraction
+    # (`outer_loop._step_size`). Both come from `vulcan_cfg`.
+    step_size_safety:         float
+    step_size_zero_delta_frac: float
+
     # Ion / fix-all-bot. Bools branch at trace time; when off, the
     # corresponding arrays are zero placeholders the body never reads.
     use_ion:                  bool
@@ -569,6 +592,8 @@ def _make_runner(net, statics: _Statics,
     photo_switch_longdy_thresh = float(statics.photo_switch_longdy_thresh)
     photo_switch_longdydt_thresh = float(statics.photo_switch_longdydt_thresh)
     hycean_pin_time = float(statics.hycean_pin_time)
+    step_size_safety = float(statics.step_size_safety)
+    step_size_zero_delta_frac = float(statics.step_size_zero_delta_frac)
     use_ion_static = statics.use_ion
     e_idx_static = statics.e_idx
     charge_arr_static = statics.charge_arr
@@ -662,10 +687,10 @@ def _make_runner(net, statics: _Statics,
         longdy_arr = jnp.where(condense_zero_conv_mask, 0.0, longdy_arr)
 
         ratio = jnp.where(s.ymix > 0,
-                          longdy_arr / jnp.maximum(s.ymix, 1e-300),
+                          longdy_arr / jnp.maximum(s.ymix, _UNDERFLOW_DENOM),
                           0.0)
         longdy_new = jnp.max(ratio)
-        dt_lookback = jnp.maximum(s.t - s.t_time_ring[indx], 1e-300)
+        dt_lookback = jnp.maximum(s.t - s.t_time_ring[indx], _UNDERFLOW_DENOM)
         longdydt_new = longdy_new / dt_lookback
         return longdy_new, longdydt_new, ratio
 
@@ -740,7 +765,11 @@ def _make_runner(net, statics: _Statics,
 
         sol_clip, ymix_new, small_y_inc, nega_y_inc = clip_fn(sol, s.ymix)
         atom_loss_new = _compute_atom_loss(sol_clip, compo_arr, atom_ini_arr)
-        delta = agg_delta_fn(sol_clip, delta_arr, s.ymix)
+        # Master computes para.delta inside Ros2.solver before the post-step
+        # clip() call. Using sol_clip here can erase the large truncation
+        # error from cells that are about to be clipped to zero and would let
+        # overly aggressive steps through (HD209 exercises this path).
+        delta = agg_delta_fn(sol, delta_arr, s.ymix)
 
         # Use dynamic s.rtol so adaptive-rtol updates take effect immediately.
         all_nonneg = jnp.all(sol_clip >= 0)
@@ -767,10 +796,17 @@ def _make_runner(net, statics: _Statics,
         dt_used_for_t = jnp.where(force_accept, jnp.float64(dt_min), s.dt)
         t_next = jnp.where(do_accept, s.t + dt_used_for_t, s.t)
 
+        # Master step_reject() resets only var.y before giving up at dt_min;
+        # var.ymix and var.atom_loss remain from the rejected clipped solve.
+        # Downstream conden/refresh/hydrostatic work must therefore see
+        # y_prev for y but the new clipped ymix on the force-accept path.
+        y_prev_clipped = jnp.where(s.y_prev < 0, 0.0, s.y_prev)
+        y_post_clip = jnp.where(force_accept, y_prev_clipped, sol_clip)
+
         # Conden gates on the pre-step `s.t` (not `t_next`); master's
         # save_step advances var.t AFTER conden runs, so this matches.
         if conden_branch is not None:
-            s_post = s._replace(y=sol_clip, ymix=ymix_new)
+            s_post = s._replace(y=y_post_clip, ymix=ymix_new)
             in_conden_window = s.t >= jnp.float64(start_conden_time)
             fire_conden = (do_accept
                            & in_conden_window
@@ -799,6 +835,7 @@ def _make_runner(net, statics: _Statics,
             fix_pfix_idx_next = s_post.fix_pfix_idx
             vs_next = s_post.vs
         else:
+            sol_clip = y_post_clip
             k_arr_next = s.k_arr
             fix_species_started_next = s.fix_species_started
             fix_y_next = s.fix_y
@@ -894,17 +931,10 @@ def _make_runner(net, statics: _Statics,
             h2he_pinned_next = s.h2he_pinned
             h2he_mix_next = s.h2he_mix
 
-        ymix_balanced = _mix_from_y(sol_balanced)
-        atom_loss_balanced = _compute_atom_loss(sol_balanced, compo_arr, atom_ini_arr)
-
         # y / ymix / atom_loss for the next iteration.
-        y_prev_clipped = jnp.where(s.y_prev < 0, 0.0, s.y_prev)
-        y_next = jnp.where(force_accept, y_prev_clipped,
-                           jnp.where(accept, sol_balanced, s.y_prev))
-        ymix_next = jnp.where(force_accept, s.ymix,
-                              jnp.where(accept, ymix_balanced, s.ymix))
-        atom_loss_next = jnp.where(force_accept, s.atom_loss_prev,
-                                   jnp.where(accept, atom_loss_balanced, s.atom_loss))
+        y_next = jnp.where(do_accept, sol_balanced, s.y_prev)
+        ymix_next = ymix_new
+        atom_loss_next = atom_loss_new
 
         # On accept, the new "y_prev" — the revert target for the next
         # in-flight retry sequence — is the fresh accepted state. On
@@ -1031,9 +1061,11 @@ def _make_runner(net, statics: _Statics,
         # Step-size control runs *after* adaptive rtol so the post-update
         # tolerance applies to the next step.
         dt_after_normal = _step_size(s.dt, delta, rtol_next,
-                                     dt_var_min, dt_var_max, dt_min, dt_max)
+                                     dt_var_min, dt_var_max, dt_min, dt_max,
+                                     step_size_safety, step_size_zero_delta_frac)
         dt_after_force = _step_size(jnp.float64(dt_min), delta, rtol_next,
-                                    dt_var_min, dt_var_max, dt_min, dt_max)
+                                    dt_var_min, dt_var_max, dt_min, dt_max,
+                                    step_size_safety, step_size_zero_delta_frac)
         dt_next = jnp.where(force_accept, dt_after_force,
                             jnp.where(accept, dt_after_normal, next_dt_if_reject))
 
@@ -1062,8 +1094,8 @@ def _make_runner(net, statics: _Statics,
             nega_count=s.nega_count + nega_count_inc,
             loss_count=s.loss_count + loss_count_inc,
             delta_count=s.delta_count + delta_count_inc,
-            small_y=s.small_y + jnp.where(do_accept, small_y_inc, jnp.float64(0.0)),
-            nega_y=s.nega_y + jnp.where(do_accept, nega_y_inc, jnp.float64(0.0)),
+            small_y=s.small_y + small_y_inc,
+            nega_y=s.nega_y + nega_y_inc,
             k_arr=k_arr_next,
             y_time_ring=y_time_ring_new,
             t_time_ring=t_time_ring_new,
@@ -1289,7 +1321,7 @@ class OuterLoop:
             dt_var_max=float(vulcan_cfg.dt_var_max),
             dt_min=float(vulcan_cfg.dt_min),
             dt_max=float(vulcan_cfg.dt_max),
-            batch_max_retries=int(getattr(vulcan_cfg, "batch_max_retries", 8)),
+            batch_max_retries=int(getattr(vulcan_cfg, "batch_max_retries", 64)),
             conv_step=int(vulcan_cfg.conv_step),
             count_min=int(vulcan_cfg.count_min),
             count_max=int(vulcan_cfg.count_max),
@@ -1332,6 +1364,10 @@ class OuterLoop:
                 getattr(vulcan_cfg, "photo_switch_longdydt_thresh", 1e-6)
             ),
             hycean_pin_time=float(getattr(vulcan_cfg, "hycean_pin_time", 1e6)),
+            step_size_safety=float(getattr(vulcan_cfg, "step_size_safety", 0.9)),
+            step_size_zero_delta_frac=float(
+                getattr(vulcan_cfg, "step_size_zero_delta_frac", 0.01)
+            ),
             use_ion=use_ion,
             e_idx=int(e_idx),
             charge_arr=jnp.asarray(charge_np),
@@ -2199,6 +2235,11 @@ class OuterLoop:
         chunk cap exists only to give the host a place to fire hooks.
         Bit-equivalence to the single-shot path is asserted by
         `tests/test_chunked_runner.py`.
+
+        Returns ``(state, wall_clock_hit)``. ``wall_clock_hit`` is True
+        only when ``vulcan_cfg.wall_clock_max`` was set and the host-side
+        elapsed wall-clock exceeded it between chunks; the caller treats
+        that as ``end_case = 4``.
         """
         from live_ui import any_live_flag_on, LiveUI
 
@@ -2212,6 +2253,13 @@ class OuterLoop:
         count_max_static = int(self._statics.count_max)
         runtime_static = float(self._statics.runtime)
         use_print_prog = bool(getattr(vulcan_cfg, "use_print_prog", False))
+        wall_clock_max = getattr(vulcan_cfg, "wall_clock_max", None)
+        wall_clock_max = (
+            float(wall_clock_max) if wall_clock_max is not None
+            and float(wall_clock_max) > 0 else None
+        )
+        start_time = float(getattr(para, "start_time", _now())) \
+            if para is not None else _now()
 
         state = init_state
         while True:
@@ -2233,7 +2281,7 @@ class OuterLoop:
             )
 
             if terminated_for_real:
-                return state
+                return state, False
 
             # Sync state to host for the per-chunk hooks.
             self._unpack_state(state, var, para, atm)
@@ -2244,6 +2292,18 @@ class OuterLoop:
                 self.output.print_prog(var, para)
             if live_on:
                 self._live_ui.dispatch(var, atm, para)
+
+            if wall_clock_max is not None \
+                    and (_now() - start_time) > wall_clock_max:
+                print(
+                    "After ------- "
+                    f"{_now() - start_time} seconds ------- s CPU time"
+                )
+                print(
+                    "Integration not completed...\n"
+                    f"Wall-clock budget exceeded ({wall_clock_max} sec)!"
+                )
+                return state, True
 
     # -----------------------------------------------------------------
     # Outer Python orchestration compatible with op.Integration.__call__
@@ -2302,17 +2362,21 @@ class OuterLoop:
 
         # Chunked execution is opt-in via the explicit `use_chunked_runner`
         # cfg flag, or implicit when any live-output flag is on (the
-        # host needs to read state between chunks to drive the live UI).
-        # Off (default), the runner is single-shot.
+        # host needs to read state between chunks to drive the live UI),
+        # or when `wall_clock_max` is set (the host check fires between
+        # chunks). Off (default), the runner is single-shot.
         from live_ui import any_live_flag_on
+        wall_clock_max = getattr(vulcan_cfg, "wall_clock_max", None)
         use_chunked = (
             bool(getattr(vulcan_cfg, "use_chunked_runner", False))
             or any_live_flag_on(vulcan_cfg)
+            or (wall_clock_max is not None and float(wall_clock_max) > 0)
         )
 
+        wall_clock_hit = False
         if use_chunked:
-            final_state = self._run_chunked(init_state, atm_static, var,
-                                             para, atm)
+            final_state, wall_clock_hit = self._run_chunked(
+                init_state, atm_static, var, para, atm)
         else:
             # Single JAX runner call.
             final_state = self._runner(init_state, atm_static)
@@ -2324,7 +2388,12 @@ class OuterLoop:
         var = self._f_dy(var, para)
 
         # Determine end_case (op.py:1075-1087) for the final print.
-        if para.count > vulcan_cfg.count_max:
+        # Wall-clock-budget exit (end_case=4) is sticky over the JAX
+        # state's count/runtime predicates because the JIT'd loop has
+        # not actually terminated — only the host bailed out.
+        if wall_clock_hit:
+            para.end_case = 4
+        elif para.count > vulcan_cfg.count_max:
             print("Integration not completed...\nMaximal allowed steps "
                   f"exceeded ({vulcan_cfg.count_max})!")
             para.end_case = 3
@@ -2355,7 +2424,7 @@ class OuterLoop:
         # end_case in (2, 3) so the summary lands for non-converged exits too.
         if para.end_case == 1:
             self.output.print_end_msg(var, para)
-        elif para.end_case in (2, 3):
+        elif para.end_case in (2, 3, 4):
             self.output.print_unconverged_msg(var, para, para.end_case)
 
     def _call_runstate(self, rs: "_state_mod.RunState", var=None, atm=None, para=None):
@@ -2398,18 +2467,21 @@ class OuterLoop:
         init_state = self._pack_state_from_runstate(rs)
 
         from live_ui import any_live_flag_on
+        wall_clock_max = getattr(vulcan_cfg, "wall_clock_max", None)
         use_chunked = (
             bool(getattr(vulcan_cfg, "use_chunked_runner", False))
             or any_live_flag_on(vulcan_cfg)
+            or (wall_clock_max is not None and float(wall_clock_max) > 0)
         )
+        wall_clock_hit = False
         if use_chunked:
             # Chunked driver still needs legacy `(var, para, atm)` for
             # the per-chunk hooks. Reuse the caller's `para` (it
             # carries `start_time`) and let the chunked driver mutate
             # it in place; the final RunState is rebuilt on return so
             # the caller gets a typed result regardless.
-            final_state = self._run_chunked(init_state, atm_static, var,
-                                             para, atm)
+            final_state, wall_clock_hit = self._run_chunked(
+                init_state, atm_static, var, para, atm)
         else:
             final_state = self._runner(init_state, atm_static)
 
@@ -2423,21 +2495,26 @@ class OuterLoop:
 
         # End-of-run printing — same predicates as the legacy path,
         # reading from the synthesised RunState rather than mutating
-        # the legacy containers.
+        # the legacy containers. Wall-clock-budget exit (end_case=4)
+        # is sticky over the JAX state's count/runtime predicates
+        # because the JIT'd loop has not actually terminated.
         count = int(rs_out.params.count)
         t_now = float(rs_out.step.t)
-        end_case = (
-            3 if count > vulcan_cfg.count_max
-            else 2 if t_now > vulcan_cfg.runtime
-            else 1
-        )
+        if wall_clock_hit:
+            end_case = 4
+        else:
+            end_case = (
+                3 if count > vulcan_cfg.count_max
+                else 2 if t_now > vulcan_cfg.runtime
+                else 1
+            )
         if end_case == 3:
             print("Integration not completed...\nMaximal allowed steps "
                   f"exceeded ({vulcan_cfg.count_max})!")
         elif end_case == 2:
             print("Integration not completed...\nMaximal allowed runtime "
                   f"exceeded ({vulcan_cfg.runtime} sec)!")
-        else:
+        elif end_case != 4:
             print(f"Integration successful with {count} steps and "
                   f"long dy, long dydt = {rs_out.step.longdy}, "
                   f"{rs_out.step.longdydt}\n"
@@ -2463,7 +2540,7 @@ class OuterLoop:
 
         if end_case == 1:
             self.output.print_end_msg(var_shim, para_shim)
-        elif end_case in (2, 3):
+        elif end_case in (2, 3, 4):
             self.output.print_unconverged_msg(var_shim, para_shim, end_case)
 
         return rs_out

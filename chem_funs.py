@@ -14,12 +14,18 @@ import vulcan_cfg
 import network as _network
 import chem as _chem
 import gibbs as _gibbs
+import make_chem_funs as _make_chem_funs
 
 jax.config.update("jax_enable_x64", True)
 
 
 _NETWORK = _network.parse_network(vulcan_cfg.network)
 _NET_JAX = _chem.to_jax(_NETWORK)
+
+# Build (or reload from cache) the SymPy-faithful per-reaction RHS.
+# Memoised in `_make_chem_funs._BUILD_CACHE`, so the warmup call in
+# `state._build_pre_loop_runstate` returns the same `Callable`.
+_CHEM_RHS_CODEGEN = _make_chem_funs.build_chem_rhs(_NETWORK)
 
 # Locate thermo/NASA9 next to the network file, or fall back to repo-root.
 _THERMO_DIR = Path(vulcan_cfg.network).parent
@@ -114,14 +120,24 @@ def _pack_k_dict(k) -> np.ndarray:
 
 
 def chemdf(y, M, k) -> np.ndarray:
-    """Chemistry RHS at all layers. y (nz, ni), M (nz,), k dict-or-(nr+1, nz). Returns (nz, ni)."""
+    """Chemistry RHS at all layers. y (nz, ni), M (nz,), k dict-or-(nr+1, nz). Returns (nz, ni).
+
+    Codegen-backed: bit-faithful to VULCAN-master's `chemdf` (same per-
+    reaction multiply chain order, same per-species accumulator order).
+    """
     y_np = np.asarray(y, dtype=np.float64)
     M_np = np.asarray(M, dtype=np.float64)
     k_arr = _pack_k_dict(k)
-    out = _chem.chem_rhs(
-        jnp.asarray(y_np), jnp.asarray(M_np), jnp.asarray(k_arr), _NET_JAX
+    out = _CHEM_RHS_CODEGEN(
+        jnp.asarray(y_np), jnp.asarray(M_np), jnp.asarray(k_arr)
     )
     return np.asarray(out, dtype=np.float64)
+
+
+# Re-exports for callers that want to bind directly to the production
+# RHS (the integrator) or the segment_sum reference (tests/benchmarks).
+chem_rhs_codegen = _CHEM_RHS_CODEGEN
+chem_rhs_segment_sum = _chem.chem_rhs_segment_sum
 
 
 def symjac(y, M, k):

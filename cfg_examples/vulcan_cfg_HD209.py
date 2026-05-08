@@ -31,6 +31,7 @@ N_H = 8.1853E-5
 S_H = 1.3183E-5
 He_H = 0.09692
 ini_mix = 'EQ' # Options: 'EQ', 'const_mix', 'vulcan_ini', 'table' (for 'vulcan_ini, the T-P grids have to be exactly the same)
+fastchem_solar_abundance_file = 'fastchem_vulcan/input/solar_element_abundances.dat'
 
 # Initialsing uniform (constant with pressure) mixing ratios (only reads when ini_mix = const_mix)
 const_mix = {'CH4':2.7761E-4*2, 'O2':4.807e-4, 'He':0.09691, 'N2':8.1853E-5, 'H2':1. -2.7761E-4*2*4/2} 
@@ -104,10 +105,12 @@ remove_list = [] # in pairs e.g. [1,2]
 use_condense = False
 use_settling = False
 start_conden_time = 1e10
-condense_sp = []     
+condense_sp = []
 non_gas_sp = []
-fix_species = []      # fixed the condensable species after condensation-evapoation EQ has reached  
+fix_species = []      # fixed the condensable species after condensation-evapoation EQ has reached
 fix_species_time = 0  # after this time to fix the condensable species
+use_ini_cold_trap = False   # apply cold-trap clip to ini abundances (only used when use_condense=True)
+use_sat_surfaceH2O = False  # pin surface H2O to saturation pressure (terrestrial atmospheres)
 
 # ====== steady state check ======
 st_factor = 0.5
@@ -144,7 +147,44 @@ conver_ignore = ['C6H6', 'C2H2', 'C6H5', 'C2H', 'C2H4', 'C2H5', 'C2H6', 'C3H2', 
 # ====== Setting up numerical parameters for Ros2 ODE solver ======
 rtol = 0.2             # relative tolerence for adjusting the stepsize
 post_conden_rtol = 0.1 # switched to this value after fix_species_time
-use_adapt_rtol = False # adapt rtol based on atom-loss diagnostics
+
+# Adaptive rtol controller (only fires when use_adapt_rtol=True).
+use_adapt_rtol = False
+rtol_min = 0.0
+rtol_max = 1.0
+adapt_rtol_dec_period = 10
+adapt_rtol_inc_period = 1000
+adapt_rtol_dec = 0.75
+adapt_rtol_inc = 1.25
+adapt_rtol_loss_mul = 2.0
+adapt_rtol_inc_loss_thresh = 2e-4
+
+# Per-step retry cap inside the JIT'd runner.
+batch_max_retries = 64
+
+# Adaptive Ros2 step-size knobs (`outer_loop._step_size`).
+step_size_safety = 0.9
+step_size_zero_delta_frac = 0.01
+
+# Photo-frequency switch thresholds.
+photo_switch_longdy_thresh = yconv_min * 10.0
+photo_switch_longdydt_thresh = 1e-6
+
+# Hycean H2/He snapshot pin time. Only active when H2 is not in fix_species.
+hycean_pin_time = 1e6
+
+# Atoms excluded from the loss-criteria check.
+loss_ex = []
+
+# FastChem-driven equilibrium init Newton solver (only used when ini_mix='EQ'
+# or 'const_lowT').
+fastchem_newton_tol = 1e-12
+fastchem_newton_max_iter = 50
+
+# Optional runner controls.
+use_fix_all_bot = False
+use_fix_H2He = False
+use_chunked_runner = False
 
 # ====== Setting up for ouwtput and plotting ======
 # plotting:

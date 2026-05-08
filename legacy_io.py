@@ -658,6 +658,11 @@ class Output(object):
             print (vulcan_cfg.out_name[:-4] + ' did not reach steady-state:')
             print ('long dy = ' + str(var.longdy) + ' and long dy/dt = ' + str(var.longdydt) )
             print ('Integration stopped before converged...\nMaximal allowed steps exceeded ('+ str(vulcan_cfg.count_max) + ' steps)')
+        elif case == 4:
+            print ("After ------- %s seconds -------" % ( time.time()- para.start_time ) + ' s CPU time')
+            print (vulcan_cfg.out_name[:-4] + ' did not reach steady-state:')
+            print ('long dy = ' + str(var.longdy) + ' and long dy/dt = ' + str(var.longdydt) )
+            print ('Integration stopped before converged...\nWall-clock budget exceeded ('+ str(getattr(vulcan_cfg, 'wall_clock_max', None)) + ' sec)')
         else:
             raise RuntimeError(f"Unconverged case undefined (case={case})")
 

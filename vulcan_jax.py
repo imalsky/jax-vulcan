@@ -12,7 +12,21 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
-print("Using JAX-native chem_funs (no make_chem_funs.py step required)")
+# Persistent XLA artifact cache: codegen RHS + jax_ros2_step + outer_loop
+# compile once per (network identity, JAX version, device target) tuple.
+# Subsequent runs skip the ~3-8 s compile and read from disk.
+import jax as _jax
+_jax.config.update(
+    "jax_compilation_cache_dir",
+    os.environ.get(
+        "JAX_COMPILATION_CACHE_DIR",
+        os.path.expanduser("~/.cache/jax_vulcan"),
+    ),
+)
+_jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
+_jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
+
+print("Using JAX-native chem_funs with SymPy-faithful chem_rhs codegen")
 
 import legacy_io as op
 import vulcan_cfg

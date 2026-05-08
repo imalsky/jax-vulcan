@@ -34,6 +34,7 @@ S_H = 1.3183E-5
 He_H = 0.09692
 ini_mix = 'const_mix' # Options: 'EQ', 'const_mix', 'vulcan_ini', 'table' (for 'vulcan_ini, the T-P grids have to be exactly the same)
 fastchem_met_scale = 1. # scaling factor for other elements in fastchem (e.g., if fastchem_met_scale = 0.1, other elements such as Si and Mg will take 0.1 solar values)
+fastchem_solar_abundance_file = 'fastchem_vulcan/input/solar_element_abundances.dat'
 
 # Initialsing uniform (constant with pressure) mixing ratios (only reads when ini_mix = const_mix)
 const_mix = {'N2':0.78, 'O2':0.20, 'H2O':1e-6,  'CO2':4E-4, 'Ar':9.34e-3, 'SO2': 2e-10} 
@@ -151,9 +152,42 @@ yconv_min = 0.1
 flux_cri = 0.1
 flux_atol = 1. # the tol for actinc flux (# photons cm-2 s-1 nm-1)
 
-# ====== Setting up numerical parameters for Ros2 ODE solver ====== 
-rtol = 1.             # relative tolerence for adjusting the stepsize 
+# ====== Setting up numerical parameters for Ros2 ODE solver ======
+rtol = 1.             # relative tolerence for adjusting the stepsize
 post_conden_rtol = 0.05 # switched to this value after fix_species_time
+
+# Adaptive rtol controller (only fires when use_adapt_rtol=True).
+use_adapt_rtol = False
+rtol_min = 0.0
+rtol_max = 2.0          # Earth runs at rtol=1.0; allow up-step room for adapt_rtol
+adapt_rtol_dec_period = 10
+adapt_rtol_inc_period = 1000
+adapt_rtol_dec = 0.75
+adapt_rtol_inc = 1.25
+adapt_rtol_loss_mul = 2.0
+adapt_rtol_inc_loss_thresh = 2e-4
+
+# Per-step retry cap inside the JIT'd runner.
+batch_max_retries = 64
+
+# Adaptive Ros2 step-size knobs.
+step_size_safety = 0.9
+step_size_zero_delta_frac = 0.01
+
+# Photo-frequency switch thresholds.
+photo_switch_longdy_thresh = yconv_min * 10.0
+photo_switch_longdydt_thresh = 1e-6
+
+hycean_pin_time = 1e6
+loss_ex = []
+
+# FastChem-driven equilibrium init Newton solver.
+fastchem_newton_tol = 1e-12
+fastchem_newton_max_iter = 50
+
+use_fix_all_bot = False
+use_fix_H2He = False
+use_chunked_runner = False
 
 # ====== Setting up for ouwtput and plotting ======
 # plotting:

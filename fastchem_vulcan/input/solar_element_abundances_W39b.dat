@@ -1,0 +1,23 @@
+#Lodders 2019 solar abundances (Wogan/Tsai 2023 values), with rocky elements
+#suppressed so fastchem's gas-only EQ matches photochem's apples-to-apples
+#network (which has no Mg/Si/Fe oxides to sequester O).
+#Use this file by symlinking solar_element_abundances.dat -> this file
+#before running W39b benchmark.
+H   12.00
+He  10.9232
+C   8.4434
+N   7.9130
+O   8.7826
+S   7.1492
+P   -3.0
+Si  -3.0
+Ti  -3.0
+V   -3.0
+Cl  -3.0
+K   -3.0
+Na  -3.0
+Mg  -3.0
+F   -3.0
+Ca  -3.0
+Fe  -3.0
+e-  0

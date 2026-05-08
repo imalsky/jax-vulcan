@@ -271,5 +271,56 @@ def test_main():
     assert main() == 0
 
 
+def test_real_network_segment_sum_residual_path_tracks_codegen(hd189_state):
+    """Guard the deliberate steady_state_grad segment_sum RHS choice.
+
+    `steady_state_grad.py` keeps the segment_sum RHS so synthetic tests can
+    pass custom `NetworkArrays`. On the real configured network it must stay
+    close to the production codegen RHS on cells with meaningful signal, so
+    implicit-gradient users do not silently differentiate a different model.
+    """
+    import chem
+    import chem_funs
+    import jax.numpy as jnp
+
+    y = jnp.asarray(hd189_state.var.y, dtype=jnp.float64)
+    M = jnp.asarray(hd189_state.atm.M, dtype=jnp.float64)
+    k_arr = jnp.asarray(hd189_state.var.k_arr, dtype=jnp.float64)
+
+    out_codegen = np.asarray(chem_funs.chem_rhs_codegen(y, M, k_arr))
+    out_segment = np.asarray(
+        chem.chem_rhs_segment_sum(y, M, k_arr, chem_funs._NET_JAX)
+    )
+
+    species_peak = np.maximum(np.abs(out_codegen).max(axis=0), 1e-30)
+    significant = np.abs(out_codegen) > 1e-6 * species_peak[None, :]
+    relerr = np.where(
+        significant,
+        np.abs(out_segment - out_codegen) / np.maximum(np.abs(out_codegen), 1e-30),
+        0.0,
+    )
+    max_rel = float(relerr.max())
+
+    bulk_rel = 0.0
+    for sp in ("H2O", "CO2", "SO", "SO2", "H2", "CO", "S", "H2S"):
+        if sp in chem_funs._NETWORK.species_idx:
+            j = chem_funs._NETWORK.species_idx[sp]
+            peak = max(float(np.abs(out_codegen[:, j]).max()), 1e-30)
+            denom = np.maximum(np.abs(out_codegen[:, j]), 1e-6 * peak)
+            bulk_rel = max(
+                bulk_rel,
+                float(np.max(np.abs(out_segment[:, j] - out_codegen[:, j]) / denom)),
+            )
+
+    assert max_rel < 5e-2, (
+        "segment_sum RHS drifted too far from production codegen on "
+        f"significant real-network cells: max relerr={max_rel:.3e}"
+    )
+    assert bulk_rel < 1e-5, (
+        "segment_sum RHS drifted on bulk species relative to production "
+        f"codegen: max relerr={bulk_rel:.3e}"
+    )
+
+
 if __name__ == "__main__":
     sys.exit(main())

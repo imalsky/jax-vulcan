@@ -39,10 +39,8 @@ ROOT = Path(__file__).resolve().parent.parent
 VULCAN_MASTER = ROOT.parent / "VULCAN-master"
 BASELINE_DIR = ROOT / "tests" / "data" / "oracle_baselines"
 
-# 20 matched Ros2 steps. Loose enough to absorb the documented chem_rhs
-# cancellation floor (~1e-4 absolute on a few species per CLAUDE.md);
-# tighter than 1e-9 on smooth pre-condensation phases would be surprising
-# and worth investigating.
+# 20 matched Ros2 steps. With the codegen RHS in place all three configs
+# now sit at <=1e-9 relerr against master.
 COUNT_MAX = 20
 
 # Baseline-vs-JAX comparison: both runs are JAX, so the only drift is
@@ -51,14 +49,11 @@ RELERR_VS_BASELINE = 1e-12
 Y_ABS_FLOOR_VS_BASELINE = 1e-9
 YMIX_ABS_FLOOR_VS_BASELINE = 1e-25
 
-# Per-config master-vs-JAX tolerance. Empirically HD209's 20-step run lands
-# at ~1.7e-9 (vs HD189's 50-step 1.59e-10 baseline in CLAUDE.md): early-step
-# relerr is dominated by the per-term ulp drift in chem_rhs documented in
-# CLAUDE.md "Numerical hygiene" — closing it requires SymPy-faithful codegen
-# which is WONTFIX. Earth and Jupiter remain at 1e-9.
+# Per-config master-vs-JAX tolerance. The SymPy-faithful chem_rhs codegen
+# closes the per-term ULP drift that previously forced HD209 up to 3e-9.
 ORACLE_CONFIGS = [
     pytest.param("Earth", 1e-9, id="Earth"),
-    pytest.param("HD209", 3e-9, id="HD209"),
+    pytest.param("HD209", 1e-9, id="HD209"),
     pytest.param("Jupiter", 1e-9, id="Jupiter"),
 ]
 

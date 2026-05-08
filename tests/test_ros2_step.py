@@ -62,7 +62,6 @@ def main() -> int:
 
     # Snapshot y BEFORE the step (since solver mutates var.y)
     y0 = np.asarray(data_var.y, dtype=np.float64).copy()
-    M0 = np.asarray(data_atm.M, dtype=np.float64).copy()
     k_dict = {i: np.asarray(v, dtype=np.float64).copy() for i, v in data_var.k.items()}
 
     # Reference one Ros2 step (mutates var.y)
@@ -78,58 +77,47 @@ def main() -> int:
     sys.path.insert(0, str(ROOT))
 
     import vulcan_cfg as cfg_jax
-    import network as net_mod
-    import gibbs as gibbs_mod
-    import chem as chem_mod
-    sys.path.insert(0, str(Path(__file__).resolve().parent))
-    import diffusion_numpy_ref as diff_mod
-    import solver as solver_mod
-    import jax.numpy as jnp
 
-    net = net_mod.parse_network(cfg_jax.network)
-    net_jax = chem_mod.to_jax(net)
-    coeffs_arr, _ = gibbs_mod.load_nasa9(net.species, ROOT / "thermo")
+    # Pin JAX modules to the exact network and transport flags used by the
+    # master-side state captured above. `jax_step` imports
+    # `chem_funs.chem_rhs_codegen` at module import time, so this must happen
+    # before importing `chem_funs` or `jax_step`.
+    cfg_jax.network = str(ROOT / cfg_v.network)
+    for name in (
+        "use_moldiff",
+        "use_vm_mol",
+        "use_settling",
+        "use_topflux",
+        "use_botflux",
+    ):
+        if hasattr(cfg_v, name):
+            setattr(cfg_jax, name, getattr(cfg_v, name))
+
+    import chem_funs
+    import jax.numpy as jnp
+    from jax_step import jax_ros2_step, make_atm_static
+
     nz, ni = y0.shape
 
     # Pack k into JAX array
-    k_arr = np.zeros((net.nr + 1, nz), dtype=np.float64)
+    k_arr = np.zeros((chem_funs.nr + 1, nz), dtype=np.float64)
     for i, v in k_dict.items():
         k_arr[i] = v
 
-    # First evaluation: chem RHS + diff at y0
-    chem_jac_jax = np.asarray(chem_mod.chem_jac(jnp.asarray(y0), jnp.asarray(M0), jnp.asarray(k_arr), net_jax))
-    diff_coeffs = diff_mod.build_diffusion_coeffs(y0, data_atm, cfg_jax)
-    diff_at_y0 = diff_mod.apply_diffusion(y0, diff_coeffs)
-    chem_rhs_y0 = np.asarray(chem_mod.chem_rhs(jnp.asarray(y0), jnp.asarray(M0), jnp.asarray(k_arr), net_jax))
-    df = chem_rhs_y0 + diff_at_y0
-
-    diff_diag, diff_sup, diff_sub = diff_mod.diffusion_block_diags(diff_coeffs, ni)
-
-    # Compute LHS = c0*I - chem_J - diff_J
-    r_ros = 1.0 + 1.0 / np.sqrt(2.0)
-    c0 = 1.0 / (r_ros * data_var.dt)
-    eye = np.eye(ni)
-    diag = c0 * eye[None] - chem_jac_jax
-    di = np.arange(ni)
-    diag[:, di, di] -= diff_diag
-    sup = np.zeros((nz - 1, ni, ni))
-    sup[:, di, di] = -diff_sup
-    sub = np.zeros((nz - 1, ni, ni))
-    sub[:, di, di] = -diff_sub
-
-    # Solve LHS @ k1 = df
-    k1 = np.asarray(solver_mod.block_thomas(jnp.asarray(diag), jnp.asarray(sup), jnp.asarray(sub), jnp.asarray(df)))
-
-    yk2 = y0 + k1 / r_ros
-
-    # Second evaluation
-    diff_at_yk2 = diff_mod.apply_diffusion(yk2, diff_coeffs)
-    chem_rhs_yk2 = np.asarray(chem_mod.chem_rhs(jnp.asarray(yk2), jnp.asarray(M0), jnp.asarray(k_arr), net_jax))
-    df2 = chem_rhs_yk2 + diff_at_yk2
-    rhs2 = df2 - (2.0 / (r_ros * data_var.dt)) * k1
-    k2 = np.asarray(solver_mod.block_thomas(jnp.asarray(diag), jnp.asarray(sup), jnp.asarray(sub), jnp.asarray(rhs2)))
-
-    sol_jax = y0 + (3.0 / (2.0 * r_ros)) * k1 + (1.0 / (2.0 * r_ros)) * k2
+    # Production one-step kernel: codegen RHS + analytical Jacobian + JAX
+    # diffusion + diagonal-aware block Thomas. This is the same hot path the
+    # outer loop calls, so this test cannot accidentally validate only the
+    # preserved segment_sum reference RHS.
+    atm_static = make_atm_static(data_atm, ni, nz)
+    sol_jax, delta_jax = jax_ros2_step(
+        jnp.asarray(y0),
+        jnp.asarray(k_arr),
+        jnp.float64(data_var.dt),
+        atm_static,
+        chem_funs._NET_JAX,
+    )
+    sol_jax = np.asarray(sol_jax, dtype=np.float64)
+    print(f"VULCAN-JAX production step delta max = {float(np.max(np.asarray(delta_jax))):.3e}")
 
     # Compare
     relerr = np.abs(sol_jax - sol_ref) / np.maximum(np.abs(sol_ref), 1e-12)
@@ -140,7 +128,7 @@ def main() -> int:
     worst = np.argsort(per_sp)[::-1][:5]
     for j in worst:
         if per_sp[j] > 1e-6:
-            print(f"  {net.species[j]}: max relerr {per_sp[j]:.3e}")
+            print(f"  {chem_funs.spec_list[j]}: max relerr {per_sp[j]:.3e}")
 
     print()
     ok = max_relerr < 1e-3   # generous; the integrator self-corrects

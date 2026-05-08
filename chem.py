@@ -10,6 +10,15 @@ Rate per reaction per layer:
     if is_three_body[i]: rate[i, z] *= M[z]
 
 Per-species dy/dt is then a `segment_sum` of (production - loss) contributions.
+
+Production uses `make_chem_funs.build_chem_rhs(net)` (SymPy-faithful per-
+reaction codegen, master-bit-faithful term order). The vectorised
+`segment_sum` form below is preserved as `chem_rhs_segment_sum` for
+test references — `chem_jac_per_layer = jax.jacrev(chem_rhs_per_layer_segment_sum)`
+is still the oracle for the analytical Jacobian. The analytical Jacobian
+itself uses the same `y_r ** stoich` formulation because the leave-one-
+out derivative form is naturally written that way and the Jacobian has
+no cancellation amplifier (machine-precision agreement vs master).
 """
 
 from __future__ import annotations
@@ -80,13 +89,18 @@ def to_jax(net: Network) -> NetworkArrays:
     )
 
 
-def chem_rhs_per_layer(
+def chem_rhs_per_layer_segment_sum(
     y: jnp.ndarray,           # [ni]
     M: float | jnp.ndarray,
     k: jnp.ndarray,           # [nr+1]
     net: NetworkArrays,
 ) -> jnp.ndarray:
-    """Chemistry contribution to dy/dt for one vertical layer. Returns [ni]."""
+    """Vectorised RHS via masked y**stoich + segment_sum. Test reference only.
+
+    Production uses `make_chem_funs.build_chem_rhs(net)` (codegen). This
+    kernel is preserved for vmap-consistency tests, the jacrev oracle,
+    and benchmarks against the codegen path.
+    """
     # Pad y so reactant_idx==ni is a no-op multiplier (the padding stoich
     # is also 0, so this is double-safe).
     yp = jnp.concatenate([y, jnp.ones((1,), dtype=y.dtype)])
@@ -105,11 +119,7 @@ def chem_rhs_per_layer(
     rate_repeat = jnp.repeat(rate, net.reactant_idx.shape[1])
 
     # num_segments = ni+1: the last segment collects padding contributions
-    # (reactant_idx==ni); we drop it on slice. There is a ~1e-4 absolute
-    # gap vs master's `chemdf` for a handful of species (CH2_1, HC3N, HCCO
-    # at certain layers). It is per-term ulp-roundoff in the rate product
-    # itself — not segment_sum reduction-order drift — and only a
-    # SymPy-faithful term order would close it. WONTFIX per CLAUDE.md.
+    # (reactant_idx==ni); we drop it on slice.
     loss = jax.ops.segment_sum(
         flat_r_st * rate_repeat,
         flat_r_idx,
@@ -125,16 +135,18 @@ def chem_rhs_per_layer(
     return prod - loss
 
 
-chem_rhs = jax.vmap(
-    chem_rhs_per_layer,
+chem_rhs_segment_sum = jax.vmap(
+    chem_rhs_per_layer_segment_sum,
     in_axes=(0, 0, 1, None),
 )
 
 
 # jacrev beats jacfwd here ("scatter at the end" pattern). Kept as the test
 # oracle for `chem_jac_analytical`; production uses the analytical form
-# (~36× faster on the SNCHO network).
-chem_jac_per_layer = jax.jacrev(chem_rhs_per_layer, argnums=0)
+# (~36× faster on the SNCHO network). Bound to the segment_sum reference
+# kernel — the Jacobian has no cancellation amplifier so the floor that
+# motivated the codegen RHS does not apply here.
+chem_jac_per_layer = jax.jacrev(chem_rhs_per_layer_segment_sum, argnums=0)
 chem_jac = jax.vmap(
     chem_jac_per_layer,
     in_axes=(0, 0, 1, None),
@@ -215,29 +227,54 @@ chem_jac_analytical = jax.vmap(
 
 
 def chem_rhs_numpy(y: np.ndarray, M: np.ndarray, k: np.ndarray, net: Network) -> np.ndarray:
-    """NumPy reference RHS for tests. Slower; iterates reactions explicitly."""
+    """NumPy reference RHS, master-faithful term order.
+
+    Used as the rtol=1e-13 oracle in `tests/test_chem_rhs_codegen.py`.
+    Mirrors `make_chem_funs.emit_chem_rhs_source`'s emission rules:
+      - per-reaction rate uses stoich-replicated `*` (not `**stoich`),
+        terminal `*M` when three-body
+      - per-reaction `v_pair = v[i] - v[i+1]` (k[i+1]==0 zeros out the
+        second term for unpaired photo/conden/radiative/ion reactions)
+      - per-species accumulator walks i=1, 3, 5, ..., products-then-
+        reactants per reaction, repeated by stoich (one `+= v_pair` per
+        stoich count, not `+= st * v_pair`)
+    The NumPy `*` is left-associative and float64 throughout; this gives
+    bit-identical emission order to master's chemdf body.
+    """
     nz, ni = y.shape
-    dydt = np.zeros_like(y)
-    for i in range(1, net.nr + 1):
+    PAD = ni
+    nr = net.nr
+    M_arr = np.asarray(M, dtype=np.float64)
+
+    v = np.zeros((nr + 1, nz), dtype=np.float64)
+    for i in range(1, nr + 1):
         rate = np.asarray(k[i], dtype=np.float64).copy()
         for kslot in range(net.reactant_idx.shape[1]):
-            sp = net.reactant_idx[i, kslot]
-            st = net.reactant_stoich[i, kslot]
-            if st == 0:
+            sp = int(net.reactant_idx[i, kslot])
+            st = int(net.reactant_stoich[i, kslot])
+            if st == 0 or sp == PAD:
                 continue
-            rate = rate * y[:, sp]**st
-        if net.is_three_body[i]:
-            rate = rate * M
+            for _ in range(st):
+                rate = rate * y[:, sp]
+        if bool(net.is_three_body[i]):
+            rate = rate * M_arr
+        v[i] = rate
+
+    dydt = np.zeros_like(y)
+    for i in range(1, nr + 1, 2):
+        v_pair = v[i] - v[i + 1]
         for kslot in range(net.product_idx.shape[1]):
-            sp = net.product_idx[i, kslot]
-            st = net.product_stoich[i, kslot]
-            if st == 0 or sp >= ni:
+            sp = int(net.product_idx[i, kslot])
+            st = int(net.product_stoich[i, kslot])
+            if st == 0 or sp == PAD:
                 continue
-            dydt[:, sp] += st * rate
+            for _ in range(st):
+                dydt[:, sp] = dydt[:, sp] + v_pair
         for kslot in range(net.reactant_idx.shape[1]):
-            sp = net.reactant_idx[i, kslot]
-            st = net.reactant_stoich[i, kslot]
-            if st == 0 or sp >= ni:
+            sp = int(net.reactant_idx[i, kslot])
+            st = int(net.reactant_stoich[i, kslot])
+            if st == 0 or sp == PAD:
                 continue
-            dydt[:, sp] -= st * rate
+            for _ in range(st):
+                dydt[:, sp] = dydt[:, sp] - v_pair
     return dydt

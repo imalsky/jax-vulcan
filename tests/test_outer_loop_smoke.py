@@ -30,11 +30,10 @@ sys.path.insert(0, str(ROOT))
 warnings.filterwarnings("ignore")
 
 
-# Per-atom atom_loss target. Empirically the JAX path lands at ~2.17e-04
-# for HD189 50 steps; the per-term ulp drift in `chem_rhs` documented in
-# CLAUDE.md "Numerical hygiene" floors how close this can get to master's
-# value (~1.95e-04). Tolerance is 15% — wide enough to absorb the chem
-# floor across CPU/GPU and minor refactors of the surrounding code, tight
+# Per-atom atom_loss target. HD189 50-step matched-step: empirically lands
+# at ~2.17e-04 with the codegen RHS — matches the previous segment_sum
+# baseline. Tolerance is 15% — wide enough to absorb the cancellation
+# residue across CPU/GPU and minor refactors of surrounding code, tight
 # enough to catch a real 5x-10x regression in atom conservation.
 EXPECTED_ATOM_LOSS = 2.17e-4
 ATOM_LOSS_RTOL = 0.15
