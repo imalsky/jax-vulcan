@@ -29,6 +29,7 @@ class Ros2JAX:
         self._photo_ion_data = None
 
     def _ensure_photo_static(self, var, atm):
+        """Build (or refresh) the cached `PhotoStaticInputs` for `(var, atm)`."""
         if self._photo_static is None:
             import photo_setup as _photo_setup
             self._photo_static = _photo_setup._build_photo_static_dense(var, atm)
@@ -128,6 +129,7 @@ class Ros2JAX:
                 var.k_arr[ridx, :] = var.Jion_sp[(sp, nbr)] * vulcan_cfg.f_diurnal
 
     def naming_solver(self, para):
+        """Print transport / BC summary lines and stamp `para.solver_str`."""
         if vulcan_cfg.use_moldiff:
             print("Include molecular diffusion.")
         else:

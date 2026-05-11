@@ -7,13 +7,11 @@ arrays at each layer x species. Captures a baseline npz under
 ``tests/data/oracle_baselines/`` so future runs without master can still
 validate against the captured state.
 
-Parametrized over three configs that exercise paths HD189 doesn't:
+Parametrized over two configs that exercise paths HD189 doesn't:
 - **Earth** — ``use_condense=True`` with ``T_cross_sp=['CO2','H2O','NH3']``
   and ``ini_mix='const_mix'``.
 - **HD209** — ``ini_mix='EQ'``, no condensation, ``NCHO_photo_network.txt``
   (no S species), weaker gravity (936 cm/s^2 vs HD189's 2140).
-- **Jupiter** — ``ini_mix='EQ'``, ``use_photo=True``, low-T rate caps
-  active, condensation on (H2O, NH3).
 
 Skips cleanly when:
 - ``../VULCAN-master/`` is absent AND no baseline npz is on disk.
@@ -54,7 +52,6 @@ YMIX_ABS_FLOOR_VS_BASELINE = 1e-25
 ORACLE_CONFIGS = [
     pytest.param("Earth", 1e-9, id="Earth"),
     pytest.param("HD209", 1e-9, id="HD209"),
-    pytest.param("Jupiter", 1e-9, id="Jupiter"),
 ]
 
 

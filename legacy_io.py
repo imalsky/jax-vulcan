@@ -52,7 +52,12 @@ class ReadRate(object):
 
 
     def read_rate(self, var, atm):
+        """Parse the reaction-rate file and populate `var`'s host-side metadata dicts.
 
+        Sets `var.Rf` (1-based reaction text), `var.pho_rate_index`,
+        `var.n_branch`, `var.photo_sp`, `var.ion_sp`, etc. Rate values
+        are scratch — `rates.setup_var_k` recomputes them.
+        """
         # `k` here is parser scratch; rates.setup_var_k overwrites var.k_arr
         # immediately after this method returns.
         k = {}

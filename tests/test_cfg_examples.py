@@ -74,7 +74,6 @@ print("PASS")
     "cfg_name",
     [
         "vulcan_cfg_Earth.py",
-        "vulcan_cfg_Jupiter.py",
         "vulcan_cfg_HD209.py",
     ],
 )

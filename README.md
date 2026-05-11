@@ -38,8 +38,8 @@ VULCAN-JAX runs supported VULCAN calculations with the same configuration files,
 cd VULCAN-JAX/
 
 # 1. Edit vulcan_cfg.py exactly as you would VULCAN-master's. Same format,
-#    same keys. Vendored presets live in cfg_examples/ for Earth, Jupiter,
-#    HD189, and HD209.
+#    same keys. Vendored presets live in cfg_examples/ for HD189, HD209,
+#    Earth, and W39b.
 cp cfg_examples/vulcan_cfg_HD189.py vulcan_cfg.py
 
 # 2. Run the forward model:
@@ -50,8 +50,11 @@ python vulcan_jax.py
 python plot_py/plot_vulcan.py output/HD189.vul
 
 # 4. (Optional) compare against a parallel VULCAN-master run:
-python tests/compare_vul.py output/HD189.vul ../VULCAN-master/output/HD189.vul
+python ../comparisons/compare_vul.py output/HD189.vul ../VULCAN-master/output/HD189.vul
 ```
+
+For a per-file map of every module and what its functions do, see
+[`file_readme.md`](file_readme.md).
 
 The `-n` flag on `vulcan_jax.py` is accepted as a no-op for upstream-CLI compatibility — `make_chem_funs.build_chem_rhs(net)` runs automatically at `chem_funs` import time and caches the SymPy-faithful per-network RHS in `__pycache__/chem_rhs_codegen_<hash>.py`.
 
@@ -84,7 +87,7 @@ used by optional validation tests that compare against upstream VULCAN.
 **Vendored runtime data** (so VULCAN-JAX is fully standalone):
 - `thermo/` — chemistry network files, NASA-9 thermodynamic data, photo cross sections.
 - `atm/` — TP/Kzz tables and stellar-flux files.
-- `cfg_examples/` — example configs for Earth, Jupiter, HD189, HD209.
+- `cfg_examples/` — example configs for HD189, HD209, Earth, W39b.
 - `fastchem_vulcan/` — FastChem binary + input/output payload for `ini_mix='EQ'`.
 
 ---
@@ -474,10 +477,13 @@ VULCAN-JAX/
 ├── phy_const.py         Physical constants (vendored from VULCAN-master)
 ├── pytest.ini           Pytest config (parallel-safe via FastChem flock)
 ├── atm/, thermo/, fastchem_vulcan/   Vendored runtime data
-├── cfg_examples/        Earth / Jupiter / HD189 / HD209 example configs
-├── benchmarks/          Bench and timing utilities
-├── tests/               Validation suite + standalone scripts
-└── CLAUDE.md            Maintenance / numerical-hygiene spec for AI agents
+├── cfg_examples/        HD189 / HD209 / Earth / W39b example configs
+├── benchmarks/          Per-step timing benchmark
+├── examples/            Usage examples (vmap, forward-mode AD, implicit AD)
+├── tools/               End-user data-prep utilities
+├── tests/               Curated validation suite
+├── file_readme.md       Per-file index of every module and its functions
+└── CLAUDE.md            Maintenance / numerical-hygiene notes
 ```
 
 ### Design choices worth knowing
@@ -510,14 +516,8 @@ Wall-time speedup depends on whether the convergence detector takes the same pat
 3. JIT compilation of the entire integration loop into one XLA graph — no Python overhead per step
 4. Pre-baked y-independent diffusion terms (computed once per Ros2 step instead of twice)
 
-Run `python benchmarks/bench_step.py` for a fresh per-step timing on your hardware.
-To isolate the cost of the SymPy-faithful RHS change against the previous
-implementation, run:
-
-```bash
-python benchmarks/bench_sympy_faithful.py
-# add --full-run to include a full configured vulcan_jax.py run in each tree
-```
+Run `python benchmarks/bench_step.py` for a fresh per-step timing on your
+hardware.
 
 ---
 
@@ -545,22 +545,22 @@ python benchmarks/bench_sympy_faithful.py
 
 ### What's covered by the test suite
 
-`pytest tests/` runs 108 tests covering:
+`pytest tests/` runs the curated suite covering:
 - JAX↔master numerical bridge (RHS, Jacobian, diffusion, single Ros2 step, photo kernels)
 - `vmap` consistency (single-call vs batched output)
 - Forward-mode AD (`jvp` through per-step kernels)
 - Reverse-mode AD via `steady_state_grad` (validated against finite differences)
 - HD189 smoke integration (50-step regression oracle)
-- 20-step matched-step oracles for Earth, Jupiter, HD209
+- 20-step matched-step oracles for Earth + HD209
 - `save_evolution` round-trip
 - `.vul` output schema & RunState round-trip
 - Vendored example-config setup
-- Optional CPU↔GPU parity (skips on CPU-only hosts)
+- W39b FastChem invariant snapshot
 
 ### What's NOT tested
 
 - **Cartesian-product oracle sweeps** over every non-default config knob. By policy.
-- **GPU parity** on this CPU-only host (skipped).
+- **GPU parity** (CPU-only host).
 - **Long-to-convergence VULCAN-master oracles** for every vendored example.
 - **Arbitrary custom networks** beyond parser/schema coverage and the bundled examples.
 - **Gradients through host-side readers / FastChem internals** — by design (host-side setup, not on the AD path).
@@ -640,20 +640,19 @@ For batched parameter sweeps (e.g. running 16 atmospheres at once with different
 ## Running tests
 
 ```bash
-python -m pytest tests -q --tb=short -ra   # full suite. 108 passed + 3 skipped
-                               # on a clean CPU-only run.
+python -m pytest tests -q --tb=short -ra   # curated suite
 python -m pytest tests -n auto -q --tb=short -ra
                                # parallel-safe (FastChem invocations
                                # serialise via fcntl.flock).
 python -m pytest tests -k "ros2 or block_thomas"   # filter
-python tests/test_foo.py       # individual scripts run standalone
 ```
 
-The 3 documented skips are: `test_backend_parity` (no GPU on this host) and 2 config-matrix sub-cases that require `H2O_l_s` in the network (HD189 doesn't have it). Upstream-comparison tests skip cleanly when `../VULCAN-master/` is absent.
+Master-comparison tests skip cleanly when `../VULCAN-master/` is absent;
+two config-matrix sub-cases also skip on networks without `H2O_l_s`.
 
-The test suite is deliberately not parametrized across every non-default config combination — see [Capabilities](#capabilities) for the full inventory.
-
-See `CLAUDE.md` for the full test-discipline rules (when to add a test, what a "real" failure looks like).
+The test suite is deliberately not parametrized across every non-default
+config combination — see [Capabilities](#capabilities) for the full
+inventory.
 
 ---
 

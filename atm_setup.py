@@ -735,10 +735,12 @@ class Atm:
         self.non_gas_sp = vulcan_cfg.non_gas_sp
 
     def f_pico(self, data_atm):
+        """Stagger pressure to interfaces and write to `data_atm.pico`."""
         data_atm.pico = np.asarray(compute_pico(jnp.asarray(data_atm.pco)))
         return data_atm
 
     def load_TPK(self, data_atm):
+        """Populate `Tco / Kzz / vz / M / n_0` per `atm_type` (analytical, file, or table)."""
         out = load_TPK(vulcan_cfg, np.asarray(data_atm.pco), pico=np.asarray(data_atm.pico))
         # `atm_type='table'` rewrites pco from a saved file.
         if "pco" in out:
@@ -748,6 +750,7 @@ class Atm:
         return data_atm
 
     def TP_H14(self, pco, *args_analytical):
+        """Heng et al. 2014 analytical T(P) profile evaluated at `pco`."""
         return np.asarray(
             analytical_TP_H14(
                 jnp.asarray(pco), args_analytical,
@@ -756,10 +759,12 @@ class Atm:
         )
 
     def mol_mass(self, sp):
+        """Molecular mass (amu) for species `sp` from the composition table."""
         from composition import compo, compo_row
         return compo["mass"][compo_row.index(sp)]
 
     def mean_mass(self, var, atm, ni):
+        """Compute per-layer mean molecular mass and write to `atm.mu`."""
         from composition import species
         ms_arr = np.array(
             [self.mol_mass(species[i]) for i in range(ni)],
@@ -771,6 +776,7 @@ class Atm:
         return atm
 
     def f_mu_dz(self, data_var, data_atm, output):
+        """Hydrostatic-balance refresh: rebuild `mu, g, Hp, dz, zco, vs` and friends."""
         from composition import species
         ni = len(species)
         ms_arr = np.array(
@@ -806,6 +812,7 @@ class Atm:
         return data_atm
 
     def mol_diff(self, atm):
+        """Compute molecular-diffusion coefficients and write `atm.Dzz / Dzz_cen / vm`."""
         from composition import compo, compo_row, species
         ni = len(species)
         ms_arr = np.array(
@@ -827,6 +834,7 @@ class Atm:
         atm.vm = out["vm"]
 
     def BC_flux(self, atm):
+        """Read top/bottom boundary-condition fluxes from the configured files."""
         from composition import species
         out = read_bc_flux(vulcan_cfg, list(species))
         atm.top_flux = out["top_flux"]
@@ -835,11 +843,13 @@ class Atm:
         atm.bot_fix_sp = out["bot_fix_sp"]
 
     def sp_sat(self, atm):
+        """Populate `atm.sat_p[sp]` for each condensable species."""
         out = compute_sat_p(list(vulcan_cfg.condense_sp), np.asarray(atm.Tco))
         for sp, sp_arr in out.items():
             atm.sat_p[sp] = sp_arr
 
     def read_sflux(self, var, atm):
+        """Read the stellar flux file, rebin onto `var.bins`, and write to var/atm."""
         out = read_sflux_binned(vulcan_cfg, np.asarray(var.bins))
         atm.sflux_raw = out["sflux_raw"]
         var.sflux_top = out["sflux_top"]

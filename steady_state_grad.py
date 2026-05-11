@@ -93,6 +93,7 @@ def build_steady_state_inputs(k_arr: jnp.ndarray, atm: AtmStatic) -> SteadyState
 
 
 def _atm_from_inputs(inputs: SteadyStateInputs) -> AtmStatic:
+    """Repack a `SteadyStateInputs` pytree into the `AtmStatic` the diffusion kernels expect."""
     return AtmStatic(
         Kzz=inputs.Kzz,
         Dzz=inputs.Dzz,

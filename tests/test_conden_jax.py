@@ -2,7 +2,7 @@
 
 The HD189 default config sets `use_condense=False`, so an end-to-end
 integration test of condensation is out of scope for this sub-milestone
-(that needs an Earth or Jupiter cfg). What's validated here is the
+(that needs the Earth cfg). What's validated here is the
 *formula correctness* of the three pure-JAX conden kernels in
 `conden.py`, fed with synthetic but physically-shaped inputs:
 

@@ -96,6 +96,7 @@ class PhotoStaticInputs(NamedTuple):
     cross_Jion:    jnp.ndarray   # (n_ion_br, nbin)  -- (0, nbin) when use_ion=False
 
     def with_din12_indx(self, idx: int) -> "PhotoStaticInputs":
+        """Return a new pytree with `din12_indx` set; rejects negative values."""
         if int(idx) < 0:
             raise ValueError(
                 f"PhotoStaticInputs.din12_indx must be >= 0; got {idx}"

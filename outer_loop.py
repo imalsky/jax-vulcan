@@ -33,6 +33,7 @@ from runtime_validation import validate_runtime_config
 
 
 def _now() -> float:
+    """Wall-clock seconds since the epoch (used for runtime print stamping)."""
     return time.time()
 
 jax.config.update("jax_enable_x64", True)

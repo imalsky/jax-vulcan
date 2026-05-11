@@ -30,6 +30,7 @@ _TABLEAU20 = [(r / 255.0, g / 255.0, b / 255.0) for (r, g, b) in _TABLEAU20]
 
 
 def any_live_flag_on(cfg=vulcan_cfg) -> bool:
+    """True if any of the four live-UI flags is enabled in `cfg`."""
     return any(
         bool(getattr(cfg, name, False))
         for name in ("use_live_plot", "use_live_flux",
@@ -38,6 +39,8 @@ def any_live_flag_on(cfg=vulcan_cfg) -> bool:
 
 
 class LiveUI:
+    """Host-side dispatcher for live mixing-ratio + actinic-flux plots."""
+
     def __init__(self) -> None:
         self.pic_count = 0
         self.flux_pic_count = 0
@@ -45,6 +48,7 @@ class LiveUI:
         self._plt = None
 
     def _ensure_mpl(self):
+        """Lazy-import matplotlib with a headless-safe backend; cache the module."""
         if self._plt is None:
             import matplotlib
             if (not os.environ.get("DISPLAY")
@@ -56,12 +60,14 @@ class LiveUI:
         return self._plt
 
     def _ensure_species_index(self):
+        """Cache and return a `species -> column_index` map for `var.ymix`."""
         if self._species_index is None:
             import chem_funs
             self._species_index = {sp: i for i, sp in enumerate(chem_funs.spec_list)}
         return self._species_index
 
     def dispatch(self, var, atm, para) -> None:
+        """Route to mixing-ratio and/or flux updaters based on cfg flags."""
         live_plot = bool(getattr(vulcan_cfg, "use_live_plot", False))
         live_flux = bool(getattr(vulcan_cfg, "use_live_flux", False))
         save_movie = bool(getattr(vulcan_cfg, "use_save_movie", False))
@@ -80,6 +86,7 @@ class LiveUI:
 
     def update_mix(self, var, atm, para,
                    save_movie: bool = False, show: bool = True) -> None:
+        """Render the mixing-ratio panel for `cfg.plot_spec`; optionally save a frame."""
         plt = self._ensure_mpl()
         species_idx = self._ensure_species_index()
 
@@ -146,6 +153,7 @@ class LiveUI:
 
     def update_flux(self, var, atm, para,
                     save_movie: bool = False, show: bool = True) -> None:
+        """Render the up/down/stellar diffusive-flux panel; optionally save a frame."""
         plt = self._ensure_mpl()
 
         plt.figure("live flux")

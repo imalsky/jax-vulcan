@@ -25,6 +25,7 @@ _LOWT_SENTINEL = -100.0
 
 
 def _cross_folder() -> str:
+    """Return `vulcan_cfg.cross_folder` as a string (path to per-species CSVs)."""
     return str(vulcan_cfg.cross_folder)
 
 

@@ -143,7 +143,7 @@ def apply_lowT_caps(
     net: Network, k: np.ndarray, T: np.ndarray, M: np.ndarray
 ) -> np.ndarray:
     """Apply three Moses+2005 low-T rate caps. Caller gates on
-    `cfg.use_lowT_limit_rates` (only the Jupiter cfg sets it)."""
+    `cfg.use_lowT_limit_rates`, used for cool-atmosphere networks."""
     k = np.asarray(k, dtype=np.float64).copy()
     T = np.asarray(T, dtype=np.float64)
     M = np.asarray(M, dtype=np.float64)

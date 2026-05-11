@@ -223,6 +223,7 @@ _K_EQ_CACHE: dict = {}
 
 
 def _K_eq_array_cached(T_np: np.ndarray) -> np.ndarray:
+    """Per-T equilibrium-constant array, memoised by `T` byte identity (LRU=4)."""
     key = (T_np.shape, T_np.tobytes())
     cached = _K_EQ_CACHE.get(key)
     if cached is not None:
