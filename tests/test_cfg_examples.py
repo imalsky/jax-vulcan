@@ -6,6 +6,7 @@ setup through photo / ion-rate initialization. This catches missing
 vendored assets and stale config paths without mutating the repo's
 default `vulcan_cfg.py`.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -37,7 +38,7 @@ spec = importlib.util.spec_from_file_location("vulcan_cfg", cfg_path)
 cfg = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(cfg)
-sys.modules["vulcan_cfg"] = cfg
+sys.modules["vulcan_jax.vulcan_cfg"] = cfg
 
 cfg.use_print_prog = False
 cfg.use_live_plot = False
@@ -51,7 +52,7 @@ cfg.count_max = 1
 cfg.count_min = 1
 cfg.runtime = 1.0e22
 
-from runtime_validation import validate_runtime_config
+from vulcan_jax.runtime_validation import validate_runtime_config
 
 validate_runtime_config(cfg, root=root)
 
@@ -60,7 +61,7 @@ validate_runtime_config(cfg, root=root)
 # `RunState.with_pre_loop_setup(cfg)` — a single call covering the
 # `make_atm` / `ReadRate` / `setup_var_k` / `InitialAbun` /
 # `populate_photo_arrays` / `apply_photo_remove` chain.
-from state import RunState
+from vulcan_jax.state import RunState
 
 rs = RunState.with_pre_loop_setup(cfg)
 assert rs.metadata is not None
@@ -78,9 +79,11 @@ print("PASS")
     ],
 )
 def test_cfg_example_setup(cfg_name: str) -> None:
-    cfg_path = ROOT / "cfg_examples" / cfg_name
+    from vulcan_jax._paths import PACKAGE_ROOT
+
+    cfg_path = PACKAGE_ROOT / "cfg_examples" / cfg_name
     result = subprocess.run(
-        [sys.executable, "-c", _SETUP_SCRIPT, str(ROOT), str(cfg_path)],
+        [sys.executable, "-c", _SETUP_SCRIPT, str(PACKAGE_ROOT), str(cfg_path)],
         capture_output=True,
         text=True,
         cwd=ROOT,

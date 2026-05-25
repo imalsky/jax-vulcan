@@ -6,6 +6,7 @@ Run:
 Requires that VULCAN-master/chem_funs.py has been regenerated for the same
 network file (run `python VULCAN-master/make_chem_funs.py` once).
 """
+
 from __future__ import annotations
 
 import sys
@@ -15,9 +16,8 @@ import pytest  # noqa: E402  (used by @pytest.mark.master_serial)
 
 # Make VULCAN-JAX importable when run from any cwd
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
 
-import network as net_mod  # noqa: E402
+import vulcan_jax.network as net_mod  # noqa: E402
 
 # Make VULCAN-master importable for chem_funs and vulcan_cfg
 VULCAN_MASTER = ROOT.parent / "VULCAN-master"
@@ -31,14 +31,14 @@ if not VULCAN_MASTER.is_dir():
 
 def main() -> int:
     sys.path.insert(0, str(VULCAN_MASTER))
-    import vulcan_cfg  # noqa: E402  (imports relative to current dir)
+    import vulcan_jax.vulcan_cfg as vulcan_cfg  # noqa: E402  (imports relative to current dir)
 
     network_path = ROOT / vulcan_cfg.network
     print(f"Parsing: {network_path}")
     net = net_mod.parse_network(network_path)
 
     # Compare against VULCAN-master/chem_funs.py
-    import chem_funs  # noqa: E402
+    import vulcan_jax.chem_funs as chem_funs  # noqa: E402
 
     ok = True
 
@@ -119,9 +119,11 @@ def main() -> int:
 def test_main():
     """Run the master comparison in a fresh Python process."""
     import subprocess
+
     result = subprocess.run(
         [sys.executable, str(Path(__file__).resolve())],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, (
         f"subprocess exited {result.returncode}\n"

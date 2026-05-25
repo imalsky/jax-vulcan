@@ -2,6 +2,7 @@
 
 Compares sol after a single 2nd-order Rosenbrock step.
 """
+
 from __future__ import annotations
 
 import os
@@ -32,7 +33,7 @@ def main() -> int:
     # === VULCAN-master pipeline + Ros2 step ===
     sys.path.insert(0, str(VULCAN_MASTER))
 
-    import vulcan_cfg as cfg_v
+    import vulcan_jax.vulcan_cfg as cfg_v
     import store as st_v
     import build_atm as ba_v
     import op as op_v
@@ -67,16 +68,17 @@ def main() -> int:
     # Reference one Ros2 step (mutates var.y)
     var_after, para_after = solver_v.solver(data_var, data_atm, data_para)
     sol_ref = np.asarray(var_after.y, dtype=np.float64).copy()
-    print(f"VULCAN ros2 step: sol shape {sol_ref.shape}, delta = {para_after.delta:.3e}")
+    print(
+        f"VULCAN ros2 step: sol shape {sol_ref.shape}, delta = {para_after.delta:.3e}"
+    )
 
     # === Switch to VULCAN-JAX ===
     for mod in ("vulcan_cfg", "store", "build_atm", "op", "chem_funs"):
         sys.modules.pop(mod, None)
     while str(VULCAN_MASTER) in sys.path:
         sys.path.remove(str(VULCAN_MASTER))
-    sys.path.insert(0, str(ROOT))
 
-    import vulcan_cfg as cfg_jax
+    import vulcan_jax.vulcan_cfg as cfg_jax
 
     # Pin JAX modules to the exact network and transport flags used by the
     # master-side state captured above. `jax_step` imports
@@ -93,9 +95,9 @@ def main() -> int:
         if hasattr(cfg_v, name):
             setattr(cfg_jax, name, getattr(cfg_v, name))
 
-    import chem_funs
+    import vulcan_jax.chem_funs as chem_funs
     import jax.numpy as jnp
-    from jax_step import jax_ros2_step, make_atm_static
+    from vulcan_jax.jax_step import jax_ros2_step, make_atm_static
 
     nz, ni = y0.shape
 
@@ -117,7 +119,9 @@ def main() -> int:
         chem_funs._NET_JAX,
     )
     sol_jax = np.asarray(sol_jax, dtype=np.float64)
-    print(f"VULCAN-JAX production step delta max = {float(np.max(np.asarray(delta_jax))):.3e}")
+    print(
+        f"VULCAN-JAX production step delta max = {float(np.max(np.asarray(delta_jax))):.3e}"
+    )
 
     # Compare
     relerr = np.abs(sol_jax - sol_ref) / np.maximum(np.abs(sol_ref), 1e-12)
@@ -131,7 +135,7 @@ def main() -> int:
             print(f"  {chem_funs.spec_list[j]}: max relerr {per_sp[j]:.3e}")
 
     print()
-    ok = max_relerr < 1e-3   # generous; the integrator self-corrects
+    ok = max_relerr < 1e-3  # generous; the integrator self-corrects
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -144,9 +148,11 @@ def test_main():
     the modules are already cached from prior tests, so we run `main()`
     in a fresh subprocess and assert the exit code."""
     import subprocess
+
     result = subprocess.run(
         [sys.executable, str(Path(__file__).resolve())],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, (
         f"subprocess exited {result.returncode}\n"

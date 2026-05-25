@@ -44,7 +44,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from phy_const import Navo, kb
+from vulcan_jax.phy_const import Navo, kb
 
 
 @dataclass
@@ -74,10 +74,10 @@ class DiffusionCoeffs:
     C_mol: np.ndarray
     # Boundary-condition arrays (BC contribution to RHS, separate from coeffs).
     use_topflux: bool
-    top_flux: np.ndarray            # shape (ni,)
+    top_flux: np.ndarray  # shape (ni,)
     use_botflux: bool
     bot_flux: np.ndarray
-    bot_vdep: np.ndarray            # shape (ni,)
+    bot_vdep: np.ndarray  # shape (ni,)
     dzi: np.ndarray
 
 
@@ -126,13 +126,13 @@ def build_diffusion_coeffs(
     dzi = atm.dzi
     Kzz = atm.Kzz
     Dzz = atm.Dzz
-    alpha = atm.alpha       # (ni,)
-    ms = atm.ms             # (ni,)
-    Tco = atm.Tco           # (nz,)
-    Hpi = atm.Hpi           # (nz-1,)
-    Ti = atm.Ti             # (nz-1,)
-    g = atm.g               # (nz,)
-    vz = atm.vz             # (nz-1,)
+    alpha = atm.alpha  # (ni,)
+    ms = atm.ms  # (ni,)
+    Tco = atm.Tco  # (nz,)
+    Hpi = atm.Hpi  # (nz-1,)
+    Ti = atm.Ti  # (nz-1,)
+    g = atm.g  # (nz,)
+    vz = atm.vz  # (nz-1,)
 
     A = np.zeros(nz, dtype=np.float64)
     B = np.zeros(nz, dtype=np.float64)
@@ -157,43 +157,109 @@ def build_diffusion_coeffs(
     if use_mol:
         if use_vm:
             # vm-mode: use upwind advection with vm[0] in place of gravity term
-            Ai[0] = -1.0 / dzi[0] * (Dzz[0] / dzi[0]) * (ysum[1] + ysum[0]) / 2.0 / ysum[0]
+            Ai[0] = (
+                -1.0 / dzi[0] * (Dzz[0] / dzi[0]) * (ysum[1] + ysum[0]) / 2.0 / ysum[0]
+            )
             Ai[0] -= ((vm[0] > 0) * vm[0]) / dzi[0]
-            Bi[0] = 1.0 / dzi[0] * (Dzz[0] / dzi[0]) * (ysum[1] + ysum[0]) / 2.0 / ysum[1]
+            Bi[0] = (
+                1.0 / dzi[0] * (Dzz[0] / dzi[0]) * (ysum[1] + ysum[0]) / 2.0 / ysum[1]
+            )
             Bi[0] -= ((vm[0] < 0) * vm[0]) / dzi[0]
         else:
             bdry0_mol_term = (
-                1.0 / dzi[0] * Dzz[0] / 2.0
-                * (-1.0 / Hpi[0] + ms * g[0] / (Navo * kb * Ti[0])
-                   + alpha / Ti[0] * (Tco[1] - Tco[0]) / dzi[0])
+                1.0
+                / dzi[0]
+                * Dzz[0]
+                / 2.0
+                * (
+                    -1.0 / Hpi[0]
+                    + ms * g[0] / (Navo * kb * Ti[0])
+                    + alpha / Ti[0] * (Tco[1] - Tco[0]) / dzi[0]
+                )
             )
-            Ai[0] = -1.0 / dzi[0] * (Dzz[0] / dzi[0]) * (ysum[1] + ysum[0]) / 2.0 / ysum[0] + bdry0_mol_term
-            Bi[0] = 1.0 / dzi[0] * (Dzz[0] / dzi[0]) * (ysum[1] + ysum[0]) / 2.0 / ysum[1] + bdry0_mol_term
+            Ai[0] = (
+                -1.0 / dzi[0] * (Dzz[0] / dzi[0]) * (ysum[1] + ysum[0]) / 2.0 / ysum[0]
+                + bdry0_mol_term
+            )
+            Bi[0] = (
+                1.0 / dzi[0] * (Dzz[0] / dzi[0]) * (ysum[1] + ysum[0]) / 2.0 / ysum[1]
+                + bdry0_mol_term
+            )
         if use_set:
             # Add settling velocity (upwind) at j=0
             Ai[0] -= ((vs[0] > 0) * vs[0]) / dzi[0]
             Bi[0] -= ((vs[0] < 0) * vs[0]) / dzi[0]
 
     # --- Top (j = nz - 1) ---
-    A[nz - 1] = -1.0 / dzi[nz - 2] * (Kzz[nz - 2] / dzi[nz - 2]) * (ysum[nz - 1] + ysum[nz - 2]) / 2.0 / ysum[nz - 1]
-    C[nz - 1] = 1.0 / dzi[nz - 2] * (Kzz[nz - 2] / dzi[nz - 2]) * (ysum[nz - 1] + ysum[nz - 2]) / 2.0 / ysum[nz - 2]
+    A[nz - 1] = (
+        -1.0
+        / dzi[nz - 2]
+        * (Kzz[nz - 2] / dzi[nz - 2])
+        * (ysum[nz - 1] + ysum[nz - 2])
+        / 2.0
+        / ysum[nz - 1]
+    )
+    C[nz - 1] = (
+        1.0
+        / dzi[nz - 2]
+        * (Kzz[nz - 2] / dzi[nz - 2])
+        * (ysum[nz - 1] + ysum[nz - 2])
+        / 2.0
+        / ysum[nz - 2]
+    )
     A[nz - 1] += ((vz[-1] < 0) * vz[-1]) / dzi[-1]
     C[nz - 1] += ((vz[-1] > 0) * vz[-1]) / dzi[-1]
 
     if use_mol:
         if use_vm:
-            Ai[nz - 1] = -1.0 / dzi[-1] * (Dzz[nz - 2] / dzi[-1]) * (ysum[nz - 1] + ysum[nz - 2]) / 2.0 / ysum[nz - 1]
+            Ai[nz - 1] = (
+                -1.0
+                / dzi[-1]
+                * (Dzz[nz - 2] / dzi[-1])
+                * (ysum[nz - 1] + ysum[nz - 2])
+                / 2.0
+                / ysum[nz - 1]
+            )
             Ai[nz - 1] += ((vm[-1] < 0) * vm[-1]) / dzi[-1]
-            Ci[nz - 1] = 1.0 / dzi[-1] * (Dzz[nz - 2] / dzi[-1]) * (ysum[nz - 1] + ysum[nz - 2]) / 2.0 / ysum[nz - 2]
+            Ci[nz - 1] = (
+                1.0
+                / dzi[-1]
+                * (Dzz[nz - 2] / dzi[-1])
+                * (ysum[nz - 1] + ysum[nz - 2])
+                / 2.0
+                / ysum[nz - 2]
+            )
             Ci[nz - 1] += ((vm[-1] > 0) * vm[-1]) / dzi[-1]
         else:
             bdry_top_mol_term = (
-                -1.0 / dzi[-1] * Dzz[-1] / 2.0
-                * (-1.0 / Hpi[-1] + ms * g[-1] / (Navo * kb * Ti[-1])
-                   + alpha / Ti[-1] * (Tco[-1] - Tco[-2]) / dzi[-1])
+                -1.0
+                / dzi[-1]
+                * Dzz[-1]
+                / 2.0
+                * (
+                    -1.0 / Hpi[-1]
+                    + ms * g[-1] / (Navo * kb * Ti[-1])
+                    + alpha / Ti[-1] * (Tco[-1] - Tco[-2]) / dzi[-1]
+                )
             )
-            Ai[nz - 1] = -1.0 / dzi[-1] * (Dzz[nz - 2] / dzi[-1]) * (ysum[nz - 1] + ysum[nz - 2]) / 2.0 / ysum[nz - 1] + bdry_top_mol_term
-            Ci[nz - 1] = 1.0 / dzi[-1] * (Dzz[nz - 2] / dzi[-1]) * (ysum[nz - 1] + ysum[nz - 2]) / 2.0 / ysum[nz - 2] + bdry_top_mol_term
+            Ai[nz - 1] = (
+                -1.0
+                / dzi[-1]
+                * (Dzz[nz - 2] / dzi[-1])
+                * (ysum[nz - 1] + ysum[nz - 2])
+                / 2.0
+                / ysum[nz - 1]
+                + bdry_top_mol_term
+            )
+            Ci[nz - 1] = (
+                1.0
+                / dzi[-1]
+                * (Dzz[nz - 2] / dzi[-1])
+                * (ysum[nz - 1] + ysum[nz - 2])
+                / 2.0
+                / ysum[nz - 2]
+                + bdry_top_mol_term
+            )
         if use_set:
             Ai[nz - 1] += ((vs[-1] < 0) * vs[-1]) / dzi[-1]
             Ci[nz - 1] += ((vs[-1] > 0) * vs[-1]) / dzi[-1]
@@ -201,12 +267,27 @@ def build_diffusion_coeffs(
     # --- Interior (1 <= j <= nz - 2) ---
     for j in range(1, nz - 1):
         dz_ave = 0.5 * (dzi[j - 1] + dzi[j])
-        A[j] = -1.0 / dz_ave * (
-            Kzz[j] / dzi[j] * (ysum[j + 1] + ysum[j]) / 2.0
-            + Kzz[j - 1] / dzi[j - 1] * (ysum[j] + ysum[j - 1]) / 2.0
-        ) / ysum[j]
-        B[j] = 1.0 / dz_ave * Kzz[j] / dzi[j] * (ysum[j + 1] + ysum[j]) / 2.0 / ysum[j + 1]
-        C[j] = 1.0 / dz_ave * Kzz[j - 1] / dzi[j - 1] * (ysum[j] + ysum[j - 1]) / 2.0 / ysum[j - 1]
+        A[j] = (
+            -1.0
+            / dz_ave
+            * (
+                Kzz[j] / dzi[j] * (ysum[j + 1] + ysum[j]) / 2.0
+                + Kzz[j - 1] / dzi[j - 1] * (ysum[j] + ysum[j - 1]) / 2.0
+            )
+            / ysum[j]
+        )
+        B[j] = (
+            1.0 / dz_ave * Kzz[j] / dzi[j] * (ysum[j + 1] + ysum[j]) / 2.0 / ysum[j + 1]
+        )
+        C[j] = (
+            1.0
+            / dz_ave
+            * Kzz[j - 1]
+            / dzi[j - 1]
+            * (ysum[j] + ysum[j - 1])
+            / 2.0
+            / ysum[j - 1]
+        )
 
         # Vertical advection
         A[j] += -((vz[j] > 0) * vz[j] - (vz[j - 1] < 0) * vz[j - 1]) / dz_ave
@@ -215,12 +296,33 @@ def build_diffusion_coeffs(
 
         if use_mol:
             # Diffusion (central) part of Ai/Bi/Ci -- common to all variants
-            Ai[j] = -1.0 / dz_ave * (
-                Dzz[j] / dzi[j] * (ysum[j + 1] + ysum[j]) / 2.0
-                + Dzz[j - 1] / dzi[j - 1] * (ysum[j] + ysum[j - 1]) / 2.0
-            ) / ysum[j]
-            Bi[j] = 1.0 / dz_ave * Dzz[j] / dzi[j] * (ysum[j + 1] + ysum[j]) / 2.0 / ysum[j + 1]
-            Ci[j] = 1.0 / dz_ave * Dzz[j - 1] / dzi[j - 1] * (ysum[j] + ysum[j - 1]) / 2.0 / ysum[j - 1]
+            Ai[j] = (
+                -1.0
+                / dz_ave
+                * (
+                    Dzz[j] / dzi[j] * (ysum[j + 1] + ysum[j]) / 2.0
+                    + Dzz[j - 1] / dzi[j - 1] * (ysum[j] + ysum[j - 1]) / 2.0
+                )
+                / ysum[j]
+            )
+            Bi[j] = (
+                1.0
+                / dz_ave
+                * Dzz[j]
+                / dzi[j]
+                * (ysum[j + 1] + ysum[j])
+                / 2.0
+                / ysum[j + 1]
+            )
+            Ci[j] = (
+                1.0
+                / dz_ave
+                * Dzz[j - 1]
+                / dzi[j - 1]
+                * (ysum[j] + ysum[j - 1])
+                / 2.0
+                / ysum[j - 1]
+            )
 
             if use_vm:
                 # vm-mode: upwind advection in place of gravity terms
@@ -229,14 +331,30 @@ def build_diffusion_coeffs(
                 Ci[j] += ((vm[j - 1] > 0) * vm[j - 1]) / dz_ave
             else:
                 # Gravity-style central terms
-                grav_j = -1.0 / Hpi[j] + ms * g[j] / (Navo * kb * Ti[j]) + alpha / Ti[j] * (Tco[j + 1] - Tco[j]) / dzi[j]
-                grav_jm = -1.0 / Hpi[j - 1] + ms * g[j] / (Navo * kb * Ti[j - 1]) + alpha / Ti[j - 1] * (Tco[j] - Tco[j - 1]) / dzi[j - 1]
+                grav_j = (
+                    -1.0 / Hpi[j]
+                    + ms * g[j] / (Navo * kb * Ti[j])
+                    + alpha / Ti[j] * (Tco[j + 1] - Tco[j]) / dzi[j]
+                )
+                grav_jm = (
+                    -1.0 / Hpi[j - 1]
+                    + ms * g[j] / (Navo * kb * Ti[j - 1])
+                    + alpha / Ti[j - 1] * (Tco[j] - Tco[j - 1]) / dzi[j - 1]
+                )
                 Ai[j] += 1.0 / (2.0 * dz_ave) * (Dzz[j] * grav_j - Dzz[j - 1] * grav_jm)
 
-                grav_jp_b = -1.0 / Hpi[j] + ms * g[j + 1] / (Navo * kb * Ti[j]) + alpha / Ti[j] * (Tco[j + 1] - Tco[j]) / dzi[j]
+                grav_jp_b = (
+                    -1.0 / Hpi[j]
+                    + ms * g[j + 1] / (Navo * kb * Ti[j])
+                    + alpha / Ti[j] * (Tco[j + 1] - Tco[j]) / dzi[j]
+                )
                 Bi[j] += 1.0 / (2.0 * dz_ave) * Dzz[j] * grav_jp_b
 
-                grav_jm_c = -1.0 / Hpi[j - 1] + ms * g[j - 1] / (Navo * kb * Ti[j - 1]) + alpha / Ti[j - 1] * (Tco[j] - Tco[j - 1]) / dzi[j - 1]
+                grav_jm_c = (
+                    -1.0 / Hpi[j - 1]
+                    + ms * g[j - 1] / (Navo * kb * Ti[j - 1])
+                    + alpha / Ti[j - 1] * (Tco[j] - Tco[j - 1]) / dzi[j - 1]
+                )
                 Ci[j] += -1.0 / (2.0 * dz_ave) * Dzz[j - 1] * grav_jm_c
 
             if use_set:
@@ -246,8 +364,12 @@ def build_diffusion_coeffs(
                 Ci[j] += ((vs[j - 1] > 0) * vs[j - 1]) / dz_ave
 
     return DiffusionCoeffs(
-        A_eddy=A, B_eddy=B, C_eddy=C,
-        A_mol=Ai, B_mol=Bi, C_mol=Ci,
+        A_eddy=A,
+        B_eddy=B,
+        C_eddy=C,
+        A_mol=Ai,
+        B_mol=Bi,
+        C_mol=Ci,
         use_topflux=bool(cfg.use_topflux),
         top_flux=np.asarray(atm.top_flux, dtype=np.float64),
         use_botflux=bool(cfg.use_botflux),
@@ -263,7 +385,7 @@ def apply_diffusion(y: np.ndarray, coeffs: DiffusionCoeffs) -> np.ndarray:
     Includes boundary-condition contributions if use_topflux / use_botflux.
     """
     nz, ni = y.shape
-    A_total = coeffs.A_eddy[:, None] + coeffs.A_mol      # (nz, ni)
+    A_total = coeffs.A_eddy[:, None] + coeffs.A_mol  # (nz, ni)
     B_total = coeffs.B_eddy[:, None] + coeffs.B_mol
     C_total = coeffs.C_eddy[:, None] + coeffs.C_mol
 
@@ -274,9 +396,7 @@ def apply_diffusion(y: np.ndarray, coeffs: DiffusionCoeffs) -> np.ndarray:
     diff[-1] = A_total[-1] * y[-1] + C_total[-1] * y[-2]
     # interior
     diff[1:-1] = (
-        A_total[1:-1] * y[1:-1]
-        + B_total[1:-1] * y[2:]
-        + C_total[1:-1] * y[:-2]
+        A_total[1:-1] * y[1:-1] + B_total[1:-1] * y[2:] + C_total[1:-1] * y[:-2]
     )
 
     # BC: top flux
@@ -319,11 +439,11 @@ def diffusion_block_diags(coeffs: DiffusionCoeffs, ni: int):
     Ci = coeffs.C_mol
 
     # Diagonal of the j-block: A[j] + Ai[j, :]
-    diag_d = A[:, None] + Ai                      # (nz, ni)
+    diag_d = A[:, None] + Ai  # (nz, ni)
     # Super-diagonal (j -> j+1): B[j] + Bi[j, :], but only for j in [0, nz-2]
-    sup_d = B[:-1, None] + Bi[:-1]                # (nz-1, ni)
+    sup_d = B[:-1, None] + Bi[:-1]  # (nz-1, ni)
     # Sub-diagonal (j -> j-1): C[j] + Ci[j, :], for j in [1, nz-1]
-    sub_d = C[1:, None] + Ci[1:]                  # (nz-1, ni)
+    sub_d = C[1:, None] + Ci[1:]  # (nz-1, ni)
 
     # Add deposition velocity to the surface diagonal
     if coeffs.use_botflux:

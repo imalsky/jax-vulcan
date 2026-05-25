@@ -14,6 +14,7 @@ conden on step 1 (entry-time t=0 < both starts). The buggy gate would fire
 conden in the first config but not the second, producing divergent state.
 The fixed gate skips both → identical first-step state.
 """
+
 from __future__ import annotations
 
 import os
@@ -23,7 +24,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 
 warnings.filterwarnings("ignore")
 
@@ -61,7 +61,7 @@ def test_fix_species_gate_uses_entry_time_t() -> None:
     )
     line_start = text.rfind("\n", 0, idx)
     line_end = text.find("\n", idx)
-    line = text[line_start : line_end]
+    line = text[line_start:line_end]
     assert "s.t" in line and "t_next" not in line, (
         f"fix-species gate must compare `s.t > stop_conden_time` (entry-time), "
         f"not `t_next`. Found: {line!r}."

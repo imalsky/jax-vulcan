@@ -3,6 +3,7 @@
 Builds a single VULCAN-master state, replicates y across a batch dimension,
 calls jax.vmap(jax_ros2_step) and verifies all batch elements agree.
 """
+
 from __future__ import annotations
 
 import os
@@ -15,7 +16,6 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 
 warnings.filterwarnings("ignore")
 
@@ -24,13 +24,13 @@ def main() -> int:
     import jax
     import jax.numpy as jnp
 
-    import vulcan_cfg
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     # Build the canonical HD189 pre-loop state via the typed constructor
     # and derive a `(var, atm, _)` shim for legacy attribute access. The
     # shim carries `var.y` / `var.k_arr` / `atm.*` populated from the
     # typed pytree.
-    from state import RunState, legacy_view
+    from vulcan_jax.state import RunState, legacy_view
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
     data_var, data_atm, _ = legacy_view(rs)
@@ -39,9 +39,9 @@ def main() -> int:
     y0 = np.asarray(data_var.y, dtype=np.float64)
     nz, ni = y0.shape
 
-    import network as net_mod
-    import chem as chem_mod
-    import jax_step as js_mod
+    import vulcan_jax.network as net_mod
+    import vulcan_jax.chem as chem_mod
+    import vulcan_jax.jax_step as js_mod
 
     net = net_mod.parse_network(vulcan_cfg.network)
     net_jax = chem_mod.to_jax(net)
@@ -65,7 +65,9 @@ def main() -> int:
             jnp.asarray(y0), jnp.asarray(k_arr), data_var.dt, atm_static, net_jax
         )
         sol_warm.block_until_ready()
-    print(f"  10 warm calls: {time.time() - t0:.2f}s ({(time.time()-t0)/10*1000:.1f}ms/step)")
+    print(
+        f"  10 warm calls: {time.time() - t0:.2f}s ({(time.time() - t0) / 10 * 1000:.1f}ms/step)"
+    )
 
     # Vmap over batch of 4 (replicas of the same y for sanity)
     BATCH = 4
@@ -73,10 +75,12 @@ def main() -> int:
     k_batch = jnp.stack([jnp.asarray(k_arr)] * BATCH, axis=0)
 
     # vmap over y, k_arr; broadcast atm_static, net_jax
-    vstep = jax.jit(jax.vmap(
-        js_mod.jax_ros2_step,
-        in_axes=(0, 0, None, None, None),
-    ))
+    vstep = jax.jit(
+        jax.vmap(
+            js_mod.jax_ros2_step,
+            in_axes=(0, 0, None, None, None),
+        )
+    )
 
     print(f"\nCompiling vmap'd step (batch={BATCH}) ...")
     t0 = time.time()
@@ -86,16 +90,23 @@ def main() -> int:
 
     t0 = time.time()
     for _ in range(10):
-        sol_batch, delta_batch = vstep(y_batch, k_batch, data_var.dt, atm_static, net_jax)
+        sol_batch, delta_batch = vstep(
+            y_batch, k_batch, data_var.dt, atm_static, net_jax
+        )
         sol_batch.block_until_ready()
-    print(f"  10 warm vmap calls: {time.time() - t0:.2f}s ({(time.time()-t0)/10*1000:.1f}ms/step)")
+    print(
+        f"  10 warm vmap calls: {time.time() - t0:.2f}s ({(time.time() - t0) / 10 * 1000:.1f}ms/step)"
+    )
 
     # Verify all batch elements equal the single-step result
     sol_batch_np = np.asarray(sol_batch)
     sol_single_np = np.asarray(sol_single)
     relerr = 0.0
     for b in range(BATCH):
-        e = np.max(np.abs(sol_batch_np[b] - sol_single_np) / np.maximum(np.abs(sol_single_np), 1e-30))
+        e = np.max(
+            np.abs(sol_batch_np[b] - sol_single_np)
+            / np.maximum(np.abs(sol_single_np), 1e-30)
+        )
         relerr = max(relerr, e)
     print(f"\nVmap consistency (batch element vs single): max relerr = {relerr:.3e}")
 

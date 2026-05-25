@@ -5,6 +5,7 @@ re-write via `apply_pytree_to_store` and re-read via
 `pytree_from_store` yields a tree-equal pytree. Pins the schema so
 future setup-pipeline edits cannot silently drop a field.
 """
+
 from __future__ import annotations
 
 import os
@@ -17,7 +18,6 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 
 warnings.filterwarnings("ignore")
 
@@ -50,7 +50,7 @@ def _pytree_equal(p, q) -> bool:
 def test_roundtrip_hd189(hd189_state):
     """`pytree_from_store -> apply_pytree_to_store -> pytree_from_store`
     is identity on the canonical HD189 reference state."""
-    from state import pytree_from_store, apply_pytree_to_store
+    from vulcan_jax.state import pytree_from_store, apply_pytree_to_store
 
     var = hd189_state.var
     atm = hd189_state.atm
@@ -73,7 +73,7 @@ def test_roundtrip_field_set_complete(hd189_state):
     test enumerates the AtmData attribute names on the HD189 reference
     state and asserts each runner-visible array attribute is present in
     the AtmInputs slot."""
-    from state import pytree_from_store, AtmInputs
+    from vulcan_jax.state import pytree_from_store, AtmInputs
 
     pt = pytree_from_store(hd189_state.var, hd189_state.atm)
 
@@ -82,9 +82,12 @@ def test_roundtrip_field_set_complete(hd189_state):
         leaf = getattr(pt.atm, name)
         assert leaf is not None, f"AtmInputs.{name} is None"
         arr = np.asarray(leaf)
-        assert arr.size > 0 or name in {"top_flux", "bot_flux", "bot_vdep", "bot_fix_sp"}, (
-            f"AtmInputs.{name} unexpectedly empty (shape={arr.shape})"
-        )
+        assert arr.size > 0 or name in {
+            "top_flux",
+            "bot_flux",
+            "bot_vdep",
+            "bot_fix_sp",
+        }, f"AtmInputs.{name} unexpectedly empty (shape={arr.shape})"
 
     # Rate constants — densified (nr+1, nz) array, non-empty.
     k_arr = np.asarray(pt.rate.k)
@@ -94,7 +97,8 @@ def test_roundtrip_field_set_complete(hd189_state):
     )
 
     # PhotoInputs — sflux_top is populated when use_photo=True.
-    import vulcan_cfg
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+
     if bool(getattr(vulcan_cfg, "use_photo", False)):
         sflux_arr = np.asarray(pt.photo.sflux_top)
         assert sflux_arr.size > 0, (
@@ -104,9 +108,9 @@ def test_roundtrip_field_set_complete(hd189_state):
 
 def test_runstate_output_parameter_schema(hd189_state):
     """RunState-backed `.vul` output exposes VULCAN-master parameter keys."""
-    import legacy_io
-    import vulcan_cfg
-    from state import runstate_from_store
+    import vulcan_jax.legacy_io as legacy_io
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.state import runstate_from_store
 
     rs = runstate_from_store(hd189_state.var, hd189_state.atm, hd189_state.para)
     _, _, param = legacy_io._synthesize_save_dicts(
@@ -141,7 +145,7 @@ def test_runstate_output_parameter_schema(hd189_state):
 def test_load_stellar_flux_no_photo():
     """`load_stellar_flux(cfg)` returns an empty payload when use_photo=False
     so callers can call it unconditionally."""
-    from state import load_stellar_flux
+    from vulcan_jax.state import load_stellar_flux
 
     class _Cfg:
         use_photo = False
@@ -156,8 +160,8 @@ def test_load_stellar_flux_no_photo():
 def test_load_stellar_flux_hd189():
     """`load_stellar_flux(vulcan_cfg)` reads the HD189 stellar flux file
     and produces sane bin extents."""
-    from state import load_stellar_flux
-    import vulcan_cfg
+    from vulcan_jax.state import load_stellar_flux
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     flux = load_stellar_flux(vulcan_cfg)
     assert flux.wavelength_nm.shape[0] > 100, (

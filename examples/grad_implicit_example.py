@@ -26,6 +26,7 @@ forward).
 Wall time: ~2 minutes for the full forward + a few seconds for the
 gradient. Run from VULCAN-JAX/ as `python examples/grad_implicit_example.py`.
 """
+
 from __future__ import annotations
 
 import os
@@ -35,7 +36,6 @@ from pathlib import Path
 
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
 import numpy as np
@@ -44,23 +44,25 @@ import jax.numpy as jnp
 
 
 def main() -> int:
-    import vulcan_cfg
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+
     vulcan_cfg.use_print_prog = False
     vulcan_cfg.use_live_plot = False
     vulcan_cfg.use_live_flux = False
 
-    import legacy_io as op
-    import op_jax
-    import outer_loop
-    import chem as _chem_mod
-    import network as _net_mod
-    from jax_step import make_atm_static
-    from steady_state_grad import (
+    import vulcan_jax.legacy_io as op
+    import vulcan_jax.op_jax as op_jax
+    import vulcan_jax.outer_loop as outer_loop
+    import vulcan_jax.chem as _chem_mod
+    import vulcan_jax.network as _net_mod
+    from vulcan_jax.jax_step import make_atm_static
+    from vulcan_jax.steady_state_grad import (
         differentiable_steady_state,
         steady_state_residual,
     )
+
     # Full pre-loop pipeline + RunState-driven runner.
-    from state import RunState, legacy_view
+    from vulcan_jax.state import RunState, legacy_view
 
     print("Building HD189 atmosphere + running forward integration...")
     t0 = time.time()
@@ -80,8 +82,9 @@ def main() -> int:
     # for the downstream `data_var.y` / `data_para.count` reads below.
     data_var, data_atm, data_para = legacy_view(runstate)
     data_para.start_time = t0
-    print(f"Forward integration done in {time.time() - t0:.1f}s "
-          f"({data_para.count} steps)")
+    print(
+        f"Forward integration done in {time.time() - t0:.1f}s ({data_para.count} steps)"
+    )
 
     # Pull the converged state into JAX form.
     network = _net_mod.parse_network(vulcan_cfg.network)
@@ -98,18 +101,27 @@ def main() -> int:
     # Sanity: how close is the converged state to f = 0?
     res = steady_state_residual(y_star, k_arr, atm_static, net_jax)
     res_norm = float(jnp.max(jnp.abs(res)))
-    rhs_scale = float(jnp.max(jnp.abs(_chem_mod.chem_rhs_segment_sum(
-        y_star, atm_static.M, k_arr, net_jax))))
-    print(f"||f(y*, k)||_inf = {res_norm:.3e}, "
-          f"||rhs||_inf at y* = {rhs_scale:.3e}, "
-          f"||f||/||rhs|| = {res_norm / max(rhs_scale, 1e-300):.3e}")
-    print("(The runner's `longdy < yconv_cri` criterion measures state "
-          "change over time, NOT ||f|| → 0. For mass-conserving HD189 "
-          "with default yconv_cri=0.01, ||f|| is large in absolute terms "
-          "but small relative to the chem-RHS scale. The implicit gradient "
-          "below is dominated by Jacobian-null-space noise unless yconv_cri "
-          "is reduced or the gradient is projected onto the conserved-mass "
-          "manifold. Lower yconv_cri for tighter forward + gradient.)")
+    rhs_scale = float(
+        jnp.max(
+            jnp.abs(
+                _chem_mod.chem_rhs_segment_sum(y_star, atm_static.M, k_arr, net_jax)
+            )
+        )
+    )
+    print(
+        f"||f(y*, k)||_inf = {res_norm:.3e}, "
+        f"||rhs||_inf at y* = {rhs_scale:.3e}, "
+        f"||f||/||rhs|| = {res_norm / max(rhs_scale, 1e-300):.3e}"
+    )
+    print(
+        "(The runner's `longdy < yconv_cri` criterion measures state "
+        "change over time, NOT ||f|| → 0. For mass-conserving HD189 "
+        "with default yconv_cri=0.01, ||f|| is large in absolute terms "
+        "but small relative to the chem-RHS scale. The implicit gradient "
+        "below is dominated by Jacobian-null-space noise unless yconv_cri "
+        "is reduced or the gradient is projected onto the conserved-mass "
+        "manifold. Lower yconv_cri for tighter forward + gradient.)"
+    )
 
     # Pick a target species — use CH4 if available, else fall back to first.
     target_sp = "CH4" if "CH4" in network.species_idx else network.species[0]
@@ -126,26 +138,29 @@ def main() -> int:
         return -jnp.log10(jnp.maximum(ymix, 1e-300))
 
     L0 = float(loss(k_arr))
-    print(f"loss(k0) = -log10(ymix) = {L0:.4f}  →  ymix ~ {10**(-L0):.3e}")
+    print(f"loss(k0) = -log10(ymix) = {L0:.4f}  →  ymix ~ {10 ** (-L0):.3e}")
 
     print("Computing implicit gradient via custom_vjp...")
     t1 = time.time()
     g = jax.grad(loss)(k_arr)
     g.block_until_ready()
-    print(f"Gradient computed in {time.time() - t1:.2f}s; "
-          f"shape={g.shape}; max |g|={float(jnp.max(jnp.abs(g))):.3e}; "
-          f"finite={bool(jnp.all(jnp.isfinite(g)))}")
+    print(
+        f"Gradient computed in {time.time() - t1:.2f}s; "
+        f"shape={g.shape}; max |g|={float(jnp.max(jnp.abs(g))):.3e}; "
+        f"finite={bool(jnp.all(jnp.isfinite(g)))}"
+    )
 
     # Top-10 most sensitive (reaction, layer) pairs:
     g_np = np.asarray(g)
     flat_idx = np.argsort(np.abs(g_np).ravel())[::-1][:10]
-    print(f"\nTop 10 most sensitive (reaction_index, layer) entries for "
-          f"d(-log10 ymix[{target_sp}, z={z_target}]) / dk:")
+    print(
+        f"\nTop 10 most sensitive (reaction_index, layer) entries for "
+        f"d(-log10 ymix[{target_sp}, z={z_target}]) / dk:"
+    )
     for fi in flat_idx:
         ri, zi = np.unravel_index(fi, g.shape)
         rxn_str = network.Rf.get(int(ri), "?")
-        print(f"  k[r={ri:4d}, z={zi:3d}]  g={g_np[ri, zi]:+.3e}  "
-              f"({rxn_str})")
+        print(f"  k[r={ri:4d}, z={zi:3d}]  g={g_np[ri, zi]:+.3e}  ({rxn_str})")
     return 0
 
 

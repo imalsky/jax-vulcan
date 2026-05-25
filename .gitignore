@@ -76,13 +76,13 @@ output/*.mp4
 output/*.gif
 
 # FastChem runtime-generated files (regenerated each run by ini_abun._run_fastchem)
-fastchem_vulcan/.fastchem_lock
-fastchem_vulcan/input/parameters.dat
-fastchem_vulcan/input/element_abundances_vulcan.dat
-fastchem_vulcan/input/vulcan_TP/vulcan_TP.dat
-fastchem_vulcan/output/monitor_output.dat
-fastchem_vulcan/output/chem_species.dat
-fastchem_vulcan/output/vulcan_EQ.dat
+src/vulcan_jax/fastchem_vulcan/.fastchem_lock
+src/vulcan_jax/fastchem_vulcan/input/parameters.dat
+src/vulcan_jax/fastchem_vulcan/input/element_abundances_vulcan.dat
+src/vulcan_jax/fastchem_vulcan/input/vulcan_TP/vulcan_TP.dat
+src/vulcan_jax/fastchem_vulcan/output/monitor_output.dat
+src/vulcan_jax/fastchem_vulcan/output/chem_species.dat
+src/vulcan_jax/fastchem_vulcan/output/vulcan_EQ.dat
 
 # Large scientific data formats (typically big binary arrays/tables)
 *.h5

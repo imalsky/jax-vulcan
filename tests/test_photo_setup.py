@@ -13,6 +13,7 @@ from those bins.
 Run from VULCAN-JAX/:
     pytest tests/test_photo_setup.py
 """
+
 from __future__ import annotations
 
 import os
@@ -25,7 +26,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 
 warnings.filterwarnings("ignore")
 
@@ -42,9 +42,9 @@ def _build_state_through_read_rate():
     that `legacy_io.ReadRate.read_rate` writes onto `var`, so we need the
     legacy containers here rather than a `legacy_view(rs)` shim.
     """
-    import legacy_io as op
-    from atm_setup import Atm
-    from state import _Variables, _AtmData
+    import vulcan_jax.legacy_io as op
+    from vulcan_jax.atm_setup import Atm
+    from vulcan_jax.state import _Variables, _AtmData
 
     data_var = _Variables()
     data_atm = _AtmData()
@@ -65,7 +65,10 @@ def _check_static_against_fixture(
     fx = np.load(fixture_path)
 
     np.testing.assert_allclose(
-        np.asarray(static.bins), fx["bins"], rtol=0.0, atol=BIN_ATOL,
+        np.asarray(static.bins),
+        fx["bins"],
+        rtol=0.0,
+        atol=BIN_ATOL,
     )
     assert int(static.nbin) == int(fx["nbin"])
     assert float(static.dbin1) == float(fx["dbin1"])
@@ -150,25 +153,27 @@ def _check_static_against_fixture(
 
 def test_photo_setup_matches_baseline_fixture():
     """HD189 default — T_cross_sp=[], use_ion=False."""
-    import photo_setup
-    import vulcan_cfg
+    import vulcan_jax.photo_setup as photo_setup
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     if not bool(getattr(vulcan_cfg, "use_photo", False)):
         import pytest
+
         pytest.skip("use_photo=False; nothing to compare.")
 
     var, atm = _build_state_through_read_rate()
     static = photo_setup._build_photo_static_dense(var, atm)
     _check_static_against_fixture(
-        static, FIXTURE_DIR / "photo_setup_hd189_baseline.npz",
+        static,
+        FIXTURE_DIR / "photo_setup_hd189_baseline.npz",
     )
 
 
 @pytest.mark.strict_isolation
 def test_photo_setup_matches_T_dep_fixture(monkeypatch):
     """HD189 with T_cross_sp=['CO2','H2O','NH3'] patched on."""
-    import photo_setup
-    import vulcan_cfg
+    import vulcan_jax.photo_setup as photo_setup
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     monkeypatch.setattr(vulcan_cfg, "T_cross_sp", ["CO2", "H2O", "NH3"])
     var, atm = _build_state_through_read_rate()

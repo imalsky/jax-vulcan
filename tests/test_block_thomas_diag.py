@@ -10,6 +10,7 @@ problem (nz=120, ni=93) with realistic magnitudes.
 Also confirms `jax.grad` works through the new function (it must — Phase
 4.2 uses it for the implicit-VJP solve).
 """
+
 from __future__ import annotations
 
 import sys
@@ -20,11 +21,10 @@ import jax
 import jax.numpy as jnp
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
 
 jax.config.update("jax_enable_x64", True)
 
-import solver as solver_mod
+import vulcan_jax.solver as solver_mod
 
 
 def _build_dense_blocks_from_diags(diag, sup_d, sub_d):
@@ -58,9 +58,7 @@ def main() -> int:
     x_diag = np.asarray(solver_mod.block_thomas_diag_offdiag(diag, sup_d, sub_d, rhs))
     x_dense = np.asarray(solver_mod.block_thomas(diag, sup_dense, sub_dense, rhs))
 
-    relerr_small = np.max(
-        np.abs(x_diag - x_dense) / np.maximum(np.abs(x_dense), 1e-12)
-    )
+    relerr_small = np.max(np.abs(x_diag - x_dense) / np.maximum(np.abs(x_dense), 1e-12))
     print(f"small (nz={nz}, ni={ni}) diag-vs-dense max relerr: {relerr_small:.3e}")
     if relerr_small > 1e-12:
         print("FAIL: small system disagreement")
@@ -80,9 +78,7 @@ def main() -> int:
     sup_d2j = jnp.asarray(sup_d2)
     sub_d2j = jnp.asarray(sub_d2)
     rhs2j = jnp.asarray(rhs2)
-    sup_dense2, sub_dense2 = _build_dense_blocks_from_diags(
-        diag2j, sup_d2j, sub_d2j
-    )
+    sup_dense2, sub_dense2 = _build_dense_blocks_from_diags(diag2j, sup_d2j, sub_d2j)
 
     x_diag2 = np.asarray(
         solver_mod.block_thomas_diag_offdiag(diag2j, sup_d2j, sub_d2j, rhs2j)
@@ -104,9 +100,7 @@ def main() -> int:
 
     # ---- jax.grad works through the new function ---------------------------
     def loss(d):
-        return jnp.sum(
-            solver_mod.block_thomas_diag_offdiag(d, sup_d, sub_d, rhs) ** 2
-        )
+        return jnp.sum(solver_mod.block_thomas_diag_offdiag(d, sup_d, sub_d, rhs) ** 2)
 
     g = jax.grad(loss)(diag)
     finite = bool(jnp.all(jnp.isfinite(g)))

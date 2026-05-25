@@ -26,6 +26,7 @@ integration test of condensation is out of scope for this sub-milestone
 All three are pure JAX so the comparison hits float64 precision modulo
 reduction order; we check `≤ 1e-13`.
 """
+
 from __future__ import annotations
 
 import os
@@ -44,23 +45,39 @@ import jax.numpy as jnp  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 
 warnings.filterwarnings("ignore")
 
 KERNEL_RTOL = 1e-13
 
 
-def _make_static(nz: int, ni: int,
-                 conden_re_idx, conden_sp_idx,
-                 Dg_per_re, sat_n_per_re, coeff_per_re,
-                 *, h2o_active=False, h2o_idx=0, h2o_l_s_idx=0,
-                 h2o_Dg=None, h2o_sat=None, h2o_m_over_rho_r2=0.0,
-                 nh3_active=False, nh3_idx=0, nh3_l_s_idx=0,
-                 nh3_Dg=None, nh3_sat=None, nh3_m_over_rho_r2=0.0,
-                 nh3_conden_top=0,
-                 n_0=None, gas_indx_mask=None):
-    import conden as _conden_mod
+def _make_static(
+    nz: int,
+    ni: int,
+    conden_re_idx,
+    conden_sp_idx,
+    Dg_per_re,
+    sat_n_per_re,
+    coeff_per_re,
+    *,
+    h2o_active=False,
+    h2o_idx=0,
+    h2o_l_s_idx=0,
+    h2o_Dg=None,
+    h2o_sat=None,
+    h2o_m_over_rho_r2=0.0,
+    nh3_active=False,
+    nh3_idx=0,
+    nh3_l_s_idx=0,
+    nh3_Dg=None,
+    nh3_sat=None,
+    nh3_m_over_rho_r2=0.0,
+    nh3_conden_top=0,
+    n_0=None,
+    gas_indx_mask=None,
+):
+    import vulcan_jax.conden as _conden_mod
+
     if h2o_Dg is None:
         h2o_Dg = np.zeros(nz)
     if h2o_sat is None:
@@ -108,7 +125,7 @@ def test_update_conden_rates():
     """Two condensation reactions over (nz=5, ni=4) — verify scatter,
     sign split, and the use_relax short-circuit (coeff=0 → all-zero rate).
     """
-    import conden as _conden_mod
+    import vulcan_jax.conden as _conden_mod
 
     rng = np.random.default_rng(42)
     nz, ni = 5, 4
@@ -125,13 +142,13 @@ def test_update_conden_rates():
     k_arr = rng.uniform(1.0, 10.0, size=(nr + 1, nz))
     y = rng.uniform(0.05, 1.5, size=(nz, ni))
 
-    st = _make_static(nz, ni,
-                      conden_re_idx, conden_sp_idx,
-                      Dg_per_re, sat_n_per_re, coeff_per_re)
+    st = _make_static(
+        nz, ni, conden_re_idx, conden_sp_idx, Dg_per_re, sat_n_per_re, coeff_per_re
+    )
 
-    k_jax = np.asarray(_conden_mod.update_conden_rates(
-        jnp.asarray(k_arr), jnp.asarray(y), st
-    ))
+    k_jax = np.asarray(
+        _conden_mod.update_conden_rates(jnp.asarray(k_arr), jnp.asarray(y), st)
+    )
 
     # Reference: per-reaction loop in numpy.
     k_ref = k_arr.copy()
@@ -139,7 +156,7 @@ def test_update_conden_rates():
         sp_idx = int(conden_sp_idx[r])
         re_idx = int(conden_re_idx[r])
         rate = Dg_per_re[r] * coeff_per_re[r] * (y[:, sp_idx] - sat_n_per_re[r])
-        k_ref[re_idx]     = np.maximum(rate, 0.0)
+        k_ref[re_idx] = np.maximum(rate, 0.0)
         k_ref[re_idx + 1] = np.maximum(-rate, 0.0)
 
     err = _relerr(k_ref, k_jax)
@@ -160,7 +177,7 @@ def test_update_conden_rates():
 
 def test_apply_h2o_relax_jax():
     """Verify against a per-cell numpy implementation of op.h2o_conden_evap_relax."""
-    import conden as _conden_mod
+    import vulcan_jax.conden as _conden_mod
 
     rng = np.random.default_rng(7)
     nz, ni = 6, 3
@@ -179,16 +196,22 @@ def test_apply_h2o_relax_jax():
     m_over_rho_r2 = 0.123
     dt = 0.4
 
-    st = _make_static(nz, ni,
-                      conden_re_idx=[], conden_sp_idx=[],
-                      Dg_per_re=np.zeros((0, nz)),
-                      sat_n_per_re=np.zeros((0, nz)),
-                      coeff_per_re=np.zeros(0),
-                      h2o_active=True,
-                      h2o_idx=h2o_idx, h2o_l_s_idx=h2o_l_s_idx,
-                      h2o_Dg=Dg, h2o_sat=sat,
-                      h2o_m_over_rho_r2=m_over_rho_r2,
-                      n_0=n_0)
+    st = _make_static(
+        nz,
+        ni,
+        conden_re_idx=[],
+        conden_sp_idx=[],
+        Dg_per_re=np.zeros((0, nz)),
+        sat_n_per_re=np.zeros((0, nz)),
+        coeff_per_re=np.zeros(0),
+        h2o_active=True,
+        h2o_idx=h2o_idx,
+        h2o_l_s_idx=h2o_l_s_idx,
+        h2o_Dg=Dg,
+        h2o_sat=sat,
+        h2o_m_over_rho_r2=m_over_rho_r2,
+        n_0=n_0,
+    )
 
     y_jax, ymix_jax = _conden_mod.apply_h2o_relax_jax(
         jnp.asarray(y), jnp.asarray(ymix), jnp.asarray(dt), st
@@ -206,8 +229,9 @@ def test_apply_h2o_relax_jax():
     evap_mask = tau < 0
 
     ymix_ref = ymix.copy()
-    ymix_ref[conden_mask, h2o_l_s_idx] += (ymix_ref[conden_mask, h2o_idx]
-                                            - y_conden[conden_mask])
+    ymix_ref[conden_mask, h2o_l_s_idx] += (
+        ymix_ref[conden_mask, h2o_idx] - y_conden[conden_mask]
+    )
     ymix_ref[conden_mask, h2o_idx] = y_conden[conden_mask]
     ymix_ref[evap_mask, h2o_idx] += ice_loss[evap_mask] / n_0[evap_mask]
     ymix_ref[evap_mask, h2o_l_s_idx] -= ice_loss[evap_mask] / n_0[evap_mask]
@@ -228,7 +252,7 @@ def test_apply_h2o_relax_jax():
 def test_apply_nh3_relax_jax():
     """Verify against a per-cell numpy implementation of op.nh3_conden_evap_relax,
     including the conden_top clamp and the NH3_l_s >= 0 clip."""
-    import conden as _conden_mod
+    import vulcan_jax.conden as _conden_mod
 
     rng = np.random.default_rng(11)
     nz, ni = 7, 3
@@ -250,17 +274,23 @@ def test_apply_nh3_relax_jax():
     sat_mix = sat / n_0
     conden_top = int(np.argmin(sat_mix))
 
-    st = _make_static(nz, ni,
-                      conden_re_idx=[], conden_sp_idx=[],
-                      Dg_per_re=np.zeros((0, nz)),
-                      sat_n_per_re=np.zeros((0, nz)),
-                      coeff_per_re=np.zeros(0),
-                      nh3_active=True,
-                      nh3_idx=nh3_idx, nh3_l_s_idx=nh3_l_s_idx,
-                      nh3_Dg=Dg, nh3_sat=sat,
-                      nh3_m_over_rho_r2=m_over_rho_r2,
-                      nh3_conden_top=conden_top,
-                      n_0=n_0)
+    st = _make_static(
+        nz,
+        ni,
+        conden_re_idx=[],
+        conden_sp_idx=[],
+        Dg_per_re=np.zeros((0, nz)),
+        sat_n_per_re=np.zeros((0, nz)),
+        coeff_per_re=np.zeros(0),
+        nh3_active=True,
+        nh3_idx=nh3_idx,
+        nh3_l_s_idx=nh3_l_s_idx,
+        nh3_Dg=Dg,
+        nh3_sat=sat,
+        nh3_m_over_rho_r2=m_over_rho_r2,
+        nh3_conden_top=conden_top,
+        n_0=n_0,
+    )
 
     y_jax, ymix_jax = _conden_mod.apply_nh3_relax_jax(
         jnp.asarray(y), jnp.asarray(ymix), jnp.asarray(dt), st
@@ -278,8 +308,9 @@ def test_apply_nh3_relax_jax():
     evap_mask = tau < 0
 
     ymix_ref = ymix.copy()
-    ymix_ref[conden_mask, nh3_l_s_idx] += (ymix_ref[conden_mask, nh3_idx]
-                                            - y_conden[conden_mask])
+    ymix_ref[conden_mask, nh3_l_s_idx] += (
+        ymix_ref[conden_mask, nh3_idx] - y_conden[conden_mask]
+    )
     ymix_ref[conden_mask, nh3_idx] = y_conden[conden_mask]
     ymix_ref[evap_mask, nh3_idx] += ice_loss[evap_mask] / n_0[evap_mask]
     ymix_ref[evap_mask, nh3_l_s_idx] -= ice_loss[evap_mask] / n_0[evap_mask]
@@ -300,7 +331,7 @@ def test_apply_nh3_relax_jax():
 
 def test_no_op_when_inactive():
     """When use_relax flags are False, the kernels must pass through unchanged."""
-    import conden as _conden_mod
+    import vulcan_jax.conden as _conden_mod
 
     rng = np.random.default_rng(99)
     nz, ni = 4, 3
@@ -308,11 +339,15 @@ def test_no_op_when_inactive():
     ymix = y / np.sum(y, axis=1, keepdims=True)
     dt = 0.1
 
-    st = _make_static(nz, ni,
-                      conden_re_idx=[], conden_sp_idx=[],
-                      Dg_per_re=np.zeros((0, nz)),
-                      sat_n_per_re=np.zeros((0, nz)),
-                      coeff_per_re=np.zeros(0))
+    st = _make_static(
+        nz,
+        ni,
+        conden_re_idx=[],
+        conden_sp_idx=[],
+        Dg_per_re=np.zeros((0, nz)),
+        sat_n_per_re=np.zeros((0, nz)),
+        coeff_per_re=np.zeros(0),
+    )
 
     y_h2o, ymix_h2o = _conden_mod.apply_h2o_relax_jax(
         jnp.asarray(y), jnp.asarray(ymix), jnp.asarray(dt), st
@@ -321,17 +356,18 @@ def test_no_op_when_inactive():
         jnp.asarray(y), jnp.asarray(ymix), jnp.asarray(dt), st
     )
 
-    err_h2o_y    = _relerr(y, np.asarray(y_h2o))
+    err_h2o_y = _relerr(y, np.asarray(y_h2o))
     err_h2o_ymix = _relerr(ymix, np.asarray(ymix_h2o))
-    err_nh3_y    = _relerr(y, np.asarray(y_nh3))
+    err_nh3_y = _relerr(y, np.asarray(y_nh3))
     err_nh3_ymix = _relerr(ymix, np.asarray(ymix_nh3))
     print(f"inactive H2O relax y     relerr: {err_h2o_y:.3e}")
     print(f"inactive H2O relax ymix  relerr: {err_h2o_ymix:.3e}")
     print(f"inactive NH3 relax y     relerr: {err_nh3_y:.3e}")
     print(f"inactive NH3 relax ymix  relerr: {err_nh3_ymix:.3e}")
 
-    assert all(e <= KERNEL_RTOL for e in
-               (err_h2o_y, err_h2o_ymix, err_nh3_y, err_nh3_ymix))
+    assert all(
+        e <= KERNEL_RTOL for e in (err_h2o_y, err_h2o_ymix, err_nh3_y, err_nh3_ymix)
+    )
 
 
 def main() -> int:

@@ -28,6 +28,7 @@ possible. Two assertions:
      net electron count per layer (`sum_i compo_full[i] * y[z, i]` with
      `compo_full[e_idx] = +1`) must be zero.
 """
+
 from __future__ import annotations
 
 import os
@@ -36,6 +37,7 @@ import warnings
 from pathlib import Path
 
 import jax
+
 jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp  # noqa: E402
@@ -43,7 +45,6 @@ import numpy as np  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 warnings.filterwarnings("ignore")
 
 
@@ -67,16 +68,20 @@ def main() -> int:
     charge_arr_np = np.array([0.0, +1.0, +2.0, -1.0, 0.0], dtype=np.float64)
 
     # ---- 1. Formula correctness ----
-    y_clamped = np.asarray(_ion_clamp(jnp.asarray(y_np),
-                                      jnp.asarray(charge_arr_np),
-                                      e_idx))
+    y_clamped = np.asarray(
+        _ion_clamp(jnp.asarray(y_np), jnp.asarray(charge_arr_np), e_idx)
+    )
     expected_e = -(charge_arr_np[None, :] * y_np).sum(axis=1)
     # einsum and Python sum may differ at last ULP; allow a few eps.
-    relerr = np.max(np.abs(y_clamped[:, e_idx] - expected_e)
-                    / np.maximum(np.abs(expected_e), 1e-300))
+    relerr = np.max(
+        np.abs(y_clamped[:, e_idx] - expected_e)
+        / np.maximum(np.abs(expected_e), 1e-300)
+    )
     if relerr > 1e-14:
-        print(f"FAIL: e column mismatch (relerr={relerr:.3e}).\n"
-              f" got: {y_clamped[:, e_idx]}\n want: {expected_e}")
+        print(
+            f"FAIL: e column mismatch (relerr={relerr:.3e}).\n"
+            f" got: {y_clamped[:, e_idx]}\n want: {expected_e}"
+        )
         return 1
     # Non-e columns must be untouched.
     for j in range(ni):

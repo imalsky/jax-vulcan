@@ -14,6 +14,7 @@ Covers:
 Run from VULCAN-JAX/:
     pytest tests/test_read_rate.py
 """
+
 from __future__ import annotations
 
 import os
@@ -26,7 +27,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 
 warnings.filterwarnings("ignore")
 
@@ -34,6 +34,7 @@ warnings.filterwarnings("ignore")
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _find_rxn_idx(net, eq: str) -> int:
     """Return the parser-i (1-based) of a forward reaction by equation text."""
@@ -53,8 +54,8 @@ def _load_nasa9_local(net):
     the JAX-side private attribute. Loading directly via
     `gibbs.load_nasa9` avoids the question.
     """
-    import gibbs
-    import vulcan_cfg
+    import vulcan_jax.gibbs as gibbs
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
     from pathlib import Path
 
     thermo_dir = Path(vulcan_cfg.network).parent
@@ -68,12 +69,13 @@ def _load_nasa9_local(net):
 # apply_lowT_caps
 # ---------------------------------------------------------------------------
 
+
 def test_lowT_caps_fire_all_three():
     """All 3 caps should fire below their thresholds with the exact Moses+2005
     formulas. Above the thresholds, k stays untouched."""
-    import network as net_mod
-    import rates
-    import vulcan_cfg
+    import vulcan_jax.network as net_mod
+    import vulcan_jax.rates as rates
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     net = net_mod.parse_network(vulcan_cfg.network)
 
@@ -122,21 +124,20 @@ def test_lowT_caps_fire_all_three():
     assert k_out[i_c2h5, 3] == pytest.approx(7.77e-12)
 
     # Other forward rows untouched.
-    other_idx = [j for j in range(1, net.nr + 1, 2)
-                 if j not in (i_ch3, i_c2h4, i_c2h5)]
+    other_idx = [j for j in range(1, net.nr + 1, 2) if j not in (i_ch3, i_c2h4, i_c2h5)]
     for j in other_idx[:5]:
         assert np.array_equal(k_out[j], k_in[j])
 
 
 def test_lowT_caps_no_op_when_T_above_thresholds():
     """If T > 300 K everywhere, no cap fires and k is unchanged."""
-    import network as net_mod
-    import rates
-    import vulcan_cfg
+    import vulcan_jax.network as net_mod
+    import vulcan_jax.rates as rates
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     net = net_mod.parse_network(vulcan_cfg.network)
     nz = 5
-    T = np.full(nz, 1500.0, dtype=np.float64)   # HD189-like
+    T = np.full(nz, 1500.0, dtype=np.float64)  # HD189-like
     M = np.full(nz, 1e15, dtype=np.float64)
 
     k_in = np.random.RandomState(0).uniform(1e-15, 1e-10, size=(net.nr + 1, nz))
@@ -148,12 +149,13 @@ def test_lowT_caps_no_op_when_T_above_thresholds():
 # apply_remove_list
 # ---------------------------------------------------------------------------
 
+
 def test_remove_list_zeros_only_listed_indices():
     """`apply_remove_list` zeros literally the indices in `remove_list` and
     nothing else (does not auto-zero the paired forward/reverse partner)."""
-    import network as net_mod
-    import rates
-    import vulcan_cfg
+    import vulcan_jax.network as net_mod
+    import vulcan_jax.rates as rates
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     net = net_mod.parse_network(vulcan_cfg.network)
     nz = 4
@@ -175,9 +177,9 @@ def test_remove_list_zeros_only_listed_indices():
 
 
 def test_remove_list_none_or_empty_is_noop():
-    import network as net_mod
-    import rates
-    import vulcan_cfg
+    import vulcan_jax.network as net_mod
+    import vulcan_jax.rates as rates
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     net = net_mod.parse_network(vulcan_cfg.network)
     k_in = np.ones((net.nr + 1, 3), dtype=np.float64)
@@ -189,6 +191,7 @@ def test_remove_list_none_or_empty_is_noop():
 # build_rate_array end-to-end
 # ---------------------------------------------------------------------------
 
+
 def test_build_rate_array_matches_legacy_hd189(hd189_state):
     """End-to-end: `build_rate_array` should match the legacy
     `read_rate -> rev_rate -> remove_rate` chain bit-exactly on HD189
@@ -199,15 +202,13 @@ def test_build_rate_array_matches_legacy_hd189(hd189_state):
     path. Mask those (and ion / conden / radiative slots) from this
     comparison; `build_rate_array` is the chemistry-rate half only.
     """
-    import network as net_mod
-    import rates
-    import vulcan_cfg
+    import vulcan_jax.network as net_mod
+    import vulcan_jax.rates as rates
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     net = net_mod.parse_network(vulcan_cfg.network)
     nasa9_coeffs = _load_nasa9_local(net)
-    k_jax = rates.build_rate_array(
-        vulcan_cfg, net, hd189_state.atm, nasa9_coeffs
-    )
+    k_jax = rates.build_rate_array(vulcan_cfg, net, hd189_state.atm, nasa9_coeffs)
 
     nr = int(net.nr)
     nz = int(hd189_state.atm.Tco.shape[0])
@@ -216,15 +217,14 @@ def test_build_rate_array_matches_legacy_hd189(hd189_state):
     k_legacy = np.asarray(hd189_state.var.k_arr, dtype=np.float64)
     if k_legacy.shape != (nr + 1, nz):
         raise AssertionError(
-            f"hd189_state.var.k_arr shape {k_legacy.shape} != ({nr+1}, {nz})"
+            f"hd189_state.var.k_arr shape {k_legacy.shape} != ({nr + 1}, {nz})"
         )
 
     # Reactions whose rate row is set outside the read_rate -> rev_rate ->
     # remove_rate chain (and therefore not in `build_rate_array`'s scope).
     skip_mask = np.zeros(nr + 1, dtype=bool)
     for i in range(1, nr + 1):
-        if (net.is_photo[i] or net.is_ion[i]
-                or net.is_conden[i] or net.is_radiative[i]):
+        if net.is_photo[i] or net.is_ion[i] or net.is_conden[i] or net.is_radiative[i]:
             skip_mask[i] = True
 
     rows = np.flatnonzero(~skip_mask)
@@ -238,10 +238,12 @@ def test_build_rate_array_matches_legacy_hd189(hd189_state):
     max_relerr = float(relerr.max())
     worst_local = int(np.unravel_index(np.argmax(relerr), relerr.shape)[0])
     worst = int(rows[worst_local])
-    print(f"build_rate_array vs legacy: max relerr = {max_relerr:.3e} "
-          f"(at parser-i = {worst}, Rf = {net.Rf.get(worst, '?')!r}); "
-          f"compared {rows.size} reactions; skipped "
-          f"{int(skip_mask.sum())} photo/ion/conden/radiative rows")
+    print(
+        f"build_rate_array vs legacy: max relerr = {max_relerr:.3e} "
+        f"(at parser-i = {worst}, Rf = {net.Rf.get(worst, '?')!r}); "
+        f"compared {rows.size} reactions; skipped "
+        f"{int(skip_mask.sum())} photo/ion/conden/radiative rows"
+    )
     assert max_relerr <= 1e-13, (
         f"build_rate_array deviates from legacy at i={worst} "
         f"(Rf={net.Rf.get(worst, '?')!r}): relerr={max_relerr:.3e}"
@@ -253,29 +255,33 @@ def test_build_rate_array_with_lowT_caps(hd189_state):
     have the three cap reactions clamped at layers where T is low. HD189's
     upper atmosphere has Tco ~ 200-700 K, which fires at least the C2H4 cap
     (T<=300) for the cooler upper layers."""
-    import network as net_mod
-    import rates
-    import vulcan_cfg
+    import vulcan_jax.network as net_mod
+    import vulcan_jax.rates as rates
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     net = net_mod.parse_network(vulcan_cfg.network)
     nasa9_coeffs = _load_nasa9_local(net)
 
     # Run with caps off (baseline) and on (capped).
-    cfg_off = type("CfgOff", (), {
-        "use_lowT_limit_rates": False,
-        "remove_list": list(getattr(vulcan_cfg, "remove_list", [])),
-    })()
-    cfg_on = type("CfgOn", (), {
-        "use_lowT_limit_rates": True,
-        "remove_list": list(getattr(vulcan_cfg, "remove_list", [])),
-    })()
+    cfg_off = type(
+        "CfgOff",
+        (),
+        {
+            "use_lowT_limit_rates": False,
+            "remove_list": list(getattr(vulcan_cfg, "remove_list", [])),
+        },
+    )()
+    cfg_on = type(
+        "CfgOn",
+        (),
+        {
+            "use_lowT_limit_rates": True,
+            "remove_list": list(getattr(vulcan_cfg, "remove_list", [])),
+        },
+    )()
 
-    k_off = rates.build_rate_array(
-        cfg_off, net, hd189_state.atm, nasa9_coeffs
-    )
-    k_on = rates.build_rate_array(
-        cfg_on, net, hd189_state.atm, nasa9_coeffs
-    )
+    k_off = rates.build_rate_array(cfg_off, net, hd189_state.atm, nasa9_coeffs)
+    k_on = rates.build_rate_array(cfg_on, net, hd189_state.atm, nasa9_coeffs)
 
     i_c2h4 = _find_rxn_idx(net, "H + C2H4 + M -> C2H5 + M")
     T = np.asarray(hd189_state.atm.Tco)

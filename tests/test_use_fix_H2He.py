@@ -20,6 +20,7 @@ This test:
 
 Standalone — no `../VULCAN-master/` oracle needed.
 """
+
 from __future__ import annotations
 
 import os
@@ -32,21 +33,23 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 
 warnings.filterwarnings("ignore")
 
 
 def _setup_state():
-    import vulcan_cfg
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+
     vulcan_cfg.count_max = 5
     vulcan_cfg.count_min = 1
     vulcan_cfg.use_print_prog = False
     vulcan_cfg.use_live_plot = False
     vulcan_cfg.use_live_flux = False
 
-    import legacy_io as op, op_jax, outer_loop  # noqa: E401
-    from state import RunState, legacy_view
+    import vulcan_jax.legacy_io as op
+    import vulcan_jax.op_jax as op_jax
+    import vulcan_jax.outer_loop as outer_loop
+    from vulcan_jax.state import RunState, legacy_view
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
     data_var, data_atm, data_para = legacy_view(rs)
@@ -60,8 +63,9 @@ def _setup_state():
 
 
 def main() -> int:
-    import vulcan_cfg
-    import chem_funs
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    import vulcan_jax.chem_funs as chem_funs
+
     species = list(chem_funs.spec_list)
     if "H2" not in species or "He" not in species:
         print("SKIP: H2 or He not in network — use_fix_H2He requires both.")
@@ -92,23 +96,29 @@ def main() -> int:
         he_post = float(np.asarray(var.y[0, he_idx]))
         h2_relerr = abs(h2_post - h2_target) / max(abs(h2_target), 1e-300)
         he_relerr = abs(he_post - he_target) / max(abs(he_target), 1e-300)
-        print(f"H2 pre-pin ymix = {h2_mix_pre:.6e}; "
-              f"target n = {h2_target:.6e}; post-run y[0] = {h2_post:.6e}; "
-              f"relerr = {h2_relerr:.3e}")
-        print(f"He pre-pin ymix = {he_mix_pre:.6e}; "
-              f"target n = {he_target:.6e}; post-run y[0] = {he_post:.6e}; "
-              f"relerr = {he_relerr:.3e}")
+        print(
+            f"H2 pre-pin ymix = {h2_mix_pre:.6e}; "
+            f"target n = {h2_target:.6e}; post-run y[0] = {h2_post:.6e}; "
+            f"relerr = {h2_relerr:.3e}"
+        )
+        print(
+            f"He pre-pin ymix = {he_mix_pre:.6e}; "
+            f"target n = {he_target:.6e}; post-run y[0] = {he_post:.6e}; "
+            f"relerr = {he_relerr:.3e}"
+        )
         ok_pin = (h2_relerr < 1e-12) and (he_relerr < 1e-12)
 
         # Master mutates vulcan_cfg.use_fix_sp_bot in-place at the moment
         # of pinning (op.py:2939-2944). We mirror that in _unpack_state so
         # downstream tooling sees the same state.
         post_dict = getattr(vulcan_cfg, "use_fix_sp_bot", {}) or {}
-        ok_dict = ("H2" in post_dict and "He" in post_dict
-                   and abs(post_dict["H2"] - h2_mix_pre) < 1e-12
-                   and abs(post_dict["He"] - he_mix_pre) < 1e-12)
-        print(f"vulcan_cfg.use_fix_sp_bot post-run: {dict(post_dict)}; "
-              f"ok={ok_dict}")
+        ok_dict = (
+            "H2" in post_dict
+            and "He" in post_dict
+            and abs(post_dict["H2"] - h2_mix_pre) < 1e-12
+            and abs(post_dict["He"] - he_mix_pre) < 1e-12
+        )
+        print(f"vulcan_cfg.use_fix_sp_bot post-run: {dict(post_dict)}; ok={ok_dict}")
         ok = ok_pin and ok_dict
     finally:
         vulcan_cfg.use_fix_H2He = original_h2he

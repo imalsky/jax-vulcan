@@ -13,6 +13,7 @@ extends to the full runner (whose vjp is blocked but whose jvp works).
 Output: a finite tangent of the per-step solution w.r.t. a perturbation
 in initial y, demonstrating the AD path is well-formed end-to-end.
 """
+
 from __future__ import annotations
 
 import os
@@ -21,17 +22,16 @@ from pathlib import Path
 
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 
-import vulcan_cfg
-import network as _net_mod
-import chem as _chem_mod
-from jax_step import jax_ros2_step, AtmStatic
+import vulcan_jax.vulcan_cfg as vulcan_cfg
+import vulcan_jax.network as _net_mod
+import vulcan_jax.chem as _chem_mod
+from vulcan_jax.jax_step import jax_ros2_step, AtmStatic
 
 
 def main() -> int:
@@ -81,19 +81,20 @@ def main() -> int:
     # ---- Reverse-mode also works on the per-step kernel (proven below). ----
     def loss(y_in):
         sol, _ = jax_ros2_step(y_in, k_arr, jnp.float64(1e-3), atm, net)
-        return jnp.sum(sol ** 2)
+        return jnp.sum(sol**2)
 
     g = jax.grad(loss)(y)
-    print(f"jax.grad through one Ros2 step finite: "
-          f"{bool(jnp.all(jnp.isfinite(g)))}")
+    print(f"jax.grad through one Ros2 step finite: {bool(jnp.all(jnp.isfinite(g)))}")
 
     # ---- Note about the full integration loop ----
     print()
-    print("Note: jax.jvp also works through the full `outer_loop.runner` "
-          "(jax.lax.while_loop forward-mode is supported). For reverse-mode "
-          "AD through the converged state, see steady_state_grad.py "
-          "— the implicit-function-theorem custom_vjp there gives O(1) "
-          "memory in step count.")
+    print(
+        "Note: jax.jvp also works through the full `outer_loop.runner` "
+        "(jax.lax.while_loop forward-mode is supported). For reverse-mode "
+        "AD through the converged state, see steady_state_grad.py "
+        "— the implicit-function-theorem custom_vjp there gives O(1) "
+        "memory in step count."
+    )
     return 0
 
 

@@ -8,6 +8,7 @@ differ in initial composition or rate constants.
 Run from VULCAN-JAX/:
     python examples/batched_run.py
 """
+
 from __future__ import annotations
 
 import os
@@ -20,7 +21,6 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 warnings.filterwarnings("ignore")
 
 
@@ -28,13 +28,14 @@ def main():
     import jax
     import jax.numpy as jnp
 
-    import vulcan_cfg
-    import chem_funs
-    import jax_step as js_mod
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    import vulcan_jax.chem_funs as chem_funs
+    import vulcan_jax.jax_step as js_mod
+
     # Build the canonical HD189 pre-loop state via the typed constructor
     # and derive a `(var, atm, _)` shim for the legacy attribute access
     # this example does (`data_var.y`, `data_atm.*`).
-    from state import RunState, legacy_view
+    from vulcan_jax.state import RunState, legacy_view
 
     # Set up the canonical state
     print("Setting up base atmosphere...")
@@ -57,17 +58,22 @@ def main():
     print(f"Batched setup: {BATCH} atmospheres, each (nz={nz}, ni={ni})")
 
     # vmap over leading batch axis of y, k_arr; broadcast atm_static, dt, net
-    vstep = jax.jit(jax.vmap(
-        js_mod.jax_ros2_step,
-        in_axes=(0, 0, None, None, None),
-    ))
+    vstep = jax.jit(
+        jax.vmap(
+            js_mod.jax_ros2_step,
+            in_axes=(0, 0, None, None, None),
+        )
+    )
 
     # Warmup
     print("Compiling vmap'd kernel ...")
     t0 = time.time()
     sol_batch, delta_batch = vstep(
-        jnp.asarray(y_batch), jnp.asarray(k_batch),
-        1e-10, atm_static, chem_funs._NET_JAX,
+        jnp.asarray(y_batch),
+        jnp.asarray(k_batch),
+        1e-10,
+        atm_static,
+        chem_funs._NET_JAX,
     )
     sol_batch.block_until_ready()
     print(f"  first call (compile + execute): {time.time() - t0:.1f}s")
@@ -77,20 +83,25 @@ def main():
     t0 = time.time()
     for _ in range(n_iter):
         sol_batch, delta_batch = vstep(
-            jnp.asarray(y_batch), jnp.asarray(k_batch),
-            1e-10, atm_static, chem_funs._NET_JAX,
+            jnp.asarray(y_batch),
+            jnp.asarray(k_batch),
+            1e-10,
+            atm_static,
+            chem_funs._NET_JAX,
         )
         sol_batch.block_until_ready()
     t_per_call = (time.time() - t0) / n_iter * 1000
 
     print("\nBatched timing:")
     print(f"  Per vmap call (batch of {BATCH}): {t_per_call:.1f} ms")
-    print(f"  Per atmosphere:                  {t_per_call/BATCH:.1f} ms")
+    print(f"  Per atmosphere:                  {t_per_call / BATCH:.1f} ms")
     print("  Single-atmosphere reference:     ~160 ms")
     print(f"  Speedup factor (batched):        {160 * BATCH / t_per_call:.2f}x")
 
     print("\nNote: on multi-CPU machines, set XLA_FLAGS to expose more devices:")
-    print(f"  XLA_FLAGS=--xla_force_host_platform_device_count={BATCH} python {sys.argv[0]}")
+    print(
+        f"  XLA_FLAGS=--xla_force_host_platform_device_count={BATCH} python {sys.argv[0]}"
+    )
     print("and switch from jax.vmap to jax.pmap to actually parallelize across")
     print("physical cores. On GPU, vmap parallelizes natively.")
 

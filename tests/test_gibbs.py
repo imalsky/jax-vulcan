@@ -5,6 +5,7 @@ Compares:
   - K_eq_array(net, g_sp, T)[i, :]               vs   chem_funs.Gibbs(i, T)
   - Final reverse-rate array                      vs   VULCAN's data_var.k after rev_rate
 """
+
 from __future__ import annotations
 
 import os
@@ -17,7 +18,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 
 # Oracle test: requires VULCAN-master sibling for the upstream
 # chem_funs.Gibbs / chem_funs.gibbs_sp reference. Skip cleanly when absent.
@@ -34,14 +34,14 @@ warnings.filterwarnings("ignore")
 
 def main() -> int:
     sys.path.insert(0, str(VULCAN_MASTER))
-    import vulcan_cfg                       # noqa
-    import store, op                        # noqa
-    from atm_setup import Atm
-    import chem_funs                         # noqa
+    import vulcan_jax.vulcan_cfg as vulcan_cfg  # noqa
+    import store, op  # noqa
+    from vulcan_jax.atm_setup import Atm
+    import vulcan_jax.chem_funs as chem_funs  # noqa
 
-    import network as net_mod
-    import rates as rates_mod
-    import gibbs as gibbs_mod
+    import vulcan_jax.network as net_mod
+    import vulcan_jax.rates as rates_mod
+    import vulcan_jax.gibbs as gibbs_mod
 
     # === 1. VULCAN setup (build atm + read forward + reverse rates) ===
     data_var = store.Variables()
@@ -92,10 +92,7 @@ def main() -> int:
     n_compared = 0
     n_fail = 0
     for i in range(1, net.stop_rev_indx, 2):
-        if (
-            net.is_photo[i] or net.is_ion[i]
-            or net.is_conden[i] or net.is_radiative[i]
-        ):
+        if net.is_photo[i] or net.is_ion[i] or net.is_conden[i] or net.is_radiative[i]:
             continue
         try:
             ref = chem_funs.Gibbs(i, T)
@@ -114,7 +111,9 @@ def main() -> int:
                     f"ours_max={ours.max():.3e}  ref_max={ref.max():.3e}"
                 )
         n_compared += 1
-    print(f"K_eq compared: {n_compared}  fails: {n_fail}  max relative error: {max_err_K:.3e}")
+    print(
+        f"K_eq compared: {n_compared}  fails: {n_fail}  max relative error: {max_err_K:.3e}"
+    )
 
     # === 5. Compare reverse k against VULCAN's data_var.k ===
     max_err_rev = 0.0
@@ -132,11 +131,11 @@ def main() -> int:
         if err > 1e-8 and ref.max() > 1e-50:
             n_rev_fail += 1
             if n_rev_fail <= 5:
-                print(
-                    f"  rev k fail i={i}: {net.Rf.get(i-1)!r}  err={err:.2e}"
-                )
+                print(f"  rev k fail i={i}: {net.Rf.get(i - 1)!r}  err={err:.2e}")
         n_rev += 1
-    print(f"reverse k compared: {n_rev}  fails: {n_rev_fail}  max relative error: {max_err_rev:.3e}")
+    print(
+        f"reverse k compared: {n_rev}  fails: {n_rev_fail}  max relative error: {max_err_rev:.3e}"
+    )
 
     # === 6. Check that beyond stop_rev_indx all reverses are zero ===
     bad_zero = 0
@@ -160,9 +159,11 @@ def main() -> int:
 def test_main():
     """Run the master comparison in a fresh Python process."""
     import subprocess
+
     result = subprocess.run(
         [sys.executable, str(Path(__file__).resolve())],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, (
         f"subprocess exited {result.returncode}\n"

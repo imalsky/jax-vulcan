@@ -14,6 +14,7 @@ End-to-end on real HD189 (~120 layers, 93 species, 1192 reactions) is
 demonstrated in `examples/grad_implicit_example.py` — slow forward pass
 but the same gradient code path.
 """
+
 from __future__ import annotations
 
 import sys
@@ -24,13 +25,12 @@ import jax
 import jax.numpy as jnp
 
 ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
 
 jax.config.update("jax_enable_x64", True)
 
-from chem import NetworkArrays
-from jax_step import AtmStatic
-from steady_state_grad import (
+from vulcan_jax.chem import NetworkArrays
+from vulcan_jax.jax_step import AtmStatic
+from vulcan_jax.steady_state_grad import (
     build_steady_state_inputs,
     differentiable_steady_state,
     steady_state_residual,
@@ -38,7 +38,7 @@ from steady_state_grad import (
     _build_jacobian_blocks,
     validate_steady_state_solution,
 )
-from solver import block_thomas_diag_offdiag
+from vulcan_jax.solver import block_thomas_diag_offdiag
 
 
 def _make_synthetic_problem():
@@ -85,7 +85,8 @@ def _make_synthetic_problem():
     reactant_stoich[5, 0] = 1.0
 
     net = NetworkArrays(
-        ni=ni, nr=nr,
+        ni=ni,
+        nr=nr,
         reactant_idx=jnp.asarray(reactant_idx),
         product_idx=jnp.asarray(product_idx),
         reactant_stoich=jnp.asarray(reactant_stoich),
@@ -121,14 +122,18 @@ def _make_synthetic_problem():
 
     # k_arr: forward rates at odd indices only.
     k_arr = jnp.zeros((nr + 1, nz))
-    k_arr = k_arr.at[1].set(jnp.full((nz,), 1.0))   # R1: 0 -> A   source rate
-    k_arr = k_arr.at[3].set(jnp.full((nz,), 0.5))   # R3: A -> B
-    k_arr = k_arr.at[5].set(jnp.full((nz,), 0.3))   # R5: B -> 0
+    k_arr = k_arr.at[1].set(jnp.full((nz,), 1.0))  # R1: 0 -> A   source rate
+    k_arr = k_arr.at[3].set(jnp.full((nz,), 0.5))  # R3: A -> B
+    k_arr = k_arr.at[5].set(jnp.full((nz,), 0.3))  # R5: B -> 0
 
     # Initial y near the well-mixed steady-state guess.
-    y_init = (jnp.zeros((nz, ni))
-              .at[:, 0].set(2.0)    # A near 1/0.5 = 2
-              .at[:, 1].set(3.3))   # B near 1/0.3 ~ 3.3
+    y_init = (
+        jnp.zeros((nz, ni))
+        .at[:, 0]
+        .set(2.0)  # A near 1/0.5 = 2
+        .at[:, 1]
+        .set(3.3)
+    )  # B near 1/0.3 ~ 3.3
     return y_init, k_arr, atm, net
 
 
@@ -221,8 +226,7 @@ def main() -> int:
     nr_plus_1, nz = k_arr0.shape
     # Only perturb entries where k_arr0 is nonzero (the forward rates).
     nonzero_idx = [
-        (i, z) for i in range(nr_plus_1) for z in range(nz)
-        if float(k_arr0[i, z]) > 0
+        (i, z) for i in range(nr_plus_1) for z in range(nz) if float(k_arr0[i, z]) > 0
     ]
     print(f"Finite-difference check on {len(nonzero_idx)} entries...")
     for i, z in nonzero_idx:
@@ -248,12 +252,16 @@ def main() -> int:
     grad_scale = float(jnp.max(jnp.abs(fd_grad_j)))
     max_abs = float(jnp.max(diff))
     abs_relerr = max_abs / grad_scale
-    print(f"max |jax - FD| / max|FD| = {abs_relerr:.3e}  "
-          f"(grad_scale={grad_scale:.3e}, max_abs_diff={max_abs:.3e})")
+    print(
+        f"max |jax - FD| / max|FD| = {abs_relerr:.3e}  "
+        f"(grad_scale={grad_scale:.3e}, max_abs_diff={max_abs:.3e})"
+    )
 
     print("Per-entry comparison (jax.grad vs FD):")
     for i, z in nonzero_idx:
-        print(f"  k[{i},{z}]: jax={float(g_jax[i, z]):+.4e}  FD={float(fd_grad_j[i, z]):+.4e}")
+        print(
+            f"  k[{i},{z}]: jax={float(g_jax[i, z]):+.4e}  FD={float(fd_grad_j[i, z]):+.4e}"
+        )
     print(f"y_star (layer 0): {y_star[0]}")
 
     # Tolerance: 1e-4 (relative to gradient scale). The non-trivial
@@ -279,8 +287,8 @@ def test_real_network_segment_sum_residual_path_tracks_codegen(hd189_state):
     close to the production codegen RHS on cells with meaningful signal, so
     implicit-gradient users do not silently differentiate a different model.
     """
-    import chem
-    import chem_funs
+    import vulcan_jax.chem as chem
+    import vulcan_jax.chem_funs as chem_funs
     import jax.numpy as jnp
 
     y = jnp.asarray(hd189_state.var.y, dtype=jnp.float64)
@@ -288,9 +296,7 @@ def test_real_network_segment_sum_residual_path_tracks_codegen(hd189_state):
     k_arr = jnp.asarray(hd189_state.var.k_arr, dtype=jnp.float64)
 
     out_codegen = np.asarray(chem_funs.chem_rhs_codegen(y, M, k_arr))
-    out_segment = np.asarray(
-        chem.chem_rhs_segment_sum(y, M, k_arr, chem_funs._NET_JAX)
-    )
+    out_segment = np.asarray(chem.chem_rhs_segment_sum(y, M, k_arr, chem_funs._NET_JAX))
 
     species_peak = np.maximum(np.abs(out_codegen).max(axis=0), 1e-30)
     significant = np.abs(out_codegen) > 1e-6 * species_peak[None, :]

@@ -17,6 +17,7 @@ This test runs HD189 with `save_evolution=True, save_evo_frq=10` for
 
 Standalone — no `../VULCAN-master/` oracle needed.
 """
+
 from __future__ import annotations
 
 import os
@@ -30,21 +31,23 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 
 warnings.filterwarnings("ignore")
 
 
 def _setup_state():
-    import vulcan_cfg
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+
     vulcan_cfg.count_max = 50
     vulcan_cfg.count_min = 1
     vulcan_cfg.use_print_prog = False
     vulcan_cfg.use_live_plot = False
     vulcan_cfg.use_live_flux = False
 
-    import legacy_io as op, op_jax, outer_loop  # noqa: E401
-    from state import RunState, legacy_view
+    import vulcan_jax.legacy_io as op
+    import vulcan_jax.op_jax as op_jax
+    import vulcan_jax.outer_loop as outer_loop
+    from vulcan_jax.state import RunState, legacy_view
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
     data_var, data_atm, data_para = legacy_view(rs)
@@ -66,10 +69,11 @@ def main() -> int:
     # and outer_loop may now hold *different* vulcan_cfg objects from the
     # test's `import vulcan_cfg`. Use legacy_io's reference so save_out
     # reads the values we set; sync outer_loop's by direct assignment.
-    import outer_loop
-    import legacy_io
+    import vulcan_jax.outer_loop as outer_loop
+    import vulcan_jax.legacy_io as legacy_io
+
     vulcan_cfg = legacy_io.vulcan_cfg
-    sys.modules["vulcan_cfg"] = vulcan_cfg
+    sys.modules["vulcan_jax.vulcan_cfg"] = vulcan_cfg
     outer_loop.vulcan_cfg = vulcan_cfg
     save_evo_frq = 10
     count_max = 50
@@ -115,15 +119,11 @@ def main() -> int:
         vulcan_cfg.out_name = "test_save_evolution.vul"
         try:
             output.save_out(var, atm, para, dname)
-            output_file = (
-                str(ROOT) + "/" + vulcan_cfg.output_dir
-                + vulcan_cfg.out_name
-            )
+            output_file = str(ROOT) + "/" + vulcan_cfg.output_dir + vulcan_cfg.out_name
             with open(output_file, "rb") as f:
                 payload = pickle.load(f)
             ok_keys = (
-                "y_time" in payload["variable"]
-                and "t_time" in payload["variable"]
+                "y_time" in payload["variable"] and "t_time" in payload["variable"]
             )
             y_round = np.asarray(payload["variable"]["y_time"])
             t_round = np.asarray(payload["variable"]["t_time"])

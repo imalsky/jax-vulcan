@@ -26,6 +26,7 @@ Cases:
      ``test_solver_fix_all_bot.py``: confirms the bottom row stays at
      chemical-EQ mixing ratios across a short integration.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -40,7 +41,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 
 warnings.filterwarnings("ignore")
 
@@ -49,10 +49,11 @@ warnings.filterwarnings("ignore")
 # Small helpers shared across cases.
 # ---------------------------------------------------------------------------
 
+
 @contextlib.contextmanager
 def cfg_overrides(**kwargs):
     """Snapshot/restore vulcan_cfg attributes around a block."""
-    import vulcan_cfg
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     saved: dict = {}
     sentinel = object()
@@ -80,9 +81,9 @@ def _hd189_atm_minimal():
     uses the private `state._Variables` / `_AtmData` containers for
     atm-only setup.
     """
-    from atm_setup import Atm
-    from state import _Variables, _AtmData
-    import vulcan_cfg as _cfg
+    from vulcan_jax.atm_setup import Atm
+    from vulcan_jax.state import _Variables, _AtmData
+    import vulcan_jax.vulcan_cfg as _cfg
 
     data_var = _Variables()
     data_atm = _AtmData()
@@ -107,17 +108,17 @@ def _setup_full_state(count_max: int = 5):
     `RunState.with_pre_loop_setup` and threads `rs.photo_static` onto the
     solver — same pattern the conftest fixture uses.
     """
-    import vulcan_cfg
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     vulcan_cfg.count_max = count_max
     vulcan_cfg.count_min = 1
     vulcan_cfg.use_print_prog = False
 
-    import legacy_io as op
-    import op_jax
-    import outer_loop  # noqa: F401
-    from atm_setup import Atm
-    from state import RunState, legacy_view
+    import vulcan_jax.legacy_io as op
+    import vulcan_jax.op_jax as op_jax
+    import vulcan_jax.outer_loop as outer_loop  # noqa: F401
+    from vulcan_jax.atm_setup import Atm
+    from vulcan_jax.state import RunState, legacy_view
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
     data_var, data_atm, data_para = legacy_view(rs)
@@ -134,16 +135,17 @@ def _setup_full_state(count_max: int = 5):
 # Case 1: use_lowT_limit_rates=True with HD189 atmosphere.
 # ---------------------------------------------------------------------------
 
+
 def test_lowT_limit_rates_caps_fire_on_HD189():
     """Cap reactions clamp at the published Moses+2005 values when
     ``use_lowT_limit_rates=True``. Complements
     ``test_read_rate.py::test_build_rate_array_with_lowT_caps`` by
     asserting all three caps' values, not just C2H4.
     """
-    import network as net_mod
-    import rates
-    import vulcan_cfg
-    from gibbs import load_nasa9
+    import vulcan_jax.network as net_mod
+    import vulcan_jax.rates as rates
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.gibbs import load_nasa9
 
     data_var, data_atm, _ = _hd189_atm_minimal()
     net = net_mod.parse_network(vulcan_cfg.network)
@@ -202,19 +204,20 @@ def test_lowT_limit_rates_caps_fire_on_HD189():
 # Case 2: T_cross_sp non-empty (Earth-style T-dep cross-section path).
 # ---------------------------------------------------------------------------
 
+
 def test_T_cross_sp_path_finite_positive():
     """T-dependent absp cross-section path produces finite, non-negative
     arrays for every (sp, layer) pair. Complements
     ``test_photo_setup.py::test_photo_setup_matches_T_dep_fixture``.
     """
-    import photo_setup
-    import vulcan_cfg
+    import vulcan_jax.photo_setup as photo_setup
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     if not bool(getattr(vulcan_cfg, "use_photo", False)):
         pytest.skip("use_photo=False; nothing to compare.")
 
     data_var, data_atm, _ = _hd189_atm_minimal()
-    import legacy_io as op
+    import vulcan_jax.legacy_io as op
 
     rate = op.ReadRate()
     data_var = rate.read_rate(data_var, data_atm)
@@ -235,6 +238,7 @@ def test_T_cross_sp_path_finite_positive():
 # Case 3: use_vm_mol=True populates atm.vm.
 # ---------------------------------------------------------------------------
 
+
 def test_use_vm_mol_populates_vm():
     """``use_vm_mol=True`` writes the advective molecular-diffusion
     velocity into ``atm.vm`` with finite, non-zero values.
@@ -242,17 +246,18 @@ def test_use_vm_mol_populates_vm():
     with cfg_overrides(use_vm_mol=True):
         _, data_atm, make_atm = _hd189_atm_minimal()
         # f_mu_dz needs ymix; populate via const_mix to avoid FastChem.
-        from ini_abun import InitialAbun
-        from state import _Variables
+        from vulcan_jax.ini_abun import InitialAbun
+        from vulcan_jax.state import _Variables
 
         data_var = _Variables()
         with cfg_overrides(
-            ini_mix="const_mix", const_mix={"H2": 0.9, "He": 0.0838, "H2O": 1e-3},
+            ini_mix="const_mix",
+            const_mix={"H2": 0.9, "He": 0.0838, "H2O": 1e-3},
         ):
             ini = InitialAbun()
             data_var = ini.ini_y(data_var, data_atm)
 
-        import legacy_io as op
+        import vulcan_jax.legacy_io as op
 
         data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
         make_atm.mol_diff(data_atm)
@@ -269,12 +274,13 @@ def test_use_vm_mol_populates_vm():
 # Case 4: use_settling=True populates atm.vs for non-gas species.
 # ---------------------------------------------------------------------------
 
+
 def test_use_settling_populates_vs_for_non_gas():
     """With ``use_settling=True`` and a tabulated condensable particle,
     ``atm.vs`` carries non-zero (downward, negative) Stokes velocity for
     the non-gas species and zero for everything else.
     """
-    import composition
+    import vulcan_jax.composition as composition
 
     species_list = list(composition.species)
     if "H2O_l_s" not in species_list:
@@ -293,12 +299,13 @@ def test_use_settling_populates_vs_for_non_gas():
     )
     with cfg_overrides(**overrides):
         data_var, data_atm, make_atm = _hd189_atm_minimal()
-        from ini_abun import InitialAbun
-        import legacy_io as op
+        from vulcan_jax.ini_abun import InitialAbun
+        import vulcan_jax.legacy_io as op
 
         # const_mix avoids FastChem coupling and is independent of condensables.
         with cfg_overrides(
-            ini_mix="const_mix", const_mix={"H2": 0.9, "He": 0.0838, "H2O": 1e-3},
+            ini_mix="const_mix",
+            const_mix={"H2": 0.9, "He": 0.0838, "H2O": 1e-3},
         ):
             ini = InitialAbun()
             data_var = ini.ini_y(data_var, data_atm)
@@ -316,6 +323,7 @@ def test_use_settling_populates_vs_for_non_gas():
 # ---------------------------------------------------------------------------
 # Cases 5-6: BC flux file readers with use_topflux / use_botflux.
 # ---------------------------------------------------------------------------
+
 
 @pytest.mark.parametrize(
     "flag,file_attr,file_path,target_sp",
@@ -339,7 +347,7 @@ def test_bc_flux_loaded_from_file(flag, file_attr, file_path, target_sp):
     ``atm.top_flux`` / ``atm.bot_flux`` from the matching cfg file.
     Verifies non-zero flux for at least one network species.
     """
-    import composition
+    import vulcan_jax.composition as composition
 
     species_list = list(composition.species)
     if target_sp not in species_list:
@@ -366,19 +374,20 @@ def test_bc_flux_loaded_from_file(flag, file_attr, file_path, target_sp):
 # Case 7: fix_species runtime smoke — short HD189 run with H2O/NH3 pinned.
 # ---------------------------------------------------------------------------
 
+
 def test_fix_species_runtime_smoke():
     """Short HD189 integration with ``fix_species`` non-empty and
     ``use_condense=True`` runs without exception and updates
     ``data_para.fix_species_start``. Complements ``test_use_fix_H2He.py``.
     """
-    import composition
+    import vulcan_jax.composition as composition
 
     species_list = list(composition.species)
     for sp in ("H2O", "H2O_l_s", "S8", "S8_l_s"):
         if sp not in species_list:
             pytest.skip(f"{sp} not in network; cannot run fix_species smoke.")
 
-    import vulcan_cfg
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     cfg_kwargs = dict(
         use_condense=True,
@@ -407,7 +416,7 @@ def test_fix_species_runtime_smoke():
         except Exception as exc:
             pytest.skip(f"fix_species setup failed cleanly: {exc!r}")
 
-        import outer_loop
+        import vulcan_jax.outer_loop as outer_loop
 
         integ = outer_loop.OuterLoop(solver, output)
         try:
@@ -427,6 +436,7 @@ def test_fix_species_runtime_smoke():
 # Case 8: use_fix_all_bot integration check.
 # ---------------------------------------------------------------------------
 
+
 def test_use_fix_all_bot_keeps_bottom_at_eq_mix():
     """``use_fix_all_bot=True`` clamps the bottom layer to chemical-EQ
     mixing ratios across a short integration. Complements
@@ -434,13 +444,16 @@ def test_use_fix_all_bot_keeps_bottom_at_eq_mix():
     ratio (not just absolute density) post-run.
     """
     with cfg_overrides(
-        use_fix_all_bot=True, count_max=10, count_min=1, use_print_prog=False,
+        use_fix_all_bot=True,
+        count_max=10,
+        count_min=1,
+        use_print_prog=False,
     ):
         solver, output, var, atm, para, _make_atm = _setup_full_state(count_max=10)
         bottom_ymix_pre = np.asarray(var.ymix[0], dtype=np.float64).copy()
         n0_bot = float(atm.n_0[0])
 
-        import outer_loop
+        import vulcan_jax.outer_loop as outer_loop
 
         integ = outer_loop.OuterLoop(solver, output)
         integ(var, atm, para, None)

@@ -2,6 +2,7 @@
 
 We compare on a real (y, M, k) state captured from VULCAN-master's pipeline.
 """
+
 from __future__ import annotations
 
 import os
@@ -32,11 +33,11 @@ def main() -> int:
     # === 1. Run VULCAN-master pipeline to get reference y/M/k state and chemdf/symjac ===
     sys.path.insert(0, str(VULCAN_MASTER))
 
-    import vulcan_cfg as cfg_v
+    import vulcan_jax.vulcan_cfg as cfg_v
     import store as st_v
     import build_atm as ba_v
     import op as op_v
-    import chem_funs as cf_v
+    import vulcan_jax.chem_funs as cf_v
 
     data_var = st_v.Variables()
     data_atm = st_v.AtmData()
@@ -64,17 +65,23 @@ def main() -> int:
 
     # === 2. Switch over to VULCAN-JAX modules (clear cached imports) ===
     for mod_name in (
-        "vulcan_cfg", "store", "build_atm", "op", "chem_funs",
-        "network", "rates", "gibbs", "chem"
+        "vulcan_cfg",
+        "store",
+        "build_atm",
+        "op",
+        "chem_funs",
+        "network",
+        "rates",
+        "gibbs",
+        "chem",
     ):
         sys.modules.pop(mod_name, None)
     # Remove VULCAN-master from sys.path
     while str(VULCAN_MASTER) in sys.path:
         sys.path.remove(str(VULCAN_MASTER))
-    sys.path.insert(0, str(ROOT))
 
-    import network as net_mod
-    import chem as chem_mod
+    import vulcan_jax.network as net_mod
+    import vulcan_jax.chem as chem_mod
     import jax.numpy as jnp
 
     net = net_mod.parse_network(ROOT / cfg_v.network)
@@ -93,7 +100,8 @@ def main() -> int:
     # Use the codegen path that the integrator actually runs. We build it
     # against `net` (parsed from cfg_v.network) so the test isn't sensitive
     # to JAX's default vulcan_cfg.network.
-    import make_chem_funs as mcf
+    import vulcan_jax.make_chem_funs as mcf
+
     chem_rhs_codegen = mcf.build_chem_rhs(net)
     dydt_jax = np.asarray(chem_rhs_codegen(y_j, M_j, k_j))
 
@@ -112,8 +120,10 @@ def main() -> int:
     relerr = np.where(significant, relerr_full, 0.0)
     max_relerr = float(relerr.max())
     max_idx = np.unravel_index(int(relerr.argmax()), relerr.shape)
-    print(f"chem_rhs max relerr (cells > 1e-6 of species peak): {max_relerr:.3e} at "
-          f"layer {max_idx[0]}, species {net.species[max_idx[1]]}")
+    print(
+        f"chem_rhs max relerr (cells > 1e-6 of species peak): {max_relerr:.3e} at "
+        f"layer {max_idx[0]}, species {net.species[max_idx[1]]}"
+    )
     print(f"  values: jax={dydt_jax[max_idx]:.3e} ref={dydt_ref[max_idx]:.3e}")
     print(f"  species peak |dydt|: {per_species_peak[max_idx[1]]:.3e}")
 
@@ -141,7 +151,9 @@ def main() -> int:
     for j in range(nz):
         block_ref = J_ref[j * ni : (j + 1) * ni, j * ni : (j + 1) * ni]
         block_jax = Jblk_jax[j]
-        err = np.max(np.abs(block_jax - block_ref) / np.maximum(np.abs(block_ref), abs_tol))
+        err = np.max(
+            np.abs(block_jax - block_ref) / np.maximum(np.abs(block_ref), abs_tol)
+        )
         if err > max_jac_relerr:
             max_jac_relerr = err
             max_jac_idx = j
@@ -155,8 +167,10 @@ def main() -> int:
     for sp in ("H2O", "CO2", "SO", "SO2", "H2", "CO", "S", "H2S"):
         if sp in net.species_idx:
             j = net.species_idx[sp]
-            r = float(np.abs(dydt_jax[:, j] - dydt_ref[:, j]).max() /
-                      max(np.abs(dydt_ref[:, j]).max(), 1e-30))
+            r = float(
+                np.abs(dydt_jax[:, j] - dydt_ref[:, j]).max()
+                / max(np.abs(dydt_ref[:, j]).max(), 1e-30)
+            )
             bulk_relerr = max(bulk_relerr, r)
     print(f"bulk-species worst relerr: {bulk_relerr:.3e}")
 
@@ -177,9 +191,11 @@ def test_main():
     references. Run `main()` in a fresh subprocess and assert the exit
     code — same pattern as `test_diffusion` / `test_ros2_step`."""
     import subprocess
+
     result = subprocess.run(
         [sys.executable, str(Path(__file__).resolve())],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, (
         f"subprocess exited {result.returncode}\n"

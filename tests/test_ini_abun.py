@@ -13,6 +13,7 @@ const_lowT}`:
   (bit-exact gate; runs in a subprocess so the upstream imports cannot
   pollute the pytest worker).
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -27,7 +28,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 VULCAN_MASTER = ROOT.parent / "VULCAN-master"
 
 warnings.filterwarnings("ignore")
@@ -37,10 +37,12 @@ warnings.filterwarnings("ignore")
 # Helpers shared by every parametrized mode test.
 # ---------------------------------------------------------------------------
 
+
 @contextlib.contextmanager
 def _cfg_overrides(**kwargs):
     """Snapshot/restore vulcan_cfg attributes around a block."""
-    import vulcan_cfg
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+
     saved = {}
     sentinel = object()
     for k in kwargs:
@@ -68,9 +70,9 @@ def _build_hd189_atm():
     mode tests don't use; using the private `state._Variables` /
     `_AtmData` containers keeps this lightweight.
     """
-    from atm_setup import Atm
-    from state import _Variables, _AtmData
-    import vulcan_cfg
+    from vulcan_jax.atm_setup import Atm
+    from vulcan_jax.state import _Variables, _AtmData
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     data_var = _Variables()
     data_atm = _AtmData()
@@ -86,12 +88,13 @@ def _build_hd189_atm():
 # const_mix mode — algebraic, no FastChem, no scipy.
 # ---------------------------------------------------------------------------
 
+
 def test_const_mix_matches_reference():
     """`y[:, i] = const_mix[sp] * gas_tot` for every species in the dict;
     zeros elsewhere. Mode is purely algebraic — no scipy, no FastChem.
     """
-    from ini_abun import InitialAbun
-    import composition
+    from vulcan_jax.ini_abun import InitialAbun
+    import vulcan_jax.composition as composition
 
     data_var, data_atm, _ = _build_hd189_atm()
     # Earth-style mixing dict (species that exist in HD189's network).
@@ -121,12 +124,13 @@ def test_const_mix_matches_reference():
 # vulcan_ini mode — pickle round-trip against an existing `.vul` file.
 # ---------------------------------------------------------------------------
 
+
 def test_vulcan_ini_roundtrip():
     """Load `output/HD189.vul` via `vulcan_ini` mode and assert each
     species column matches the file's `y[:, species.index(sp)]` exactly.
     """
-    from ini_abun import InitialAbun
-    import composition
+    from vulcan_jax.ini_abun import InitialAbun
+    import vulcan_jax.composition as composition
 
     vul_path = ROOT / "output" / "HD189.vul"
     if not vul_path.is_file():
@@ -139,7 +143,9 @@ def test_vulcan_ini_roundtrip():
 
     data_var, data_atm, _ = _build_hd189_atm()
     if prev_y.shape[0] != len(data_atm.pco):
-        pytest.skip(f"`HD189.vul` has nz={prev_y.shape[0]} but cfg nz={len(data_atm.pco)}")
+        pytest.skip(
+            f"`HD189.vul` has nz={prev_y.shape[0]} but cfg nz={len(data_atm.pco)}"
+        )
 
     with _cfg_overrides(ini_mix="vulcan_ini", vul_ini=str(vul_path)):
         ini = InitialAbun()
@@ -152,7 +158,10 @@ def test_vulcan_ini_roundtrip():
             continue
         ref = prev_y[:, prev_species.index(sp)]
         np.testing.assert_allclose(
-            y[:, species_list.index(sp)], ref, rtol=1e-13, atol=0.0,
+            y[:, species_list.index(sp)],
+            ref,
+            rtol=1e-13,
+            atol=0.0,
             err_msg=f"vulcan_ini round-trip mismatch for {sp}",
         )
 
@@ -160,6 +169,7 @@ def test_vulcan_ini_roundtrip():
 # ---------------------------------------------------------------------------
 # table mode — synthesize a tiny mixing-ratio table on tmp_path.
 # ---------------------------------------------------------------------------
+
 
 def test_table_roundtrip(tmp_path):
     """Write a per-layer mixing table containing every species in the
@@ -170,8 +180,8 @@ def test_table_roundtrip(tmp_path):
     list and indexes `table[sp]` for each, so the file MUST contain a
     column per species — we cannot get away with a sparse table.
     """
-    from ini_abun import InitialAbun
-    import composition
+    from vulcan_jax.ini_abun import InitialAbun
+    import vulcan_jax.composition as composition
 
     data_var, data_atm, _ = _build_hd189_atm()
     nz_ = len(data_atm.pco)
@@ -200,24 +210,30 @@ def test_table_roundtrip(tmp_path):
     for sp, mix in populated.items():
         idx = species_list.index(sp)
         np.testing.assert_allclose(
-            y[:, idx], n_0 * mix, rtol=1e-13, atol=0.0,
+            y[:, idx],
+            n_0 * mix,
+            rtol=1e-13,
+            atol=0.0,
             err_msg=f"table mode mismatch for {sp}",
         )
     # Species not in the populated dict should be zero.
     other_idx = [i for i, sp in enumerate(species_list) if sp not in populated]
-    assert np.all(y[:, other_idx] == 0.0), "table mode left non-zero residue in unspecified species"
+    assert np.all(y[:, other_idx] == 0.0), (
+        "table mode left non-zero residue in unspecified species"
+    )
 
 
 # ---------------------------------------------------------------------------
 # const_lowT mode — JAX Newton vs scipy.fsolve.
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize(
     "O_H,C_H,He_H,N_H",
     [
         (5.37e-4, 2.95e-4, 0.0838, 7.08e-5),  # HD189 solar
-        (1.0e-3,  5.0e-4,  0.10,   1.0e-4),
-        (1.0e-4,  5.0e-5,  0.05,   1.0e-5),
+        (1.0e-3, 5.0e-4, 0.10, 1.0e-4),
+        (1.0e-4, 5.0e-5, 0.05, 1.0e-5),
     ],
 )
 def test_const_lowT_matches_scipy(O_H, C_H, He_H, N_H):
@@ -228,16 +244,20 @@ def test_const_lowT_matches_scipy(O_H, C_H, He_H, N_H):
     ratios."""
     import jax.numpy as jnp
     from scipy.optimize import fsolve
-    from ini_abun import _abun_lowT_residual, _jax_newton
+    from vulcan_jax.ini_abun import _abun_lowT_residual, _jax_newton
 
     def master_res(x, *args):
         return list(_abun_lowT_residual(jnp.asarray(x), *args))
 
     x0 = [0.9, 0.1, 0.0, 0.0, 0.0]
     scipy_root = fsolve(master_res, x0, args=(O_H, C_H, He_H, N_H))
-    jax_root = np.asarray(_jax_newton(
-        _abun_lowT_residual, jnp.array(x0), (O_H, C_H, He_H, N_H),
-    ))
+    jax_root = np.asarray(
+        _jax_newton(
+            _abun_lowT_residual,
+            jnp.array(x0),
+            (O_H, C_H, He_H, N_H),
+        )
+    )
     np.testing.assert_allclose(scipy_root, jax_root, rtol=1e-13, atol=1e-15)
 
 
@@ -245,13 +265,14 @@ def test_const_lowT_matches_scipy(O_H, C_H, He_H, N_H):
 # charge_list invariants.
 # ---------------------------------------------------------------------------
 
+
 def test_charge_list_no_ions():
     """HD189 has `use_ion=False`; `data_var.charge_list` must stay
     empty (or unset) and the legacy attribute must not appear with
     spurious entries.
     """
-    from ini_abun import InitialAbun
-    import vulcan_cfg
+    from vulcan_jax.ini_abun import InitialAbun
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     data_var, data_atm, _ = _build_hd189_atm()
     assert vulcan_cfg.use_ion is False, "test assumes HD189 default cfg"
@@ -270,14 +291,17 @@ def test_charge_list_no_ions():
 # fresh Python process.
 # ---------------------------------------------------------------------------
 
-def main() -> int:
-    from atm_setup import Atm
-    from ini_abun import InitialAbun
-    from state import _Variables, _AtmData
-    import vulcan_cfg
-    import chem_funs as cf_jax
 
-    print(f"VULCAN-JAX chem_funs: ni={cf_jax.ni} nr={cf_jax.nr}, ini_mix={vulcan_cfg.ini_mix}")
+def main() -> int:
+    from vulcan_jax.atm_setup import Atm
+    from vulcan_jax.ini_abun import InitialAbun
+    from vulcan_jax.state import _Variables, _AtmData
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    import vulcan_jax.chem_funs as cf_jax
+
+    print(
+        f"VULCAN-JAX chem_funs: ni={cf_jax.ni} nr={cf_jax.nr}, ini_mix={vulcan_cfg.ini_mix}"
+    )
 
     data_var = _Variables()
     data_atm = _AtmData()
@@ -308,7 +332,7 @@ def main() -> int:
 
     import build_atm as ba_v
     import store as st_v
-    import vulcan_cfg as cfg_v
+    import vulcan_jax.vulcan_cfg as cfg_v
 
     data_var2 = st_v.Variables()
     data_atm2 = st_v.AtmData()
@@ -354,9 +378,13 @@ def main() -> int:
             continue
         diff = abs(jax_atom_ini[atom] - vul_atom_ini[atom]) / abs(vul_atom_ini[atom])
         if diff < 1e-12:
-            print(f"OK   atom_ini[{atom}] = {jax_atom_ini[atom]:.4e} (relerr {diff:.2e})")
+            print(
+                f"OK   atom_ini[{atom}] = {jax_atom_ini[atom]:.4e} (relerr {diff:.2e})"
+            )
         else:
-            print(f"FAIL atom_ini[{atom}]: jax={jax_atom_ini[atom]:.4e} vul={vul_atom_ini[atom]:.4e}")
+            print(
+                f"FAIL atom_ini[{atom}]: jax={jax_atom_ini[atom]:.4e} vul={vul_atom_ini[atom]:.4e}"
+            )
             ok = False
 
     print()
@@ -377,9 +405,11 @@ def test_zzz_main_eq_vs_master():
             "this comparison test requires the upstream sibling repo."
         )
     import subprocess
+
     result = subprocess.run(
         [sys.executable, str(Path(__file__).resolve())],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, (
         f"subprocess exited {result.returncode}\n"

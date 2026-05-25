@@ -11,6 +11,7 @@ Mirrors `test_vmap_step.py`'s pattern but covers the per-layer
 chemistry, the analytical Jacobian, the diagonal-offdiag block
 solver, and the photo optical-depth kernel.
 """
+
 from __future__ import annotations
 
 import os
@@ -22,15 +23,14 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 
 warnings.filterwarnings("ignore")
 
 
 def _build_state():
     """Build the canonical HD189 state once for kernel testing."""
-    import vulcan_cfg
-    from state import RunState, legacy_view
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.state import RunState, legacy_view
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
     data_var, data_atm, _ = legacy_view(rs)
@@ -47,7 +47,7 @@ def test_chem_rhs_codegen_vmap_consistency() -> None:
     """`vmap(chem_rhs_codegen)` over a batch agrees with single calls."""
     import jax
     import jax.numpy as jnp
-    import chem_funs
+    import vulcan_jax.chem_funs as chem_funs
 
     _, data_var, data_atm = _build_state()
 
@@ -69,16 +69,18 @@ def test_chem_rhs_codegen_vmap_consistency() -> None:
 
     for b in range(BATCH):
         rel = _max_relerr(batched[b], single[b])
-        assert rel < 1e-12, f"chem_rhs_codegen vmap drift at batch {b}: relerr={rel:.3e}"
+        assert rel < 1e-12, (
+            f"chem_rhs_codegen vmap drift at batch {b}: relerr={rel:.3e}"
+        )
 
 
 def test_chem_rhs_segment_sum_reference_vmap_consistency() -> None:
     """The preserved segment_sum reference RHS remains vmap-consistent."""
     import jax
     import jax.numpy as jnp
-    import vulcan_cfg
-    import network as net_mod
-    import chem as chem_mod
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    import vulcan_jax.network as net_mod
+    import vulcan_jax.chem as chem_mod
 
     _, data_var, data_atm = _build_state()
     net = net_mod.parse_network(vulcan_cfg.network)
@@ -95,7 +97,10 @@ def test_chem_rhs_segment_sum_reference_vmap_consistency() -> None:
         axis=0,
     )
 
-    single = [chem_mod.chem_rhs_segment_sum(y_batch[b], M, k_arr, net_jax) for b in range(BATCH)]
+    single = [
+        chem_mod.chem_rhs_segment_sum(y_batch[b], M, k_arr, net_jax)
+        for b in range(BATCH)
+    ]
     batched = jax.vmap(chem_mod.chem_rhs_segment_sum, in_axes=(0, None, None, None))(
         y_batch, M, k_arr, net_jax
     )
@@ -109,9 +114,9 @@ def test_chem_jac_analytical_vmap_consistency() -> None:
     """`vmap(chem_jac_analytical)` agrees with single calls."""
     import jax
     import jax.numpy as jnp
-    import vulcan_cfg
-    import network as net_mod
-    import chem as chem_mod
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    import vulcan_jax.network as net_mod
+    import vulcan_jax.chem as chem_mod
 
     _, data_var, data_atm = _build_state()
     net = net_mod.parse_network(vulcan_cfg.network)
@@ -132,9 +137,9 @@ def test_chem_jac_analytical_vmap_consistency() -> None:
         chem_mod.chem_jac_analytical(y_batch[b], M, k_arr, net_jax)
         for b in range(BATCH)
     ]
-    batched = jax.vmap(
-        chem_mod.chem_jac_analytical, in_axes=(0, None, None, None)
-    )(y_batch, M, k_arr, net_jax)
+    batched = jax.vmap(chem_mod.chem_jac_analytical, in_axes=(0, None, None, None))(
+        y_batch, M, k_arr, net_jax
+    )
 
     for b in range(BATCH):
         rel = _max_relerr(batched[b], single[b])
@@ -147,7 +152,7 @@ def test_block_thomas_diag_offdiag_vmap_consistency() -> None:
     """`vmap(block_thomas_diag_offdiag)` agrees with single calls."""
     import jax
     import jax.numpy as jnp
-    import solver as solver_mod
+    import vulcan_jax.solver as solver_mod
 
     rng = np.random.default_rng(2)
     nz, ni = 16, 8
@@ -176,9 +181,7 @@ def test_block_thomas_diag_offdiag_vmap_consistency() -> None:
     sub_b = jnp.stack([s[2] for s in systems], axis=0)
     rhs_b = jnp.stack([s[3] for s in systems], axis=0)
 
-    single = [
-        solver_mod.block_thomas_diag_offdiag(*systems[b]) for b in range(BATCH)
-    ]
+    single = [solver_mod.block_thomas_diag_offdiag(*systems[b]) for b in range(BATCH)]
     batched = jax.vmap(solver_mod.block_thomas_diag_offdiag, in_axes=(0, 0, 0, 0))(
         diag_b, sup_b, sub_b, rhs_b
     )
@@ -198,7 +201,7 @@ def test_compute_tau_jax_vmap_consistency() -> None:
     """
     import jax
     import jax.numpy as jnp
-    import vulcan_cfg
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     if not vulcan_cfg.use_photo:
         return  # Nothing to validate when photo is off.
@@ -207,12 +210,10 @@ def test_compute_tau_jax_vmap_consistency() -> None:
     if rs.photo_static is None:
         return
 
-    import photo as photo_mod
-    import chem_funs
+    import vulcan_jax.photo as photo_mod
+    import vulcan_jax.chem_funs as chem_funs
 
-    photo_data = photo_mod.photo_data_from_static(
-        rs.photo_static, chem_funs.spec_list
-    )
+    photo_data = photo_mod.photo_data_from_static(rs.photo_static, chem_funs.spec_list)
     y = jnp.asarray(rs.step.y, dtype=jnp.float64)
     dz = jnp.asarray(data_atm.dz, dtype=jnp.float64)
 
@@ -223,13 +224,13 @@ def test_compute_tau_jax_vmap_consistency() -> None:
         axis=0,
     )
 
-    single = [photo_mod.compute_tau_jax(y_batch[b], dz, photo_data) for b in range(BATCH)]
+    single = [
+        photo_mod.compute_tau_jax(y_batch[b], dz, photo_data) for b in range(BATCH)
+    ]
     batched = jax.vmap(photo_mod.compute_tau_jax, in_axes=(0, None, None))(
         y_batch, dz, photo_data
     )
 
     for b in range(BATCH):
         rel = _max_relerr(batched[b], single[b])
-        assert rel < 1e-12, (
-            f"compute_tau_jax vmap drift at batch {b}: relerr={rel:.3e}"
-        )
+        assert rel < 1e-12, f"compute_tau_jax vmap drift at batch {b}: relerr={rel:.3e}"

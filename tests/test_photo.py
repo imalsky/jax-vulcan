@@ -3,6 +3,7 @@
 Runs VULCAN's compute_tau on the canonical HD189 state, then runs the JAX
 version on the same state and compares element-wise.
 """
+
 from __future__ import annotations
 
 import os
@@ -15,7 +16,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 
 # Oracle test: requires VULCAN-master sibling for the upstream op.compute_tau /
 # op.compute_flux / op.compute_J reference. Skip cleanly when absent.
@@ -32,17 +32,18 @@ warnings.filterwarnings("ignore")
 def main() -> int:
     sys.path.append(str(VULCAN_MASTER))
     import jax.numpy as jnp
-    import vulcan_cfg
-    from atm_setup import Atm
-    from ini_abun import InitialAbun
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.atm_setup import Atm
+    from vulcan_jax.ini_abun import InitialAbun
     import op
-    import photo as photo_mod
+    import vulcan_jax.photo as photo_mod
+
     # The private `state._Variables` / `_AtmData` containers are reached
     # in here because hybrid oracle tests need master's pipeline to mutate
     # a single shared `(var, atm)` — e.g. master's `make_bins_read_cross`
     # writes `var.cross[sp]` dicts that the JAX side's
     # `_build_photo_static_dense` then reads.
-    from state import _Variables, _AtmData
+    from vulcan_jax.state import _Variables, _AtmData
 
     # === Set up state with photochemistry ===
     data_var = _Variables()
@@ -75,13 +76,15 @@ def main() -> int:
     print(f"  range: [{tau_ref.min():.3e}, {tau_ref.max():.3e}]")
 
     # === Pack photo data and run JAX version ===
-    import chem_funs
+    import vulcan_jax.chem_funs as chem_funs
+
     species_list = chem_funs.spec_list
 
     # Build the dense `PhotoStaticInputs` and derive the runtime
     # `PhotoData` from it; master's `make_bins_read_cross` above already
     # populated the dicts master's compute_tau needs.
-    import photo_setup
+    import vulcan_jax.photo_setup as photo_setup
+
     static = photo_setup._build_photo_static_dense(data_var, data_atm)
     static = static.with_din12_indx(int(data_var.sflux_din12_indx))
     photo_data = photo_mod.photo_data_from_static(static, species_list)
@@ -90,9 +93,11 @@ def main() -> int:
     print(f"  absp species (T-dep):  {photo_data.absp_T_idx.shape[0]}")
     print(f"  scat species:          {photo_data.scat_idx.shape[0]}")
 
-    tau_jax = np.asarray(photo_mod.compute_tau_jax(
-        jnp.asarray(data_var.y), jnp.asarray(data_atm.dz), photo_data
-    ))
+    tau_jax = np.asarray(
+        photo_mod.compute_tau_jax(
+            jnp.asarray(data_var.y), jnp.asarray(data_atm.dz), photo_data
+        )
+    )
 
     # Compare
     if tau_jax.shape != tau_ref.shape:
@@ -106,19 +111,24 @@ def main() -> int:
 
     # Locate worst
     worst = np.unravel_index(relerr.argmax(), relerr.shape)
-    print(f"  worst at layer {worst[0]}, bin {worst[1]}: jax={tau_jax[worst]:.4e} ref={tau_ref[worst]:.4e}")
+    print(
+        f"  worst at layer {worst[0]}, bin {worst[1]}: jax={tau_jax[worst]:.4e} ref={tau_ref[worst]:.4e}"
+    )
 
     # === compute_flux validation ===
     # Reset VULCAN's dflux_u/d to zero so JAX's zero-init matches first-call behavior
     data_var.dflux_u = np.zeros_like(data_var.dflux_u)
     data_var.dflux_d = np.zeros_like(data_var.dflux_d)
-    data_var.tau = tau_ref   # restore tau (may have been modified)
+    data_var.tau = tau_ref  # restore tau (may have been modified)
     data_var.ymix = data_var.y / np.vstack(np.sum(data_var.y, axis=1))
     solver_v.compute_flux(data_var, data_atm)
     aflux_ref = data_var.aflux.copy()
-    print(f"\nVULCAN aflux shape: {aflux_ref.shape}, range [{aflux_ref.min():.3e}, {aflux_ref.max():.3e}]")
+    print(
+        f"\nVULCAN aflux shape: {aflux_ref.shape}, range [{aflux_ref.min():.3e}, {aflux_ref.max():.3e}]"
+    )
 
-    from phy_const import hc
+    from vulcan_jax.phy_const import hc
+
     aflux_jax, _, _, _ = photo_mod.compute_flux_jax(
         jnp.asarray(tau_ref),
         jnp.asarray(data_var.sflux_top),
@@ -127,9 +137,11 @@ def main() -> int:
         jnp.asarray(data_var.bins),
         float(np.cos(vulcan_cfg.sl_angle)),
         float(vulcan_cfg.edd),
-        float(0.0),                 # ag0=0 in phy_const
+        float(0.0),  # ag0=0 in phy_const
         float(hc),
-        jnp.zeros_like(jnp.asarray(data_var.dflux_u)),  # dflux_u_prev = zeros (first-call match)
+        jnp.zeros_like(
+            jnp.asarray(data_var.dflux_u)
+        ),  # dflux_u_prev = zeros (first-call match)
         ag0_is_zero=True,
     )
     aflux_jax = np.asarray(aflux_jax)
@@ -170,11 +182,7 @@ def main() -> int:
     print(f"compute_J max relerr: {max_relerr3:.3e} (over {n_compared} branches)")
 
     print()
-    ok = (
-        max_relerr < 1e-10
-        and max_relerr2 < 1e-6
-        and max_relerr3 < 1e-6
-    )
+    ok = max_relerr < 1e-10 and max_relerr2 < 1e-6 and max_relerr3 < 1e-6
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -183,9 +191,11 @@ def main() -> int:
 def test_main():
     """Run the master comparison in a fresh Python process."""
     import subprocess
+
     result = subprocess.run(
         [sys.executable, str(Path(__file__).resolve())],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, (
         f"subprocess exited {result.returncode}\n"

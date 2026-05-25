@@ -1,3 +1,70 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vulcan-jax"
+dynamic = ["version"]
+description = "VULCAN-JAX: JAX-accelerated photochemical kinetics for exoplanet atmospheres"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "BSD-3-Clause"
+dependencies = [
+    "jax>=0.4.31",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "h5py>=3.8",
+    "sympy>=1.12",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7",
+    "pytest-xdist>=3",
+    "ruff>=0.11",
+    "vulture>=2.11",
+    "build>=1.2",
+    "twine>=5",
+]
+plot = [
+    "matplotlib>=3.7",
+    "Pillow>=10",
+]
+
+[project.scripts]
+vulcan-jax = "vulcan_jax.vulcan_jax_cli:cli_main"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+vulcan_jax = [
+    "atm/**/*",
+    "thermo/**/*",
+    "fastchem_vulcan/**/*",
+    "cfg_examples/**/*",
+]
+
+[tool.setuptools.dynamic]
+version = { attr = "vulcan_jax._version.__version__" }
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.ruff.lint.per-file-ignores]
 "examples/grad_implicit_example.py" = ["E402"]
 "examples/grad_jvp_example.py" = ["E402"]
@@ -5,4 +72,4 @@
 "tests/test_block_thomas_diag.py" = ["E402"]
 "tests/test_photo_ion.py" = ["E402"]
 "tests/test_steady_state_grad.py" = ["E402"]
-"vulcan_jax.py" = ["E402"]
+"src/vulcan_jax/vulcan_jax_cli.py" = ["E402"]

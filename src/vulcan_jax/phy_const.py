@@ -1,0 +1,9 @@
+"""Physical constants in CGS, sourced from astropy."""
+
+kb = 1.38064852e-16  # Boltzmann constant (erg/K)
+Navo = 6.02214086e23  # Avogadro's number
+hc = 1.98644582e-9  # Planck constant * c (erg·nm)
+au = 1.49597871e13  # Astronomical unit (cm)
+r_sun = 6.957e10  # solar radius (cm)
+r_jup = 7.1492e9  # Jupiter equatorial radius (cm)
+ag0 = 0  # asymmetry factor in RT (0 = isotropic scattering)

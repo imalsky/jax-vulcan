@@ -11,6 +11,7 @@ must agree to machine precision on a real (y, M, k) state.
 Standalone test: does NOT require ../VULCAN-master/. Uses VULCAN-JAX's
 local rate-coef + atmosphere build path (legacy_io.ReadRate + build_atm).
 """
+
 from __future__ import annotations
 
 import os
@@ -22,20 +23,19 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 warnings.filterwarnings("ignore")
 
 
 def _check_jacobians(state) -> int:
     """Compare chem_jac_analytical vs jacrev path on the given HD189 state."""
-    import chem as chem_mod
+    import vulcan_jax.chem as chem_mod
     import jax.numpy as jnp
-    import network as net_mod
-    import vulcan_cfg
+    import vulcan_jax.network as net_mod
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     data_var, data_atm = state.var, state.atm
-    y = jnp.asarray(data_var.y, dtype=jnp.float64)              # [nz, ni]
-    M = jnp.asarray(data_atm.M, dtype=jnp.float64)              # [nz]
+    y = jnp.asarray(data_var.y, dtype=jnp.float64)  # [nz, ni]
+    M = jnp.asarray(data_atm.M, dtype=jnp.float64)  # [nz]
     nz, ni = y.shape
 
     net = net_mod.parse_network(vulcan_cfg.network)
@@ -44,15 +44,16 @@ def _check_jacobians(state) -> int:
 
     print(f"State: nz={nz}, ni={ni}, nr={net.nr}")
 
-    J_dense = np.asarray(chem_mod.chem_jac(y, M, k_arr, net_jax))           # [nz, ni, ni]
-    J_anal = np.asarray(chem_mod.chem_jac_analytical(y, M, k_arr, net_jax)) # [nz, ni, ni]
+    J_dense = np.asarray(chem_mod.chem_jac(y, M, k_arr, net_jax))  # [nz, ni, ni]
+    J_anal = np.asarray(
+        chem_mod.chem_jac_analytical(y, M, k_arr, net_jax)
+    )  # [nz, ni, ni]
 
     diff = np.abs(J_anal - J_dense)
     abs_max_dense = max(np.abs(J_dense).max(), 1e-300)
     relerr = diff / np.maximum(np.abs(J_dense), 1e-30)
     # Use a sane absolute floor for cells near zero (cancellation noise).
-    rel_significant = np.where(np.abs(J_dense) > 1e-12 * abs_max_dense,
-                               relerr, 0.0)
+    rel_significant = np.where(np.abs(J_dense) > 1e-12 * abs_max_dense, relerr, 0.0)
     max_rel = float(rel_significant.max())
     max_abs = float(diff.max())
 
@@ -79,11 +80,11 @@ def main() -> int:
     """Standalone entry: build the HD189 state inline (mirrors what the
     `hd189_state` fixture does) so `python tests/test_chem_jac_sparse.py`
     still works outside pytest."""
-    from atm_setup import Atm
-    import legacy_io as op
-    import op_jax
-    import vulcan_cfg
-    from state import RunState, legacy_view
+    from vulcan_jax.atm_setup import Atm
+    import vulcan_jax.legacy_io as op
+    import vulcan_jax.op_jax as op_jax
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.state import RunState, legacy_view
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
     data_var, data_atm, data_para = legacy_view(rs)
@@ -95,9 +96,14 @@ def main() -> int:
 
     # Match the fixture's shape so _check_jacobians can consume either.
     from conftest import HD189State  # type: ignore[import-not-found]
+
     state = HD189State(
-        var=data_var, atm=data_atm, para=data_para,
-        make_atm=make_atm, output=output, solver=solver,
+        var=data_var,
+        atm=data_atm,
+        para=data_para,
+        make_atm=make_atm,
+        output=output,
+        solver=solver,
     )
     return _check_jacobians(state)
 

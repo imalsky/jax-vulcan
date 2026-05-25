@@ -15,6 +15,7 @@ the unclamped baseline).
 The pre-Phase-10.6 version of this test only checked that
 `naming_solver` raised `NotImplementedError`. That deferral is gone now.
 """
+
 from __future__ import annotations
 
 import os
@@ -27,21 +28,23 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 
 warnings.filterwarnings("ignore")
 
 
 def _setup_state():
-    import vulcan_cfg
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+
     vulcan_cfg.count_max = 10
     vulcan_cfg.count_min = 1
     vulcan_cfg.use_print_prog = False
     vulcan_cfg.use_live_plot = False
     vulcan_cfg.use_live_flux = False
 
-    import legacy_io as op, op_jax, outer_loop  # noqa: E401
-    from state import RunState, legacy_view
+    import vulcan_jax.legacy_io as op
+    import vulcan_jax.op_jax as op_jax
+    import vulcan_jax.outer_loop as outer_loop
+    from vulcan_jax.state import RunState, legacy_view
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
     data_var, data_atm, data_para = legacy_view(rs)
@@ -55,21 +58,19 @@ def _setup_state():
 
 
 def main() -> int:
-    import vulcan_cfg
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+
     original = getattr(vulcan_cfg, "use_fix_all_bot", False)
     vulcan_cfg.use_fix_all_bot = True
     try:
         solver, output, var, atm, para, outer_loop = _setup_state()
         # Capture the would-be clamp target BEFORE the run.
-        bottom_target = (np.asarray(var.ymix[0], dtype=np.float64)
-                         * float(atm.n_0[0]))
+        bottom_target = np.asarray(var.ymix[0], dtype=np.float64) * float(atm.n_0[0])
         integ = outer_loop.OuterLoop(solver, output)
         integ(var, atm, para, None)
 
         diff = np.abs(np.asarray(var.y[0]) - bottom_target)
-        max_relerr = float(np.max(
-            diff / np.maximum(np.abs(bottom_target), 1e-300)
-        ))
+        max_relerr = float(np.max(diff / np.maximum(np.abs(bottom_target), 1e-300)))
         print(f"clamped bottom: max relerr = {max_relerr:.3e}")
         ok = max_relerr < 1e-12
     finally:

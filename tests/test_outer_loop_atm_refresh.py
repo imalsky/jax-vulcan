@@ -21,6 +21,7 @@ Validates:
     2. var.y after hydrostatic balance matches to ≤ 1e-13.
     3. Carry's atm fields match `atm.*` from path A to ≤ 1e-13.
 """
+
 from __future__ import annotations
 
 import copy
@@ -34,7 +35,6 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 
 # Oracle test: requires VULCAN-master sibling for the upstream
 # op.Integration.update_mu_dz / update_phi_esc reference. Skip when absent.
@@ -54,12 +54,12 @@ REFRESH_RTOL = 1e-13
 
 def main() -> int:
     sys.path.append(str(VULCAN_MASTER))
-    import vulcan_cfg
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
     import op
-    import op_jax
-    import outer_loop
-    from atm_setup import Atm
-    from state import RunState, legacy_view
+    import vulcan_jax.op_jax as op_jax
+    import vulcan_jax.outer_loop as outer_loop
+    from vulcan_jax.atm_setup import Atm
+    from vulcan_jax.state import RunState, legacy_view
 
     # --- Build HD189 reference state ---
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
@@ -83,7 +83,9 @@ def main() -> int:
     atm_A = integ_ref.update_mu_dz(var_A, atm_A, make_atm)
     atm_A = integ_ref.update_phi_esc(var_A, atm_A)
     if vulcan_cfg.use_condense:
-        var_A.y[:, atm_A.gas_indx] = np.vstack(atm_A.n_0) * var_A.ymix[:, atm_A.gas_indx]
+        var_A.y[:, atm_A.gas_indx] = (
+            np.vstack(atm_A.n_0) * var_A.ymix[:, atm_A.gas_indx]
+        )
     else:
         var_A.y = np.vstack(atm_A.n_0) * var_A.ymix
 
@@ -134,15 +136,15 @@ def main() -> int:
         return float(np.max(np.abs(ours - ref) / denom))
 
     for label, A, B in (
-        ("mu",       mu_A,       mu_B),
-        ("g",        g_A,        g_B),
-        ("Hp",       Hp_A,       Hp_B),
-        ("dz",       dz_A,       dz_B),
-        ("dzi",      dzi_A,      dzi_B),
-        ("Hpi",      Hpi_A,      Hpi_B),
-        ("zco",      zco_A,      zco_B),
+        ("mu", mu_A, mu_B),
+        ("g", g_A, g_B),
+        ("Hp", Hp_A, Hp_B),
+        ("dz", dz_A, dz_B),
+        ("dzi", dzi_A, dzi_B),
+        ("Hpi", Hpi_A, Hpi_B),
+        ("zco", zco_A, zco_B),
         ("top_flux", top_flux_A, top_flux_B),
-        ("y_post_hydro", y_A,    y_B),
+        ("y_post_hydro", y_A, y_B),
     ):
         err = _relerr(A, B)
         print(f"{label:14s} relerr: {err:.3e}")
@@ -159,9 +161,11 @@ def main() -> int:
 def test_main():
     """Run the master comparison in a fresh Python process."""
     import subprocess
+
     result = subprocess.run(
         [sys.executable, str(Path(__file__).resolve())],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, (
         f"subprocess exited {result.returncode}\n"

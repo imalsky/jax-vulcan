@@ -7,6 +7,7 @@ T/M atmosphere. Required for Task #5 validation.
 Run from VULCAN-JAX/:
     python tests/test_rates.py
 """
+
 from __future__ import annotations
 
 import os
@@ -19,8 +20,7 @@ import pytest
 
 # Imports relative to VULCAN-JAX/
 ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)              # ensure relative paths in vulcan_cfg.py resolve
-sys.path.insert(0, str(ROOT))
+os.chdir(ROOT)  # ensure relative paths in vulcan_cfg.py resolve
 
 # Oracle test: requires VULCAN-master sibling for the upstream `op` reference.
 # Skip cleanly when absent so VULCAN-JAX-only checkouts don't see a hard failure.
@@ -38,16 +38,17 @@ warnings.filterwarnings("ignore")
 
 def main() -> int:
     sys.path.append(str(VULCAN_MASTER))
-    import vulcan_cfg                       # noqa: E402
-    from atm_setup import Atm               # noqa: E402
-    import op                               # noqa: E402
+    import vulcan_jax.vulcan_cfg as vulcan_cfg  # noqa: E402
+    from vulcan_jax.atm_setup import Atm  # noqa: E402
+    import op  # noqa: E402
+
     # The private `state._Variables` / `_AtmData` containers are reached
     # in here because this oracle test feeds master's `op.ReadRate.read_rate`,
     # which writes the `var.k` dict surface.
-    from state import _Variables, _AtmData  # noqa: E402
+    from vulcan_jax.state import _Variables, _AtmData  # noqa: E402
 
-    import network as net_mod               # VULCAN-JAX
-    import rates as rates_mod               # VULCAN-JAX
+    import vulcan_jax.network as net_mod  # VULCAN-JAX
+    import vulcan_jax.rates as rates_mod  # VULCAN-JAX
 
     # === 1. Run VULCAN setup until var.k is populated ===
     data_var = _Variables()
@@ -65,8 +66,10 @@ def main() -> int:
     T = np.asarray(data_atm.Tco, dtype=np.float64)
     M = np.asarray(data_atm.M, dtype=np.float64)
     nz = T.shape[0]
-    print(f"Atmosphere: nz={nz}, T range [{T.min():.1f}, {T.max():.1f}] K, "
-          f"M range [{M.min():.2e}, {M.max():.2e}] cm^-3")
+    print(
+        f"Atmosphere: nz={nz}, T range [{T.min():.1f}, {T.max():.1f}] K, "
+        f"M range [{M.min():.2e}, {M.max():.2e}] cm^-3"
+    )
 
     # === 2. Run VULCAN-JAX rate computation on the same atmosphere ===
     net = net_mod.parse_network(vulcan_cfg.network)
@@ -131,8 +134,10 @@ def main() -> int:
     print(f"Compared {n_compared} forward reactions")
     print(f"  Pass: {n_pass}")
     print(f"  Fail: {n_fail}")
-    print(f"  Max relative error: {max_relerr:.3e} (at i={worst_i}, "
-          f"{net.Rf.get(worst_i, '?')!r})")
+    print(
+        f"  Max relative error: {max_relerr:.3e} (at i={worst_i}, "
+        f"{net.Rf.get(worst_i, '?')!r})"
+    )
 
     print()
     if n_fail == 0:
@@ -146,9 +151,11 @@ def main() -> int:
 def test_main():
     """Run the master comparison in a fresh Python process."""
     import subprocess
+
     result = subprocess.run(
         [sys.executable, str(Path(__file__).resolve())],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     assert result.returncode == 0, (
         f"subprocess exited {result.returncode}\n"

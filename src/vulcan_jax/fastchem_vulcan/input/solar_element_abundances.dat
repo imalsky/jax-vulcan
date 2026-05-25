@@ -1,0 +1,29 @@
+# Lodders 2019 solar abundances (Wogan & Tsai 2023 values).
+# Rocky elements (P, Si, Ti, V, Cl, K, Na, Mg, F, Ca, Fe) are suppressed to
+# log abundance -3.0 because the shipped NCHO / SNCHO photo-networks include
+# no species containing them. Leaving them at solar values would sequester
+# O atoms into MgO / SiO2 / FeO etc. gas-phase species that the network and
+# `_load_eq_y` cannot read back, producing initial states with ~19% less O
+# in the network-reachable pool (and a corresponding 2.2% drop in H/C/N
+# normalisation). The Lodders-2009 file with full rocky abundances is
+# preserved at `vulcan-master/fastchem_vulcan/input/solar_element_abundances.dat.bak`
+# for historical reference; do not copy it back without also extending the
+# network to include silicate / metal-oxide species.
+H   12.00
+He  10.9232
+C   8.4434
+N   7.9130
+O   8.7826
+S   7.1492
+P   -3.0
+Si  -3.0
+Ti  -3.0
+V   -3.0
+Cl  -3.0
+K   -3.0
+Na  -3.0
+Mg  -3.0
+F   -3.0
+Ca  -3.0
+Fe  -3.0
+e-  0

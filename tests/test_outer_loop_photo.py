@@ -21,6 +21,7 @@ Validates:
     3. var.k_arr entries for active photo branches agree to ≤ 1e-13.
     4. var.J_sp[(sp, nbr)] entries (incl. the (sp, 0) total) agree to ≤ 1e-13.
 """
+
 from __future__ import annotations
 
 import os
@@ -33,7 +34,6 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 
 warnings.filterwarnings("ignore")
 
@@ -42,15 +42,16 @@ PHOTO_RTOL = 1e-13
 
 
 def main() -> int:
-    import vulcan_cfg
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+
     if not vulcan_cfg.use_photo:
         print("SKIP: vulcan_cfg.use_photo=False; nothing to validate.")
         return 0
 
-    import legacy_io as op
-    import op_jax
-    import outer_loop
-    from state import RunState, legacy_view
+    import vulcan_jax.legacy_io as op
+    import vulcan_jax.op_jax as op_jax
+    import vulcan_jax.outer_loop as outer_loop
+    from vulcan_jax.state import RunState, legacy_view
 
     # --- Build HD189 reference state with the photo pre-loop (as
     # `vulcan_jax.py` does before entering the integration loop). ---
@@ -66,7 +67,8 @@ def main() -> int:
     # var.k_arr to the post-rate-build, pre-photo values via
     # `setup_var_k`, then re-run Path A explicitly so we have a clean
     # pre/post split.
-    import rates as _rates_mod
+    import vulcan_jax.rates as _rates_mod
+
     _network = _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
 
     # Snapshot the pre-photo state so Path B can run from the SAME starting
@@ -147,21 +149,22 @@ def main() -> int:
     dynamic_state = init_state._replace(dz=init_state.dz * dz_scale)
     dynamic_final = photo_branch(dynamic_state)
     tau_dynamic_ref = outer_loop._photo_mod.compute_tau_jax(
-        dynamic_state.y, dynamic_state.dz, integ._photo_static.photo_data,
+        dynamic_state.y,
+        dynamic_state.dz,
+        integ._photo_static.photo_data,
     )
-    dyn_dz_err = _relerr(np.asarray(tau_dynamic_ref),
-                         np.asarray(dynamic_final.tau))
+    dyn_dz_err = _relerr(np.asarray(tau_dynamic_ref), np.asarray(dynamic_final.tau))
     print(f"dynamic-dz tau relerr: {dyn_dz_err:.3e}")
     if dyn_dz_err > PHOTO_RTOL:
         print("FAIL: photo branch did not use dynamic state.dz")
         ok = False
 
     for label, A, B in (
-        ("tau",        tau_A,        tau_B),
-        ("aflux",      aflux_A,      aflux_B),
-        ("sflux",      sflux_A,      sflux_B),
-        ("dflux_d",    dflux_d_A,    dflux_d_B),
-        ("dflux_u",    dflux_u_A,    dflux_u_B),
+        ("tau", tau_A, tau_B),
+        ("aflux", aflux_A, aflux_B),
+        ("sflux", sflux_A, sflux_B),
+        ("dflux_d", dflux_d_A, dflux_d_B),
+        ("dflux_u", dflux_u_A, dflux_u_B),
         ("prev_aflux", prev_aflux_A, prev_aflux_B),
     ):
         err = _relerr(A, B)
@@ -170,10 +173,11 @@ def main() -> int:
             print(f"FAIL: {label} mismatch")
             ok = False
 
-    err_change = (abs(aflux_change_A - aflux_change_B)
-                  / max(abs(aflux_change_A), 1e-300))
-    print(f"aflux_change relerr: {err_change:.3e}  "
-          f"(A={aflux_change_A:.3e}, B={aflux_change_B:.3e})")
+    err_change = abs(aflux_change_A - aflux_change_B) / max(abs(aflux_change_A), 1e-300)
+    print(
+        f"aflux_change relerr: {err_change:.3e}  "
+        f"(A={aflux_change_A:.3e}, B={aflux_change_B:.3e})"
+    )
     if err_change > PHOTO_RTOL:
         print("FAIL: aflux_change mismatch")
         ok = False
@@ -182,7 +186,8 @@ def main() -> int:
     # anything outside that set should be bit-identical. Both paths write
     # the same J*.
     pho_re_set = {
-        idx for (sp, nbr), idx in data_var.pho_rate_index.items()
+        idx
+        for (sp, nbr), idx in data_var.pho_rate_index.items()
         if idx not in vulcan_cfg.remove_list
     }
     max_k_relerr = 0.0
@@ -196,9 +201,13 @@ def main() -> int:
             n_changed += 1
             max_k_relerr = max(max_k_relerr, re)
         if re > PHOTO_RTOL:
-            print(f"FAIL: var.k_arr[{ridx}] relerr {re:.3e} (in pho={ridx in pho_re_set})")
+            print(
+                f"FAIL: var.k_arr[{ridx}] relerr {re:.3e} (in pho={ridx in pho_re_set})"
+            )
             ok = False
-    print(f"var.k_arr photo entries:   {n_changed} reactions, max relerr {max_k_relerr:.3e}")
+    print(
+        f"var.k_arr photo entries:   {n_changed} reactions, max relerr {max_k_relerr:.3e}"
+    )
 
     # J_sp: every (sp, nbr) entry in A should appear in B with same values,
     # including the (sp, 0) totals.

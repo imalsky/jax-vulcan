@@ -11,15 +11,16 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 
-import op_jax
-import vulcan_cfg
+import vulcan_jax.op_jax as op_jax
+import vulcan_jax.vulcan_cfg as vulcan_cfg
 
 
 def _manual_jion(aflux, cross, split, dbin1, dbin2):
     left = np.sum(aflux[:, :split] * cross[:split], axis=1) * dbin1
-    left -= 0.5 * (aflux[:, 0] * cross[0] + aflux[:, split - 1] * cross[split - 1]) * dbin1
+    left -= (
+        0.5 * (aflux[:, 0] * cross[0] + aflux[:, split - 1] * cross[split - 1]) * dbin1
+    )
     right = np.sum(aflux[:, split:] * cross[split:], axis=1) * dbin2
     right -= 0.5 * (aflux[:, split] * cross[split] + aflux[:, -1] * cross[-1]) * dbin2
     return left + right
@@ -62,14 +63,21 @@ def main() -> int:
     # PhotoStaticInputs so its lazy `_ensure_photo_static` doesn't try to
     # read a full pre-loop state off the SimpleNamespace.
     import jax.numpy as jnp
-    from state import PhotoStaticInputs
+    from vulcan_jax.state import PhotoStaticInputs
+
     nbin = aflux.shape[1]
     nz = aflux.shape[0]
     photo_static = PhotoStaticInputs(
         bins=jnp.zeros((nbin,), dtype=jnp.float64),
-        nbin=nbin, dbin1=dbin1, dbin2=dbin2, din12_indx=split,
-        absp_sp=(), absp_T_sp=(), scat_sp=(),
-        branch_keys=(), branch_T_keys=(),
+        nbin=nbin,
+        dbin1=dbin1,
+        dbin2=dbin2,
+        din12_indx=split,
+        absp_sp=(),
+        absp_T_sp=(),
+        scat_sp=(),
+        branch_keys=(),
+        branch_T_keys=(),
         ion_branch_keys=(("H2O", 1), ("H2O", 2), ("NH3", 1)),
         absp_cross=jnp.zeros((0, nbin), dtype=jnp.float64),
         absp_T_cross=jnp.zeros((0, nz, nbin), dtype=jnp.float64),

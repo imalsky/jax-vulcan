@@ -30,7 +30,6 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 MASTER = ROOT.parent / "VULCAN-master"
 os.chdir(ROOT)
-sys.path.insert(0, str(ROOT))
 warnings.filterwarnings("ignore")
 
 # Number of accepted steps in the outer-loop bench. Small enough to
@@ -46,6 +45,7 @@ KERNEL_ITERS = 20
 def _backend_label() -> str:
     import jax
     import jaxlib
+
     devs = jax.devices()
     kinds = sorted({d.platform for d in devs})
     return (
@@ -57,8 +57,9 @@ def _backend_label() -> str:
 
 def _setup_runstate():
     """Run the full pre-loop pipeline; return (RunState, setup_seconds)."""
-    import vulcan_cfg
-    from state import RunState
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.state import RunState
+
     t0 = time.time()
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
     return rs, time.time() - t0
@@ -136,15 +137,15 @@ print((time.time() - t0) / 20.0 * 1000.0)
 def _bench_jax_kernel(rs) -> float:
     """Per-step jax_ros2_step ms (warm)."""
     import jax.numpy as jnp
-    from jax_step import jax_ros2_step, make_atm_static
-    import chem_funs
-    from state import legacy_view
+    from vulcan_jax.jax_step import jax_ros2_step, make_atm_static
+    import vulcan_jax.chem_funs as chem_funs
+    from vulcan_jax.state import legacy_view
 
     var, atm, _ = legacy_view(rs)
     nz, ni = var.y.shape
     k_arr = np.asarray(var.k_arr, dtype=np.float64)
     if k_arr.shape != (chem_funs.nr + 1, nz):
-        raise ValueError(f"k_arr shape {k_arr.shape} != ({chem_funs.nr+1}, {nz})")
+        raise ValueError(f"k_arr shape {k_arr.shape} != ({chem_funs.nr + 1}, {nz})")
 
     atm_static = make_atm_static(atm, ni, nz)
     y_j = jnp.asarray(var.y)
@@ -170,11 +171,11 @@ def _bench_outer_loop(rs, n_steps: int) -> tuple[float, float, int, int]:
     against the cached kernel. Convergence and runtime caps are
     deliberately set out of reach so the run terminates on count_max.
     """
-    import legacy_io as op
-    import op_jax
-    import outer_loop
-    import vulcan_cfg
-    from state import RunState
+    import vulcan_jax.legacy_io as op
+    import vulcan_jax.op_jax as op_jax
+    import vulcan_jax.outer_loop as outer_loop
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.state import RunState
 
     saved = {
         k: getattr(vulcan_cfg, k)
@@ -227,10 +228,11 @@ def main() -> None:
     print(f"jax_ros2_step_ms_per_step={kernel_ms:.3f}  (warm, kernel only)")
 
     first_s, cached_s, n1, n2 = _bench_outer_loop(rs, OUTER_BENCH_STEPS)
-    print(f"outer_loop_first_call_seconds={first_s:.2f}  "
-          f"({n1} steps, includes JIT compile)")
-    print(f"outer_loop_cached_call_seconds={cached_s:.2f}  "
-          f"({n2} steps, kernel cached)")
+    print(
+        f"outer_loop_first_call_seconds={first_s:.2f}  "
+        f"({n1} steps, includes JIT compile)"
+    )
+    print(f"outer_loop_cached_call_seconds={cached_s:.2f}  ({n2} steps, kernel cached)")
     print(f"outer_loop_per_step_ms_cached={cached_s / max(n2, 1) * 1000.0:.3f}")
 
     master_ms = _bench_master_single_step()
@@ -238,8 +240,9 @@ def main() -> None:
         print(f"master_ros2_step_ms_per_step={master_ms:.3f}  (subprocess oracle)")
         print(f"speedup_kernel_vs_master={master_ms / kernel_ms:.2f}x")
     else:
-        print("master_ros2_step_ms_per_step=unavailable  "
-              "(no ../VULCAN-master/ sibling)")
+        print(
+            "master_ros2_step_ms_per_step=unavailable  (no ../VULCAN-master/ sibling)"
+        )
 
 
 if __name__ == "__main__":

@@ -11,9 +11,11 @@
 The (y, M, k) state is captured fresh from `RunState.with_pre_loop_setup`
 on the current `vulcan_cfg.network` (one pre-loop pipeline run, ~1-3 s).
 """
+
 from __future__ import annotations
 
 import os
+import pickle
 import sys
 import warnings
 from pathlib import Path
@@ -26,11 +28,29 @@ os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
 VULCAN_MASTER = ROOT.parent / "VULCAN-master"
+PROJECT_ROOT = ROOT.parent
+
+
+def _atom_count_matrix(net: object, atoms: tuple[str, ...]) -> np.ndarray:
+    """Return species-by-atom stoichiometry for `atoms`. shape: (ni, n_atoms)."""
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+
+    compo = np.genfromtxt(
+        ROOT / vulcan_cfg.com_file,
+        names=True,
+        dtype=None,
+        encoding=None,
+    )
+    row_by_species = {str(row["species"]): row for row in compo}
+    return np.asarray(
+        [[float(row_by_species[sp][atom]) for atom in atoms] for sp in net.species],
+        dtype=np.float64,
+    )
 
 
 def _toy_network_for_codegen(tmp_path: Path):
     """Return a tiny network that exercises codegen order-sensitive cases."""
-    from network import Network
+    from vulcan_jax.network import Network
 
     ni = 3
     nr = 4
@@ -111,7 +131,7 @@ def _toy_network_for_codegen(tmp_path: Path):
 
 def test_codegen_source_preserves_master_emission_rules(tmp_path):
     """Generated RHS keeps VULCAN-master's order-sensitive chemdf shape."""
-    import make_chem_funs as mcf
+    import vulcan_jax.make_chem_funs as mcf
 
     net = _toy_network_for_codegen(tmp_path)
     src = mcf.emit_chem_rhs_source(net)
@@ -126,7 +146,7 @@ def test_codegen_source_preserves_master_emission_rules(tmp_path):
 def test_codegen_cache_key_changes_with_consumed_network_fields(tmp_path):
     """Cache key invalidates when any codegen-consumed network table changes."""
     import dataclasses
-    import make_chem_funs as mcf
+    import vulcan_jax.make_chem_funs as mcf
 
     net = _toy_network_for_codegen(tmp_path)
     key0 = mcf.chem_rhs_cache_key(net)
@@ -139,9 +159,7 @@ def test_codegen_cache_key_changes_with_consumed_network_fields(tmp_path):
 
     m_changed = net.is_three_body.copy()
     m_changed[2] = True
-    key_m = mcf.chem_rhs_cache_key(
-        dataclasses.replace(net, is_three_body=m_changed)
-    )
+    key_m = mcf.chem_rhs_cache_key(dataclasses.replace(net, is_three_body=m_changed))
 
     assert key_stoich != key0
     assert key_m != key0
@@ -149,10 +167,9 @@ def test_codegen_cache_key_changes_with_consumed_network_fields(tmp_path):
 
 def _capture_state():
     """Return (y, M, k_arr, net) from a fresh pre-loop pipeline run."""
-    sys.path.insert(0, str(ROOT))
-    import vulcan_cfg
-    import network as net_mod
-    from state import RunState
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    import vulcan_jax.network as net_mod
+    from vulcan_jax.state import RunState
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
     net = net_mod.parse_network(vulcan_cfg.network)
@@ -160,6 +177,110 @@ def _capture_state():
     M = np.asarray(rs.atm.M, dtype=np.float64)
     k_arr = np.asarray(rs.rate.k, dtype=np.float64)
     return y, M, k_arr, net
+
+
+def _hd209_repeated_final_layer_fixture() -> tuple[
+    np.ndarray, np.ndarray, np.ndarray, object, tuple[str, ...], np.ndarray
+]:
+    """Return one HD209 final-state layer repeated to the production column shape."""
+    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    import vulcan_jax.network as net_mod
+
+    saved = PROJECT_ROOT / "jax_paper" / "data" / "jax_HD209.vul"
+    if not saved.exists():
+        pytest.skip(f"HD209 saved output absent at {saved}")
+
+    with saved.open("rb") as handle:
+        state = pickle.load(handle)
+
+    net = net_mod.parse_network(vulcan_cfg.network)
+    if list(state["variable"]["species"]) != list(net.species):
+        pytest.skip("Current vulcan_cfg network does not match saved HD209 state")
+
+    layer = 2
+    n_layers = int(state["variable"]["y"].shape[0])
+    y_layer = np.asarray(
+        state["variable"]["y"][layer : layer + 1],
+        dtype=np.float64,
+    )
+    y = np.repeat(y_layer, n_layers, axis=0)
+    M = np.repeat(
+        np.asarray(state["atm"]["M"][layer : layer + 1], dtype=np.float64),
+        n_layers,
+    )
+    k_arr = np.zeros((net.nr + 1, n_layers), dtype=np.float64)
+    for i, vec in state["variable"]["k"].items():
+        if 1 <= int(i) <= net.nr:
+            k_arr[int(i)] = np.asarray(vec, dtype=np.float64)[layer]
+    atoms = ("H", "O", "C", "N")
+    atom_counts = _atom_count_matrix(net, atoms)
+    return y, M, k_arr, net, atoms, atom_counts
+
+
+def test_hd209_jit_rhs_projection_removes_atom_residual() -> None:
+    """HD209 C drift is the raw JIT RHS residual, not source stoichiometry."""
+    import jax
+    import jax.numpy as jnp
+    import vulcan_jax.chem as chem_mod
+    import vulcan_jax.make_chem_funs as mcf
+    import vulcan_jax.jax_step as jax_step
+
+    y, M, k_arr, net, atoms, atom_counts = _hd209_repeated_final_layer_fixture()
+    ns: dict = {}
+    exec(compile(mcf.emit_chem_rhs_source(net), "<hd209_codegen>", "exec"), ns)
+    raw_jit = jax.jit(ns["chem_rhs_codegen"])
+
+    y_j = jnp.asarray(y)
+    M_j = jnp.asarray(M)
+    k_j = jnp.asarray(k_arr)
+    out_jit = np.asarray(raw_jit(y_j, M_j, k_j).block_until_ready())
+    with jax.disable_jit():
+        out_nojit = np.asarray(raw_jit(y_j, M_j, k_j))
+    out_numpy = chem_mod.chem_rhs_numpy(y, M, k_arr, net)
+
+    np.testing.assert_array_equal(out_nojit, out_numpy)
+
+    c_idx = atoms.index("C")
+    raw_residual = out_jit @ atom_counts  # shape: (nz, n_atoms)
+    nojit_residual = out_nojit @ atom_counts
+    assert abs(float(raw_residual[0, c_idx])) > 1.0e9
+    assert abs(float(nojit_residual[0, c_idx])) < 1.0e4
+
+    projected = np.asarray(jax_step._project_chem_rhs(jnp.asarray(out_jit)))
+    projected_residual = projected @ atom_counts
+    assert abs(float(projected_residual[0, c_idx])) < 1.0e4
+
+    reservoir_idx = [net.species_idx[sp] for sp in ("H2", "H2O", "CO", "N2")]
+    non_reservoir_delta = np.delete(projected - out_jit, reservoir_idx, axis=1)
+    assert float(np.max(np.abs(non_reservoir_delta))) == 0.0
+
+
+def test_hd209_jacobian_projection_uses_same_reservoir_rows() -> None:
+    """Projected chemistry Jacobian mutates only reservoir rows."""
+    import jax
+    import jax.numpy as jnp
+    import vulcan_jax.chem as chem_mod
+    import vulcan_jax.jax_step as jax_step
+
+    y, M, k_arr, net, atoms, atom_counts = _hd209_repeated_final_layer_fixture()
+    net_jax = chem_mod.to_jax(net)
+    chem_jac = np.asarray(
+        jax.jit(chem_mod.chem_jac_analytical)(
+            jnp.asarray(y), jnp.asarray(M), jnp.asarray(k_arr), net_jax
+        ).block_until_ready()
+    )
+    projected = np.asarray(jax_step._project_chem_jac(jnp.asarray(chem_jac)))
+
+    before = np.einsum("ia,zij->zaj", atom_counts, chem_jac)
+    after = np.einsum("ia,zij->zaj", atom_counts, projected)
+    c_idx = atoms.index("C")
+    assert float(np.max(np.abs(after[:, c_idx, :]))) < float(
+        np.max(np.abs(before[:, c_idx, :]))
+    )
+
+    reservoir_idx = [net.species_idx[sp] for sp in ("H2", "H2O", "CO", "N2")]
+    non_reservoir_delta = np.delete(projected - chem_jac, reservoir_idx, axis=1)
+    assert float(np.max(np.abs(non_reservoir_delta))) == 0.0
 
 
 def test_codegen_matches_numpy_oracle():
@@ -180,8 +301,8 @@ def test_codegen_matches_numpy_oracle():
     y, M, k_arr, net = _capture_state()
 
     import jax.numpy as jnp
-    import chem as chem_mod
-    import make_chem_funs as mcf
+    import vulcan_jax.chem as chem_mod
+    import vulcan_jax.make_chem_funs as mcf
 
     fn = mcf.build_chem_rhs(net)
     out_codegen = np.asarray(fn(jnp.asarray(y), jnp.asarray(M), jnp.asarray(k_arr)))
@@ -241,6 +362,7 @@ def test_codegen_matches_master_chemdf():
         pytest.skip(f"VULCAN-master sibling absent at {VULCAN_MASTER}")
 
     import subprocess
+
     result = subprocess.run(
         [sys.executable, "-c", _MASTER_VS_CODEGEN_DRIVER],
         capture_output=True,
@@ -257,7 +379,7 @@ def test_codegen_matches_master_chemdf():
     )
 
 
-_MASTER_VS_CODEGEN_DRIVER = '''
+_MASTER_VS_CODEGEN_DRIVER = """
 import os, sys, warnings
 from pathlib import Path
 import numpy as np
@@ -271,11 +393,11 @@ warnings.filterwarnings("ignore")
 #        (y, M, k_dict) and chemdf reference, then chdir back. ===
 os.chdir(VULCAN_MASTER)
 sys.path.insert(0, str(VULCAN_MASTER))
-import vulcan_cfg as cfg_v
+import vulcan_jax.vulcan_cfg as cfg_v
 import store as st_v
 import build_atm as ba_v
 import op as op_v
-import chem_funs as cf_v
+import vulcan_jax.chem_funs as cf_v
 
 data_var = st_v.Variables()
 data_atm = st_v.AtmData()
@@ -305,12 +427,11 @@ for mod_name in ("vulcan_cfg", "store", "build_atm", "op", "chem_funs",
     sys.modules.pop(mod_name, None)
 while str(VULCAN_MASTER) in sys.path:
     sys.path.remove(str(VULCAN_MASTER))
-sys.path.insert(0, str(ROOT))
 os.chdir(ROOT)
 
 import jax.numpy as jnp
-import network as net_mod
-import make_chem_funs as mcf
+import vulcan_jax.network as net_mod
+import vulcan_jax.make_chem_funs as mcf
 
 # Reparse the master-side network through the JAX parser; build codegen
 # against this same network so the species/reaction indexing matches the
@@ -362,4 +483,4 @@ print(f"worst bulk-species relerr: {worst_bulk:.3e}")
 ok = bulk_ok
 print("PASS" if ok else "FAIL")
 sys.exit(0 if ok else 1)
-'''
+"""
