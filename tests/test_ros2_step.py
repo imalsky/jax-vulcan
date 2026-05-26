@@ -31,6 +31,7 @@ warnings.filterwarnings("ignore")
 
 def main() -> int:
     # === VULCAN-master pipeline + Ros2 step ===
+    os.chdir(VULCAN_MASTER)
     sys.path.insert(0, str(VULCAN_MASTER))
 
     import vulcan_jax.vulcan_cfg as cfg_v
@@ -77,6 +78,7 @@ def main() -> int:
         sys.modules.pop(mod, None)
     while str(VULCAN_MASTER) in sys.path:
         sys.path.remove(str(VULCAN_MASTER))
+    os.chdir(ROOT)
 
     import vulcan_jax.vulcan_cfg as cfg_jax
 

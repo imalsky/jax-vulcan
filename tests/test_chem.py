@@ -31,6 +31,7 @@ warnings.filterwarnings("ignore")
 
 def main() -> int:
     # === 1. Run VULCAN-master pipeline to get reference y/M/k state and chemdf/symjac ===
+    os.chdir(VULCAN_MASTER)
     sys.path.insert(0, str(VULCAN_MASTER))
 
     import vulcan_cfg as cfg_v
@@ -79,6 +80,7 @@ def main() -> int:
     # Remove VULCAN-master from sys.path
     while str(VULCAN_MASTER) in sys.path:
         sys.path.remove(str(VULCAN_MASTER))
+    os.chdir(ROOT)
 
     import vulcan_jax.network as net_mod
     import vulcan_jax.chem as chem_mod

@@ -30,6 +30,7 @@ warnings.filterwarnings("ignore")
 
 
 def main() -> int:
+    os.chdir(VULCAN_MASTER)
     sys.path.append(str(VULCAN_MASTER))
     import jax.numpy as jnp
     import vulcan_jax.vulcan_cfg as vulcan_cfg
@@ -76,6 +77,7 @@ def main() -> int:
     print(f"  range: [{tau_ref.min():.3e}, {tau_ref.max():.3e}]")
 
     # === Pack photo data and run JAX version ===
+    os.chdir(ROOT)
     import vulcan_jax.chem_funs as chem_funs
 
     species_list = chem_funs.spec_list

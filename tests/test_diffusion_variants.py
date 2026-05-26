@@ -32,9 +32,11 @@ warnings.filterwarnings("ignore")
 
 
 def main() -> int:
+    os.chdir(VULCAN_MASTER)
     sys.path.append(str(VULCAN_MASTER))
     import vulcan_jax.vulcan_cfg as vulcan_cfg
     import op  # VULCAN-master's op (oracle)
+    os.chdir(ROOT)
 
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import diffusion_numpy_ref as diff_mod

@@ -37,14 +37,12 @@ warnings.filterwarnings("ignore")
 
 
 def main() -> int:
+    os.chdir(VULCAN_MASTER)
     sys.path.append(str(VULCAN_MASTER))
     import vulcan_jax.vulcan_cfg as vulcan_cfg  # noqa: E402
     from vulcan_jax.atm_setup import Atm  # noqa: E402
     import op  # noqa: E402
 
-    # The private `state._Variables` / `_AtmData` containers are reached
-    # in here because this oracle test feeds master's `op.ReadRate.read_rate`,
-    # which writes the `var.k` dict surface.
     from vulcan_jax.state import _Variables, _AtmData  # noqa: E402
 
     import vulcan_jax.network as net_mod  # VULCAN-JAX
@@ -62,6 +60,7 @@ def main() -> int:
 
     rate = op.ReadRate()
     data_var = rate.read_rate(data_var, data_atm)
+    os.chdir(ROOT)
 
     T = np.asarray(data_atm.Tco, dtype=np.float64)
     M = np.asarray(data_atm.M, dtype=np.float64)

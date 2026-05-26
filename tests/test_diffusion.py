@@ -31,6 +31,7 @@ warnings.filterwarnings("ignore")
 
 def main() -> int:
     # === Set up VULCAN-master state for reference ===
+    os.chdir(VULCAN_MASTER)
     sys.path.insert(0, str(VULCAN_MASTER))
 
     import vulcan_cfg as cfg_v
@@ -79,6 +80,7 @@ def main() -> int:
         sys.modules.pop(mod, None)
     while str(VULCAN_MASTER) in sys.path:
         sys.path.remove(str(VULCAN_MASTER))
+    os.chdir(ROOT)
 
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import diffusion_numpy_ref as diff_mod

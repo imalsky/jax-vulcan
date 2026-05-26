@@ -53,9 +53,11 @@ REFRESH_RTOL = 2e-2
 
 
 def main() -> int:
+    os.chdir(VULCAN_MASTER)
     sys.path.append(str(VULCAN_MASTER))
     import vulcan_jax.vulcan_cfg as vulcan_cfg
     import op
+    os.chdir(ROOT)
     import vulcan_jax.op_jax as op_jax
     import vulcan_jax.outer_loop as outer_loop
     from vulcan_jax.atm_setup import Atm

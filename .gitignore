@@ -68,12 +68,6 @@ xla_dump/
 output/
 *.vul
 
-# Root-level symlinks to src/vulcan_jax/ data dirs (for backward compat / tests)
-/thermo
-/atm
-/fastchem_vulcan
-/cfg_examples
-
 # FastChem runtime-generated files (regenerated each run by ini_abun._run_fastchem)
 src/vulcan_jax/fastchem_vulcan/.fastchem_lock
 src/vulcan_jax/fastchem_vulcan/input/parameters.dat

@@ -328,11 +328,13 @@ def main() -> int:
     if not VULCAN_MASTER.is_dir():
         print("SKIP: VULCAN-master sibling not present; bit-exact oracle unavailable.")
         return 0
+    os.chdir(VULCAN_MASTER)
     sys.path.insert(0, str(VULCAN_MASTER))
 
     import build_atm as ba_v
     import store as st_v
     import vulcan_cfg as cfg_v
+    os.chdir(ROOT)
 
     if getattr(cfg_v, "use_solar", True) != getattr(vulcan_cfg, "use_solar", True):
         print("SKIP: master and JAX vulcan_cfg have different use_solar; configs diverged.")

@@ -33,6 +33,7 @@ warnings.filterwarnings("ignore")
 
 
 def main() -> int:
+    os.chdir(VULCAN_MASTER)
     sys.path.insert(0, str(VULCAN_MASTER))
     import vulcan_jax.vulcan_cfg as vulcan_cfg  # noqa
     import store, op  # noqa
@@ -56,6 +57,7 @@ def main() -> int:
     if getattr(vulcan_cfg, "use_lowT_limit_rates", False):
         data_var = rate.lim_lowT_rates(data_var, data_atm)
     data_var = rate.rev_rate(data_var, data_atm)
+    os.chdir(ROOT)
 
     T = np.asarray(data_atm.Tco, dtype=np.float64)
     M = np.asarray(data_atm.M, dtype=np.float64)
