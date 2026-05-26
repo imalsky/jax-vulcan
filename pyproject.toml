@@ -56,7 +56,19 @@ vulcan_jax = [
     "atm/**/*",
     "thermo/**/*",
     "fastchem_vulcan/**/*",
-    "cfg_examples/**/*",
+    "cfg_examples/**/*.py",
+]
+
+[tool.setuptools.exclude-package-data]
+vulcan_jax = [
+    "**/__pycache__/**",
+    "**/*.pyc",
+    "fastchem_vulcan/input/parameters.dat",
+    "fastchem_vulcan/input/element_abundances_vulcan.dat",
+    "fastchem_vulcan/input/vulcan_TP/vulcan_TP.dat",
+    "fastchem_vulcan/output/monitor_output.dat",
+    "fastchem_vulcan/output/chem_species.dat",
+    "fastchem_vulcan/output/vulcan_EQ.dat",
 ]
 
 [tool.setuptools.dynamic]

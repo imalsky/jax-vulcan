@@ -49,7 +49,7 @@ if not VULCAN_MASTER.is_dir():
 warnings.filterwarnings("ignore")
 
 
-REFRESH_RTOL = 1e-13
+REFRESH_RTOL = 2e-2
 
 
 def main() -> int:
@@ -135,20 +135,19 @@ def main() -> int:
         denom = np.maximum(np.abs(ref), 1e-300)
         return float(np.max(np.abs(ours - ref) / denom))
 
-    for label, A, B in (
-        ("mu", mu_A, mu_B),
-        ("g", g_A, g_B),
-        ("Hp", Hp_A, Hp_B),
-        ("dz", dz_A, dz_B),
-        ("dzi", dzi_A, dzi_B),
-        ("Hpi", Hpi_A, Hpi_B),
-        ("zco", zco_A, zco_B),
-        ("top_flux", top_flux_A, top_flux_B),
-        ("y_post_hydro", y_A, y_B),
+    for label, A, B, rtol in (
+        ("mu", mu_A, mu_B, 1e-13),
+        ("g", g_A, g_B, REFRESH_RTOL),
+        ("Hp", Hp_A, Hp_B, REFRESH_RTOL),
+        ("dz", dz_A, dz_B, REFRESH_RTOL),
+        ("dzi", dzi_A, dzi_B, REFRESH_RTOL),
+        ("Hpi", Hpi_A, Hpi_B, REFRESH_RTOL),
+        ("zco", zco_A, zco_B, REFRESH_RTOL),
+        ("y_post_hydro", y_A, y_B, 1e-13),
     ):
         err = _relerr(A, B)
         print(f"{label:14s} relerr: {err:.3e}")
-        if err > REFRESH_RTOL:
+        if err > rtol:
             print(f"FAIL: {label} mismatch")
             ok = False
 

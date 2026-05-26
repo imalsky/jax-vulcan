@@ -27,6 +27,8 @@ ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
+from vulcan_jax._paths import resolve_data_path
+
 VULCAN_MASTER = ROOT.parent / "VULCAN-master"
 PROJECT_ROOT = ROOT.parent
 
@@ -36,7 +38,7 @@ def _atom_count_matrix(net: object, atoms: tuple[str, ...]) -> np.ndarray:
     import vulcan_jax.vulcan_cfg as vulcan_cfg
 
     compo = np.genfromtxt(
-        ROOT / vulcan_cfg.com_file,
+        resolve_data_path(vulcan_cfg.com_file),
         names=True,
         dtype=None,
         encoding=None,
@@ -393,11 +395,11 @@ warnings.filterwarnings("ignore")
 #        (y, M, k_dict) and chemdf reference, then chdir back. ===
 os.chdir(VULCAN_MASTER)
 sys.path.insert(0, str(VULCAN_MASTER))
-import vulcan_jax.vulcan_cfg as cfg_v
+import vulcan_cfg as cfg_v
 import store as st_v
 import build_atm as ba_v
 import op as op_v
-import vulcan_jax.chem_funs as cf_v
+import chem_funs as cf_v
 
 data_var = st_v.Variables()
 data_atm = st_v.AtmData()
@@ -432,11 +434,12 @@ os.chdir(ROOT)
 import jax.numpy as jnp
 import vulcan_jax.network as net_mod
 import vulcan_jax.make_chem_funs as mcf
+from vulcan_jax._paths import resolve_data_path
 
 # Reparse the master-side network through the JAX parser; build codegen
 # against this same network so the species/reaction indexing matches the
 # k_dict captured from master.
-net = net_mod.parse_network(ROOT / cfg_v.network)
+net = net_mod.parse_network(resolve_data_path(cfg_v.network))
 fn = mcf.build_chem_rhs(net)
 
 k_full = np.zeros((net.nr + 1, nz), dtype=np.float64)

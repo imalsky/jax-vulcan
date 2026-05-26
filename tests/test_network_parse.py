@@ -33,7 +33,8 @@ def main() -> int:
     sys.path.insert(0, str(VULCAN_MASTER))
     import vulcan_jax.vulcan_cfg as vulcan_cfg  # noqa: E402  (imports relative to current dir)
 
-    network_path = ROOT / vulcan_cfg.network
+    from vulcan_jax._paths import resolve_data_path
+    network_path = resolve_data_path(vulcan_cfg.network)
     print(f"Parsing: {network_path}")
     net = net_mod.parse_network(network_path)
 

@@ -33,7 +33,7 @@ def main() -> int:
     # === Set up VULCAN-master state for reference ===
     sys.path.insert(0, str(VULCAN_MASTER))
 
-    import vulcan_jax.vulcan_cfg as cfg_v
+    import vulcan_cfg as cfg_v
     import store as st_v
     import build_atm as ba_v
     import op as op_v
@@ -66,7 +66,7 @@ def main() -> int:
     lhs_ref = np.asarray(odes.lhs_jac_tot(data_var, data_atm), dtype=np.float64)
 
     # Reference chemistry Jacobian (no diffusion)
-    import vulcan_jax.chem_funs as cf_v
+    import chem_funs as cf_v
 
     chem_jac_ref = -np.asarray(cf_v.symjac(y, data_atm.M, data_var.k), dtype=np.float64)
     # lhs_ref = c0*I + chem_jac_ref + diff_jac_blocks  ?

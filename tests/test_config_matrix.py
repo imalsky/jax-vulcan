@@ -151,7 +151,7 @@ def test_lowT_limit_rates_caps_fire_on_HD189():
     net = net_mod.parse_network(vulcan_cfg.network)
     thermo_dir = Path(vulcan_cfg.network).parent
     if not (thermo_dir / "NASA9").exists():
-        thermo_dir = ROOT / "thermo"
+        thermo_dir = ROOT / "src" / "vulcan_jax" / "thermo"
     nasa9_coeffs, _present = load_nasa9(net.species, thermo_dir)
 
     with cfg_overrides(use_lowT_limit_rates=True):
@@ -352,7 +352,7 @@ def test_bc_flux_loaded_from_file(flag, file_attr, file_path, target_sp):
     species_list = list(composition.species)
     if target_sp not in species_list:
         pytest.skip(f"{target_sp} not in HD189 network; cannot validate BC.")
-    if not (ROOT / file_path).is_file():
+    if not (ROOT / "src" / "vulcan_jax" / file_path).is_file():
         pytest.skip(f"BC file {file_path!r} missing.")
 
     overrides = {flag: True, file_attr: file_path}

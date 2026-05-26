@@ -4,8 +4,9 @@
 *$py.class
 *.so
 
-# Claude code
+# Claude code / internal docs
 CLAUDE.md
+FILE_README.md
 
 # Distribution / packaging
 build/
@@ -63,17 +64,15 @@ xla_dump/
 *.orig
 *.rej
 
-# VULCAN simulation outputs (binary pickle, ~10+ MB each)
+# VULCAN simulation outputs
+output/
 *.vul
 
-# VULCAN per-run config snapshot (Output.save_out copies vulcan_cfg.py here)
-output/cfg_*.txt
-
-# Live-UI artifacts (movies / frames written next to outputs)
-output/movie_*/
-output/*_movie/
-output/*.mp4
-output/*.gif
+# Root-level symlinks to src/vulcan_jax/ data dirs (for backward compat / tests)
+/thermo
+/atm
+/fastchem_vulcan
+/cfg_examples
 
 # FastChem runtime-generated files (regenerated each run by ini_abun._run_fastchem)
 src/vulcan_jax/fastchem_vulcan/.fastchem_lock

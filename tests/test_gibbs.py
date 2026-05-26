@@ -62,7 +62,7 @@ def main() -> int:
 
     # === 2. JAX-side computation ===
     net = net_mod.parse_network(vulcan_cfg.network)
-    coeffs, present = gibbs_mod.load_nasa9(net.species, ROOT / "thermo")
+    coeffs, present = gibbs_mod.load_nasa9(net.species, "thermo")
     g_sp = gibbs_mod.gibbs_sp_vector(coeffs, T)
     K_eq = gibbs_mod.K_eq_array(net, g_sp, T)
     k_fwd = rates_mod.compute_forward_k(net, T, M)

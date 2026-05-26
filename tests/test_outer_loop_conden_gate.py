@@ -30,7 +30,7 @@ warnings.filterwarnings("ignore")
 
 def test_conden_gate_uses_entry_time_t() -> None:
     """The conden window gate must use entry-time `s.t`, not `t_next`."""
-    src_path = ROOT / "outer_loop.py"
+    src_path = ROOT / "src" / "vulcan_jax" / "outer_loop.py"
     text = src_path.read_text()
 
     # Locate the conden window predicate and assert it reads `s.t`.
@@ -47,7 +47,7 @@ def test_conden_gate_uses_entry_time_t() -> None:
 
 def test_fix_species_gate_uses_entry_time_t() -> None:
     """The fix-species trigger must compare `s.t > stop_conden_time`."""
-    src_path = ROOT / "outer_loop.py"
+    src_path = ROOT / "src" / "vulcan_jax" / "outer_loop.py"
     text = src_path.read_text()
 
     # Find the predicate inside the trigger_fix block.  The gate is always

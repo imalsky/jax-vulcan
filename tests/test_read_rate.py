@@ -60,7 +60,7 @@ def _load_nasa9_local(net):
 
     thermo_dir = Path(vulcan_cfg.network).parent
     if not (thermo_dir / "NASA9").exists():
-        thermo_dir = ROOT / "thermo"
+        thermo_dir = Path("thermo")
     coeffs, _present = gibbs.load_nasa9(net.species, thermo_dir)
     return coeffs
 

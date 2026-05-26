@@ -84,7 +84,8 @@ def main() -> int:
     # master-side state captured above. `jax_step` imports
     # `chem_funs.chem_rhs_codegen` at module import time, so this must happen
     # before importing `chem_funs` or `jax_step`.
-    cfg_jax.network = str(ROOT / cfg_v.network)
+    from vulcan_jax._paths import resolve_data_path
+    cfg_jax.network = str(resolve_data_path(cfg_v.network))
     for name in (
         "use_moldiff",
         "use_vm_mol",

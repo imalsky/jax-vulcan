@@ -55,15 +55,16 @@ PY
 )"
 echo "Releasing version: $VER"
 
-# 3) Commit + push
-git status
-git add -A
-git commit -m "Release v$VER"
-git push origin main
-
-# 4) Build + upload to TestPyPI
+# 3) Build first to catch errors before committing
 python -m pip install --upgrade pip build twine
 python -m build
+
+# 4) Commit + push (only after build succeeds)
+git status
+git add -u
+git add src/vulcan_jax/_version.py
+git commit -m "Release v$VER"
+git push origin main
 
 export TWINE_USERNAME="__token__"
 python -m twine upload --verbose --repository-url https://test.pypi.org/legacy/ dist/*

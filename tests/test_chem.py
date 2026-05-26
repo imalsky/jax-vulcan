@@ -33,11 +33,11 @@ def main() -> int:
     # === 1. Run VULCAN-master pipeline to get reference y/M/k state and chemdf/symjac ===
     sys.path.insert(0, str(VULCAN_MASTER))
 
-    import vulcan_jax.vulcan_cfg as cfg_v
+    import vulcan_cfg as cfg_v
     import store as st_v
     import build_atm as ba_v
     import op as op_v
-    import vulcan_jax.chem_funs as cf_v
+    import chem_funs as cf_v
 
     data_var = st_v.Variables()
     data_atm = st_v.AtmData()
@@ -84,7 +84,8 @@ def main() -> int:
     import vulcan_jax.chem as chem_mod
     import jax.numpy as jnp
 
-    net = net_mod.parse_network(ROOT / cfg_v.network)
+    from vulcan_jax._paths import resolve_data_path
+    net = net_mod.parse_network(resolve_data_path(cfg_v.network))
     net_jax = chem_mod.to_jax(net)
 
     # Use the same k_dict from VULCAN's pipeline (already validated against ours).

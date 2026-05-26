@@ -45,6 +45,14 @@ cfg = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 spec.loader.exec_module(cfg)
 sys.modules["vulcan_jax.vulcan_cfg"] = cfg
+sys.modules["vulcan_cfg"] = cfg
+
+# Clear any cached vulcan_jax submodules so chem_funs re-parses the W39b network
+for mod_name in list(sys.modules):
+    if mod_name.startswith("vulcan_jax.") and mod_name != "vulcan_jax.vulcan_cfg":
+        del sys.modules[mod_name]
+if "vulcan_jax" in sys.modules:
+    del sys.modules["vulcan_jax"]
 
 from vulcan_jax.runtime_validation import validate_runtime_config
 
@@ -126,9 +134,9 @@ try:
     sys.path.insert(0, str(root))
 
     import build_atm
-    import vulcan_jax.chem_funs as chem_funs
+    import chem_funs
     import store
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    import vulcan_cfg
 
     data_var = store.Variables()
     data_atm = store.AtmData()
