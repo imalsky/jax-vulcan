@@ -203,6 +203,7 @@ def _run_fastchem_locked(data_atm) -> None:
             fout.write(new_str)
 
     _FC_VULCAN_TP.parent.mkdir(parents=True, exist_ok=True)
+    _FC_OUTPUT.mkdir(parents=True, exist_ok=True)
     with open(_FC_VULCAN_TP, "w") as fout:
         ost = "#p (bar)    T (K)\n"
         for n, p in enumerate(data_atm.pco):
