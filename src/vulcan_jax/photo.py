@@ -210,6 +210,7 @@ def compute_flux_jax(
     ll = jnp.clip(ll, -1e10, 1e10)
 
     chi = zeta_m**2 * tran**2 - zeta_p**2
+    chi = jnp.where(jnp.abs(chi) < 1e-300, 1e-300, chi)
     xi = zeta_p * zeta_m * (1.0 - tran**2)
     phi = (zeta_m**2 - zeta_p**2) * tran
 

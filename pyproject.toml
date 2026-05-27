@@ -63,6 +63,9 @@ vulcan_jax = [
 vulcan_jax = [
     "**/__pycache__/**",
     "**/*.pyc",
+    "fastchem_vulcan/fastchem",
+    "fastchem_vulcan/obj/*.o",
+    "fastchem_vulcan/obj/*.d",
     "fastchem_vulcan/input/parameters.dat",
     "fastchem_vulcan/input/element_abundances_vulcan.dat",
     "fastchem_vulcan/input/vulcan_TP/vulcan_TP.dat",

@@ -18,6 +18,7 @@ FastChem subprocess calls are serialised via `fcntl.flock` so
 from __future__ import annotations
 
 import fcntl
+import os
 import pickle
 import subprocess
 from pathlib import Path
@@ -47,7 +48,25 @@ jax.config.update("jax_enable_x64", True)
 # sentinel and write to the same input/output files.
 _ROOT = Path(__file__).resolve().parent
 _FC_DIR = (_ROOT / "fastchem_vulcan").resolve()
+_FC_BIN = _FC_DIR / "fastchem"
 _FC_SENTINEL = _FC_DIR / ".fastchem_lock"
+
+
+def _ensure_fastchem_binary() -> None:
+    """Compile FastChem from vendored C++ source if the binary is missing or
+    was built for a different platform."""
+    if _FC_BIN.is_file() and os.access(_FC_BIN, os.X_OK):
+        return
+    makefile = _FC_DIR / "makefile"
+    if not makefile.is_file():
+        raise FileNotFoundError(
+            f"FastChem binary missing and no makefile found at {makefile}. "
+            "Reinstall vulcan-jax to get the C++ source."
+        )
+    (_FC_DIR / "obj").mkdir(exist_ok=True)
+    subprocess.check_call(["make"], cwd=str(_FC_DIR))
+    if not _FC_BIN.is_file():
+        raise RuntimeError("make completed but fastchem binary was not produced")
 _FC_INPUT = _FC_DIR / "input"
 _FC_OUTPUT = _FC_DIR / "output"
 _FC_VULCAN_TP = _FC_INPUT / "vulcan_TP" / "vulcan_TP.dat"
@@ -216,6 +235,7 @@ def _run_fastchem_locked(data_atm) -> None:
         ost = ost[:-1]
         fout.write(ost)
 
+    _ensure_fastchem_binary()
     try:
         subprocess.check_call(
             ["./fastchem input/config.input"],

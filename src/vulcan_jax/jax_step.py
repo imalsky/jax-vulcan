@@ -301,6 +301,7 @@ def _build_diff_coeffs_jax(y, atm: AtmStatic, grav: DiffGrav):
     nz = atm.Tco.shape[0]
 
     ysum = jnp.sum(jnp.where(atm.gas_indx_mask[None, :], y, 0.0), axis=1)
+    ysum = jnp.maximum(ysum, 1e-300)
 
     # Build full nz arrays of interior values, then overwrite the boundaries.
     j_int = jnp.arange(1, nz - 1)

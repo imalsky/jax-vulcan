@@ -221,7 +221,7 @@ def _step_size(
     from `vulcan_cfg.step_size_safety` / `step_size_zero_delta_frac`;
     the defaults here are kept for direct callers (tests / standalone use).
     """
-    delta_eff = jnp.where(delta == 0.0, zero_delta_frac * rtol, delta)
+    delta_eff = jnp.where(delta < 1e-300, zero_delta_frac * rtol, delta)
     h_factor = safety * (rtol / delta_eff) ** 0.5
     h_factor = jnp.clip(h_factor, dt_var_min, dt_var_max)
     return jnp.clip(dt * h_factor, dt_min, dt_max)
