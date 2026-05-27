@@ -174,6 +174,8 @@ def compute_diff_grav(atm: AtmStatic) -> DiffGrav:
     dz_ave = 0.5 * (dzi[j_int - 1] + dzi[j_int])  # (nz-2,)
     use_vm = jnp.asarray(atm.use_vm_mol, dtype=jnp.float64)
     use_set = jnp.asarray(atm.use_settling, dtype=jnp.float64)
+    mol_active = jnp.any(Dzz != 0.0)
+    Hpi = jnp.where(mol_active, Hpi, jnp.ones_like(Hpi))
 
     grav_j = (
         -1.0 / Hpi[j_int][:, None]
