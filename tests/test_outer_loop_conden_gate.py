@@ -18,7 +18,6 @@ The fixed gate skips both → identical first-step state.
 from __future__ import annotations
 
 import os
-import sys
 import warnings
 from pathlib import Path
 

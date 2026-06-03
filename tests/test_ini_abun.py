@@ -334,10 +334,13 @@ def main() -> int:
     import build_atm as ba_v
     import store as st_v
     import vulcan_cfg as cfg_v
+
     os.chdir(ROOT)
 
     if getattr(cfg_v, "use_solar", True) != getattr(vulcan_cfg, "use_solar", True):
-        print("SKIP: master and JAX vulcan_cfg have different use_solar; configs diverged.")
+        print(
+            "SKIP: master and JAX vulcan_cfg have different use_solar; configs diverged."
+        )
         return 0
 
     data_var2 = st_v.Variables()

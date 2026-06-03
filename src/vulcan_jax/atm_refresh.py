@@ -13,6 +13,8 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+_UNDERFLOW_DENOM = 1e-300
+
 
 class AtmRefreshStatic(NamedTuple):
     """Closed-over static inputs to the atm-refresh kernels."""
@@ -55,15 +57,13 @@ def update_mu_dz_jax(ymix: jnp.ndarray, st: AtmRefreshStatic):
 
     mu = jnp.einsum("zi,i->z", ymix, mol_mass)
 
-    _HP_DENOM_FLOOR = 1e-300
-
     # Forward scan upward from `pref_indx` to nz-1.
     def fwd_step(zco_i, i):
         # g at the reference layer is gs by definition; above it, g follows
         # the inverse-square law from Rp+zco[i].
         is_pref = i == pref_indx
         g_i = jnp.where(is_pref, gs, gs * (Rp / (Rp + zco_i)) ** 2)
-        denom = jnp.maximum(mu[i] / Navo * g_i, _HP_DENOM_FLOOR)
+        denom = jnp.maximum(mu[i] / Navo * g_i, _UNDERFLOW_DENOM)
         Hp_i = kb * Tco[i] / denom
         dz_i = Hp_i * jnp.log(pico[i] / pico[i + 1])
         zco_ip1 = zco_i + dz_i
@@ -80,7 +80,7 @@ def update_mu_dz_jax(ymix: jnp.ndarray, st: AtmRefreshStatic):
     def bwd_step(zco_ip1, i):
         # The layer sits below zco[i+1], so g uses Rp+zco[i+1].
         g_i = gs * (Rp / (Rp + zco_ip1)) ** 2
-        denom = jnp.maximum(mu[i] / Navo * g_i, _HP_DENOM_FLOOR)
+        denom = jnp.maximum(mu[i] / Navo * g_i, _UNDERFLOW_DENOM)
         Hp_i = kb * Tco[i] / denom
         dz_i = Hp_i * jnp.log(pico[i] / pico[i + 1])
         zco_i = zco_ip1 - dz_i

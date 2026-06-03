@@ -5,7 +5,6 @@ import os
 
 os.environ["OMP_NUM_THREADS"] = "1"
 
-import sys
 import time
 
 import jax as _jax
@@ -53,7 +52,9 @@ def cli_main():
     print(f"VULCAN-JAX starting integration at t=0, dt={float(runstate.step.dt):.2e}")
     runstate = integ(runstate)
 
-    print(f"VULCAN-JAX done. Saving output to {vulcan_cfg.output_dir}{vulcan_cfg.out_name}")
+    print(
+        f"VULCAN-JAX done. Saving output to {vulcan_cfg.output_dir}{vulcan_cfg.out_name}"
+    )
     output.save_out(runstate, dname)
 
     if getattr(vulcan_cfg, "use_plot_end", False) or (

@@ -146,24 +146,24 @@ def main() -> int:
             for i in range(ni):
                 ref_val = diff_jac_only[j * ni + i, (j + 1) * ni + i]
                 jax_val = -sup_d[j, i]
-                # Pass if absolute diff is below floor OR relative diff is small
-            abs_diff = abs(ref_val - jax_val)
-            if abs_diff < jac_abs_tol:
-                err = 0.0
-            else:
-                err = abs_diff / max(abs(ref_val), jac_abs_tol)
+                # Pass if absolute diff is below floor OR relative diff is small.
+                abs_diff = abs(ref_val - jax_val)
+                if abs_diff < jac_abs_tol:
+                    err = 0.0
+                else:
+                    err = abs_diff / max(abs(ref_val), jac_abs_tol)
                 if err > max_sup_err:
                     max_sup_err = err
         if j > 0:
             for i in range(ni):
                 ref_val = diff_jac_only[j * ni + i, (j - 1) * ni + i]
                 jax_val = -sub_d[j - 1, i]
-                # Pass if absolute diff is below floor OR relative diff is small
-            abs_diff = abs(ref_val - jax_val)
-            if abs_diff < jac_abs_tol:
-                err = 0.0
-            else:
-                err = abs_diff / max(abs(ref_val), jac_abs_tol)
+                # Pass if absolute diff is below floor OR relative diff is small.
+                abs_diff = abs(ref_val - jax_val)
+                if abs_diff < jac_abs_tol:
+                    err = 0.0
+                else:
+                    err = abs_diff / max(abs(ref_val), jac_abs_tol)
                 if err > max_sub_err:
                     max_sub_err = err
 

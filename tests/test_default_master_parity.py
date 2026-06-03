@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 VULCAN_MASTER = ROOT.parent / "VULCAN-master"
 
 from vulcan_jax._paths import PACKAGE_ROOT
+
 MATCHED_ACCEPTED_STEPS = 20
 COUNT_MAX = MATCHED_ACCEPTED_STEPS - 1
 MATCHED_STEP_RTOL = 3.0e-9
@@ -113,10 +114,29 @@ def run() -> None:
             text=True,
             timeout=600,
         )
+        # make_chem_funs.py writes chem_funs.py BEFORE its post-codegen
+        # check_conserv() sanity check, which raises under numpy>=1.24
+        # (str(numpy.bytes_) -> "b'OH'", so compo_row.index('OH') fails). That
+        # crash is benign to the generated module: master's own vulcan.py
+        # ignores make_chem_funs's exit code (os.system). So only bail if the
+        # generated chem_funs.py does not import with a valid (ni, nr).
         if res.returncode != 0:
-            print(res.stdout[-2000:])
-            print(res.stderr[-2000:])
-            sys.exit(res.returncode)
+            probe = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import chem_funs as c; "
+                    "assert getattr(c, 'ni', 0) > 0 and getattr(c, 'nr', 0) > 0",
+                ],
+                cwd=str(master_root),
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+            if probe.returncode != 0:
+                print(res.stdout[-2000:])
+                print(res.stderr[-2000:])
+                sys.exit(res.returncode)
 
         os.chdir(master_root)
         sys.path.insert(0, str(master_root))
@@ -372,7 +392,9 @@ def test_default_hd189_preloop_and_matched_steps_match_master() -> None:
         master_npz = tmp_path / "master_hd189.npz"
         jax_npz = tmp_path / "jax_hd189.npz"
         master_backup = tmp_path / "master_backup"
-        stock_fastchem = PACKAGE_ROOT / "fastchem_vulcan/input/solar_element_abundances.dat"
+        stock_fastchem = (
+            PACKAGE_ROOT / "fastchem_vulcan/input/solar_element_abundances.dat"
+        )
 
         master_res = _run_script(
             _MASTER_SCRIPT,

@@ -5,7 +5,7 @@ A JAX-accelerated, differentiable port of [VULCAN](https://github.com/exoclime/V
 VULCAN-JAX runs the same configuration files, input data, and `.vul` output schema as upstream VULCAN. The hot path is a single JIT-compiled `lax.while_loop` on CPU or GPU. The runtime is standalone -- no `../VULCAN-master/` sibling required.
 
 **Why use this over upstream VULCAN?**
-- ~5-8x faster end-to-end on CPU (single-threaded); the per-step kernel is ~3x faster
+- ~3x faster per-step on CPU (single-threaded; see Benchmarks); end-to-end speedup is workload-dependent
 - Differentiable: forward-mode through the runner, reverse-mode via implicit steady-state gradients
 - Same config format and `.vul` output: VULCAN's `plot_py/` scripts work unmodified
 - Vectorizable: tested `vmap` support for batched parameter sweeps
@@ -314,12 +314,14 @@ See `examples/grad_implicit_example.py` and `examples/grad_jvp_example.py` for w
 
 ## Benchmarks
 
-Per-step kernel timing on HD189 from `python benchmarks/bench_step.py` (CPU, single-threaded):
+Per-step kernel timing on HD189 from `python benchmarks/bench_step.py`. Numbers
+below are from one reference CPU host (single-threaded, `jax==0.6.2`, float64);
+they are hardware- and version-dependent, so re-run the benchmark on your machine.
 
 | Step | Master (NumPy) | VULCAN-JAX | Speedup |
 |---|---:|---:|---:|
-| Single Ros2 step | 152.3 ms | 45.1 ms | 3.4x |
-| 50-step OuterLoop | -- | 49.6 ms/step | -- |
+| Single Ros2 step | 118.5 ms | 37.2 ms | 3.2x |
+| 50-step OuterLoop | -- | 50.2 ms/step | -- |
 
 Speedup comes from: analytical Jacobian (95 ms -> 2.6 ms), diagonal-aware block-Thomas (O(ni^3) -> O(ni^2)), JIT compilation of the full loop, and pre-baked y-independent diffusion terms.
 
@@ -355,19 +357,23 @@ The `test_cfg_examples[vulcan_cfg_Earth.py]` test is a known skip -- the Earth c
 
 ### Numerical agreement (per-component)
 
-| Layer | Agreement |
-|---|---|
-| Forward rate coefficients (596 reactions) | bit-exact |
-| Reverse rates (533 from Gibbs) | 1.4e-14 |
-| Atmosphere structure (pco/Tco/Kzz/M) | bit-exact |
-| Initial abundances (FastChem path) | bit-exact |
-| Chemistry RHS (`chem_rhs_codegen` vs `chemdf`) | <=1e-5 on significant cells |
-| Chemistry Jacobian (analytical vs jacrev oracle) | 4.3e-13 |
-| Diffusion operator (vs `op.diffdf`) | 2e-6 (FP-noise-bound) |
-| Block-Thomas solver | 3e-15 |
-| Single Ros2 step (vs `op.Ros2.solver`) | 1.16e-15 |
-| Photo kernels (tau/flux/J) | 8e-16 / 3.7e-11 / 1.8e-11 |
-| End-to-end converged HD189 (median dex) | 0.004 dex (~1%) |
+Measured on the default `NCHO_photo_network` (69 species, 878 reactions, 439
+forward) against the VULCAN-master oracle. Each row is reproduced by the named
+backing test; re-run those for the current numbers on your host.
+
+| Layer | Agreement (max relative error) | Backing test |
+|---|---|---|
+| Forward rate coefficients (439 forward) | bit-exact | `test_rates` |
+| Reverse rates (Gibbs-derived) | 1.4e-14 | `test_gibbs` |
+| Atmosphere structure (pco/Tco/Kzz/M) | bit-exact | `test_default_master_parity` |
+| Initial abundances (FastChem path) | bit-exact | `test_default_master_parity` |
+| Chemistry RHS (`chem_rhs_codegen` vs oracle) | ~2e-13 worst cell; bulk species ~1e-16 | `test_chem_rhs_codegen` |
+| Chemistry Jacobian (analytical vs jacrev oracle) | 2.8e-15 | `test_chem_jac_sparse` |
+| Diffusion operator (vs `op.diffdf`) | ~1e-5 (FP-cancellation-bound); Jacobian blocks bit-exact | `test_diffusion` |
+| Block-Thomas solver | 3e-15 | `test_block_thomas_diag` |
+| Single Ros2 step (vs `op.Ros2.solver`) | 1.6e-9 (full step) | `test_ros2_step` |
+| Photo kernels (tau/flux/J) | 7e-16 / 1.2e-11 / 6.8e-12 | `test_photo` |
+| End-to-end converged HD189 (median dex) | ~0.004 dex (~1%); no automated convergence oracle yet | -- |
 
 ### Compatibility surface
 

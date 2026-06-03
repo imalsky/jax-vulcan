@@ -11,6 +11,8 @@ import numpy as np
 
 jax.config.update("jax_enable_x64", True)
 
+_UNDERFLOW_DENOM = 1e-300
+
 
 class PhotoData(NamedTuple):
     """Pre-stacked cross-section arrays for JAX photochem.
@@ -175,7 +177,7 @@ def compute_flux_jax(
     else:
         tot_scat = jnp.zeros_like(delta_tau)
 
-    w0 = tot_scat / jnp.maximum(tot_abs + tot_scat, 1e-300)
+    w0 = tot_scat / jnp.maximum(tot_abs + tot_scat, _UNDERFLOW_DENOM)
     w0 = jnp.where(jnp.isnan(w0), 0.0, w0)
     w0 = jnp.minimum(w0, 1.0 - 1e-8)
 
@@ -210,7 +212,7 @@ def compute_flux_jax(
     ll = jnp.clip(ll, -1e10, 1e10)
 
     chi = zeta_m**2 * tran**2 - zeta_p**2
-    chi = jnp.where(jnp.abs(chi) < 1e-300, 1e-300, chi)
+    chi = jnp.where(chi > -_UNDERFLOW_DENOM, -_UNDERFLOW_DENOM, chi)
     xi = zeta_p * zeta_m * (1.0 - tran**2)
     phi = (zeta_m**2 - zeta_p**2) * tran
 

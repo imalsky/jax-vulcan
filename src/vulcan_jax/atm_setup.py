@@ -111,7 +111,9 @@ def _interp_descending_or_ascending(
 def _read_atm_table(atm_file: str) -> dict[str, np.ndarray]:
     """Read an atm/atm_*.txt file. Returns dict with `Pressure`/`Temp` and
     optional `Kzz`/`vz` columns."""
-    table = np.genfromtxt(resolve_data_path(atm_file), names=True, dtype=None, skip_header=1)
+    table = np.genfromtxt(
+        resolve_data_path(atm_file), names=True, dtype=None, skip_header=1
+    )
     out: dict[str, np.ndarray] = {
         "Pressure": np.asarray(table["Pressure"], dtype=np.float64),
         "Temp": np.asarray(table["Temp"], dtype=np.float64),
@@ -185,7 +187,9 @@ def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray
         Tco = np.asarray(vul_data["atm"]["Tco"], dtype=np.float64)
     elif atm_type == "table":
         print(f"Initializing PT from the prvious run {cfg.vul_ini}")
-        table = np.genfromtxt(resolve_data_path(cfg.vul_ini), names=True, dtype=None, skip_header=1)
+        table = np.genfromtxt(
+            resolve_data_path(cfg.vul_ini), names=True, dtype=None, skip_header=1
+        )
         if not nz == len(table["Pressure"]):
             raise IOError(
                 "Initial profile has different layers than the current setting"
@@ -773,11 +777,15 @@ def compute_sat_p(condense_sp: list[str], Tco: np.ndarray) -> dict[str, np.ndarr
             a, b, c = 3.27860e1, -8.65139e4, 4.80395e-1
             out[sp] = np.exp(a + b / (T + c))
         elif sp == "H2S":
+            # Giauque & Blue (1936) Antoine fits; output is in cmHg.
             mask_ice = T <= 187.6
             ice_log10 = -1329.0 / T + 9.28588 - 0.0051263 * T
             l_log10 = -1145.0 / T + 7.94746 - 0.00322 * T
             sat_p = 10 ** (mask_ice * ice_log10 + (~mask_ice) * l_log10)
-            out[sp] = sat_p * 0.001333 * 1e6
+            # cmHg -> bar (0.0133322) -> dyne/cm^2 (1e6). The literal 0.01333
+            # is the cmHg->bar factor; anchored by the H2S boiling point
+            # (T=212.8 K -> formula gives 76.1 cmHg = 1.015 bar ~ 1 atm).
+            out[sp] = sat_p * 0.01333 * 1e6
     return out
 
 

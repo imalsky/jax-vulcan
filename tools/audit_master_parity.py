@@ -282,18 +282,25 @@ def audit(master_root: Path, jax_root: Path) -> list[str]:
 def main(argv: list[str] | None = None) -> int:
     """Run the parity audit CLI."""
     parser = argparse.ArgumentParser(description=__doc__)
-    default_jax = Path(__file__).resolve().parent.parent
+    repo_root = Path(__file__).resolve().parent.parent  # VULCAN-JAX/
+    # Runtime data (vulcan_cfg.py, cfg_examples/, atm/, thermo/, fastchem_vulcan/)
+    # lives under the installed package, not the repo root, after the
+    # flat->package restructuring. Default to the package dir so the documented
+    # invocation `python tools/audit_master_parity.py --master ../VULCAN-master`
+    # works without an explicit --jax-root.
+    from vulcan_jax._paths import PACKAGE_ROOT
+
     parser.add_argument(
         "--master",
         type=Path,
-        default=default_jax.parent / "VULCAN-master",
+        default=repo_root.parent / "VULCAN-master",
         help="Path to the VULCAN-master checkout.",
     )
     parser.add_argument(
         "--jax-root",
         type=Path,
-        default=default_jax,
-        help="Path to the VULCAN-JAX checkout.",
+        default=PACKAGE_ROOT,
+        help="Path to the VULCAN-JAX package dir (src/vulcan_jax).",
     )
     args = parser.parse_args(argv)
 

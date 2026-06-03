@@ -20,7 +20,6 @@ narrows down to the offending function immediately.
 from __future__ import annotations
 
 import os
-import sys
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
@@ -74,6 +73,7 @@ def _make_pco(P_b, P_t, nz):
 
 def _hd189_atm_file_path() -> str:
     from vulcan_jax._paths import PACKAGE_ROOT
+
     return str(PACKAGE_ROOT / "atm" / "atm_HD189_Kzz.txt")
 
 

@@ -15,7 +15,6 @@ solver, and the photo optical-depth kernel.
 from __future__ import annotations
 
 import os
-import sys
 import warnings
 from pathlib import Path
 

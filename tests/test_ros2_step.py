@@ -87,6 +87,7 @@ def main() -> int:
     # `chem_funs.chem_rhs_codegen` at module import time, so this must happen
     # before importing `chem_funs` or `jax_step`.
     from vulcan_jax._paths import resolve_data_path
+
     cfg_jax.network = str(resolve_data_path(cfg_v.network))
     for name in (
         "use_moldiff",

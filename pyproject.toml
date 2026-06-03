@@ -80,11 +80,20 @@ version = { attr = "vulcan_jax._version.__version__" }
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
+# These modules intentionally set up sys.path / os.chdir (so vulcan_cfg's
+# relative paths resolve, or to stage VULCAN-master) before importing, so the
+# module-level imports legitimately come after executable statements (E402).
 [tool.ruff.lint.per-file-ignores]
 "examples/grad_implicit_example.py" = ["E402"]
 "examples/grad_jvp_example.py" = ["E402"]
+"examples/quickstart.ipynb" = ["E402"]
+"tests/test_atom_conservation_projection.py" = ["E402"]
 "tests/test_block_thomas.py" = ["E402"]
 "tests/test_block_thomas_diag.py" = ["E402"]
+"tests/test_chem_rhs_codegen.py" = ["E402"]
+"tests/test_default_master_parity.py" = ["E402"]
+"tests/test_oracle.py" = ["E402"]
 "tests/test_photo_ion.py" = ["E402"]
 "tests/test_steady_state_grad.py" = ["E402"]
+"tests/test_w39b_fastchem_invariant.py" = ["E402"]
 "src/vulcan_jax/vulcan_jax_cli.py" = ["E402"]

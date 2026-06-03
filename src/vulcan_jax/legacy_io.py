@@ -812,7 +812,9 @@ class Output(object):
         if _cfg_path.exists():
             with open(_cfg_path, "r") as f:
                 cfg_str = f.read()
-            with open(dname + "/" + output_dir + "cfg_" + out_name[:-3] + "txt", "w") as f:
+            with open(
+                dname + "/" + output_dir + "cfg_" + out_name[:-3] + "txt", "w"
+            ) as f:
                 f.write(cfg_str)
 
     def save_out(self, *args, **kwargs):

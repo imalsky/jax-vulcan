@@ -416,6 +416,7 @@ def _fastchem_source_for_cfg(cfg_path: Path) -> Path:
         "fastchem_vulcan/input/solar_element_abundances.dat",
     )
     from vulcan_jax._paths import resolve_data_path
+
     return resolve_data_path(rel)
 
 
@@ -552,14 +553,17 @@ def _safe_relerr(
     b = np.asarray(b, dtype=np.float64)
     nan_a = np.isnan(a)
     nan_b = np.isnan(b)
-    both_nan = nan_a & nan_b
-    only_one_nan = nan_a ^ nan_b
+    only_one_nan = nan_a ^ nan_b  # NaN on one side only — a real divergence
     any_nan = nan_a | nan_b
     a_clean = np.where(any_nan, 0.0, a)
     b_clean = np.where(any_nan, 0.0, b)
     diff = np.abs(a_clean - b_clean)
     denom = np.maximum(np.abs(a_clean), floor)
     rel = np.where(diff <= abs_floor, 0.0, diff / denom)
+    # Where both are NaN (fully empty layers), any_nan zeroed both -> rel=0,
+    # which is the intended "ignore" behavior. Where only ONE is NaN, the two
+    # states genuinely disagree; surface it as +inf rather than silently 0.
+    rel = np.where(only_one_nan, np.inf, rel)
     if rel.size == 0:
         return 0.0
     return float(np.max(rel))

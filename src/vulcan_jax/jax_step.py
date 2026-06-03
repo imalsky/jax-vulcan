@@ -25,6 +25,8 @@ from . import vulcan_cfg
 
 jax.config.update("jax_enable_x64", True)
 
+_UNDERFLOW_DENOM = 1e-300
+
 _PROJECT_ATOMS = ("H", "O", "C", "N")
 _RESERVOIR_SPECIES = ("H2", "H2O", "CO", "N2")
 
@@ -301,7 +303,7 @@ def _build_diff_coeffs_jax(y, atm: AtmStatic, grav: DiffGrav):
     nz = atm.Tco.shape[0]
 
     ysum = jnp.sum(jnp.where(atm.gas_indx_mask[None, :], y, 0.0), axis=1)
-    ysum = jnp.maximum(ysum, 1e-300)
+    ysum = jnp.maximum(ysum, _UNDERFLOW_DENOM)
 
     # Build full nz arrays of interior values, then overwrite the boundaries.
     j_int = jnp.arange(1, nz - 1)

@@ -11,15 +11,27 @@ Builds the HD189 reference state and runs the atm-refresh branch *both* ways:
       `outer_loop._make_atm_refresh_branch`, with hydrostatic balance applied
       inside `body_fn` of the JAX runner.
 
-Both paths share the same kernels (`atm_refresh.update_mu_dz_jax`, etc.)
-modulo the dict-iteration boundary, so agreement should land at ~1e-13 or
-better — the only differences are float64 reduction order across `lax.scan`
-vs Python `for`. Anything larger means a wiring bug.
+Path A is master's NumPy `update_mu_dz`; path B is the JAX kernel. They are
+NOT the same kernel: master computes the hydrostatic gravity `g(z)` from a
+STALE `atm.zco` (the previous cycle's value), while `update_mu_dz_jax` is
+self-consistent (each layer's `g` uses the freshly-scanned `zco`). That is a
+real, documented divergence (~1.8% at the top of atmosphere for HD189; see
+README "Correctness fixes" and the positive pin in
+`tests/test_atm_refresh_gravity.py`). So the hydrostatic fields
+(g/Hp/dz/dzi/Hpi/zco) are only expected to agree to ~2% (`REFRESH_RTOL`),
+while quantities not sensitive to that gravity difference — `mu` and `var.y`
+after hydrostatic balance — match to float64 reduction-order precision.
+
+`top_flux` is intentionally NOT compared: HD189 has `diff_esc = []` and
+`use_topflux = False`, so it is physically inert, and the two harness paths
+seed its BC array differently (master keeps `atm.top_flux`; the JAX carry
+starts from `_pack_state`), which is a harness artifact, not a divergence.
 
 Validates:
-    1. atm.{mu, g, Hp, dz, dzi, Hpi, zco, top_flux} match to ≤ 1e-13.
-    2. var.y after hydrostatic balance matches to ≤ 1e-13.
-    3. Carry's atm fields match `atm.*` from path A to ≤ 1e-13.
+    1. atm.mu and var.y after hydrostatic balance match to ≤ 1e-13.
+    2. atm.{g, Hp, dz, dzi, Hpi, zco} agree to ≤ REFRESH_RTOL (the gravity
+       self-consistency divergence), NOT silently — the bound is asserted so a
+       regression that changed its magnitude would surface here.
 """
 
 from __future__ import annotations
@@ -57,6 +69,7 @@ def main() -> int:
     sys.path.append(str(VULCAN_MASTER))
     import vulcan_jax.vulcan_cfg as vulcan_cfg
     import op
+
     os.chdir(ROOT)
     import vulcan_jax.op_jax as op_jax
     import vulcan_jax.outer_loop as outer_loop
@@ -98,7 +111,6 @@ def main() -> int:
     dzi_A = atm_A.dzi.copy()
     Hpi_A = atm_A.Hpi.copy()
     zco_A = atm_A.zco.copy()
-    top_flux_A = atm_A.top_flux.copy()
     y_A = var_A.y.copy()
 
     # --- Path B: atm-refresh branch + hydrostatic balance via JAX runner ---
@@ -122,7 +134,6 @@ def main() -> int:
     dzi_B = np.asarray(after_refresh_state.dzi)
     Hpi_B = np.asarray(after_refresh_state.Hpi)
     zco_B = np.asarray(after_refresh_state.zco)
-    top_flux_B = np.asarray(after_refresh_state.top_flux)
 
     # Hydrostatic balance: y_B = n_0 * ymix. body_fn applies this after
     # the Ros2 step; here we exercise it standalone against atm.n_0

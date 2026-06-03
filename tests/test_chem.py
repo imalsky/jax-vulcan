@@ -87,6 +87,7 @@ def main() -> int:
     import jax.numpy as jnp
 
     from vulcan_jax._paths import resolve_data_path
+
     net = net_mod.parse_network(resolve_data_path(cfg_v.network))
     net_jax = chem_mod.to_jax(net)
 

@@ -9,7 +9,6 @@ future setup-pipeline edits cannot silently drop a field.
 from __future__ import annotations
 
 import os
-import sys
 import warnings
 from pathlib import Path
 

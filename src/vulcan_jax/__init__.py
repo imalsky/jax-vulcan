@@ -42,7 +42,9 @@ def make_config(**overrides: Any) -> _types.SimpleNamespace:
         **{
             k: _copy.deepcopy(v)
             for k, v in vars(vulcan_cfg).items()
-            if not k.startswith("_") and not callable(v) and not hasattr(v, "__loader__")
+            if not k.startswith("_")
+            and not callable(v)
+            and not hasattr(v, "__loader__")
         }
     )
     for k, v in overrides.items():

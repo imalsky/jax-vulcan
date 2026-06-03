@@ -67,6 +67,8 @@ def _ensure_fastchem_binary() -> None:
     subprocess.check_call(["make"], cwd=str(_FC_DIR))
     if not _FC_BIN.is_file():
         raise RuntimeError("make completed but fastchem binary was not produced")
+
+
 _FC_INPUT = _FC_DIR / "input"
 _FC_OUTPUT = _FC_DIR / "output"
 _FC_VULCAN_TP = _FC_INPUT / "vulcan_TP" / "vulcan_TP.dat"
@@ -323,7 +325,9 @@ def _load_vulcan_ini_y(data_atm) -> tuple[np.ndarray, list[str]]:
 
 def _load_table_y(data_atm) -> tuple[np.ndarray, list[str]]:
     """Load `y` from a per-layer mixing-ratio text table."""
-    table = np.genfromtxt(resolve_data_path(vulcan_cfg.vul_ini), names=True, dtype=None, skip_header=1)
+    table = np.genfromtxt(
+        resolve_data_path(vulcan_cfg.vul_ini), names=True, dtype=None, skip_header=1
+    )
     if not len(data_atm.pco) == len(table["Pressure"]):
         print(
             "Warning! The initial profile has different layers than the current setting..."
