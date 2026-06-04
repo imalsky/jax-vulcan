@@ -58,6 +58,44 @@ _NETWORK = _net_mod.parse_network(str(resolve_data_path(vulcan_cfg.network)))
 _NET_JAX = _chem_mod.to_jax(_NETWORK)
 
 
+class ProfileVars(NamedTuple):
+    """Per-profile constants the integration needs but that vary between
+    atmospheres (T-P, abundances, Kzz, gravity, planet radius, saturation,
+    molecular diffusion).
+
+    These used to live in the runner closures (`_Statics`, `AtmRefreshStatic`,
+    `CondenStatic`). `jax.vmap` does NOT batch closure constants, so a batched
+    run would share lane-0's atmosphere across every lane. Threading them
+    through the `JaxIntegState` carry instead makes vmap batch them per lane.
+    They are constant during a run — the body never mutates them — so for the
+    single-profile path the carried values equal the old closure constants and
+    behaviour is unchanged. `pref_indx` stays a closure constant (it sizes a
+    `jnp.arange`, so it cannot be a tracer) and must therefore be identical
+    across a batch; the emulator buckets accordingly.
+    """
+
+    # from _Statics
+    n_0: jnp.ndarray  # (nz,)              total number density
+    Kzz: jnp.ndarray  # (nz-1,)            eddy diffusion (cond_fn slope_min)
+    atom_ini: jnp.ndarray  # (n_atoms,)    initial atom abundances (atom_loss)
+    bottom_n: jnp.ndarray  # (ni,)         fix-all-bot pin (ymix[0]*n_0[0])
+    fix_species_sat_mix: jnp.ndarray  # (n_fix_species, nz)
+    # from AtmRefreshStatic
+    r_Tco: jnp.ndarray  # (nz,)            atm-refresh temperature
+    r_pico: jnp.ndarray  # (nz+1,)         atm-refresh interface pressure
+    r_Dzz_top: jnp.ndarray  # (ni,)        top-interface molecular diffusion
+    r_gs: jnp.ndarray  # ()               surface gravity
+    r_zco_pref: jnp.ndarray  # ()          reference-layer height
+    r_Rp: jnp.ndarray  # ()               planet radius
+    # from CondenStatic
+    c_Dg_per_re: jnp.ndarray  # (n_conden_re, nz)
+    c_sat_n_per_re: jnp.ndarray  # (n_conden_re, nz)
+    c_h2o_Dg: jnp.ndarray  # (nz,)
+    c_h2o_sat: jnp.ndarray  # (nz,)
+    c_nh3_Dg: jnp.ndarray  # (nz,)
+    c_nh3_sat: jnp.ndarray  # (nz,)
+
+
 class JaxIntegState(NamedTuple):
     """Carry state for the JIT'd accept/reject loop.
 
@@ -154,6 +192,24 @@ class JaxIntegState(NamedTuple):
     # `accept_count >= chunk_target`. Single-shot runs seed it to
     # `count_max + 1` so the cap never trips.
     chunk_target: jnp.ndarray  # ()  int32
+
+    # Per-profile termination state for the vmapped batched runner
+    # (`run_batch`). Unused by the single-profile path: seeded to
+    # (False, 0) and never read by `cond_fn` / `body_fn`. The batched
+    # runner sets `is_done` once a lane really terminates (converged /
+    # runtime / step-count / non-finite) so `cond_fn_batch` can stop it
+    # and `body_fn_batch` can freeze it while stragglers finish.
+    # `termination_reason`: 0 running, 1 converged, 2 runtime exceeded,
+    # 3 step-count exceeded, 4 stalled-convergence, 5 non-finite state.
+    is_done: jnp.ndarray  # ()  bool
+    termination_reason: jnp.ndarray  # ()  int32
+
+    # Per-profile constants (see ProfileVars). Constant during a run; rides
+    # in the carry so jax.vmap batches them per lane. The single-profile path
+    # seeds this from the same builders the closure used, so it is a no-op
+    # there. The body splices these into AtmRefreshStatic / CondenStatic and
+    # reads n_0 / Kzz / atom_ini directly.
+    pv: ProfileVars
 
 
 class _PhotoStatic(NamedTuple):
@@ -453,13 +509,24 @@ def _make_conden_branch(conden_static: _conden_mod.CondenStatic):
     """
 
     def conden_branch(s: JaxIntegState) -> JaxIntegState:
-        k_arr_new = _conden_mod.update_conden_rates(s.k_arr, s.y, conden_static)
-        y_new, ymix_new = _conden_mod.apply_h2o_relax_jax(
-            s.y, s.ymix, s.dt, conden_static
+        # Splice this lane's per-profile conden arrays (T-P-dependent diffusion
+        # and saturation) from the carry into the closure-baked static so a
+        # vmapped batch uses each lane's own atmosphere, not lane 0's. The
+        # constant fields (indices, coeffs, masks, bools, nh3_conden_top) stay
+        # baked. nh3_conden_top is a Python int sizing a host branch, so
+        # batched NH3 condensation is rejected upstream (run_batch).
+        st = conden_static._replace(
+            Dg_per_re=s.pv.c_Dg_per_re,
+            sat_n_per_re=s.pv.c_sat_n_per_re,
+            h2o_Dg=s.pv.c_h2o_Dg,
+            h2o_sat=s.pv.c_h2o_sat,
+            nh3_Dg=s.pv.c_nh3_Dg,
+            nh3_sat=s.pv.c_nh3_sat,
+            n_0=s.pv.n_0,
         )
-        y_new, ymix_new = _conden_mod.apply_nh3_relax_jax(
-            y_new, ymix_new, s.dt, conden_static
-        )
+        k_arr_new = _conden_mod.update_conden_rates(s.k_arr, s.y, st)
+        y_new, ymix_new = _conden_mod.apply_h2o_relax_jax(s.y, s.ymix, s.dt, st)
+        y_new, ymix_new = _conden_mod.apply_nh3_relax_jax(y_new, ymix_new, s.dt, st)
         return s._replace(y=y_new, ymix=ymix_new, k_arr=k_arr_new)
 
     return conden_branch
@@ -617,7 +684,6 @@ def _make_runner(
     dt_max = statics.dt_max
     batch_max_retries = statics.batch_max_retries
     compo_arr = statics.compo_arr
-    atom_ini_arr = statics.atom_ini_arr
     conv_step = statics.conv_step
     count_min = statics.count_min
     count_max = statics.count_max
@@ -632,8 +698,6 @@ def _make_runner(
     mtol_conv = statics.mtol_conv
     conver_ignore_mask = statics.conver_ignore_mask
     condense_zero_conv_mask = statics.condense_zero_conv_mask
-    n_0_static = statics.n_0
-    Kzz_static = statics.Kzz
     use_photo_static = statics.use_photo
     use_atm_refresh_static = statics.use_atm_refresh
     use_conden_static = statics.use_conden
@@ -657,7 +721,6 @@ def _make_runner(
     e_idx_static = statics.e_idx
     charge_arr_static = statics.charge_arr
     use_fix_all_bot_static = statics.use_fix_all_bot
-    bottom_n_static = statics.bottom_n
     use_fix_H2He_static = statics.use_fix_H2He
     h2_idx_static = int(statics.h2_idx)
     he_idx_static = int(statics.he_idx)
@@ -671,7 +734,6 @@ def _make_runner(
     post_conden_rtol = statics.post_conden_rtol
     fix_species_from_coldtrap_lev = statics.fix_species_from_coldtrap_lev
     fix_species_idx = statics.fix_species_idx
-    fix_species_sat_mix = statics.fix_species_sat_mix
     fix_species_wholecol = statics.fix_species_wholecol
 
     if non_gas_present:
@@ -688,14 +750,14 @@ def _make_runner(
             return y_in / ysum
 
     def _activate_fix_species(s_in: JaxIntegState) -> JaxIntegState:
-        nz_fix = n_0_static.shape[0]
+        nz_fix = s_in.pv.n_0.shape[0]
         n_fix = fix_species_idx.shape[0]
         fix_y_new = s_in.fix_y.at[:, fix_species_idx].set(s_in.y[:, fix_species_idx])
 
         if fix_species_from_coldtrap_lev:
-            sat_rho = n_0_static[None, :] * fix_species_sat_mix
+            sat_rho = s_in.pv.n_0[None, :] * s_in.pv.fix_species_sat_mix
             cond_status = s_in.y[:, fix_species_idx].T >= sat_rho
-            masked_sat = jnp.where(cond_status, fix_species_sat_mix, jnp.inf)
+            masked_sat = jnp.where(cond_status, s_in.pv.fix_species_sat_mix, jnp.inf)
             coldtrap_idx = jnp.argmin(masked_sat, axis=1).astype(jnp.int32)
             has_cond = jnp.any(cond_status, axis=1)
             coldtrap_idx = jnp.where(
@@ -744,7 +806,7 @@ def _make_runner(
         indx = jnp.argmin(diffs_guarded)
 
         y_old = s.y_time_ring[indx]
-        n_0_col = n_0_static[:, None]
+        n_0_col = s.pv.n_0[:, None]
         longdy_arr = jnp.abs((s.y - y_old) / n_0_col)
         longdy_arr = jnp.where(s.ymix < mtol_conv, 0.0, longdy_arr)
         longdy_arr = jnp.where(s.y < statics.atol, 0.0, longdy_arr)
@@ -759,22 +821,31 @@ def _make_runner(
         longdydt_new = longdy_new / dt_lookback
         return longdy_new, longdydt_new, ratio
 
-    def cond_fn(s: JaxIntegState):
+    def _real_terminate(s: JaxIntegState):
+        """Real (non-chunk) termination predicate + reason code.
+
+        Mirrors `cond_fn`'s terminate logic minus the chunk-cap yield, and
+        also returns a reason code so the batched runner can report why each
+        lane stopped. Reason priority matches the single-profile `end_case`
+        ladder in `_call_runstate` (step-count over runtime over converged):
+        0 running, 1 converged, 2 runtime exceeded, 3 step-count exceeded,
+        4 stalled-convergence.
+        """
         too_long = s.t > jnp.float64(runtime)
         too_many = s.accept_count > jnp.int32(count_max)
 
         # `slope_min` is recomputed from the live Hp because atm refresh
         # can change it mid-run.
         slope_min = jnp.minimum(
-            jnp.min(Kzz_static / (0.1 * s.Hp[:-1]) ** 2),
+            jnp.min(s.pv.Kzz / (0.1 * s.Hp[:-1]) ** 2),
             jnp.float64(1e-8),
         )
         slope_min = jnp.maximum(slope_min, jnp.float64(1e-10))
 
-        is_converged = (
+        conv_normal = (
             (s.longdy < jnp.float64(yconv_cri)) & (s.longdydt < jnp.float64(slope_cri))
         ) | ((s.longdy < jnp.float64(yconv_min)) & (s.longdydt < slope_min))
-        is_converged = is_converged & (s.aflux_change < jnp.float64(flux_cri))
+        conv_normal = conv_normal & (s.aflux_change < jnp.float64(flux_cri))
 
         # Stall fallback: longdy_seen_min already crossed the loose-branch
         # threshold AND current longdy is back near it AND no significant
@@ -789,15 +860,33 @@ def _make_runner(
             & (s.longdy < jnp.float64(yconv_min))
             & (s.aflux_change < jnp.float64(flux_cri))
         )
-        is_converged = is_converged | is_stalled
+        is_converged = conv_normal | is_stalled
 
         ready = (s.t > jnp.float64(trun_min)) & (s.accept_count > jnp.int32(count_min))
+        conv_term = ready & is_converged
+        real_term = too_long | too_many | conv_term
+        reason = jnp.where(
+            too_many,
+            jnp.int32(3),
+            jnp.where(
+                too_long,
+                jnp.int32(2),
+                jnp.where(
+                    conv_term & conv_normal,
+                    jnp.int32(1),
+                    jnp.where(conv_term & is_stalled, jnp.int32(4), jnp.int32(0)),
+                ),
+            ),
+        )
+        return real_term, reason
+
+    def cond_fn(s: JaxIntegState):
+        real_term, _ = _real_terminate(s)
         # Chunk cap, used by the chunked driver to break for host
         # callbacks. Single-shot runs seed it past count_max so it never
         # trips.
         chunk_done = s.accept_count >= s.chunk_target
-        terminate = too_long | too_many | chunk_done | (ready & is_converged)
-        return jnp.logical_not(terminate)
+        return jnp.logical_not(real_term | chunk_done)
 
     def body_fn(s: JaxIntegState, atm_static_):
         # Gate photo on `retry_count==0` so reject loops don't re-fire it.
@@ -828,7 +917,7 @@ def _make_runner(
             sol, delta_arr = jax_ros2_step(s.y, s.k_arr, s.dt, atm_step, net)
 
         sol_clip, ymix_new, small_y_inc, nega_y_inc = clip_fn(sol, s.ymix)
-        atom_loss_new = _compute_atom_loss(sol_clip, compo_arr, atom_ini_arr)
+        atom_loss_new = _compute_atom_loss(sol_clip, compo_arr, s.pv.atom_ini)
         # Master computes para.delta inside Ros2.solver before the post-step
         # clip() call. Using sol_clip here can erase the large truncation
         # error from cells that are about to be clipped to zero and would let
@@ -929,17 +1018,31 @@ def _make_runner(
                 & (jnp.mod(s.accept_count, jnp.int32(update_frq)) == jnp.int32(0))
                 & jnp.bool_(use_atm_refresh_static)
             )
+            # Splice this lane's per-profile atmosphere (T-P, top diffusion,
+            # gravity, radius, reference-layer height) from the carry into the
+            # closure-baked refresh static so a vmapped batch refreshes each
+            # lane against its own atmosphere. `pref_indx` stays baked (it
+            # sizes a jnp.arange) and must be batch-constant — guaranteed by
+            # bucketing.
+            refresh_lane = refresh_static._replace(
+                Tco=s.pv.r_Tco,
+                pico=s.pv.r_pico,
+                Dzz_top=s.pv.r_Dzz_top,
+                gs=s.pv.r_gs,
+                zco_pref=s.pv.r_zco_pref,
+                Rp=s.pv.r_Rp,
+            )
 
             def _do_refresh(_):
                 mu_n, g_n, Hp_n, dz_n, zco_n, dzi_n, Hpi_n = (
-                    _atm_refresh_mod.update_mu_dz_jax(ymix_new, refresh_static)
+                    _atm_refresh_mod.update_mu_dz_jax(ymix_new, refresh_lane)
                 )
                 top_flux_n = _atm_refresh_mod.update_phi_esc_jax(
                     sol_clip,
                     g_n,
                     Hp_n,
                     s.top_flux,
-                    refresh_static,
+                    refresh_lane,
                 )
                 return mu_n, g_n, Hp_n, dz_n, zco_n, dzi_n, Hpi_n, top_flux_n
 
@@ -990,10 +1093,10 @@ def _make_runner(
         # fix-all-bot pin: bottom layer fixed to chem-EQ mixing ratios
         # snapshotted at init, scaled by n_0[0]. Trace-time branch.
         if use_fix_all_bot_static:
-            sol_balanced = sol_balanced.at[0].set(bottom_n_static)
+            sol_balanced = sol_balanced.at[0].set(s.pv.bottom_n)
         if use_fix_sp_bot_static:
             sol_balanced = sol_balanced.at[0, fix_sp_bot_idx_static].set(
-                fix_sp_bot_mix_static * n_0_static[0]
+                fix_sp_bot_mix_static * s.pv.n_0[0]
             )
 
         # Hycean H2/He bottom-pin (op.py:2937-2944): master fires the
@@ -1011,10 +1114,10 @@ def _make_runner(
             h2he_pinned_next = s.h2he_pinned | trip
             apply_pin = h2he_pinned_next
             new_h2_val = jnp.where(
-                apply_pin, h2_mix_snap * n_0_static[0], sol_balanced[0, h2_idx_static]
+                apply_pin, h2_mix_snap * s.pv.n_0[0], sol_balanced[0, h2_idx_static]
             )
             new_he_val = jnp.where(
-                apply_pin, he_mix_snap * n_0_static[0], sol_balanced[0, he_idx_static]
+                apply_pin, he_mix_snap * s.pv.n_0[0], sol_balanced[0, he_idx_static]
             )
             sol_balanced = sol_balanced.at[0, h2_idx_static].set(new_h2_val)
             sol_balanced = sol_balanced.at[0, he_idx_static].set(new_he_val)
@@ -1277,7 +1380,154 @@ def _make_runner(
             state,
         )
 
-    return runner
+    def cond_fn_batch(s: JaxIntegState):
+        # Per-lane stop predicate for the vmapped runner. Gates ONLY on flags
+        # already on the carry (`is_done`, set by the body the moment a lane
+        # really terminates or goes non-finite, plus the `chunk_target`
+        # yield). It must NOT re-derive `real_term` here: the loop exits when
+        # cond is False, so if cond tripped on `real_term` directly the body
+        # would never run on the terminal state to record `is_done` /
+        # `termination_reason`. Letting the body run one more (frozen, no-op)
+        # iteration to flip `is_done` costs nothing — the carry value is
+        # unchanged — and keeps the flags correct. `jax.vmap` reduces these
+        # per-lane bools across the batch (loop runs while ANY lane is live).
+        chunk_reached = s.accept_count >= s.chunk_target
+        return jnp.logical_not(s.is_done | chunk_reached)
+
+    def body_fn_batch(s: JaxIntegState, atm_static_):
+        # `jax.vmap(lax.while_loop)` applies the body to EVERY lane each
+        # iteration, including lanes whose `cond_fn_batch` already went
+        # False, until the slowest lane finishes. So finished lanes must be
+        # frozen: advance all lanes, then keep the pre-step carry `s` for any
+        # lane that is already done / really terminates now / hit its chunk
+        # yield / just went non-finite. Freezing on `s` (not the advanced
+        # state) makes each lane's frozen result identical to running that
+        # profile alone — it stops at the first state satisfying the
+        # termination predicate, exactly like the single-profile loop.
+        real_term, reason = _real_terminate(s)
+        chunk_reached = s.accept_count >= s.chunk_target
+        s_adv = body_fn(s, atm_static_)
+        nan_now = jnp.logical_not(jnp.all(jnp.isfinite(s_adv.y)))
+
+        already_done = s.is_done
+        # A lane that goes non-finite while still advancing is frozen at its
+        # last good carry `s` and flagged (reason 5); the bad `s_adv` is
+        # discarded so it cannot leak into the result.
+        became_nan = nan_now & ~already_done & ~real_term & ~chunk_reached
+        keep_old = already_done | real_term | chunk_reached | became_nan
+        frozen = jax.tree_util.tree_map(
+            lambda o, n: jnp.where(keep_old, o, n), s, s_adv
+        )
+        is_done_next = already_done | real_term | became_nan
+        reason_next = jnp.where(
+            already_done,
+            s.termination_reason,
+            jnp.where(
+                real_term,
+                reason,
+                jnp.where(became_nan, jnp.int32(5), jnp.int32(0)),
+            ),
+        )
+        return frozen._replace(is_done=is_done_next, termination_reason=reason_next)
+
+    def runner_batch(state: JaxIntegState, atm_static: AtmStatic):
+        # Single-profile while_loop with freeze-on-done semantics. NOT
+        # jitted here — `OuterLoop.run_batch` wraps it in jax.vmap+jax.jit
+        # with the right `in_axes` so a whole batch of profiles integrates
+        # in one device call.
+        return jax.lax.while_loop(
+            cond_fn_batch,
+            lambda s: body_fn_batch(s, atm_static),
+            state,
+        )
+
+    return runner, runner_batch
+
+
+# in_axes prefix for `jax.vmap`-ing the batched runner over `AtmStatic`:
+# every per-profile array leaf is batched on axis 0; the four toggle flags
+# are broadcast (None) because they are identical within a (nz, toggle-combo)
+# batch and are consumed only as traced values (jnp.asarray / jnp.where) in
+# `jax_step`, never in a Python `if`.
+_ATM_STATIC_BATCH_AXES = AtmStatic(
+    Kzz=0,
+    Dzz=0,
+    dzi=0,
+    vz=0,
+    Hpi=0,
+    Ti=0,
+    Tco=0,
+    g=0,
+    ms=0,
+    alpha=0,
+    M=0,
+    vm=0,
+    vs=0,
+    top_flux=0,
+    bot_flux=0,
+    bot_vdep=0,
+    gas_indx_mask=0,
+    use_vm_mol=None,
+    use_settling=None,
+    use_topflux=None,
+    use_botflux=None,
+)
+
+
+def stack_integ_states(states: "list[JaxIntegState]") -> JaxIntegState:
+    """Stack single-profile `JaxIntegState`s into one batched state.
+
+    Every leaf gains a leading batch axis. All inputs must share identical
+    leaf shapes (same nz / ni / network), which the emulator guarantees by
+    bucketing on `nz` before calling.
+    """
+    return jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *states)
+
+
+def unstack_integ_states(batched: JaxIntegState, n: int) -> "list[JaxIntegState]":
+    """Split a batched `JaxIntegState` into `n` single-profile states."""
+    return [jax.tree_util.tree_map(lambda x, i=i: x[i], batched) for i in range(n)]
+
+
+def stack_atm_statics(atms: "list[AtmStatic]") -> AtmStatic:
+    """Stack single-profile `AtmStatic`s into one batched `AtmStatic`.
+
+    Array leaves gain a leading batch axis; the four toggle flags are kept as
+    scalars (broadcast under vmap via `_ATM_STATIC_BATCH_AXES`) and must be
+    identical across the batch — bucket by toggle-combo before calling.
+    """
+    first = atms[0]
+    flags = ("use_vm_mol", "use_settling", "use_topflux", "use_botflux")
+    for a in atms[1:]:
+        if any(getattr(a, f) != getattr(first, f) for f in flags):
+            raise ValueError(
+                "stack_atm_statics: AtmStatic toggle flags differ across the "
+                "batch; bucket profiles by toggle-combo before stacking."
+            )
+    array_fields = (
+        "Kzz",
+        "Dzz",
+        "dzi",
+        "vz",
+        "Hpi",
+        "Ti",
+        "Tco",
+        "g",
+        "ms",
+        "alpha",
+        "M",
+        "vm",
+        "vs",
+        "top_flux",
+        "bot_flux",
+        "bot_vdep",
+        "gas_indx_mask",
+    )
+    stacked = {
+        name: jnp.stack([jnp.asarray(getattr(a, name)) for a in atms], axis=0)
+        for name in array_fields
+    }
+    return first._replace(**stacked)
 
 
 class OuterLoop:
@@ -1327,6 +1577,11 @@ class OuterLoop:
 
         # Lazy runner cache; populated on first call and reused thereafter.
         self._runner = None
+        # Un-jitted freeze-on-done while_loop for the vmapped batched path,
+        # and its jax.vmap+jax.jit wrapper (`run_batch`). Both ride the same
+        # (nz, toggle-combo) closure as `_runner`.
+        self._runner_batch = None
+        self._vrunner = None
         self._statics = None
         self._photo_static = None
         self._refresh_static = None
@@ -1340,6 +1595,8 @@ class OuterLoop:
         a possibly-mutated `vulcan_cfg` (notebooks, parameter sweeps).
         Without this, the runner closure pins the original config."""
         self._runner = None
+        self._runner_batch = None
+        self._vrunner = None
         self._statics = None
         self._photo_static = None
         self._refresh_static = None
@@ -1578,7 +1835,7 @@ class OuterLoop:
         self._photo_static = self._build_photo_static(var, atm)
         self._refresh_static = self._build_refresh_static(var, atm)
         self._conden_static = self._build_conden_static(var, atm, gas_mask_jnp)
-        self._runner = _make_runner(
+        self._runner, self._runner_batch = _make_runner(
             _NET_JAX,
             self._statics,
             self._non_gas_present,
@@ -1990,6 +2247,64 @@ class OuterLoop:
             is_final_photo_frq=jnp.bool_(False),
         )
 
+    def _profile_vars_from_runstate(self, rs) -> ProfileVars:
+        """Snapshot this profile's per-profile constants into a `ProfileVars`.
+
+        Rebuilds the per-run static bundles for THIS runstate (so the values
+        match what the single-profile closure would bake) and copies out the
+        per-profile arrays/scalars that the batched runner reads from the carry
+        instead of the closure. Host-side NumPy; cheap. Conden arrays fall back
+        to consistently-shaped placeholders when condensation is off (the body
+        never reads them in that case).
+        """
+        var, atm, _ = _state_mod.legacy_view(rs)
+        statics = self._build_statics(var, atm)
+        refresh = self._build_refresh_static(var, atm)
+        ni = _NETWORK.ni
+        nz = int(atm.Tco.shape[0])
+        gas_mask_np = np.zeros(ni, dtype=bool)
+        if self._non_gas_present and hasattr(atm, "gas_indx"):
+            gas_mask_np[np.asarray(atm.gas_indx, dtype=int)] = True
+        else:
+            gas_mask_np[:] = True
+        conden = self._build_conden_static(var, atm, jnp.asarray(gas_mask_np))
+        if conden is not None:
+            c_Dg = jnp.asarray(conden.Dg_per_re, dtype=jnp.float64)
+            c_sat_n = jnp.asarray(conden.sat_n_per_re, dtype=jnp.float64)
+            c_h2o_Dg = jnp.asarray(conden.h2o_Dg, dtype=jnp.float64)
+            c_h2o_sat = jnp.asarray(conden.h2o_sat, dtype=jnp.float64)
+            c_nh3_Dg = jnp.asarray(conden.nh3_Dg, dtype=jnp.float64)
+            c_nh3_sat = jnp.asarray(conden.nh3_sat, dtype=jnp.float64)
+        else:
+            zz = jnp.zeros((nz,), dtype=jnp.float64)
+            c_Dg = jnp.zeros((1, nz), dtype=jnp.float64)
+            c_sat_n = jnp.zeros((1, nz), dtype=jnp.float64)
+            c_h2o_Dg = zz
+            c_h2o_sat = zz
+            c_nh3_Dg = zz
+            c_nh3_sat = zz
+        return ProfileVars(
+            n_0=jnp.asarray(statics.n_0, dtype=jnp.float64),
+            Kzz=jnp.asarray(statics.Kzz, dtype=jnp.float64),
+            atom_ini=jnp.asarray(statics.atom_ini_arr, dtype=jnp.float64),
+            bottom_n=jnp.asarray(statics.bottom_n, dtype=jnp.float64),
+            fix_species_sat_mix=jnp.asarray(
+                statics.fix_species_sat_mix, dtype=jnp.float64
+            ),
+            r_Tco=jnp.asarray(refresh.Tco, dtype=jnp.float64),
+            r_pico=jnp.asarray(refresh.pico, dtype=jnp.float64),
+            r_Dzz_top=jnp.asarray(refresh.Dzz_top, dtype=jnp.float64),
+            r_gs=jnp.float64(refresh.gs),
+            r_zco_pref=jnp.float64(refresh.zco_pref),
+            r_Rp=jnp.float64(refresh.Rp),
+            c_Dg_per_re=c_Dg,
+            c_sat_n_per_re=c_sat_n,
+            c_h2o_Dg=c_h2o_Dg,
+            c_h2o_sat=c_h2o_sat,
+            c_nh3_Dg=c_nh3_Dg,
+            c_nh3_sat=c_nh3_sat,
+        )
+
     def _pack_state_from_runstate(self, rs) -> JaxIntegState:
         """Build the initial JaxIntegState from a fully-populated RunState.
 
@@ -2068,6 +2383,15 @@ class OuterLoop:
             # chunked driver mutates this between chunks; the seed is
             # only used when the driver doesn't run.
             chunk_target=jnp.int32(2**30),
+            # Batched-runner termination flags. The single-profile path
+            # never reads these; the vmapped `run_batch` flips `is_done`
+            # and records `termination_reason` per lane.
+            is_done=jnp.bool_(False),
+            termination_reason=jnp.int32(0),
+            # Per-profile constants threaded through the carry so jax.vmap
+            # batches them per lane (closure-baked constants would be shared).
+            # No-op for the single-profile path (matches the closure values).
+            pv=self._profile_vars_from_runstate(rs),
         )
 
     def _pack_state(self, var, para, atm) -> JaxIntegState:
@@ -2731,6 +3055,73 @@ class OuterLoop:
             self.output.print_unconverged_msg(var_shim, para_shim, end_case)
 
         return rs_out
+
+    def prepare_runstate(self, rs):
+        """Build `(init_state, atm_static)` for one RunState and ensure the
+        runner closure is built for this rs's (nz, toggle-combo).
+
+        The batched GPU driver calls this per profile, then stacks the
+        results (`stack_integ_states` / `stack_atm_statics`) into one batch
+        for `run_batch`. All profiles in a single `run_batch` call must share
+        the same nz / toggle-combo so the closure and array shapes match —
+        the emulator buckets accordingly. This mirrors the setup `_call_runstate`
+        does up to (but not including) the runner call.
+        """
+        validate_runtime_config(vulcan_cfg)
+        self.loss_criteria = 0.0005
+        var, atm, _ = _state_mod.legacy_view(rs)
+        if (
+            rs.photo_static is not None
+            and getattr(self.odesolver, "_photo_static", None) is None
+        ):
+            self.odesolver._photo_static = rs.photo_static
+        self._ensure_runner(var, atm)
+        ni = _NETWORK.ni
+        nz = int(rs.atm.Tco.shape[0])
+        atm_static = make_atm_static(atm, ni, nz)
+        init_state = self._pack_state_from_runstate(rs)
+        return init_state, atm_static
+
+    def run_batch(self, states_batched, atm_static_batched):
+        """Integrate a whole batch of profiles in one vmapped device call.
+
+        `states_batched` / `atm_static_batched` are the stacked outputs of
+        `prepare_runstate` (leading batch axis on every array leaf; the four
+        AtmStatic toggle flags broadcast). Returns the batched final
+        `JaxIntegState`; read per-lane `termination_reason` / `ymix` after
+        unstacking with `unstack_integ_states`. Requires `_ensure_runner` to
+        have run (via `prepare_runstate`) for this batch's (nz, toggle-combo).
+
+        Lanes run with freeze-on-done: each profile's converged result is
+        identical to running it alone, and the call returns once the slowest
+        lane finishes (or every lane hits its `chunk_target` yield, which the
+        host-side compaction loop uses to refill finished lanes).
+        """
+        if self._runner_batch is None:
+            raise RuntimeError(
+                "run_batch called before the runner was built; call "
+                "prepare_runstate on at least one profile first."
+            )
+        # Per-profile photo cross-sections and the NH3 host-int cold-trap index
+        # are not threaded through the batched carry; reject those configs
+        # rather than silently sharing lane 0's values across the batch.
+        if self._statics is not None and bool(self._statics.use_photo):
+            raise NotImplementedError(
+                "run_batch does not support photochemistry yet — per-profile "
+                "photo cross-sections are not batched."
+            )
+        if self._conden_static is not None and bool(
+            getattr(self._conden_static, "nh3_active", False)
+        ):
+            raise NotImplementedError(
+                "run_batch does not support NH3 condensation — nh3_conden_top "
+                "is a host-side integer branch that cannot be vmapped."
+            )
+        if self._vrunner is None:
+            self._vrunner = jax.jit(
+                jax.vmap(self._runner_batch, in_axes=(0, _ATM_STATIC_BATCH_AXES))
+            )
+        return self._vrunner(states_batched, atm_static_batched)
 
     def _summary_shim(self, rs):
         """Build a minimal legacy-shape stand-in for the post-run prints.

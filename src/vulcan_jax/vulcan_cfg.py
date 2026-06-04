@@ -2,11 +2,19 @@
 # Configuration file of VULCAN:
 # =============================================================================
 
+import os
+
 # ====== Setting up the elements included in the network ======
 atom_list = ["H", "O", "C", "N"]
 # ====== Setting up paths and filenames for the input and output files  ======
 # input:
-network = "thermo/NCHO_photo_network.txt"
+# The reaction network is parsed ONCE at import time (chem_funs / outer_loop
+# module level), so it cannot be changed by mutating this attribute after
+# `import vulcan_jax`. Callers that drive VULCAN-JAX in-process with a
+# non-default network — e.g. the emulator's GPU-batched generation, which
+# imports the package only once — set $VULCAN_JAX_NETWORK before that first
+# import. The subprocess driver still overwrites this line with a literal.
+network = os.environ.get("VULCAN_JAX_NETWORK", "thermo/NCHO_photo_network.txt")
 use_lowT_limit_rates = False
 gibbs_text = "thermo/gibbs_text.txt"  # (all the nasa9 files must be placed in the folder: thermo/NASA9/)
 cross_folder = "thermo/photo_cross/"
