@@ -46,8 +46,32 @@ jax.config.update("jax_enable_x64", True)
 # Anchor FastChem paths to the source location (not cwd) so concurrent
 # workers invoked from different directories all flock on the same
 # sentinel and write to the same input/output files.
+#
+# $VULCAN_JAX_FASTCHEM_DIR overrides the working tree (mirrors the
+# $VULCAN_JAX_NETWORK hook): set it BEFORE importing vulcan_jax to point
+# FastChem at a private per-worker copy of `fastchem_vulcan/`. The GPU-batched
+# emulator driver sets it per host-setup worker so the cross-process flock
+# stays uncontended (a per-worker sentinel) instead of serialising the
+# expensive EQ subprocess across the whole pool. The override dir must already
+# contain the FastChem binary + input tree (the driver seeds it by copying the
+# installed package's `fastchem_vulcan/`). Read-only static data (the
+# solar-abundance file) stays anchored to `_ROOT`, which is fine to share.
 _ROOT = Path(__file__).resolve().parent
-_FC_DIR = (_ROOT / "fastchem_vulcan").resolve()
+
+
+def _fastchem_dir() -> Path:
+    """FastChem working tree: $VULCAN_JAX_FASTCHEM_DIR if set, else package copy.
+
+    Read at import (these are module-level constants), so the override must be
+    in the environment before the first `import vulcan_jax`.
+    """
+    override = os.environ.get("VULCAN_JAX_FASTCHEM_DIR")
+    if override:
+        return Path(override).expanduser().resolve()
+    return (_ROOT / "fastchem_vulcan").resolve()
+
+
+_FC_DIR = _fastchem_dir()
 _FC_BIN = _FC_DIR / "fastchem"
 _FC_SENTINEL = _FC_DIR / ".fastchem_lock"
 

@@ -220,7 +220,7 @@ class RunState(NamedTuple):
     # Constructors — canonical pre-loop entry points
     # ------------------------------------------------------------------
     @classmethod
-    def with_pre_loop_setup(cls, cfg) -> "RunState":
+    def with_pre_loop_setup(cls, cfg, *, skip_chem_warmup: bool = False) -> "RunState":
         """Build a fully-initialised `RunState` from `vulcan_cfg`.
 
         Runs the same pre-loop pipeline `vulcan_jax.py` ran historically
@@ -232,8 +232,16 @@ class RunState(NamedTuple):
         This is the canonical pre-loop entry point — driver / tests /
         examples / benchmarks all do
             ``rs = RunState.with_pre_loop_setup(cfg); rs = integ(rs)``.
+
+        `skip_chem_warmup=True` skips the chem-RHS JIT warmup. That warmup's
+        result is discarded — it only forces XLA to compile the codegen
+        `chem_rhs` so the first runner step doesn't stall on compile. Callers
+        that build the RunState in one process but integrate in another (e.g.
+        the GPU-batched emulator's host-setup workers, which hand the RunState
+        to a separate device process) can skip it to avoid a wasted per-worker
+        CPU compile; the returned RunState is otherwise identical.
         """
-        return _build_pre_loop_runstate(cfg)
+        return _build_pre_loop_runstate(cfg, skip_chem_warmup=skip_chem_warmup)
 
     @classmethod
     def fresh_from_cfg(cls, cfg) -> "RunState":
@@ -653,7 +661,7 @@ def _runmetadata_from_legacy(var, atm, para) -> RunMetadata:
     )
 
 
-def _build_pre_loop_runstate(cfg) -> RunState:
+def _build_pre_loop_runstate(cfg, *, skip_chem_warmup: bool = False) -> RunState:
     """Run the full pre-loop pipeline and return a populated RunState."""
     import time
 
@@ -710,14 +718,18 @@ def _build_pre_loop_runstate(cfg) -> RunState:
     # stall on compile. `build_chem_rhs` is memoised; chem_funs already
     # called it at import time, so this is a cache hit. The
     # `block_until_ready()` call forces XLA to materialise the compile
-    # here (~3-8 s on cold disk cache, <100 ms when cached).
-    from . import make_chem_funs as _make_chem_funs
+    # here (~3-8 s on cold disk cache, <100 ms when cached). The result is
+    # discarded — it is purely a warmup — so `skip_chem_warmup` callers that
+    # integrate in a different process can skip it without changing the
+    # returned RunState.
+    if not skip_chem_warmup:
+        from . import make_chem_funs as _make_chem_funs
 
-    _chem_rhs = _make_chem_funs.build_chem_rhs(network)
-    _y0 = jnp.asarray(var.y, dtype=jnp.float64)
-    _M0 = jnp.asarray(atm.M, dtype=jnp.float64)
-    _k0 = jnp.asarray(var.k_arr, dtype=jnp.float64)
-    _chem_rhs(_y0, _M0, _k0).block_until_ready()
+        _chem_rhs = _make_chem_funs.build_chem_rhs(network)
+        _y0 = jnp.asarray(var.y, dtype=jnp.float64)
+        _M0 = jnp.asarray(atm.M, dtype=jnp.float64)
+        _k0 = jnp.asarray(var.k_arr, dtype=jnp.float64)
+        _chem_rhs(_y0, _M0, _k0).block_until_ready()
 
     # Mirror VULCAN master's initial Integration.backup() so the first
     # reject/force-accept path can revert to the real pre-step state.

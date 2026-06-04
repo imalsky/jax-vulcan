@@ -13,6 +13,7 @@ Most legacy class method bodies retain upstream structure. JAX-specific
 schema synthesis helpers are local adapters and should stay explicit.
 """
 
+import copy
 import numpy as np
 import os
 import pickle
@@ -25,6 +26,69 @@ from .vulcan_cfg import nz
 from ._paths import resolve_data_path
 
 species = chem_funs.spec_list
+
+
+# ---------------------------------------------------------------------------
+# Rate-parse cache
+# ---------------------------------------------------------------------------
+# `ReadRate.read_rate` parses the whole reaction-network file on every call and
+# writes purely metadata onto `var` (the scratch temperature-dependent `k` dict
+# it builds is discarded — `rates.build_rate_array` recomputes the canonical
+# `var.k_arr`). The network is fixed for a whole dataset, so re-parsing it once
+# per profile is pure waste. Memoise the parsed metadata keyed by
+# `(resolved network path, use_ion)`; a cache hit restores deep copies onto the
+# fresh `var` so a later in-place mutation can't poison the cache. The cache is
+# per-process (module-global) — the GPU-batched emulator's spawn workers each
+# parse once and reuse for all their profiles. Disable with
+# $VULCAN_JAX_RATE_CACHE=0 (used by the parity test).
+#
+# The exact set of `var` attributes `read_rate` writes (verified against the
+# function body). Everything else `read_rate` touches is local scratch.
+_RATE_PARSE_VAR_ATTRS = (
+    "Rf",
+    "Rindx",
+    "a",
+    "n",
+    "E",
+    "a_inf",
+    "n_inf",
+    "E_inf",
+    "pho_rate_index",
+    "ion_rate_index",
+    "conden_indx",
+    "recomb_indx",
+    "photo_indx",
+    "ion_indx",
+    "stop_rev_indx",
+    "special_re",
+    "conden_re_list",
+    "n_branch",
+    "ion_branch",
+    "photo_sp",
+    "ion_sp",
+)
+
+_RATE_PARSE_CACHE: dict[tuple[str, bool], dict] = {}
+
+
+def _rate_cache_enabled() -> bool:
+    """Rate-parse memoisation is on unless $VULCAN_JAX_RATE_CACHE=0."""
+    return os.environ.get("VULCAN_JAX_RATE_CACHE", "1") != "0"
+
+
+def _snapshot_rate_parse(var) -> dict:
+    """Deep-copy the post-parse rate metadata off `var` for the cache."""
+    return {
+        name: copy.deepcopy(getattr(var, name))
+        for name in _RATE_PARSE_VAR_ATTRS
+        if hasattr(var, name)
+    }
+
+
+def _restore_rate_parse(var, snap: dict) -> None:
+    """Deep-copy cached rate metadata back onto a fresh `var` (cache hit)."""
+    for name, value in snap.items():
+        setattr(var, name, copy.deepcopy(value))
 
 
 def _master_tableau20() -> list[tuple[float, float, float]]:
@@ -70,7 +134,22 @@ class ReadRate(object):
         Sets `var.Rf` (1-based reaction text), `var.pho_rate_index`,
         `var.n_branch`, `var.photo_sp`, `var.ion_sp`, etc. Rate values
         are scratch — `rates.setup_var_k` recomputes them.
+
+        Parse output depends only on the network file + `use_ion`, so it is
+        memoised per process (see `_RATE_PARSE_CACHE`): a cache hit restores
+        the metadata onto `var` and skips the file read + line parse entirely.
         """
+        cache_key = None
+        if _rate_cache_enabled():
+            cache_key = (
+                str(resolve_data_path(vulcan_cfg.network)),
+                bool(vulcan_cfg.use_ion),
+            )
+            snap = _RATE_PARSE_CACHE.get(cache_key)
+            if snap is not None:
+                _restore_rate_parse(var, snap)
+                return var
+
         # `k` here is parser scratch; rates.setup_var_k overwrites var.k_arr
         # immediately after this method returns.
         k = {}
@@ -276,6 +355,9 @@ class ReadRate(object):
         var.photo_sp = set(photo_sp)
         if vulcan_cfg.use_ion:
             var.ion_sp = set(ion_sp)
+
+        if cache_key is not None:
+            _RATE_PARSE_CACHE[cache_key] = _snapshot_rate_parse(var)
 
         return var
 
