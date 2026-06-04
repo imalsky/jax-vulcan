@@ -156,12 +156,12 @@ VULCAN-JAX/
 ├── tools/                   Data-prep and parity-audit utilities
 ├── output/                  Forward-model outputs (.vul files, not tracked)
 ├── plot/                    Generated figures (not tracked)
+├── docs/                    Project docs (file_organization.md, BUGS_FOUND.md)
 │
 ├── pyproject.toml           Build metadata and dependencies
 ├── setup.py                 Compatibility shim
 ├── release.sh               TestPyPI release script
-├── README.md                This file
-└── FILE_README.md           Per-module function-level index (internal reference)
+└── README.md                This file
 ```
 
 ### Directory purposes
@@ -172,6 +172,7 @@ VULCAN-JAX/
 | `benchmarks/` | `bench_step.py` -- per-step kernel timing vs NumPy | Yes |
 | `tests/` | Curated pytest suite: JAX-master parity, vmap, AD, integration smoke tests | Yes |
 | `tools/` | `audit_master_parity.py` (parity audit vs upstream), `make_mix_table.py`, `make_spectra_in_nm.py`, `print_actinic_flux.py` | Yes |
+| `docs/` | `file_organization.md` (per-module function index), `BUGS_FOUND.md` (validation bug log) | Yes |
 | `output/` | `.vul` pickle files from forward-model runs | No (gitignored) |
 | `plot/` | Generated figures from plot scripts | No (gitignored) |
 

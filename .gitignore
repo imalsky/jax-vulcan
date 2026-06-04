@@ -4,9 +4,8 @@
 *$py.class
 *.so
 
-# Claude code / internal docs
+# Claude code / internal docs (docs/ is tracked; CLAUDE.md stays internal)
 CLAUDE.md
-FILE_README.md
 
 # Distribution / packaging
 build/
@@ -76,6 +75,11 @@ src/vulcan_jax/fastchem_vulcan/input/vulcan_TP/vulcan_TP.dat
 src/vulcan_jax/fastchem_vulcan/output/monitor_output.dat
 src/vulcan_jax/fastchem_vulcan/output/chem_species.dat
 src/vulcan_jax/fastchem_vulcan/output/vulcan_EQ.dat
+
+# FastChem compiled build artifacts (C++ source + makefiles are tracked)
+src/vulcan_jax/fastchem_vulcan/obj/*.o
+src/vulcan_jax/fastchem_vulcan/obj/*.d
+src/vulcan_jax/fastchem_vulcan/fastchem
 
 # Large scientific data formats (typically big binary arrays/tables)
 *.h5
