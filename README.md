@@ -147,7 +147,7 @@ VULCAN-JAX/
 │   ├── _version.py          Version string
 │   ├── atm/                 TP/Kzz tables, stellar flux, BC files
 │   ├── thermo/              Network files, NASA-9 data, photo cross sections
-│   ├── fastchem_vulcan/     FastChem binary + I/O for ini_mix='EQ'
+│   ├── fastchem_vulcan/     FastChem C++ source + I/O for ini_mix='EQ' (binary auto-built on first use)
 │   └── cfg_examples/        Example configs (HD189, HD209, Earth, W39b)
 │
 ├── tests/                   Validation suite (see "Running tests")
@@ -225,6 +225,8 @@ print("Steps:", int(rs_out.params.count))
 On the first import with a given network, `make_chem_funs` generates and caches a per-network chemistry RHS source file. This takes a few seconds and prints informational messages. Subsequent imports reuse the cache.
 
 The "Element # not found. Neglected!" messages from FastChem are normal -- the solar abundance file has heavy elements not in the C-H-O-N network, which are safely ignored.
+
+The FastChem binary is **not** vendored as a pre-built executable; the C++ source and makefiles are. The first time `ini_mix='EQ'` runs, `ini_abun._ensure_fastchem_binary()` compiles it from source (`make` in `fastchem_vulcan/`, creating `obj/` and the runtime `input/`/`output/` dirs as needed) and reuses it thereafter. The build is serialized by the same `fcntl.flock` that guards the EQ subprocess, so `pytest -n auto` and parallel host-setup workers won't race to build. A C++ toolchain (`c++`/`make`) must be on `PATH`; if the build fails, run `make` manually under `fastchem_vulcan/`.
 
 ---
 
