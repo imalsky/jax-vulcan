@@ -335,14 +335,19 @@ def main() -> int:
     import store as st_v
     import vulcan_cfg as cfg_v
 
-    os.chdir(ROOT)
-
     if getattr(cfg_v, "use_solar", True) != getattr(vulcan_cfg, "use_solar", True):
+        os.chdir(ROOT)
         print(
             "SKIP: master and JAX vulcan_cfg have different use_solar; configs diverged."
         )
         return 0
 
+    # Stay in VULCAN-master while building the master-side objects: store.Variables()
+    # reads sflux_file and Atm.load_TPK() reads the TP profile via paths RELATIVE to
+    # the master repo root, and ini_y() shells out to fastchem_vulcan/. Only chdir
+    # back to ROOT after every master-side file read is done (the comparison below
+    # is purely in-memory). Restoring CWD earlier raised
+    # FileNotFoundError: atm/stellar_flux/... and masked this EQ-vs-master gate.
     data_var2 = st_v.Variables()
     data_atm2 = st_v.AtmData()
     make_atm2 = ba_v.Atm()
@@ -354,6 +359,8 @@ def main() -> int:
     ini_v = ba_v.InitialAbun()
     data_var2 = ini_v.ini_y(data_var2, data_atm2)
     data_var2 = ini_v.ele_sum(data_var2)
+
+    os.chdir(ROOT)
 
     vul_y = np.asarray(data_var2.y)
     vul_atom_ini = dict(data_var2.atom_ini)

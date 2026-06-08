@@ -36,15 +36,41 @@ _CANONICAL_FASTCHEM_ABUNDANCES = {
 }
 
 
-def _validate_fastchem_input_vs_network(cfg, root: Path) -> list[str]:
-    """Pin `fastchem_solar_abundance_file` content to the canonical values.
+# Element row order REQUIRED by the vendored FastChem. Its
+# fastchem_src/mass_action_constant.cpp subtracts per-element NASA9 reference
+# polynomials by HARD-CODED slot index (index_C=0, index_H=1, index_He=2,
+# index_N=3, index_O=4, index_P=5, index_S=6, index_Si=7, index_Ti=8,
+# index_V=9, index_Cl=10, index_Km=11 [=K], index_Na=12, index_Mg=13,
+# index_F=14, index_Ca=15, index_Fe=16, index_e=17). The element vector is built
+# in abundance-file row order, so the file MUST list elements in exactly this
+# order. A reorder (e.g. H,He,C,...) makes carbon take helium's reference and CO
+# never forms — silent, no crash. `tests/test_fastchem_element_order.py` parses
+# the C++ and asserts this list still matches the hard-coded indices.
+_FASTCHEM_ELEMENT_ORDER = [
+    "C", "H", "He", "N", "O", "P", "S", "Si", "Ti", "V",
+    "Cl", "K", "Na", "Mg", "F", "Ca", "Fe", "e-",
+]
 
-    Catches the failure mode where someone (re-)installs the historical
-    Lodders-2009 file with Mg / Si / Fe / etc. at solar dex. That sequesters
-    ~19% of O into silicate / metal-oxide gas-phase species the NCHO and
-    SNCHO networks cannot represent, producing initial conditions biased
-    against `_load_eq_y`. The check is content-based (parsed dex values),
-    not byte-hash, so whitespace / EOL differences don't trip false positives.
+
+def _validate_fastchem_input_vs_network(cfg, root: Path) -> list[str]:
+    """Pin `fastchem_solar_abundance_file` content AND element row order.
+
+    Two independent failure modes, both silent (no crash, plausible-looking
+    output):
+
+    1. Values: someone (re-)installs the historical Lodders-2009 file with
+       Mg / Si / Fe / etc. at solar dex. That sequesters ~19% of O into
+       silicate / metal-oxide species the NCHO / SNCHO networks cannot
+       represent, biasing initial conditions against `_load_eq_y`.
+    2. Order: someone reorders the rows (e.g. H,He,C,... instead of
+       C,H,He,...). FastChem's mass_action_constant.cpp subtracts per-element
+       NASA9 references by hard-coded slot, so a reorder makes carbon take
+       helium's reference -> CO/CH4/CO2 never form, all carbon stays atomic.
+       See `_FASTCHEM_ELEMENT_ORDER`.
+
+    Both checks are content-based (parsed values / parsed symbol order), not a
+    byte hash, so whitespace / EOL / decimal-format differences don't trip
+    false positives.
     """
     errors: list[str] = []
     if getattr(cfg, "ini_mix", None) != "EQ":
@@ -60,6 +86,7 @@ def _validate_fastchem_input_vs_network(cfg, root: Path) -> list[str]:
         return errors  # missing-file error captured by caller
 
     parsed: dict[str, float] = {}
+    order: list[str] = []
     with open(abun_path) as fh:
         for line in fh:
             stripped = line.strip()
@@ -72,6 +99,23 @@ def _validate_fastchem_input_vs_network(cfg, root: Path) -> list[str]:
                 parsed[parts[0]] = float(parts[1])
             except ValueError:
                 continue
+            order.append(parts[0])
+
+    # Element row order is load-bearing (FastChem hard-codes element slots) AND
+    # must be COMPLETE. A truncated file (missing trailing rows) would satisfy a
+    # prefix check yet leave later C++ slots (P, S, the rocky elements) pointing
+    # at the wrong reference polynomial. Require the exact canonical order; the
+    # trailing electron row is optional (absent when use_ion is False).
+    if order not in (_FASTCHEM_ELEMENT_ORDER, _FASTCHEM_ELEMENT_ORDER[:-1]):
+        errors.append(
+            f"FastChem input {abun_rel!r} element ROW ORDER is wrong: got "
+            f"{order} but FastChem's mass_action_constant.cpp hard-codes the "
+            f"full order {_FASTCHEM_ELEMENT_ORDER}. A reorder OR a missing "
+            "element makes carbon (or P/S/rocky) take the wrong reference "
+            "polynomial -> the affected molecules never form (e.g. carbon stays "
+            "atomic, no CO). Restore the canonical C,H,He,N,O,P,S,... order in "
+            "full."
+        )
 
     mismatches: list[str] = []
     for elem, expected in _CANONICAL_FASTCHEM_ABUNDANCES.items():
