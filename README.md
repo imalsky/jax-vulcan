@@ -208,17 +208,34 @@ cfg = vulcan_jax.make_config(
 )
 rs = vulcan_jax.RunState.with_pre_loop_setup(cfg)
 
-# Run integration
+# Run integration -- pass the SAME cfg to the runner so its solver knobs
+# (count_max, rtol, dt bounds, convergence criteria, ...) honor your overrides.
 from vulcan_jax import outer_loop, op_jax, legacy_io
 solver = op_jax.Ros2JAX()
-output = legacy_io.Output()
-integ = outer_loop.OuterLoop(solver, output)
+output = legacy_io.Output(cfg=cfg)  # cfg-aware output paths + progress prints
+integ = outer_loop.OuterLoop(solver, output, cfg=cfg)
 rs_out = integ(rs)
 
 # Check results
 print("Converged:", rs_out.params.end_case == 1)
 print("Steps:", int(rs_out.params.count))
 ```
+
+`make_config(...)` overrides are honored end-to-end: `with_pre_loop_setup(cfg)`
+applies them to the pre-loop setup, `OuterLoop(solver, output, cfg=cfg)` to the
+integration, and `legacy_io.Output(cfg=cfg)` to the output paths and progress
+prints. `cfg` defaults to the global `vulcan_cfg` module, so the bare
+`OuterLoop(solver, output)` / `Output()` (the CLI form) is unchanged.
+
+**Import-frozen knobs `make_config` cannot change.** A few structural inputs are
+read once at the first `import vulcan_jax` and cannot be changed afterward: the
+reaction `network` (`ni` / `nr` / `spec_list`), the composition table `com_file`,
+and `atom_list` (the reservoir-projection tables). Passing a different
+`cfg.network` or `cfg.com_file` raises a clear error rather than silently using
+the import-time value (a same-content copy at a different path is accepted). To
+change the network, set the `VULCAN_JAX_NETWORK` environment variable to its
+path **before** the first `import vulcan_jax` (or use the subprocess driver);
+set `com_file` / `atom_list` in the config used at that first import.
 
 ### Known first-run behavior
 
@@ -352,7 +369,7 @@ python tools/audit_master_parity.py --master ../VULCAN-master
 
 Master-comparison tests (those comparing against `../VULCAN-master/`) require the sibling checkout and skip cleanly when it's absent. These tests run master imports in isolated subprocesses.
 
-The `test_cfg_examples[vulcan_cfg_Earth.py]` test is a known skip -- the Earth config references species not in the default network.
+The Earth example config (`cfg_examples/vulcan_cfg_Earth.py`) ships but is not covered by the setup/oracle tests. It lists Ar (and other inert background gases) in `atom_list` / `const_mix`, but Ar is chemically inert and is therefore not a species in any reaction network, so `ini_abun`'s `const_mix` initializer raises `'Ar' is not in list`. Running it needs the `const_mix` path to handle inert atoms that have no network species (an open item); until then the config is provided as a starting point, not a tested path.
 
 ---
 

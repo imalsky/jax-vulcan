@@ -85,6 +85,13 @@ def _build_chem_projection_tables() -> tuple[
     _CHEM_INV_RESERVOIR_COUNTS,
 ) = _build_chem_projection_tables()
 
+# atom_list value baked into the reservoir-projection tables above at import.
+# It is import-frozen (the tables are module-level constants), so
+# state._assert_atom_list_matches_import fails fast if a later make_config
+# passes a different atom_list rather than silently mixing import-time
+# projection with cfg-time atom accounting.
+IMPORT_ATOM_LIST = tuple(getattr(vulcan_cfg, "atom_list", ()))
+
 
 def _project_chem_rhs(rhs: jnp.ndarray) -> jnp.ndarray:
     """Project chemistry RHS onto H/O/C/N conservation via abundant reservoirs."""
@@ -541,25 +548,28 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
     return sol, delta_arr
 
 
-def make_atm_static(atm, ni: int, nz: int) -> AtmStatic:
-    """Build an AtmStatic from a legacy AtmData container."""
+def make_atm_static(atm, ni: int, nz: int, cfg=vulcan_cfg) -> AtmStatic:
+    """Build an AtmStatic from a legacy AtmData container.
+
+    `cfg` defaults to the global vulcan_cfg module; OuterLoop passes its own
+    `self._cfg` so the transport toggles below honor a make_config() cfg (this
+    runs at integration time, after state._cfg_overlay has restored the global).
+    """
     use_vm = bool(
-        getattr(vulcan_cfg, "use_vm_mol", False)
-        and getattr(vulcan_cfg, "use_moldiff", True)
+        getattr(cfg, "use_vm_mol", False) and getattr(cfg, "use_moldiff", True)
     )
     use_set = bool(
-        getattr(vulcan_cfg, "use_settling", False)
-        and getattr(vulcan_cfg, "use_moldiff", True)
+        getattr(cfg, "use_settling", False) and getattr(cfg, "use_moldiff", True)
     )
-    use_topflux = bool(getattr(vulcan_cfg, "use_topflux", False))
-    use_botflux = bool(getattr(vulcan_cfg, "use_botflux", False))
+    use_topflux = bool(getattr(cfg, "use_topflux", False))
+    use_botflux = bool(getattr(cfg, "use_botflux", False))
     gas_mask = jnp.zeros((ni,), dtype=jnp.bool_)
     gas_mask = gas_mask.at[jnp.asarray(atm.gas_indx, dtype=jnp.int32)].set(True)
     vm = atm.vm if use_vm else jnp.zeros((nz, ni), dtype=jnp.float64)
     vs = atm.vs if use_set else jnp.zeros((nz - 1, ni), dtype=jnp.float64)
     Dzz = (
         atm.Dzz
-        if getattr(vulcan_cfg, "use_moldiff", True)
+        if getattr(cfg, "use_moldiff", True)
         else jnp.zeros((nz - 1, ni), dtype=jnp.float64)
     )
     return AtmStatic(

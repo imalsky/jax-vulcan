@@ -9,7 +9,13 @@ from ._paths import resolve_data_path
 
 species = chem_funs.spec_list
 
-with open(resolve_data_path(vulcan_cfg.com_file), "r") as _f:
+# Resolved path of the composition table actually loaded at import. The table
+# is import-frozen (ini_abun imports these arrays directly), so a later
+# make_config(com_file=...) cannot change it; state._assert_com_file_matches_import
+# fails fast on a mismatch instead of silently using this default.
+COM_FILE_PATH = resolve_data_path(vulcan_cfg.com_file)
+
+with open(COM_FILE_PATH, "r") as _f:
     _columns = _f.readline()
     _num_ele = len(_columns.split()) - 2
 _type_list = ["int"] * _num_ele

@@ -180,5 +180,5 @@ def test_fastchem_dir_default_is_package(tmp_path):
         timeout=300,
     )
     assert out.returncode == 0, out.stderr
-    name, root = out.stdout.split("\n")[0], out.stdout.split("\n")[1]
+    name = out.stdout.split("\n")[0]
     assert name == "fastchem_vulcan"

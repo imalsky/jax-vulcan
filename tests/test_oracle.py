@@ -7,11 +7,13 @@ arrays at each layer x species. Captures a baseline npz under
 ``tests/data/oracle_baselines/`` so future runs without master can still
 validate against the captured state.
 
-Parametrized over two configs that exercise paths HD189 doesn't:
-- **Earth** — ``use_condense=True`` with ``T_cross_sp=['CO2','H2O','NH3']``
-  and ``ini_mix='const_mix'``.
+Parametrized over the HD209 config, which exercises paths HD189 doesn't:
 - **HD209** — ``ini_mix='EQ'``, no condensation, ``NCHO_photo_network.txt``
   (no S species), weaker gravity (936 cm/s^2 vs HD189's 2140).
+
+The Earth config was dropped from this oracle: it lists inert Ar, which is not
+a species in any reaction network, so its ``const_mix`` init raises
+``'Ar' is not in list`` (see README's note on the Earth config).
 
 Skips cleanly when:
 - ``../VULCAN-master/`` is absent AND no baseline npz is on disk.
@@ -56,14 +58,6 @@ YMIX_ABS_FLOOR_VS_BASELINE = 1e-25
 # projection (jax_step._project_chem_rhs) perturbs the RHS by ~5e-13
 # relative per step, compounding over 20 steps.
 ORACLE_CONFIGS = [
-    pytest.param(
-        "Earth",
-        1e-9,
-        id="Earth",
-        marks=pytest.mark.skip(
-            reason="Earth config requires Ar (not in default NCHO network)"
-        ),
-    ),
     pytest.param("HD209", 1e-4, id="HD209"),
 ]
 

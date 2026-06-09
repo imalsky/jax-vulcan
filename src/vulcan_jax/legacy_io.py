@@ -22,7 +22,6 @@ import time
 from . import vulcan_cfg
 from . import chem_funs
 from .chem_funs import ni, nr
-from .vulcan_cfg import nz
 from ._paths import resolve_data_path
 
 species = chem_funs.spec_list
@@ -304,14 +303,14 @@ class ReadRate(object):
                     Rf[i] = line.partition("[")[-1].rpartition("]")[0].strip()
 
                     var.conden_re_list.append(i)
-                    k[i] = np.zeros(nz)
-                    k[i + 1] = np.zeros(nz)
+                    k[i] = np.zeros(vulcan_cfg.nz)
+                    k[i + 1] = np.zeros(vulcan_cfg.nz)
 
                     i += 2
 
                 # setting photo dissociation reactions to zeros
                 elif photo_re and line.strip() and not line.startswith("#"):
-                    k[i] = np.zeros(nz)
+                    k[i] = np.zeros(vulcan_cfg.nz)
                     Rf[i] = line.partition("[")[-1].rpartition("]")[0].strip()
 
                     # adding the photo species
@@ -330,7 +329,7 @@ class ReadRate(object):
 
                 # setting photo ionization reactions to zeros
                 elif ion_re and line.strip() and not line.startswith("#"):
-                    k[i] = np.zeros(nz)
+                    k[i] = np.zeros(vulcan_cfg.nz)
                     Rf[i] = line.partition("[")[-1].rpartition("]")[0].strip()
 
                     ion_sp.append(Rf[i].split()[0])
@@ -742,12 +741,18 @@ class Output(object):
     (useful in CI).
     """
 
-    def __init__(self):
+    def __init__(self, cfg=vulcan_cfg):
+        # cfg defaults to the global vulcan_cfg module so the CLI and legacy
+        # callers (which pass nothing) are unchanged. make_config() users pass
+        # their namespace so output paths, the .vul writer, and progress prints
+        # honor the same cfg as setup and the runner. Pair with
+        # OuterLoop(cfg=cfg); save_out(..., cfg=...) overrides per call.
+        self._cfg = cfg
 
         output_dir, out_name, plot_dir = (
-            vulcan_cfg.output_dir,
-            vulcan_cfg.out_name,
-            vulcan_cfg.plot_dir,
+            self._cfg.output_dir,
+            self._cfg.out_name,
+            self._cfg.plot_dir,
         )
 
         if not os.path.exists(output_dir):
@@ -766,7 +771,7 @@ class Output(object):
             + " || Step number: "
             + str(para.count)
             + "/"
-            + str(vulcan_cfg.count_max)
+            + str(self._cfg.count_max)
         )
         print(
             "longdy = "
@@ -787,7 +792,7 @@ class Output(object):
             + " s CPU time"
         )
         print(
-            vulcan_cfg.out_name[:-4]
+            self._cfg.out_name[:-4]
             + " has successfully run to steady-state with "
             + str(para.count)
             + " steps and "
@@ -802,8 +807,8 @@ class Output(object):
         )
 
         print("total atom loss:")
-        for atom in vulcan_cfg.atom_list:
-            if atom not in getattr(vulcan_cfg, "loss_ex", []):
+        for atom in self._cfg.atom_list:
+            if atom not in getattr(self._cfg, "loss_ex", []):
                 print(atom + ": " + f"{var.atom_loss[atom]:.4e}" + " ")
 
         print("negative solution counter:")
@@ -812,7 +817,7 @@ class Output(object):
         print(para.loss_count)
         print("delta rejected counter:")
         print(para.delta_count)
-        if getattr(vulcan_cfg, "use_shark", False):
+        if getattr(self._cfg, "use_shark", False):
             print("It's a long journey to this shark planet. Don't stop bleeding.")
         print("------ Live long and prosper \\V/ ------")
 
@@ -822,7 +827,7 @@ class Output(object):
                 "After ------- %s seconds -------" % (time.time() - para.start_time)
                 + " s CPU time"
             )
-            print(vulcan_cfg.out_name[:-4] + " did not reach steady-state:")
+            print(self._cfg.out_name[:-4] + " did not reach steady-state:")
             print(
                 "long dy = "
                 + str(var.longdy)
@@ -831,7 +836,7 @@ class Output(object):
             )
             print(
                 "Integration stopped before converged...\nMaximal allowed runtime exceeded ("
-                + f"{vulcan_cfg.runtime:.1e}"
+                + f"{self._cfg.runtime:.1e}"
                 + " sec)"
             )
         elif case == 3:
@@ -839,7 +844,7 @@ class Output(object):
                 "After ------- %s seconds -------" % (time.time() - para.start_time)
                 + " s CPU time"
             )
-            print(vulcan_cfg.out_name[:-4] + " did not reach steady-state:")
+            print(self._cfg.out_name[:-4] + " did not reach steady-state:")
             print(
                 "long dy = "
                 + str(var.longdy)
@@ -848,7 +853,7 @@ class Output(object):
             )
             print(
                 "Integration stopped before converged...\nMaximal allowed steps exceeded ("
-                + str(vulcan_cfg.count_max)
+                + str(self._cfg.count_max)
                 + " steps)"
             )
         elif case == 4:
@@ -856,7 +861,7 @@ class Output(object):
                 "After ------- %s seconds -------" % (time.time() - para.start_time)
                 + " s CPU time"
             )
-            print(vulcan_cfg.out_name[:-4] + " did not reach steady-state:")
+            print(self._cfg.out_name[:-4] + " did not reach steady-state:")
             print(
                 "long dy = "
                 + str(var.longdy)
@@ -865,15 +870,15 @@ class Output(object):
             )
             print(
                 "Integration stopped before converged...\nWall-clock budget exceeded ("
-                + str(getattr(vulcan_cfg, "wall_clock_max", None))
+                + str(getattr(self._cfg, "wall_clock_max", None))
                 + " sec)"
             )
         else:
             raise RuntimeError(f"Unconverged case undefined (case={case})")
 
         print("total atom loss:")
-        for atom in vulcan_cfg.atom_list:
-            if atom not in getattr(vulcan_cfg, "loss_ex", []):
+        for atom in self._cfg.atom_list:
+            if atom not in getattr(self._cfg, "loss_ex", []):
                 print(atom + ": " + f"{var.atom_loss[atom]:.4e}" + " ")
         print("negative solution counter:")
         print(para.nega_count)
@@ -883,21 +888,34 @@ class Output(object):
         print(para.delta_count)
 
     def save_cfg(self, dname):
-        output_dir, out_name = vulcan_cfg.output_dir, vulcan_cfg.out_name
-        if not os.path.exists(output_dir):
-            print("The output directory assigned in vulcan_cfg.py does not exist.")
-            print("Directory ", output_dir, " created.")
-            os.mkdir(output_dir)
+        # Create the target directory at the actual write location
+        # (dname/output_dir), not relative to the current working directory —
+        # save_cfg writes under dname, so a cwd != dname caller (the public API)
+        # would otherwise create cwd/output_dir and then fail to write under
+        # dname/output_dir.
+        output_dir, out_name = self._cfg.output_dir, self._cfg.out_name
+        target_dir = os.path.join(dname, output_dir)
+        os.makedirs(target_dir, exist_ok=True)
 
-        # copy the vulcan_cfg.py file (try CWD first, then package default)
-        _cfg_path = resolve_data_path("vulcan_cfg.py")
-        if _cfg_path.exists():
-            with open(_cfg_path, "r") as f:
-                cfg_str = f.read()
-            with open(
-                dname + "/" + output_dir + "cfg_" + out_name[:-3] + "txt", "w"
-            ) as f:
-                f.write(cfg_str)
+        # Serialize the ACTIVE config (self._cfg) so the snapshot reflects the
+        # real run — including make_config() overrides — rather than copying the
+        # packaged vulcan_cfg.py source (which would lose every override and is
+        # meaningless for a make_config namespace). Works for both the global
+        # module and a SimpleNamespace; values are repr'd so the file re-reads.
+        lines = []
+        for key in sorted(vars(self._cfg)):
+            if key.startswith("_"):
+                continue
+            val = getattr(self._cfg, key)
+            if callable(val) or isinstance(val, type) or hasattr(val, "__loader__"):
+                continue
+            try:
+                lines.append(f"{key} = {val!r}")
+            except Exception:
+                continue
+        out_path = os.path.join(target_dir, "cfg_" + out_name[:-3] + "txt")
+        with open(out_path, "w") as f:
+            f.write("\n".join(lines) + "\n")
 
     def save_out(self, *args, **kwargs):
         """Write the `.vul` pickle output.
@@ -913,18 +931,15 @@ class Output(object):
 
     def _save_out_from_runstate(self, runstate, dname, photo_static=None, cfg=None):
         """Canonical .vul writer: reads everything from `runstate`."""
-        cfg_mod = cfg if cfg is not None else vulcan_cfg
+        cfg_mod = cfg if cfg is not None else self._cfg
         var_save, atm_save, para_save = _synthesize_save_dicts(
             runstate, cfg_mod, photo_static=photo_static
         )
 
         output_dir, out_name = cfg_mod.output_dir, cfg_mod.out_name
-        output_file = dname + "/" + output_dir + out_name
-
-        if not os.path.exists(output_dir):
-            print("The output directory assigned in vulcan_cfg.py does not exist.")
-            print("Directory ", output_dir, " created.")
-            os.mkdir(output_dir)
+        target_dir = os.path.join(dname, output_dir)
+        os.makedirs(target_dir, exist_ok=True)
+        output_file = os.path.join(target_dir, out_name)
 
         with open(output_file, "wb") as outfile:
             if cfg_mod.output_humanread:
@@ -946,13 +961,10 @@ class Output(object):
 
             _runstate_to_store(runstate, var, atm, para)
 
-        output_dir, out_name = vulcan_cfg.output_dir, vulcan_cfg.out_name
-        output_file = dname + "/" + output_dir + out_name
-
-        if not os.path.exists(output_dir):
-            print("The output directory assigned in vulcan_cfg.py does not exist.")
-            print("Directory ", output_dir, " created.")
-            os.mkdir(output_dir)
+        output_dir, out_name = self._cfg.output_dir, self._cfg.out_name
+        target_dir = os.path.join(dname, output_dir)
+        os.makedirs(target_dir, exist_ok=True)
+        output_file = os.path.join(target_dir, out_name)
 
         for key in var.var_evol_save:
             as_nparray = np.array(getattr(var, key))
@@ -963,7 +975,7 @@ class Output(object):
         # Build the photo-static pytree lazily from (var, atm) when not
         # supplied by the caller; the cross-section dicts are then
         # synthesised at pickle time.
-        if photo_static is None and bool(getattr(vulcan_cfg, "use_photo", False)):
+        if photo_static is None and bool(getattr(self._cfg, "use_photo", False)):
             from . import photo_setup as _photo_setup
 
             photo_static = _photo_setup._build_photo_static_dense(var, atm)
@@ -983,14 +995,14 @@ class Output(object):
                 var_save[key] = photo_dicts[key]
             else:
                 var_save[key] = getattr(var, key)
-        if vulcan_cfg.save_evolution:
+        if self._cfg.save_evolution:
             # The runner already captured y_time/t_time at save_evo_frq cadence;
             # don't slice [::fq] again here.
             for key in var.var_evol_save:
                 var_save[key] = getattr(var, key)
 
         with open(output_file, "wb") as outfile:
-            if vulcan_cfg.output_humanread:  # human-readable form, less efficient
+            if self._cfg.output_humanread:  # human-readable form, less efficient
                 outfile.write(
                     str(
                         {
@@ -1013,7 +1025,7 @@ class Output(object):
 
     def plot_end(self, var, atm, para):
         plt = _import_plt()
-        plot_dir = vulcan_cfg.plot_dir
+        plot_dir = self._cfg.plot_dir
         colors = [
             "b",
             "g",
@@ -1036,16 +1048,16 @@ class Output(object):
         ]
         ymix = np.asarray(var.ymix)
         plt.figure("mixing ratios")
-        for color_index, sp in enumerate(vulcan_cfg.plot_spec):
+        for color_index, sp in enumerate(self._cfg.plot_spec):
             color = colors[color_index % len(colors)]
-            if not vulcan_cfg.plot_height:
+            if not self._cfg.plot_height:
                 plt.plot(
                     ymix[:, species.index(sp)], atm.pco / 1.0e6, color=color, label=sp
                 )
                 plt.gca().set_yscale("log")
                 plt.gca().invert_yaxis()
                 plt.ylabel("Pressure (bar)")
-                plt.ylim((vulcan_cfg.P_b / 1.0e6, vulcan_cfg.P_t / 1.0e6))
+                plt.ylim((self._cfg.P_b / 1.0e6, self._cfg.P_t / 1.0e6))
             else:
                 plt.plot(
                     ymix[:, species.index(sp)], atm.zmco / 1.0e5, color=color, label=sp
@@ -1061,9 +1073,9 @@ class Output(object):
 
         # use_live_plot keeps the figure on screen; use_PIL pops the PNG in
         # an external viewer; otherwise close so figures don't accumulate.
-        if getattr(vulcan_cfg, "use_live_plot", False):
+        if getattr(self._cfg, "use_live_plot", False):
             plt.draw()
-        elif getattr(vulcan_cfg, "use_PIL", False):
+        elif getattr(self._cfg, "use_PIL", False):
             from PIL import Image
 
             Image.open(plot_dir + "mix2.png").show()
@@ -1073,8 +1085,8 @@ class Output(object):
 
     def plot_evo(self, var, atm, plot_j=-1, plot_ymin=1e-20, dn=1):
         plt = _import_plt()
-        plot_spec = vulcan_cfg.plot_spec
-        plot_dir = vulcan_cfg.plot_dir
+        plot_spec = self._cfg.plot_spec
+        plot_dir = self._cfg.plot_dir
         plt.figure("evolution")
         ymix_time = np.array(np.asarray(var.y_time) / atm.n_0[:, np.newaxis])
         for i, sp in enumerate(plot_spec):
@@ -1095,14 +1107,14 @@ class Output(object):
 
     def plot_TP(self, atm):
         plt = _import_plt()
-        plot_dir = vulcan_cfg.plot_dir
+        plot_dir = self._cfg.plot_dir
         fig, ax1 = plt.subplots()
         ax2 = ax1.twiny()
-        if not vulcan_cfg.plot_height:
+        if not self._cfg.plot_height:
             ax1.semilogy(atm.Tco, atm.pco / 1.0e6, c="black")
             ax2.loglog(atm.Kzz, atm.pico[1:-1] / 1.0e6, c="k", ls="--")
             plt.gca().invert_yaxis()
-            plt.ylim((vulcan_cfg.P_b / 1.0e6, vulcan_cfg.P_t / 1.0e6))
+            plt.ylim((self._cfg.P_b / 1.0e6, self._cfg.P_t / 1.0e6))
             ax1.set_ylabel("Pressure (bar)")
         else:
             ax1.plot(atm.Tco, atm.zmco / 1.0e5, c="black")

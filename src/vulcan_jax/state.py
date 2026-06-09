@@ -7,6 +7,9 @@ returns a populated pytree. The private `_Variables` / `_AtmData` /
 
 from __future__ import annotations
 
+import contextlib
+import copy
+from pathlib import Path
 from typing import NamedTuple, Optional
 
 import jax.numpy as jnp
@@ -661,7 +664,234 @@ def _runmetadata_from_legacy(var, atm, para) -> RunMetadata:
     )
 
 
+def _network_path_for(cfg) -> Optional[str]:
+    """Resolved absolute path of cfg's reaction network, or None if unset."""
+    net = getattr(cfg, "network", None)
+    if net is None:
+        return None
+    return str(Path(resolve_data_path(net)).resolve())
+
+
+def _network_topology_signature(net) -> bytes:
+    """Hash the reaction-topology arrays that fix the codegen RHS and rate
+    indexing — the same structural arrays ``make_chem_funs.chem_rhs_cache_key``
+    consumes, minus the path/mtime so a byte-identical vendored copy at a
+    different path compares equal. Two networks with the same signature produce
+    an identical codegen RHS and compatible ``k_arr`` ordering; any reordered or
+    edited reaction (even with the same species and reaction count) differs."""
+    import hashlib
+
+    h = hashlib.sha256()
+    for arr in (
+        net.reactant_idx,
+        net.product_idx,
+        net.reactant_stoich,
+        net.product_stoich,
+        net.is_three_body,
+        net.is_forward,
+    ):
+        h.update(np.ascontiguousarray(arr).tobytes())
+    h.update(int(net.ni).to_bytes(4, "little"))
+    h.update(int(net.nr).to_bytes(4, "little"))
+    return h.digest()
+
+
+def _assert_network_matches_import(cfg) -> None:
+    """Fail fast if cfg requests a different network than the import-locked one.
+
+    The reaction network (``ni`` / ``nr`` / ``spec_list`` and the codegen RHS)
+    is parsed once at the first ``import vulcan_jax`` and cannot be changed by
+    passing a different ``cfg.network`` afterward. Without this guard the
+    mismatch only surfaces ~30 s into setup as a cryptic ``var.k_arr shape``
+    ValueError. To use a different network set ``$VULCAN_JAX_NETWORK`` before
+    the first import (or run the subprocess driver).
+
+    Compatibility is decided by reaction *topology*, not file path and not just
+    species + nr: the same network is vendored at more than one location (the
+    package copy plus the ``VULCAN-master`` sibling that oracle tests ``chdir``
+    into), so a byte-identical copy at a different path is fine — but a network
+    with the same species and reaction count yet reordered/edited reactions
+    would silently pair the import-time codegen RHS with mis-indexed rates, so
+    the full reaction topology must match.
+    """
+    want_path = _network_path_for(cfg)
+    if want_path is None:
+        return
+    import_net = chem_funs._NETWORK
+    have_path = str(Path(import_net.network_path).resolve())
+    if want_path == have_path:
+        return  # identical file: fast path, no reparse on the common case
+
+    # Different path — reparse and compare the reaction TOPOLOGY (structure +
+    # order), which is what fixes the codegen RHS and k_arr indexing. Same
+    # species + nr is NOT sufficient: a reordered or edited reaction set passes
+    # that yet corrupts the RHS<->rate pairing. The SPECIES NAMES must also
+    # match: the numeric topology hash is index-based, so renaming a species
+    # (e.g. H->X at the same index) leaves the signature identical while the
+    # species/metadata side differs — so compare species identity too. If it
+    # can't be resolved/parsed here, defer to the pipeline (and the state.py
+    # k_arr backstop).
+    from . import network as _net_mod
+
+    try:
+        want_net = _net_mod.parse_network(want_path)
+    except Exception:
+        return
+    if list(want_net.species) == list(import_net.species) and (
+        _network_topology_signature(want_net) == _network_topology_signature(import_net)
+    ):
+        return  # same species AND topology -> codegen RHS + metadata compatible
+
+    raise ValueError(
+        "VULCAN-JAX reaction network is import-locked. It is parsed once at "
+        "the first `import vulcan_jax` and cannot be changed afterward.\n"
+        f"  import-time network : {have_path} "
+        f"({import_net.ni} species, {import_net.nr} reactions)\n"
+        f"  cfg.network requests: {want_path} "
+        f"({want_net.ni} species, {want_net.nr} reactions)\n"
+        "The requested network differs in species, reaction count, or reaction "
+        "topology (order / stoichiometry) from the import-locked one, so its "
+        "rates cannot be paired with the import-time codegen RHS. "
+        "make_config(network=...) cannot hot-swap the network in-process. Set "
+        "the environment variable VULCAN_JAX_NETWORK to the desired network "
+        "path BEFORE the first `import vulcan_jax` (or use the subprocess driver)."
+    )
+
+
+def _assert_com_file_matches_import(cfg) -> None:
+    """Fail fast if cfg requests a different composition table than the locked one.
+
+    The per-species composition / mass table is read once into ``composition.py``
+    at the first ``import vulcan_jax`` (``ini_abun`` imports those arrays
+    directly), so a later ``make_config(com_file=...)`` cannot change it. Without
+    this guard a missing or different table is silently ignored in favour of the
+    already-loaded default. A same-content vendored copy at a different path is
+    accepted.
+    """
+    cfg_com = getattr(cfg, "com_file", None)
+    if cfg_com is None:
+        return
+    from . import composition as _composition
+
+    have = getattr(_composition, "COM_FILE_PATH", None)
+    if have is None:
+        return
+    have_r = str(Path(have).resolve())
+    want_r = str(Path(resolve_data_path(cfg_com)).resolve())
+    if want_r == have_r:
+        return
+    try:
+        with open(want_r, "rb") as _w, open(have_r, "rb") as _h:
+            if _w.read() == _h.read():
+                return  # same table content at a different vendored path
+    except FileNotFoundError:
+        pass  # requested table is missing -> definitely a mismatch
+    except Exception:
+        return  # can't determine -> defer to the pipeline
+
+    raise ValueError(
+        "VULCAN-JAX composition table (com_file) is import-locked. It is loaded "
+        "once into composition.py at the first `import vulcan_jax` and cannot be "
+        "changed afterward.\n"
+        f"  import-time com_file : {have_r}\n"
+        f"  cfg.com_file requests: {want_r}\n"
+        "make_config(com_file=...) cannot change it in-process (and a missing "
+        "file would otherwise be silently ignored). Set com_file in the config "
+        "used at the first `import vulcan_jax`."
+    )
+
+
+def _assert_atom_list_matches_import(cfg) -> None:
+    """Fail fast if cfg requests a different atom_list than the import-locked one.
+
+    The reservoir-projection tables in ``jax_step`` are built once at the first
+    ``import vulcan_jax`` from ``atom_list`` and are module-level constants, so a
+    later ``make_config(atom_list=...)`` cannot change them — it would mix the
+    import-time H/O/C/N projection with cfg-time atom accounting. README
+    documents atom_list as import-frozen; this enforces it instead of silently
+    running the inconsistent mix.
+    """
+    cfg_atoms = getattr(cfg, "atom_list", None)
+    if cfg_atoms is None:
+        return
+    from . import jax_step as _jax_step
+
+    have = getattr(_jax_step, "IMPORT_ATOM_LIST", None)
+    if have is None:
+        return
+    if tuple(cfg_atoms) == tuple(have):
+        return
+    raise ValueError(
+        "VULCAN-JAX atom_list is import-locked. The reservoir-projection tables "
+        "are built once at the first `import vulcan_jax`, so a later "
+        "make_config(atom_list=...) cannot change them.\n"
+        f"  import-time atom_list : {list(have)}\n"
+        f"  cfg.atom_list requests: {list(cfg_atoms)}\n"
+        "Set atom_list in the config used at the first `import vulcan_jax`."
+    )
+
+
+@contextlib.contextmanager
+def _cfg_overlay(cfg):
+    """Overlay cfg's public attributes onto the global ``vulcan_cfg`` for setup.
+
+    The pre-loop pipeline's scratch containers (``_Variables`` / ``_AtmData`` /
+    ``_Parameters``), the ``atm_setup`` / ``ini_abun`` facades, and
+    ``legacy_io.ReadRate`` read knobs off the module-global ``vulcan_cfg``
+    rather than a threaded argument. When ``cfg`` IS that module (the CLI path)
+    this is a no-op. When ``cfg`` is a separate namespace (``make_config()``)
+    we overlay its public attributes for the duration of setup and restore the
+    originals on exit, so overrides take effect with zero global leakage.
+    Mirrors the snapshot/restore in ``tests/conftest.py``; the runner-side
+    counterpart is ``OuterLoop(cfg=...)``.
+    """
+    from . import vulcan_cfg  # deferred so a sys.modules rebind (tests) is honored
+
+    if cfg is vulcan_cfg:
+        yield
+        return
+
+    before: dict = {}
+    added: list = []
+    for name, val in vars(cfg).items():
+        if name.startswith("_") or callable(val) or hasattr(val, "__loader__"):
+            continue
+        if hasattr(vulcan_cfg, name):
+            try:
+                before[name] = copy.deepcopy(getattr(vulcan_cfg, name))
+            except Exception:
+                before[name] = getattr(vulcan_cfg, name)
+        else:
+            added.append(name)
+        setattr(vulcan_cfg, name, val)
+    try:
+        yield
+    finally:
+        for name, val in before.items():
+            setattr(vulcan_cfg, name, val)
+        for name in added:
+            try:
+                delattr(vulcan_cfg, name)
+            except Exception:
+                pass
+
+
 def _build_pre_loop_runstate(cfg, *, skip_chem_warmup: bool = False) -> RunState:
+    """Run the full pre-loop pipeline and return a populated RunState.
+
+    Fails fast on a network mismatch (the network is import-locked), then runs
+    the pipeline with ``cfg`` overlaid onto the global ``vulcan_cfg`` so
+    ``make_config()`` overrides are honored with zero leakage. The runner reads
+    the same cfg via ``OuterLoop(cfg=...)``.
+    """
+    _assert_network_matches_import(cfg)
+    _assert_com_file_matches_import(cfg)
+    _assert_atom_list_matches_import(cfg)
+    with _cfg_overlay(cfg):
+        return _build_pre_loop_runstate_impl(cfg, skip_chem_warmup=skip_chem_warmup)
+
+
+def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> RunState:
     """Run the full pre-loop pipeline and return a populated RunState."""
     import time
 

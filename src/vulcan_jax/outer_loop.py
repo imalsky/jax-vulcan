@@ -311,7 +311,14 @@ def _make_clip_fn(
             ysum = jnp.sum(
                 jnp.where(gas_mask_2d[None, :], y_clip, 0.0), axis=1, keepdims=True
             )
-            return y_clip, y_clip / ysum, small_y_inc, nega_y_inc
+            # Guard the normalization: a layer whose gas species all clip to
+            # zero gives ysum==0. master (op.py:2488-2508) divides unguarded
+            # and emits inf/NaN; we return 0 mixing for that empty layer. A
+            # nonzero condensate numerator over a 1e-300 floor would still
+            # overflow, so use `where`, not `maximum`. Normal layers have
+            # ysum ~ n_0 >> 0, so this is bit-identical there.
+            ymix_new = jnp.where(ysum > 0, y_clip / ysum, 0.0)
+            return y_clip, ymix_new, small_y_inc, nega_y_inc
     else:
 
         def clip_fn(y_in, ymix_old):
@@ -323,7 +330,12 @@ def _make_clip_fn(
             )
             y_clip = jnp.where((y_in < pos_cut) & (y_in >= nega_cut), 0.0, y_in)
             y_clip = jnp.where((ymix_old < mtol) & (y_clip < 0), 0.0, y_clip)
+            # Guard the normalization against an all-zero layer (ysum==0 →
+            # 0/0). Mirrors the _UNDERFLOW_DENOM floor at jax_step.py:305-306;
+            # master (op.py) divides unguarded. ysum ~ n_0 >> 1e-300 normally,
+            # so the floor is a no-op on the physical path.
             ysum = jnp.sum(y_clip, axis=1, keepdims=True)
+            ysum = jnp.maximum(ysum, _UNDERFLOW_DENOM)
             return y_clip, y_clip / ysum, small_y_inc, nega_y_inc
 
     return clip_fn
@@ -1535,9 +1547,18 @@ class OuterLoop:
     runs every accepted step with internal retries, photo / atm-refresh /
     conden updates, ring-buffered convergence, and adaptive rtol."""
 
-    def __init__(self, odesolver, output):
-        self.mtol = float(vulcan_cfg.mtol)
-        self.atol = float(vulcan_cfg.atol)
+    def __init__(self, odesolver, output, cfg=vulcan_cfg):
+        # cfg defaults to the global vulcan_cfg module so the CLI and legacy
+        # callers (which pass nothing) are unchanged. make_config() users pass
+        # their own namespace, so every runtime knob read below comes from the
+        # same cfg the RunState was built with. The setup-side counterpart is
+        # state._cfg_overlay; together they make make_config() honored
+        # end-to-end. The import-locked network (module-level _NETWORK) is the
+        # one knob cfg cannot change here — state._build_pre_loop_runstate
+        # fails fast on a network mismatch.
+        self._cfg = cfg
+        self.mtol = float(self._cfg.mtol)
+        self.atol = float(self._cfg.atol)
         self.output = output
         self.odesolver = odesolver
         self.loss_criteria = 0.0005
@@ -1546,9 +1567,7 @@ class OuterLoop:
 
         # Atom ordering captured ONCE at init; dict↔array conversion relies on it.
         self._atom_order = [
-            a
-            for a in vulcan_cfg.atom_list
-            if a not in getattr(vulcan_cfg, "loss_ex", [])
+            a for a in self._cfg.atom_list if a not in getattr(self._cfg, "loss_ex", [])
         ]
 
         # compo_arr (ni, n_atoms): rows = species, cols = atom_order.
@@ -1572,8 +1591,8 @@ class OuterLoop:
             dtype=np.float64,
         )
 
-        self._non_gas_present = bool(vulcan_cfg.non_gas_sp)
-        self._zero_bot_row = bool(vulcan_cfg.use_botflux or vulcan_cfg.use_fix_sp_bot)
+        self._non_gas_present = bool(self._cfg.non_gas_sp)
+        self._zero_bot_row = bool(self._cfg.use_botflux or self._cfg.use_fix_sp_bot)
 
         # Lazy runner cache; populated on first call and reused thereafter.
         self._runner = None
@@ -1588,7 +1607,7 @@ class OuterLoop:
         self._conden_static = None
         self._live_ui = None
         # When use_condense=True, only gas columns get rebalanced after Ros2.
-        self._hydro_partial = bool(vulcan_cfg.use_condense)
+        self._hydro_partial = bool(self._cfg.use_condense)
 
     def reset(self) -> None:
         """Drop the cached JIT'd runner so the next call re-traces against
@@ -1614,7 +1633,7 @@ class OuterLoop:
         # conver_ignore: species names listed in vulcan_cfg.conver_ignore
         # that the longdy reduction at op.py:1049 zeroes out.
         conver_ignore_np = np.zeros(ni, dtype=bool)
-        for sp in getattr(vulcan_cfg, "conver_ignore", []):
+        for sp in getattr(self._cfg, "conver_ignore", []):
             if sp in _NETWORK.species_idx:
                 conver_ignore_np[_NETWORK.species_idx[sp]] = True
 
@@ -1622,15 +1641,15 @@ class OuterLoop:
         # non_gas_sp columns are zeroed in longdy. HD189 has non_gas_sp=[].
         nz = atm.Tco.shape[0]
         cond_zero_conv_np = np.zeros((nz, ni), dtype=bool)
-        if vulcan_cfg.use_condense:
-            for sp in vulcan_cfg.non_gas_sp:
+        if self._cfg.use_condense:
+            for sp in self._cfg.non_gas_sp:
                 if sp in _NETWORK.species_idx:
                     cond_zero_conv_np[:, _NETWORK.species_idx[sp]] = True
 
         # Ion charge balance + fix-all-bot. Both static masks are degenerate
         # (zeros) when their cfg flag is off; the body's Python
         # `if use_*_static:` skips them at trace time.
-        use_ion = bool(vulcan_cfg.use_ion)
+        use_ion = bool(self._cfg.use_ion)
         if use_ion:
             charge_list = list(getattr(var, "charge_list", []))
             charge_np = np.zeros(ni, dtype=np.float64)
@@ -1649,7 +1668,7 @@ class OuterLoop:
             charge_np = np.zeros(ni, dtype=np.float64)
             e_idx = 0
 
-        use_fix_all_bot = bool(getattr(vulcan_cfg, "use_fix_all_bot", False))
+        use_fix_all_bot = bool(getattr(self._cfg, "use_fix_all_bot", False))
         if use_fix_all_bot:
             # Pin bottom layer to chemical-EQ mixing ratios captured at
             # init time, scaled by static n_0[0] (op.py:3022, 3050-3051).
@@ -1657,7 +1676,7 @@ class OuterLoop:
         else:
             bottom_n_np = np.zeros(ni, dtype=np.float64)
 
-        fix_sp_bot_cfg = getattr(vulcan_cfg, "use_fix_sp_bot", {}) or {}
+        fix_sp_bot_cfg = getattr(self._cfg, "use_fix_sp_bot", {}) or {}
         use_fix_sp_bot = bool(fix_sp_bot_cfg)
         if use_fix_sp_bot:
             fix_sp_bot_idx = np.asarray(
@@ -1672,7 +1691,7 @@ class OuterLoop:
             fix_sp_bot_idx = np.zeros((0,), dtype=np.int32)
             fix_sp_bot_mix = np.zeros((0,), dtype=np.float64)
 
-        use_fix_H2He = bool(getattr(vulcan_cfg, "use_fix_H2He", False))
+        use_fix_H2He = bool(getattr(self._cfg, "use_fix_H2He", False))
         if use_fix_H2He:
             h2_idx = int(_NETWORK.species_idx["H2"])
             he_idx = int(_NETWORK.species_idx["He"])
@@ -1680,8 +1699,8 @@ class OuterLoop:
             h2_idx = -1
             he_idx = -1
 
-        fix_species_cfg = list(getattr(vulcan_cfg, "fix_species", []) or [])
-        use_fix_species = bool(vulcan_cfg.use_condense and fix_species_cfg)
+        fix_species_cfg = list(getattr(self._cfg, "fix_species", []) or [])
+        use_fix_species = bool(self._cfg.use_condense and fix_species_cfg)
         if use_fix_species:
             wholecol_species = {"H2O_l_s", "H2SO4_l", "NH3_l_s", "S8_l_s"}
             fix_species_idx = np.asarray(
@@ -1706,69 +1725,67 @@ class OuterLoop:
         return _Statics(
             compo_arr=jnp.asarray(self._compo_arr),
             atom_ini_arr=jnp.asarray(atom_ini_arr),
-            initial_rtol=float(vulcan_cfg.rtol),
-            loss_eps=float(vulcan_cfg.loss_eps),
-            pos_cut=float(vulcan_cfg.pos_cut),
-            nega_cut=float(vulcan_cfg.nega_cut),
+            initial_rtol=float(self._cfg.rtol),
+            loss_eps=float(self._cfg.loss_eps),
+            pos_cut=float(self._cfg.pos_cut),
+            nega_cut=float(self._cfg.nega_cut),
             mtol=float(self.mtol),
             atol=float(self.atol),
-            dt_var_min=float(vulcan_cfg.dt_var_min),
-            dt_var_max=float(vulcan_cfg.dt_var_max),
-            dt_min=float(vulcan_cfg.dt_min),
-            dt_max=float(vulcan_cfg.dt_max),
-            batch_max_retries=int(getattr(vulcan_cfg, "batch_max_retries", 64)),
-            conv_step=int(vulcan_cfg.conv_step),
-            count_min=int(vulcan_cfg.count_min),
-            count_max=int(vulcan_cfg.count_max),
-            conv_stall_window=int(getattr(vulcan_cfg, "conv_stall_window", 200)),
-            runtime=float(vulcan_cfg.runtime),
-            trun_min=float(vulcan_cfg.trun_min),
-            st_factor=float(vulcan_cfg.st_factor),
-            yconv_cri=float(vulcan_cfg.yconv_cri),
-            yconv_min=float(vulcan_cfg.yconv_min),
-            slope_cri=float(vulcan_cfg.slope_cri),
-            flux_cri=float(vulcan_cfg.flux_cri),
-            mtol_conv=float(vulcan_cfg.mtol_conv),
+            dt_var_min=float(self._cfg.dt_var_min),
+            dt_var_max=float(self._cfg.dt_var_max),
+            dt_min=float(self._cfg.dt_min),
+            dt_max=float(self._cfg.dt_max),
+            batch_max_retries=int(getattr(self._cfg, "batch_max_retries", 64)),
+            conv_step=int(self._cfg.conv_step),
+            count_min=int(self._cfg.count_min),
+            count_max=int(self._cfg.count_max),
+            conv_stall_window=int(getattr(self._cfg, "conv_stall_window", 200)),
+            runtime=float(self._cfg.runtime),
+            trun_min=float(self._cfg.trun_min),
+            st_factor=float(self._cfg.st_factor),
+            yconv_cri=float(self._cfg.yconv_cri),
+            yconv_min=float(self._cfg.yconv_min),
+            slope_cri=float(self._cfg.slope_cri),
+            flux_cri=float(self._cfg.flux_cri),
+            mtol_conv=float(self._cfg.mtol_conv),
             conver_ignore_mask=jnp.asarray(conver_ignore_np),
             condense_zero_conv_mask=jnp.asarray(cond_zero_conv_np),
             n_0=jnp.asarray(atm.n_0, dtype=jnp.float64),
             Kzz=jnp.asarray(atm.Kzz, dtype=jnp.float64),
-            use_photo=bool(vulcan_cfg.use_photo),
+            use_photo=bool(self._cfg.use_photo),
             use_atm_refresh=True,
-            use_conden=bool(vulcan_cfg.use_condense),
-            ini_update_photo_frq=int(getattr(vulcan_cfg, "ini_update_photo_frq", 1)),
-            final_update_photo_frq=int(
-                getattr(vulcan_cfg, "final_update_photo_frq", 1)
-            ),
-            update_frq=int(vulcan_cfg.update_frq),
-            use_adapt_rtol=bool(getattr(vulcan_cfg, "use_adapt_rtol", False)),
-            rtol_min=float(getattr(vulcan_cfg, "rtol_min", 0.0)),
-            rtol_max=float(getattr(vulcan_cfg, "rtol_max", 1.0)),
+            use_conden=bool(self._cfg.use_condense),
+            ini_update_photo_frq=int(getattr(self._cfg, "ini_update_photo_frq", 1)),
+            final_update_photo_frq=int(getattr(self._cfg, "final_update_photo_frq", 1)),
+            update_frq=int(self._cfg.update_frq),
+            use_adapt_rtol=bool(getattr(self._cfg, "use_adapt_rtol", False)),
+            rtol_min=float(getattr(self._cfg, "rtol_min", 0.0)),
+            rtol_max=float(getattr(self._cfg, "rtol_max", 1.0)),
             initial_loss_criteria=float(getattr(self, "loss_criteria", 0.0005)),
-            adapt_rtol_dec_period=int(getattr(vulcan_cfg, "adapt_rtol_dec_period", 10)),
+            adapt_rtol_dec_period=int(getattr(self._cfg, "adapt_rtol_dec_period", 10)),
             adapt_rtol_inc_period=int(
-                getattr(vulcan_cfg, "adapt_rtol_inc_period", 1000)
+                getattr(self._cfg, "adapt_rtol_inc_period", 1000)
             ),
-            adapt_rtol_dec=float(getattr(vulcan_cfg, "adapt_rtol_dec", 0.75)),
-            adapt_rtol_inc=float(getattr(vulcan_cfg, "adapt_rtol_inc", 1.25)),
-            adapt_rtol_loss_mul=float(getattr(vulcan_cfg, "adapt_rtol_loss_mul", 2.0)),
+            adapt_rtol_dec=float(getattr(self._cfg, "adapt_rtol_dec", 0.75)),
+            adapt_rtol_inc=float(getattr(self._cfg, "adapt_rtol_inc", 1.25)),
+            adapt_rtol_loss_mul=float(getattr(self._cfg, "adapt_rtol_loss_mul", 2.0)),
             adapt_rtol_inc_loss_thresh=float(
-                getattr(vulcan_cfg, "adapt_rtol_inc_loss_thresh", 2e-4)
+                getattr(self._cfg, "adapt_rtol_inc_loss_thresh", 2e-4)
             ),
             photo_switch_longdy_thresh=float(
                 getattr(
-                    vulcan_cfg,
+                    self._cfg,
                     "photo_switch_longdy_thresh",
-                    float(vulcan_cfg.yconv_min) * 10.0,
+                    float(self._cfg.yconv_min) * 10.0,
                 )
             ),
             photo_switch_longdydt_thresh=float(
-                getattr(vulcan_cfg, "photo_switch_longdydt_thresh", 1e-6)
+                getattr(self._cfg, "photo_switch_longdydt_thresh", 1e-6)
             ),
-            hycean_pin_time=float(getattr(vulcan_cfg, "hycean_pin_time", 1e6)),
-            step_size_safety=float(getattr(vulcan_cfg, "step_size_safety", 0.9)),
+            hycean_pin_time=float(getattr(self._cfg, "hycean_pin_time", 1e6)),
+            step_size_safety=float(getattr(self._cfg, "step_size_safety", 0.9)),
             step_size_zero_delta_frac=float(
-                getattr(vulcan_cfg, "step_size_zero_delta_frac", 0.01)
+                getattr(self._cfg, "step_size_zero_delta_frac", 0.01)
             ),
             use_ion=use_ion,
             e_idx=int(e_idx),
@@ -1783,25 +1800,25 @@ class OuterLoop:
             he_idx=he_idx,
             use_fix_species=use_fix_species,
             post_conden_rtol=float(
-                getattr(vulcan_cfg, "post_conden_rtol", vulcan_cfg.rtol)
+                getattr(self._cfg, "post_conden_rtol", self._cfg.rtol)
             ),
             fix_species_from_coldtrap_lev=bool(
-                getattr(vulcan_cfg, "fix_species_from_coldtrap_lev", False)
+                getattr(self._cfg, "fix_species_from_coldtrap_lev", False)
             ),
             fix_species_idx=jnp.asarray(fix_species_idx),
             fix_species_sat_mix=jnp.asarray(fix_species_sat_mix),
             fix_species_wholecol=jnp.asarray(fix_species_wholecol),
-            save_evolution=bool(getattr(vulcan_cfg, "save_evolution", False)),
-            save_evo_frq=int(getattr(vulcan_cfg, "save_evo_frq", 1)),
+            save_evolution=bool(getattr(self._cfg, "save_evolution", False)),
+            save_evo_frq=int(getattr(self._cfg, "save_evo_frq", 1)),
             save_evo_n_max=(
                 int(
                     np.ceil(
-                        int(vulcan_cfg.count_max)
-                        / max(int(getattr(vulcan_cfg, "save_evo_frq", 1)), 1)
+                        int(self._cfg.count_max)
+                        / max(int(getattr(self._cfg, "save_evo_frq", 1)), 1)
                     )
                 )
                 + 1
-                if bool(getattr(vulcan_cfg, "save_evolution", False))
+                if bool(getattr(self._cfg, "save_evolution", False))
                 else 1
             ),
         )
@@ -1826,8 +1843,8 @@ class OuterLoop:
         # Only fires when `use_condense=True` (via condense_sp + non_gas_sp);
         # default HD189 has both empty so the mask is all False.
         cond_mask_np = np.zeros((nz, ni), dtype=bool)
-        if vulcan_cfg.use_condense:
-            for sp in vulcan_cfg.condense_sp + vulcan_cfg.non_gas_sp:
+        if self._cfg.use_condense:
+            for sp in self._cfg.condense_sp + self._cfg.non_gas_sp:
                 if sp in _NETWORK.species_idx:
                     cond_mask_np[:, _NETWORK.species_idx[sp]] = True
 
@@ -1843,8 +1860,8 @@ class OuterLoop:
             self._zero_bot_row,
             jnp.asarray(cond_mask_np),
             self._hydro_partial,
-            float(getattr(vulcan_cfg, "start_conden_time", 0.0)),
-            float(getattr(vulcan_cfg, "stop_conden_time", 0.0)),
+            float(getattr(self._cfg, "start_conden_time", 0.0)),
+            float(getattr(self._cfg, "stop_conden_time", 0.0)),
             photo_static=self._photo_static,
             refresh_static=self._refresh_static,
             conden_static=self._conden_static,
@@ -1858,7 +1875,7 @@ class OuterLoop:
         odesolver when available (those got populated by the pre-loop
         `solver.compute_tau` call in `vulcan_jax.py`).
         """
-        if not vulcan_cfg.use_photo:
+        if not self._cfg.use_photo:
             return None
 
         # Derive everything from the dense `PhotoStaticInputs` pytree. If the
@@ -1881,7 +1898,7 @@ class OuterLoop:
             photo_J_data = _photo_mod.photo_J_data_from_static(photo_static)
             odesolver._photo_J_data = photo_J_data
         photo_ion_data = getattr(odesolver, "_photo_ion_data", None)
-        if vulcan_cfg.use_ion:
+        if self._cfg.use_ion:
             if photo_ion_data is None:
                 photo_ion_data = _photo_mod.photo_ion_data_from_static(photo_static)
                 odesolver._photo_ion_data = photo_ion_data
@@ -1889,11 +1906,11 @@ class OuterLoop:
             photo_ion_data = None
 
         (branch_re_idx, branch_active, branch_T_re_idx, branch_T_active) = (
-            _photo_mod.pack_J_to_k_index_map(photo_J_data, var, vulcan_cfg)
+            _photo_mod.pack_J_to_k_index_map(photo_J_data, var, self._cfg)
         )
         if photo_ion_data is not None:
             ion_branch_re_idx, ion_branch_active = _photo_mod.pack_Jion_to_k_index_map(
-                photo_ion_data, var, vulcan_cfg
+                photo_ion_data, var, self._cfg
             )
             cross_Jion = photo_ion_data.cross_J
         else:
@@ -1926,12 +1943,12 @@ class OuterLoop:
             din12_indx=din12_indx,
             dbin1=dbin1,
             dbin2=dbin2,
-            mu_zenith=float(np.cos(vulcan_cfg.sl_angle)),
-            edd=float(vulcan_cfg.edd),
+            mu_zenith=float(np.cos(self._cfg.sl_angle)),
+            edd=float(self._cfg.edd),
             ag0=ag0,
             hc=float(_phy_const.hc),
-            f_diurnal=float(vulcan_cfg.f_diurnal),
-            flux_atol=float(vulcan_cfg.flux_atol),
+            f_diurnal=float(self._cfg.f_diurnal),
+            flux_atol=float(self._cfg.flux_atol),
             ag0_is_zero=(ag0 == 0.0),
         )
 
@@ -1952,7 +1969,7 @@ class OuterLoop:
             dtype=np.float64,
         )
         diff_esc_idx = np.array(
-            [species.index(sp) for sp in vulcan_cfg.diff_esc],
+            [species.index(sp) for sp in self._cfg.diff_esc],
             dtype=np.int32,
         )
         return _atm_refresh_mod.AtmRefreshStatic(
@@ -1965,10 +1982,10 @@ class OuterLoop:
             pref_indx=int(atm.pref_indx),
             zco_pref=float(atm.zco[atm.pref_indx]),
             gs=float(atm.gs),
-            Rp=float(vulcan_cfg.Rp),
+            Rp=float(self._cfg.Rp),
             kb=float(_phy_const.kb),
             Navo=float(_phy_const.Navo),
-            max_flux=float(vulcan_cfg.max_flux),
+            max_flux=float(self._cfg.max_flux),
             nz=int(nz),
             ni=int(ni),
         )
@@ -1992,7 +2009,7 @@ class OuterLoop:
         is degenerate and `apply_h2o_relax_jax` / `apply_nh3_relax_jax`
         short-circuit at trace time via the `*_active` Python bool.
         """
-        if not vulcan_cfg.use_condense:
+        if not self._cfg.use_condense:
             return None
 
         species_idx = _NETWORK.species_idx
@@ -2024,13 +2041,13 @@ class OuterLoop:
         }
 
         # Walk var.conden_re_list and pack one row per reaction.
-        relax_set = set(getattr(vulcan_cfg, "use_relax", []) or [])
+        relax_set = set(getattr(self._cfg, "use_relax", []) or [])
         conden_re_idx_list, conden_sp_idx_list = [], []
         Dg_rows, sat_n_rows, coeff_list = [], [], []
         for re in var.conden_re_list:
             rf = var.Rf[re]  # 'H2O -> H2O_l_s', etc.
             gas_sp = rf.split(" -> ")[0].strip()
-            if gas_sp not in vulcan_cfg.condense_sp:
+            if gas_sp not in self._cfg.condense_sp:
                 # Reaction is in the network but not active in this run.
                 # Match op.conden's behavior: leaves k untouched (=0).
                 continue
@@ -2059,7 +2076,7 @@ class OuterLoop:
                 / np.asarray(atm.Tco, dtype=np.float64)
             )
             if gas_sp == "H2O":
-                sat_n = sat_n * float(vulcan_cfg.humidity)
+                sat_n = sat_n * float(self._cfg.humidity)
             conden_re_idx_list.append(int(re))
             conden_sp_idx_list.append(int(sp_idx))
             Dg_rows.append(Dg)
@@ -2096,7 +2113,7 @@ class OuterLoop:
                 np.asarray(atm.sat_p["H2O"], dtype=np.float64)
                 / kb
                 / np.asarray(atm.Tco, dtype=np.float64)
-                * float(vulcan_cfg.humidity)
+                * float(self._cfg.humidity)
             )
         else:
             sp_h2o = sp_h2o_l_s = 0
@@ -2228,8 +2245,8 @@ class OuterLoop:
         """
         nz = int(rs.atm.Tco.shape[0])
         ni = _NETWORK.ni
-        conv_step = int(vulcan_cfg.conv_step)
-        ini_frq = int(getattr(vulcan_cfg, "ini_update_photo_frq", 1))
+        conv_step = int(self._cfg.conv_step)
+        ini_frq = int(getattr(self._cfg, "ini_update_photo_frq", 1))
         return dict(
             y_time_ring=jnp.zeros((conv_step, nz, ni), dtype=jnp.float64),
             t_time_ring=jnp.zeros((conv_step,), dtype=jnp.float64),
@@ -2241,7 +2258,7 @@ class OuterLoop:
             ),
             longdy_seen_min=jnp.float64(jnp.inf),
             count_since_new_min=jnp.int32(0),
-            rtol=jnp.float64(float(vulcan_cfg.rtol)),
+            rtol=jnp.float64(float(self._cfg.rtol)),
             loss_criteria=jnp.float64(float(getattr(self, "loss_criteria", 0.0005))),
             update_photo_frq=jnp.int32(ini_frq),
             is_final_photo_frq=jnp.bool_(False),
@@ -2501,7 +2518,7 @@ class OuterLoop:
             photo_runtime_out = None
 
         nz = int(rs_entry.atm.Tco.shape[0])
-        fix_species_cfg = list(getattr(vulcan_cfg, "fix_species", []) or [])
+        fix_species_cfg = list(getattr(self._cfg, "fix_species", []) or [])
         if fix_species_cfg:
             fix_y_full = np.asarray(state.fix_y, dtype=np.float64)
             fix_y_per_sp = np.zeros((len(fix_species_cfg), nz), dtype=np.float64)
@@ -2552,15 +2569,15 @@ class OuterLoop:
         # vulcan_cfg.use_fix_sp_bot post-run sees the pinned values.
         if self._statics.use_fix_H2He and bool(state.h2he_pinned):
             h2he_mix_arr = np.asarray(state.h2he_mix, dtype=np.float64)
-            existing = dict(getattr(vulcan_cfg, "use_fix_sp_bot", {}) or {})
+            existing = dict(getattr(self._cfg, "use_fix_sp_bot", {}) or {})
             existing.setdefault("H2", float(h2he_mix_arr[0]))
             existing.setdefault("He", float(h2he_mix_arr[1]))
-            vulcan_cfg.use_fix_sp_bot = existing
+            self._cfg.use_fix_sp_bot = existing
 
         # rtol may have moved adaptively inside the runner; reflect it in
         # the global cfg for parity with op.Integration.__call__.
         if self._statics.use_adapt_rtol:
-            vulcan_cfg.rtol = float(state.rtol)
+            self._cfg.rtol = float(state.rtol)
 
         # Rebuild var.y_time / var.t_time chronologically from the ring
         # buffer (most recent min(accept_count, conv_step) entries).
@@ -2687,8 +2704,7 @@ class OuterLoop:
     # -----------------------------------------------------------------
     # f_dy — inlined from op.Integration.f_dy (op.py:1003-1015)
     # -----------------------------------------------------------------
-    @staticmethod
-    def _f_dy(var, para):
+    def _f_dy(self, var, para):
         """Compute dy / dydt diagnostics from var.y vs var.y_prev.
 
         Inlined from `op.Integration.f_dy` — no JAX, just NumPy reductions
@@ -2700,8 +2716,8 @@ class OuterLoop:
             return var
         y, ymix, y_prev = var.y, var.ymix, var.y_prev
         dy = np.abs(y - y_prev)
-        dy[ymix < vulcan_cfg.mtol] = 0
-        dy[y < vulcan_cfg.atol] = 0
+        dy[ymix < self._cfg.mtol] = 0
+        dy[y < self._cfg.atol] = 0
         pos = y > 0
         if np.any(pos):
             dy_val = float(np.amax(dy[pos] / y[pos]))
@@ -2735,17 +2751,17 @@ class OuterLoop:
         """
         from .live_ui import any_live_flag_on, LiveUI
 
-        live_on = any_live_flag_on(vulcan_cfg)
+        live_on = any_live_flag_on(self._cfg)
         if live_on:
-            chunk_size = max(int(getattr(vulcan_cfg, "live_plot_frq", 10)), 1)
+            chunk_size = max(int(getattr(self._cfg, "live_plot_frq", 10)), 1)
             if self._live_ui is None:
                 self._live_ui = LiveUI()
         else:
-            chunk_size = max(int(getattr(vulcan_cfg, "print_prog_num", 100)), 1)
+            chunk_size = max(int(getattr(self._cfg, "print_prog_num", 100)), 1)
         count_max_static = int(self._statics.count_max)
         runtime_static = float(self._statics.runtime)
-        use_print_prog = bool(getattr(vulcan_cfg, "use_print_prog", False))
-        wall_clock_max = getattr(vulcan_cfg, "wall_clock_max", None)
+        use_print_prog = bool(getattr(self._cfg, "use_print_prog", False))
+        wall_clock_max = getattr(self._cfg, "wall_clock_max", None)
         wall_clock_max = (
             float(wall_clock_max)
             if wall_clock_max is not None and float(wall_clock_max) > 0
@@ -2839,7 +2855,7 @@ class OuterLoop:
         final state.
         """
         del make_atm  # captured into _refresh_static at OuterLoop init
-        validate_runtime_config(vulcan_cfg)
+        validate_runtime_config(self._cfg)
         self.loss_criteria = 0.0005
 
         # Build the JAX runner on first entry — cached for the run.
@@ -2847,7 +2863,7 @@ class OuterLoop:
         ni = _NETWORK.ni
         nz = atm.Tco.shape[0]
 
-        atm_static = make_atm_static(atm, ni, nz)
+        atm_static = make_atm_static(atm, ni, nz, cfg=self._cfg)
         init_state = self._pack_state(var, para, atm)
 
         # Chunked execution is opt-in via the explicit `use_chunked_runner`
@@ -2857,10 +2873,10 @@ class OuterLoop:
         # chunks). Off (default), the runner is single-shot.
         from .live_ui import any_live_flag_on
 
-        wall_clock_max = getattr(vulcan_cfg, "wall_clock_max", None)
+        wall_clock_max = getattr(self._cfg, "wall_clock_max", None)
         use_chunked = (
-            bool(getattr(vulcan_cfg, "use_chunked_runner", False))
-            or any_live_flag_on(vulcan_cfg)
+            bool(getattr(self._cfg, "use_chunked_runner", False))
+            or any_live_flag_on(self._cfg)
             or (wall_clock_max is not None and float(wall_clock_max) > 0)
         )
 
@@ -2885,16 +2901,16 @@ class OuterLoop:
         # not actually terminated — only the host bailed out.
         if wall_clock_hit:
             para.end_case = 4
-        elif para.count > vulcan_cfg.count_max:
+        elif para.count > self._cfg.count_max:
             print(
                 "Integration not completed...\nMaximal allowed steps "
-                f"exceeded ({vulcan_cfg.count_max})!"
+                f"exceeded ({self._cfg.count_max})!"
             )
             para.end_case = 3
-        elif var.t > vulcan_cfg.runtime:
+        elif var.t > self._cfg.runtime:
             print(
                 "Integration not completed...\nMaximal allowed runtime "
-                f"exceeded ({vulcan_cfg.runtime} sec)!"
+                f"exceeded ({self._cfg.runtime} sec)!"
             )
             para.end_case = 2
         else:
@@ -2905,7 +2921,7 @@ class OuterLoop:
             )
             para.end_case = 1
 
-        if vulcan_cfg.use_print_prog:
+        if self._cfg.use_print_prog:
             # `print_prog` reads `para.where_varies_most`, which the
             # legacy `op.conv` populated but we don't (the in-runner
             # conv reduces directly to scalar longdy). Set a sentinel
@@ -2937,7 +2953,7 @@ class OuterLoop:
         `make_atm_static`. The legacy positional args are accepted for
         back-compat with the `integ(rs, var, atm, para)` signature.
         """
-        validate_runtime_config(vulcan_cfg)
+        validate_runtime_config(self._cfg)
         self.loss_criteria = 0.0005
 
         # When called as `integ(rs)`, derive a legacy-shaped shim from the
@@ -2964,15 +2980,15 @@ class OuterLoop:
         ni = _NETWORK.ni
         nz = int(rs.atm.Tco.shape[0])
 
-        atm_static = make_atm_static(atm, ni, nz)
+        atm_static = make_atm_static(atm, ni, nz, cfg=self._cfg)
         init_state = self._pack_state_from_runstate(rs)
 
         from .live_ui import any_live_flag_on
 
-        wall_clock_max = getattr(vulcan_cfg, "wall_clock_max", None)
+        wall_clock_max = getattr(self._cfg, "wall_clock_max", None)
         use_chunked = (
-            bool(getattr(vulcan_cfg, "use_chunked_runner", False))
-            or any_live_flag_on(vulcan_cfg)
+            bool(getattr(self._cfg, "use_chunked_runner", False))
+            or any_live_flag_on(self._cfg)
             or (wall_clock_max is not None and float(wall_clock_max) > 0)
         )
         wall_clock_hit = False
@@ -3006,20 +3022,20 @@ class OuterLoop:
         else:
             end_case = (
                 3
-                if count > vulcan_cfg.count_max
+                if count > self._cfg.count_max
                 else 2
-                if t_now > vulcan_cfg.runtime
+                if t_now > self._cfg.runtime
                 else 1
             )
         if end_case == 3:
             print(
                 "Integration not completed...\nMaximal allowed steps "
-                f"exceeded ({vulcan_cfg.count_max})!"
+                f"exceeded ({self._cfg.count_max})!"
             )
         elif end_case == 2:
             print(
                 "Integration not completed...\nMaximal allowed runtime "
-                f"exceeded ({vulcan_cfg.runtime} sec)!"
+                f"exceeded ({self._cfg.runtime} sec)!"
             )
         elif end_case != 4:
             print(
@@ -3041,7 +3057,7 @@ class OuterLoop:
         )
         para_shim.end_case = end_case
 
-        if vulcan_cfg.use_print_prog:
+        if self._cfg.use_print_prog:
             if (
                 not hasattr(para_shim, "where_varies_most")
                 or para_shim.where_varies_most is None
@@ -3067,7 +3083,7 @@ class OuterLoop:
         the emulator buckets accordingly. This mirrors the setup `_call_runstate`
         does up to (but not including) the runner call.
         """
-        validate_runtime_config(vulcan_cfg)
+        validate_runtime_config(self._cfg)
         self.loss_criteria = 0.0005
         var, atm, _ = _state_mod.legacy_view(rs)
         if (
@@ -3078,7 +3094,7 @@ class OuterLoop:
         self._ensure_runner(var, atm)
         ni = _NETWORK.ni
         nz = int(rs.atm.Tco.shape[0])
-        atm_static = make_atm_static(atm, ni, nz)
+        atm_static = make_atm_static(atm, ni, nz, cfg=self._cfg)
         init_state = self._pack_state_from_runstate(rs)
         return init_state, atm_static
 
