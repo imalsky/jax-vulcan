@@ -47,8 +47,24 @@ _CANONICAL_FASTCHEM_ABUNDANCES = {
 # never forms — silent, no crash. `tests/test_fastchem_element_order.py` parses
 # the C++ and asserts this list still matches the hard-coded indices.
 _FASTCHEM_ELEMENT_ORDER = [
-    "C", "H", "He", "N", "O", "P", "S", "Si", "Ti", "V",
-    "Cl", "K", "Na", "Mg", "F", "Ca", "Fe", "e-",
+    "C",
+    "H",
+    "He",
+    "N",
+    "O",
+    "P",
+    "S",
+    "Si",
+    "Ti",
+    "V",
+    "Cl",
+    "K",
+    "Na",
+    "Mg",
+    "F",
+    "Ca",
+    "Fe",
+    "e-",
 ]
 
 

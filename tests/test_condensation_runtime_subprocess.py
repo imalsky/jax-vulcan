@@ -41,7 +41,7 @@ CONDEN_NETWORK = "thermo/SNCHO_photo_network_2025.txt"
 
 # The child sets $VULCAN_JAX_NETWORK and imports vulcan_jax for the first time
 # inside this process, so the condensate network is the import-locked one.
-_CHILD = r'''
+_CHILD = r"""
 import os, sys, time, warnings
 warnings.filterwarnings("ignore")
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
@@ -122,7 +122,7 @@ assert cond_total > 0.0, f"no H2O condensate formed (total={cond_total:.3e})"
 print(f"CONDEN_OK t={float(rs_out.step.t):.2e} count={int(rs_out.params.count)} "
       f"H2O_l_s_total={cond_total:.3e} ({time.time()-t0:.1f}s)")
 print("PASS")
-'''
+"""
 
 
 def test_condensation_runtime_subprocess():
@@ -131,7 +131,11 @@ def test_condensation_runtime_subprocess():
     if not (PACKAGE_ROOT / CONDEN_NETWORK).exists():
         pytest.skip(f"condensate network {CONDEN_NETWORK!r} not vendored")
 
-    env = {**os.environ, "JAX_PLATFORM_NAME": "cpu", "VULCAN_JAX_NETWORK": CONDEN_NETWORK}
+    env = {
+        **os.environ,
+        "JAX_PLATFORM_NAME": "cpu",
+        "VULCAN_JAX_NETWORK": CONDEN_NETWORK,
+    }
     res = subprocess.run(
         [sys.executable, "-c", _CHILD, str(ROOT)],
         capture_output=True,

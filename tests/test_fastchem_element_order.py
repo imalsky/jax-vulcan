@@ -36,9 +36,24 @@ VULCAN_MASTER = ROOT.parent / "VULCAN-master"
 
 # C++ symbol token -> element symbol (Km is potassium; e is the electron).
 _CPP_NAME_TO_ELEMENT = {
-    "C": "C", "H": "H", "He": "He", "N": "N", "O": "O", "P": "P", "S": "S",
-    "Si": "Si", "Ti": "Ti", "V": "V", "Cl": "Cl", "Km": "K", "Na": "Na",
-    "Mg": "Mg", "F": "F", "Ca": "Ca", "Fe": "Fe", "e": "e-",
+    "C": "C",
+    "H": "H",
+    "He": "He",
+    "N": "N",
+    "O": "O",
+    "P": "P",
+    "S": "S",
+    "Si": "Si",
+    "Ti": "Ti",
+    "V": "V",
+    "Cl": "Cl",
+    "Km": "K",
+    "Na": "Na",
+    "Mg": "Mg",
+    "F": "F",
+    "Ca": "Ca",
+    "Fe": "Fe",
+    "e": "e-",
 }
 
 
@@ -80,10 +95,14 @@ def _parse_abundance_order(path: Path) -> list[str]:
     "repo_root",
     [
         pytest.param(PACKAGE_ROOT, id="jax"),
-        pytest.param(VULCAN_MASTER, id="master",
-                     marks=pytest.mark.skipif(
-                         not (VULCAN_MASTER / "fastchem_vulcan").is_dir(),
-                         reason="VULCAN-master sibling absent")),
+        pytest.param(
+            VULCAN_MASTER,
+            id="master",
+            marks=pytest.mark.skipif(
+                not (VULCAN_MASTER / "fastchem_vulcan").is_dir(),
+                reason="VULCAN-master sibling absent",
+            ),
+        ),
     ],
 )
 def test_cpp_indices_match_canonical_order(repo_root: Path):
@@ -105,10 +124,14 @@ def test_cpp_indices_match_canonical_order(repo_root: Path):
     "repo_root",
     [
         pytest.param(PACKAGE_ROOT, id="jax"),
-        pytest.param(VULCAN_MASTER, id="master",
-                     marks=pytest.mark.skipif(
-                         not (VULCAN_MASTER / "fastchem_vulcan").is_dir(),
-                         reason="VULCAN-master sibling absent")),
+        pytest.param(
+            VULCAN_MASTER,
+            id="master",
+            marks=pytest.mark.skipif(
+                not (VULCAN_MASTER / "fastchem_vulcan").is_dir(),
+                reason="VULCAN-master sibling absent",
+            ),
+        ),
     ],
 )
 @pytest.mark.parametrize(
@@ -136,10 +159,26 @@ def test_abundance_file_matches_canonical_order(repo_root: Path, fname: str):
 # --------------------------------------------------------------------------- #
 def test_validator_rejects_reordered_abundance_file(tmp_path: Path):
     # H-first order with otherwise-canonical values (the exact regression).
-    rows = ["H 12.00", "He 10.9232", "C 8.4434", "N 7.9130", "O 8.7826",
-            "S 7.1492", "P -3.0", "Si -3.0", "Ti -3.0", "V -3.0", "Cl -3.0",
-            "K -3.0", "Na -3.0", "Mg -3.0", "F -3.0", "Ca -3.0", "Fe -3.0",
-            "e- 0"]
+    rows = [
+        "H 12.00",
+        "He 10.9232",
+        "C 8.4434",
+        "N 7.9130",
+        "O 8.7826",
+        "S 7.1492",
+        "P -3.0",
+        "Si -3.0",
+        "Ti -3.0",
+        "V -3.0",
+        "Cl -3.0",
+        "K -3.0",
+        "Na -3.0",
+        "Mg -3.0",
+        "F -3.0",
+        "Ca -3.0",
+        "Fe -3.0",
+        "e- 0",
+    ]
     rel = "fastchem_vulcan/input/solar_element_abundances.dat"
     (tmp_path / "fastchem_vulcan" / "input").mkdir(parents=True)
     (tmp_path / rel).write_text("# header\n" + "\n".join(rows) + "\n")
@@ -152,11 +191,29 @@ def test_validator_rejects_reordered_abundance_file(tmp_path: Path):
 
     # And ACCEPT the canonical order (values + order both correct).
     good = "\n".join(
-        f"{s} {v}" for s, v in zip(
+        f"{s} {v}"
+        for s, v in zip(
             _FASTCHEM_ELEMENT_ORDER,
-            ["8.4434", "12.00", "10.9232", "7.9130", "8.7826", "-3.0", "7.1492",
-             "-3.0", "-3.0", "-3.0", "-3.0", "-3.0", "-3.0", "-3.0", "-3.0",
-             "-3.0", "-3.0", "0"],
+            [
+                "8.4434",
+                "12.00",
+                "10.9232",
+                "7.9130",
+                "8.7826",
+                "-3.0",
+                "7.1492",
+                "-3.0",
+                "-3.0",
+                "-3.0",
+                "-3.0",
+                "-3.0",
+                "-3.0",
+                "-3.0",
+                "-3.0",
+                "-3.0",
+                "-3.0",
+                "0",
+            ],
         )
     )
     (tmp_path / rel).write_text("# header\n" + good + "\n")
@@ -196,7 +253,10 @@ def test_fastchem_eq_forms_co_not_atomic_carbon(tmp_path: Path):
 
     res = subprocess.run(
         ["./fastchem", "input/config.input"],
-        cwd=str(tree), capture_output=True, text=True, timeout=120,
+        cwd=str(tree),
+        capture_output=True,
+        text=True,
+        timeout=120,
     )
     if res.returncode != 0:
         pytest.skip(f"FastChem binary did not run here: {res.stderr[-400:]}")

@@ -59,9 +59,7 @@ def _pin_cfg():
 def _build_rs(vulcan_cfg, *, skip_chem_warmup=False):
     from vulcan_jax.state import RunState
 
-    return RunState.with_pre_loop_setup(
-        vulcan_cfg, skip_chem_warmup=skip_chem_warmup
-    )
+    return RunState.with_pre_loop_setup(vulcan_cfg, skip_chem_warmup=skip_chem_warmup)
 
 
 def _rate_fields(rs) -> dict:
