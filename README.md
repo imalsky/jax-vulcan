@@ -367,6 +367,8 @@ python -m pytest tests/ -k "ros2 or block_thomas"
 python tools/audit_master_parity.py --master ../VULCAN-master
 ```
 
+The suite imports the *installed* `vulcan_jax` (src layout), so development requires an **editable** install (`pip install -e .`). A non-editable install (e.g. `pip install .` from a release) would shadow the checkout and silently test stale code; `tests/conftest.py` fails collection with a clear message if `import vulcan_jax` resolves outside the repo's `src/`.
+
 Master-comparison tests (those comparing against `../VULCAN-master/`) require the sibling checkout and skip cleanly when it's absent. These tests run master imports in isolated subprocesses.
 
 The Earth example config (`cfg_examples/vulcan_cfg_Earth.py`) ships but is not covered by the setup/oracle tests. It lists Ar (and other inert background gases) in `atom_list` / `const_mix`, but Ar is chemically inert and is therefore not a species in any reaction network, so `ini_abun`'s `const_mix` initializer raises `'Ar' is not in list`. Running it needs the `const_mix` path to handle inert atoms that have no network species (an open item); until then the config is provided as a starting point, not a tested path.

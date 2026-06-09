@@ -43,6 +43,30 @@ os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
 
+def _assert_testing_repo_checkout() -> None:
+    """Fail collection loudly if `import vulcan_jax` resolves outside this repo.
+
+    The package uses a src layout, so the suite imports the *installed*
+    `vulcan_jax`. A non-editable install (e.g. `pip install .` from a release)
+    shadows the checkout and the suite silently tests stale code — branch
+    changes appear to fail (or pass) for reasons unrelated to the working tree.
+    """
+    import vulcan_jax
+
+    pkg_path = Path(vulcan_jax.__file__).resolve()
+    expected = (ROOT / "src" / "vulcan_jax").resolve()
+    if not pkg_path.is_relative_to(expected):
+        raise pytest.UsageError(
+            f"`import vulcan_jax` resolves to {pkg_path}, not this checkout "
+            f"({expected}). You are testing a stale installed copy, not the "
+            "working tree. Fix with an editable install:\n"
+            "    pip install -e . --no-deps"
+        )
+
+
+_assert_testing_repo_checkout()
+
+
 @pytest.fixture(scope="session")
 def vulcan_master_op():
     """Import VULCAN-master's `op` for oracle-comparison tests.
