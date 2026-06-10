@@ -345,6 +345,26 @@ they are hardware- and version-dependent, so re-run the benchmark on your machin
 
 Speedup comes from: analytical Jacobian (95 ms -> 2.6 ms), diagonal-aware block-Thomas (O(ni^3) -> O(ni^2)), JIT compilation of the full loop, and pre-baked y-independent diffusion terms.
 
+### Where the per-step time actually goes
+
+Profiling master's Ros2 step *by operation* (single-threaded CPU, HD189) shows
+the cost is dominated by genuine numerical kernels, not Python overhead. The
+relative shares below are host-robust even though absolute ms are not:
+
+| Operation | Master share | vs VULCAN-JAX | Why |
+|---|---:|---:|---|
+| **Linear solve** | **~50% of the step** | **~5x cheaper** | master calls `solve_banded` **twice** per step (two LU factorizations of the *same* matrix) and the band stores the species-diagonal off-blocks as if dense; block-Thomas factorizes once, reuses it for both Ros2 stages, and skips those zeros |
+| Chemistry Jacobian | ~16% | ~6x cheaper | analytical (stoichiometry-driven) vs master's symbolic Jacobian |
+| Transport + chemistry RHS | ~18% | ~30-60x cheaper | per-network codegen, XLA-fused, `y`-independent gravity pre-baked out |
+| Banded repack into SciPy storage | ~7% | eliminated | the block-Thomas path never repacks into band storage |
+| Python dispatch / glue / temporaries | ~3% | folded into one XLA program | master is already well-vectorized |
+
+The headline correction to the usual "JAX removes Python overhead" story: Python
+interpreter overhead is only ~3% here. Master's time is real kernel work, and the
+**linear solve is the single biggest cost (~half the step)** -- so the
+structure-aware, single-factorization block-Thomas is the dominant lever, with the
+analytical Jacobian, fused RHS, and the eliminated banded repack stacking on top.
+
 ```bash
 python benchmarks/bench_step.py   # run on your hardware
 ```
