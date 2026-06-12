@@ -266,7 +266,8 @@ on the SNCHO network. The `jacrev` form is kept as a test oracle.
 - `chem_rhs_per_layer_segment_sum(y, M, k, net)` — segment-sum reference RHS at one layer. Test oracle and vmap-consistency basis. **Not on the production hot path** (codegen-RHS replaced it for master-bit-faithful term ordering).
 - `chem_rhs_segment_sum` — `vmap` over layers of the per-layer reference (in_axes `(0, 0, 1, None)`).
 - `chem_jac_per_layer`, `chem_jac` — `jacrev`-based reference Jacobian. Test oracle only.
-- `chem_jac_analytical_per_layer(y, M, k, net)` — stoichiometry-driven analytical Jacobian for one layer. Builds `J[i,j] = Σ_r sign_i · stoich_i · ∂rate[r]/∂y_j` directly from `NetworkArrays`. **Production hot path.**
+- `_JAC_CHUNK_REACTIONS = 128` — reaction-axis chunk size for the analytical-Jacobian scatter; bounds the per-layer transient that grows linearly with vmap batch width (the batch-512 GPU OOM driver). A code constant, not a config knob: changing it permutes float summation order.
+- `chem_jac_analytical_per_layer(y, M, k, net)` — stoichiometry-driven analytical Jacobian for one layer. Builds `J[i,j] = Σ_r sign_i · stoich_i · ∂rate[r]/∂y_j` directly from `NetworkArrays`; the scatter runs as a `lax.scan` over `_JAC_CHUNK_REACTIONS`-sized reaction chunks (`unroll=1`) into a carried `(ni+1)²` accumulator. **Production hot path.**
 - `chem_jac_analytical` — `vmap` over layers of the analytical Jacobian.
 - `chem_rhs_numpy(y, M, k, net)` — NumPy reference RHS in master-faithful term order; used at `rtol=1e-13` in `tests/test_chem_rhs_codegen.py`.
 
@@ -304,9 +305,12 @@ Single-JIT outer integration loop. Runs the full integration inside one
 **[Δ master]** Master polls termination in Python (`while not stop():
 one_step()`). JAX folds termination, accept/reject retries, photo-frequency
 switching, adaptive rtol, ring-buffered convergence detection, atmosphere
-refresh, condensation, ion charge balance, and the `fix_all_bot` /
+refresh, condensation, ion charge balance (with master's electron-row
+freeze inside both Ros2 stages when `use_ion`), and the `fix_all_bot` /
 `fix_H2He` clamps into one device-side `lax.while_loop` body. The host
-sees one `integ(rs)` call. A `use_chunked_runner=True` mode exists for
+sees one `integ(rs)` call. A batched variant (`run_batch`) vmaps the same
+body across profiles with freeze-on-done lanes; per-profile constants ride
+the `ProfileVars` slot of the carry instead of the closures. A `use_chunked_runner=True` mode exists for
 live-UI cadence — it runs the same JIT'd body in `live_plot_frq`-sized
 chunks so the host can dispatch `print_prog` / live plots between chunks.
 
@@ -319,13 +323,15 @@ Module-level helpers:
 - `_make_aggregate_delta_fn(mtol, atol, zero_bot_row, condense_zero_mask)` — closure for the truncation-error aggregator (max relative `delta`).
 - `_make_photo_branch(photo_static)` / `_make_atm_refresh_branch(refresh_static)` / `_make_conden_branch(conden_static)` — module-level factories returning the photo / atm-refresh / condensation sub-graph closures. These are **not** methods on `OuterLoop`; they're closed over by `_make_runner` and bound into the runner's body.
 - `_make_runner(net, statics, …)` — assemble the full `lax.while_loop` body (cond + body, accept/reject retries, photo/conden/atm-refresh gating). Returns the JIT-able `runner(state, atm_static)` callable. The integration's hot path lives here.
-- `JaxIntegState` — runner carry pytree (~80 slots: y, t, dt, counts, longdy ring buffer, photo carry, atm carry, conden carry, atom-loss history, …).
+- `ProfileVars` — per-profile constants threaded through the carry so `jax.vmap` batches them per lane (n_0, Kzz, atom_ini, atm-refresh fields, conden diffusion/saturation arrays, the NH3 cold-trap index `c_nh3_conden_top`, and the two T-P-dependent photo statics `p_absp_T_cross` / `p_cross_J_T`).
+- `stack_integ_states(states)` / `stack_atm_statics(atms)` / `unstack_integ_states(batched, n)` — build/split the leading batch axis for `run_batch`.
+- `JaxIntegState` — runner carry pytree (~80 slots: y, t, dt, counts, longdy ring buffer, photo carry, atm carry, conden carry, atom-loss history, `pv: ProfileVars`, …).
 - `_PhotoStatic` — photo sub-graph's frozen NamedTuple (cross sections, branch maps, sflux, scattering tables).
 - `_Statics` — umbrella container for the three sub-graph statics (`photo`, `atm_refresh`, `conden`) plus the global atm-static.
 
 Public class:
 - `OuterLoop` — main driver class; constructed once, called per run.
-  - `__init__(odesolver, output)` — store the photo wrapper and the `.vul` writer; set `loss_criteria` default.
+  - `__init__(odesolver, output, cfg=vulcan_cfg)` — store the photo wrapper, the `.vul` writer, and the per-instance cfg (`make_config()` users pass their own namespace); set `loss_criteria` default.
   - `reset()` — clear the cached statics + runner (call when switching configs in the same process).
   - `__call__(*args)` — polymorphic entry: if first arg is a `RunState`, dispatch to `_call_runstate`; else fall back to the legacy `(var, atm, para, make_atm)` quadruple. Both paths produce bit-equivalent final states.
   - `_call_runstate(rs, var=None, atm=None, para=None)` — RunState entry point. Materialises legacy scratch via `legacy_view(rs)`, builds statics, runs the JIT'd runner (single-shot or chunked), unpacks back into a fresh `RunState`, and returns it.
@@ -341,6 +347,9 @@ Public class:
   - `_atom_dict_to_arr(d)` / `_initial_photo_carry_from_runstate(rs)` / `_initial_atm_carry_from_runstate(rs)` / `_initial_conv_carry_from_runstate(rs)` — RunState → initial-carry conversions.
   - `_f_dy(var, para)` — host-side diagnostic for `dy / dydt`, used by the end-of-run print.
   - `_run_chunked(init_state, atm_static, var, para, atm)` — chunked execution path (cfg `use_chunked_runner=True`, any live-UI flag on, or `wall_clock_max` set). Calls the runner in `live_plot_frq`-sized chunks and dispatches `print_prog` / `live_ui.LiveUI` / wall-clock checks between chunks.
+  - `prepare_runstate(rs)` — build one profile's `(init_state, atm_static)` for the batched path and ensure the runner closure exists; guards that photo lanes share the first profile's star/wavelength grid (`nbin`/`din12_indx`/`bins`/`sflux_top`) — only the T-P profile may differ.
+  - `run_batch(states_batched, atm_static_batched)` — one vmapped device call integrating every lane to termination with freeze-on-done; per-lane results identical to solo runs. Supports photochemistry and NH3/H2O relaxation condensation (per-profile values ride `ProfileVars`).
+  - `_profile_vars_from_runstate(rs)` — snapshot this profile's per-profile constants into a `ProfileVars` (falls back to the closure-baked photo static on the legacy entry path, which has no `rs.photo_static`).
   - `_summary_shim(rs)` — small post-run RunState wrapper used by tests.
 
 ### `op_jax.py`
@@ -419,10 +428,11 @@ relaxation kernels (`apply_h2o_relax_jax`, `apply_nh3_relax_jax`) so the
 hot path stays JIT-compatible. Only `H2O` and `NH3` have implicit-Euler
 relaxation; the other condensates (`H2SO4`, `S2`/`S4`/`S8`, `C`) go
 through the reaction-rate path.
+- `SUPPORTED_CONDEN_KINETICS = (H2O, NH3, H2SO4, S2, S4, S8, C)` — the condensates with a fully-ported runtime kinetics path (exactly master's `op.conden` branch set); `atm_setup._SUPPORTED_CONDENSABLES` adds sat-data-only H2S. `runtime_validation` checks `condense_sp` against these upfront.
 - `CondenStatic` — NamedTuple of static condensation inputs (gas-to-condensate mapping, masses, sat tables, conden re indices, relax-species indices and saturation arrays, gas-only mask).
 - `update_conden_rates(k_arr, y, st)` — recompute condensation/evaporation rate constants and overwrite the conden rows of `k_arr` (`k_pos` to `re`, `k_neg` to `re+1`).
 - `apply_h2o_relax_jax(y, ymix, dt, st) → (y_new, ymix_new)` — implicit-Euler `H2O` cold-trap relaxation. Mass moves into / out of `H2O_l_s`. No-op when `h2o_active=False`.
-- `apply_nh3_relax_jax(y, ymix, dt, st) → (y_new, ymix_new)` — analogous `NH3` relaxation, clamping condensation to layers at or below `nh3_conden_top = argmin(sat_mix['NH3'])`.
+- `apply_nh3_relax_jax(y, ymix, dt, st) → (y_new, ymix_new)` — analogous `NH3` relaxation, clamping condensation to layers at or below `nh3_conden_top = argmin(sat_mix['NH3'])` (a Python int when closure-baked, a per-lane 0-d int32 when spliced from `ProfileVars` in the batched runner — the kernel only compares it against `jnp.arange`).
 
 ### `integrate.py`
 Fixed-`dt` JAX integration loop used for validation and benchmarks.
@@ -462,9 +472,10 @@ checkpointing.
 
 ### `runtime_validation.py`
 Pre-run configuration validation.
+- `_validate_fastchem_input_vs_network(cfg, root)` — pin the FastChem element file's values and order against the network's atoms.
 - `_validate_network_assets(cfg, root)` — check every species / photo / atom file referenced by `cfg` exists.
 - `_validate_numerical_bounds(cfg)` — bound-check tuning knobs (rtol/loss/photo-switch/Newton-tol/step-size) so typos fail early.
-- `validate_runtime_config(cfg, root=None)` — top-level entry, called from `vulcan_jax_cli.py` and `outer_loop.OuterLoop._call_legacy`.
+- `validate_runtime_config(cfg, root=None)` — top-level entry, called from `vulcan_jax_cli.py` and the `OuterLoop` entry points. Also rejects upfront: non-Ros2 solvers, inconsistent flag combos, `const_mix` keys that are not network species (master crashes identically, e.g. its Earth example's 'Ar'), and `condense_sp` entries outside the supported condensate tiers (kinetics set vs sat-only H2S).
 
 ### `legacy_io.py`
 Vendored host-side glue from VULCAN-master's `op.py` — the rate-metadata
@@ -546,7 +557,7 @@ transform consistency. Run with
 - `test_block_thomas.py`, `test_block_thomas_diag.py` — block-tridiagonal solvers.
 - `test_diffusion.py`, `test_diffusion_variants.py` — diffusion operator + Jacobian assembly.
 - `test_ros2_step.py` — single-step Rosenbrock kernel.
-- `test_conden_jax.py` — condensation kernels.
+- `test_conden_jax.py` — condensation kernels, incl. the traced-scalar / per-lane `nh3_conden_top` boundary (bitwise).
 - `test_photo.py`, `test_photo_ion.py`, `test_photo_setup.py` — photo kernels and cross-section preprocessing.
 - `test_gibbs.py`, `test_rates.py`, `test_read_rate.py`, `test_network_parse.py` — setup parsers.
 - `test_ini_abun.py` — all five `ini_mix` modes.
@@ -560,6 +571,19 @@ transform consistency. Run with
 - `test_w39b_fastchem_invariant.py` — frozen FastChem snapshot for W39b.
 - `test_use_fix_H2He.py`, `test_solver_fix_all_bot.py` — boundary-condition variants.
 - `test_vmap_kernels.py`, `test_vmap_step.py` — JAX vmap consistency.
+- `test_vmap_while_loop.py` — `run_batch` full-integration batching: homogeneous equivalence, freeze-on-done, NaN isolation, genuinely-different profiles vs solo runs.
+- `test_vmap_photo_batch.py` — batched photochemistry: per-lane T-dependent cross sections, solo-vs-batch agreement, same-star guard.
+- `test_nh3_conden_batch_subprocess.py` — end-to-end batched NH3 condensation on the lowT-Jupiter network (subprocess via `$VULCAN_JAX_NETWORK`; the suite's slowest test, ~10 min cold).
+- `test_condensation_runtime_subprocess.py` — end-to-end H2O relaxation + settling on a condensate network (subprocess).
+- `test_legacy_photo_tcross.py` — legacy `(var, atm, para)` entry with non-empty `T_cross_sp` (regression for the ProfileVars photo fallback).
+- `test_validation_const_mix_conden.py` — upfront validators: non-network `const_mix` keys, unsupported `condense_sp`, sat-only H2S acceptance, tier-drift guard.
+- `test_make_config_wiring.py` — `make_config()` override propagation + import-lock fail-fasts.
+- `test_host_setup_hooks.py` — `$VULCAN_JAX_FASTCHEM_DIR`, rate-parse cache, `skip_chem_warmup`.
+- `test_atm_refresh_gravity.py` — self-consistent gravity invariant in the hydrostatic refresh.
+- `test_atom_conservation_projection.py`, `test_species_mass_integrity.py` — conservation projection + composition-table integrity.
+- `test_fastchem_element_order.py` — FastChem abundance-file element-order regression guard.
+- `test_diffusion_production_kernel.py`, `test_moldiff_disabled.py` — production diffusion kernel + moldiff-off variant.
+- `test_cli_smoke.py` — `vulcan-jax` CLI end-to-end smoke.
 - `test_steady_state_grad.py` — implicit-AD reverse-mode gradients.
 - `test_cfg_examples.py` — each kept config loads + runs pre-loop setup.
 - `test_config_matrix.py` — config-flag combination coverage.
@@ -568,7 +592,8 @@ transform consistency. Run with
 - `bench_step.py` — per-step JAX timing + comparison to VULCAN-master if a sibling checkout is present.
 
 ### `examples/`
-- `batched_run.py` — `jax.vmap` over batched atmospheres for parameter sweeps.
+- `batched_run.py` — `jax.vmap` over the per-step kernel for batched atmospheres.
+- `gpu_benchmark.py` — standalone GPU throughput benchmark driving `run_batch` to convergence over HD189-like planet batches (parallel host setup, chunked progress, `--device-batch` host-side tiling). Kept byte-identical with `vulcan-emulator/supercomputer_cmds/gpu_benchmark.py`.
 - `grad_jvp_example.py` — forward-mode AD through the per-step kernel.
 - `grad_implicit_example.py` — reverse-mode AD through the converged steady state via `steady_state_grad`.
 

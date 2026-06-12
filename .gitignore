@@ -115,3 +115,6 @@ plot/*.pdf
 plot/*.jpg
 plot/*.jpeg
 plot/*.svg
+
+# Generated example figures (examples/output/ is already covered by output/)
+examples/plot/

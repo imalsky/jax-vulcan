@@ -7,17 +7,25 @@ hit along the way.
 
 ## Needs HPC verification (cannot be done on this CPU-only host)
 
+> **Runner:** with the PBS (NAS GH200) system down, both GPU items below run
+> on the edge A100 via `vulcan-emulator/supercomputer_cmds/run_gpu_benchmark.sh`
+> (sbatch, or plain `bash` on any GPU box). It does the tiled sweep, then an
+> untiled Fix-B probe in a fresh process, sized to the visible GPU memory
+> (512 lanes on >=70 GiB, 256 on a 40 GB A100). `gpu_benchmark.py` now prints
+> a per-batch `peak GiB` column (XLA allocator `peak_bytes_in_use`) — that
+> column is the Fix-B verdict. An A100 pass transfers to the GH200: the
+> transient scales with batch width, not GPU model.
+
 1. **Fix B on-device confirmation.** The chunked Jacobian assembly
    (`chem.py::_JAC_CHUNK_REACTIONS`, `lax.scan` with `unroll=1`) is designed
    to drop the batch-512 vmap transient from ~60 GiB to ~1/7 of that, but the
    XLA-undo risk (scan fused back into one flat scatter) only shows up on
-   device. Run the 512-batch sweep on the GH200 node and confirm peak memory
-   actually drops. If XLA un-does the chunking, add `jax.checkpoint` on the
-   chunk body or shrink the chunk size.
-2. **Untiled vs tiled 512.** `gpu_benchmark.py --device-batch 512` measures a
-   true 512-wide vmap (expected to fit outright with Fix B); the default
-   `--device-batch 128` tiles 4x128. Compare both — if untiled-512 fits and
-   is faster per planet, raise the default.
+   device. Run the untiled probe and confirm `peak GiB` stays far below the
+   un-chunked prediction (~42-61 GiB at 512 lanes). If XLA un-does the
+   chunking, add `jax.checkpoint` on the chunk body or shrink the chunk size.
+2. **Untiled vs tiled.** The probe phase measures a true batch-wide vmap; the
+   sweep uses `--device-batch 128` tiles. Compare profiles/s — if untiled
+   fits and is faster per planet, raise the default device batch.
 3. **Pinned step counts may shift on GPU.** Fix B changes float summation
    order inside the Ros2 LHS. On this host the HD189-EQ run still converges
    in exactly 606 steps, but the `gpu_benchmark_fix` reference counts

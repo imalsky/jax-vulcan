@@ -237,6 +237,35 @@ change the network, set the `VULCAN_JAX_NETWORK` environment variable to its
 path **before** the first `import vulcan_jax` (or use the subprocess driver);
 set `com_file` / `atom_list` in the config used at that first import.
 
+### Batched runs (vmap across profiles)
+
+`OuterLoop.run_batch` integrates a whole batch of *different* atmospheric
+profiles in one vmapped device call — the GPU-parallel emulator-data and
+parameter-sweep path:
+
+```python
+states, atms = zip(*(integ.prepare_runstate(rs) for rs in run_states))
+batched = integ.run_batch(
+    outer_loop.stack_integ_states(list(states)),
+    outer_loop.stack_atm_statics(list(atms)),
+)
+results = outer_loop.unstack_integ_states(batched, len(run_states))
+```
+
+Every lane runs with freeze-on-done semantics: each profile's result is
+identical to running it alone, and the call returns when the slowest lane
+terminates (per-lane `termination_reason` / `ymix` on the unstacked states).
+Supported physics matches the single-profile runner, including
+**photochemistry** (per-profile T-interpolated cross sections ride the carry;
+all lanes must share the star, wavelength grid, network, and config scalars —
+only the T-P profile varies, enforced by `prepare_runstate`) and **NH3/H2O
+relaxation condensation** (the per-profile NH3 cold-trap index rides the
+carry). All profiles in one batch must share `nz` and the config
+toggle-combo. `examples/gpu_benchmark.py` is the full worked driver (parallel
+host setup, chunked progress, `--device-batch` tiling for large batches);
+`tests/test_vmap_while_loop.py`, `tests/test_vmap_photo_batch.py`, and
+`tests/test_nh3_conden_batch_subprocess.py` pin the solo-vs-batch equivalence.
+
 ### Known first-run behavior
 
 On the first import with a given network, `make_chem_funs` generates and caches a per-network chemistry RHS source file. This takes a few seconds and prints informational messages. Subsequent imports reuse the cache.
@@ -393,6 +422,8 @@ The suite imports the *installed* `vulcan_jax` (src layout), so development requ
 
 Master-comparison tests (those comparing against `../VULCAN-master/`) require the sibling checkout and skip cleanly when it's absent. These tests run master imports in isolated subprocesses.
 
+The slowest test is `tests/test_nh3_conden_batch_subprocess.py` (~10 min cold): a fresh subprocess parses and compiles the 1141-reaction lowT-Jupiter network to prove batched NH3 condensation matches solo runs end-to-end. JAX's persistent compile cache makes identical reruns much cheaper.
+
 The Earth example config (`cfg_examples/vulcan_cfg_Earth.py`) ships but cannot run — **in VULCAN-master either**. It lists Ar in `atom_list` / `const_mix`, but Ar appears in no reaction of the SNCHO network, so it is not a network species; master's `build_atm.ini_y` calls `species.index(sp)` unconditionally and crashes with the identical `ValueError: 'Ar' is not in list` (`build_atm.py:200`, reproduced end-to-end on the shipped Earth example). Inert background gases without network reactions were never live master physics, so VULCAN-JAX does not invent them; `runtime_validation` rejects such a `const_mix` upfront with an explanation instead of failing mid-setup (`tests/test_validation_const_mix_conden.py`). The Earth config is kept verbatim as upstream ships it — running it means removing Ar from `const_mix`/`atom_list` (master would additionally NaN-poison its atom-conservation diagnostics for any `atom_list` atom carried by no species, via 0/0 in `atom_loss`).
 
 ---
@@ -434,6 +465,8 @@ backing test; re-run those for the current numbers on your host.
 - Live UI fires between JIT'd step batches (cadence-faithful, not call-site-identical)
 - Output writer synthesizes `J_sp`/`Jion_sp` at pickle time rather than incrementally
 - Convergence stall fallback (`conv_stall_window`) handles heavy-hydrocarbon oscillation
+- Upfront config validation is stricter than master: non-network `const_mix` keys and unsupported `condense_sp` entries fail at validate time with an explanation (master crashes deep in setup for the former and silently zero-rates the latter)
+- `use_print_delta` (master's largest-truncation-error print inside the solver) is declared for config-surface compatibility but not consumed — a per-step host print is impractical inside the JIT'd runner
 
 ---
 

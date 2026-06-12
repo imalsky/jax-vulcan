@@ -53,9 +53,12 @@ After `pip install vulcan-jax` (>= 0.1.13, nothing else):
     # Force the GPU backend (errors early if no GPU is visible to JAX):
     JAX_PLATFORM_NAME=gpu python gpu_benchmark.py
 
-On the GH200 / HPC (an H100 GPU), submit supercomputer_cmds/run_gpu_benchmark.pbs,
-which streams this script's output to a tail-able log file. For the paper's
-throughput-vs-batch-size sweep:  qsub -v BATCHES="8 64 256 512" ...
+On the GH200 / NAS (PBS):  qsub supercomputer_cmds/run_gpu_benchmark.pbs
+On the edge A100 (SLURM):  sbatch supercomputer_cmds/run_gpu_benchmark.sh
+Both stream this script's output to a tail-able log file; the .sh variant
+adds an untiled Fix-B memory probe after the tiled sweep. For the paper's
+throughput-vs-batch-size sweep:  qsub -v BATCHES="8 64 256 512" ... /
+sbatch --export=ALL,BATCHES="8 64 256 512" ...
 
 The "profiles/s" at the largest batch size is the number to watch: the GPU
 amortizes a fixed per-call overhead across the whole batch, so throughput
@@ -291,6 +294,28 @@ def stack_batch(integ, run_states):
     )
 
 
+def _device_mem_stats():
+    """Peak / current / limit device memory in GiB, or None when the backend
+    has no allocator stats (CPU, some platforms).
+
+    `peak_bytes_in_use` is cumulative for the process — XLA's allocator has no
+    public reset — so within an ascending batch sweep the value after each
+    batch is that batch's peak. This is the number that verifies the chunked
+    Jacobian assembly actually bounds the vmap transient on device.
+    """
+    import jax
+
+    stats = getattr(jax.devices()[0], "memory_stats", lambda: None)()
+    if not stats:
+        return None
+    gib = 2**30
+    return {
+        "peak": stats.get("peak_bytes_in_use", 0) / gib,
+        "in_use": stats.get("bytes_in_use", 0) / gib,
+        "limit": stats.get("bytes_limit", 0) / gib,
+    }
+
+
 def print_backend_banner():
     """Print the JAX backend + devices and a clear CPU-fallback note."""
     import jax
@@ -309,6 +334,9 @@ def print_backend_banner():
     print(f"jax version        : {jax.__version__}")
     print(f"jax backend        : {backend}")
     print(f"jax devices        : {devices}")
+    mem = _device_mem_stats()
+    if mem and mem["limit"] > 0:
+        print(f"device memory      : {mem['limit']:.1f} GiB visible to XLA")
     on_gpu = backend in ("gpu", "cuda", "rocm")
     if not on_gpu:
         print("")
@@ -442,6 +470,7 @@ def benchmark_one(integ, run_states, count_max, chunk, label, device_batch):
         if len(call_times) > 1
         else 0.0
     )
+    mem = _device_mem_stats()
     result = {
         "n": n,
         "total_s": total_s,
@@ -452,6 +481,9 @@ def benchmark_one(integ, run_states, count_max, chunk, label, device_batch):
         "reasons": _reason_breakdown(reasons),
         "steps_max": int(steps.max()),
         "finite": bool(finite),
+        # Cumulative process peak; in an ascending sweep this is this batch's
+        # peak. None on backends without allocator stats (CPU).
+        "peak_gib": mem["peak"] if mem else None,
     }
     return result
 
@@ -592,10 +624,15 @@ def main() -> int:
                 )
             )
             r = results[-1]
+            peak = (
+                f" | device peak {r['peak_gib']:.1f} GiB"
+                if r["peak_gib"] is not None
+                else ""
+            )
             log(
                 f"{label}: DONE in {r['total_s']:.1f}s "
                 f"(first call {r['first_call_s']:.1f}s incl XLA compile) | "
-                f"finished-ok {r['n_ok']}/{r['n']} | {r['reasons']}"
+                f"finished-ok {r['n_ok']}/{r['n']} | {r['reasons']}{peak}"
                 + ("" if r["finite"] else " | [NON-FINITE ymix!]")
             )
     finally:
@@ -603,15 +640,18 @@ def main() -> int:
 
     header = (
         f"{'batch':>6} | {'total s':>9} | {'1st call s':>10} | "
-        f"{'prof/s':>8} | {'steady prof/s':>13} | {'ok':>9} | reasons"
+        f"{'prof/s':>8} | {'steady prof/s':>13} | {'peak GiB':>8} | "
+        f"{'ok':>9} | reasons"
     )
     print("\n" + header)
     print("-" * (len(header) + 20))
     for r in results:
         flag = "" if r["finite"] else "  [NON-FINITE!]"
+        peak = f"{r['peak_gib']:>8.1f}" if r["peak_gib"] is not None else f"{'--':>8}"
         print(
             f"{r['n']:>6} | {r['total_s']:>9.1f} | {r['first_call_s']:>10.1f} | "
             f"{r['profiles_s']:>8.3f} | {r['steady_profiles_s']:>13.3f} | "
+            f"{peak} | "
             f"{r['n_ok']:>4}/{r['n']:<4} | {r['reasons']}{flag}"
         )
 
@@ -626,7 +666,9 @@ def main() -> int:
         "\nNotes: every lane runs to its own termination (freeze-on-done), so "
         "'total s' is set by the slowest lane. '1st call s' includes the "
         "one-time XLA compile for that (nz, batch) shape; 'steady prof/s' "
-        "excludes it. 'ok' counts converged + stalled-converged lanes "
+        "excludes it. 'peak GiB' is the process-cumulative device-allocator "
+        "peak (per-batch in an ascending sweep; '--' on backends without "
+        "allocator stats). 'ok' counts converged + stalled-converged lanes "
         "(both are steady-state ends); 'step-cap' lanes need a higher "
         "--count-max.",
         flush=True,
