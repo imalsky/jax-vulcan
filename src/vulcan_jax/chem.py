@@ -234,7 +234,6 @@ def chem_jac_analytical_per_layer(
     chunk = min(_JAC_CHUNK_REACTIONS, n_rows)
     n_chunks = -(-n_rows // chunk)
     pad = n_chunks * chunk - n_rows
-    max_terms = net.reactant_idx.shape[1]
 
     r_idx_c = jnp.pad(net.reactant_idx, ((0, pad), (0, 0)), constant_values=ni)
     out_idx_c = jnp.pad(out_idx, ((0, pad), (0, 0)), constant_values=ni)

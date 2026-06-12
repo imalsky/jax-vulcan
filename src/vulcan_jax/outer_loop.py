@@ -64,9 +64,10 @@ class ProfileVars(NamedTuple):
     molecular diffusion).
 
     These used to live in the runner closures (`_Statics`, `AtmRefreshStatic`,
-    `CondenStatic`). `jax.vmap` does NOT batch closure constants, so a batched
-    run would share lane-0's atmosphere across every lane. Threading them
-    through the `JaxIntegState` carry instead makes vmap batch them per lane.
+    `CondenStatic`, `_PhotoStatic`). `jax.vmap` does NOT batch closure
+    constants, so a batched run would share lane-0's atmosphere across every
+    lane. Threading them through the `JaxIntegState` carry instead makes vmap
+    batch them per lane.
     They are constant during a run — the body never mutates them — so for the
     single-profile path the carried values equal the old closure constants and
     behaviour is unchanged. `pref_indx` stays a closure constant (it sizes a
@@ -935,7 +936,24 @@ def _make_runner(
             g=s.g, dzi=s.dzi, Hpi=s.Hpi, top_flux=s.top_flux, vs=s.vs
         )
 
-        if use_fix_species_static:
+        # Master pins the electron rows inside BOTH Ros2 stages when use_ion
+        # (op.py:2949-2952, 2966-2967): df[e]=0 + LHS rows zeroed with
+        # diag=1/(r*h), so k1[e]=k2[e]=0, sol[e]=y[e], delta[e]=0 within the
+        # step; 'e' is then recomputed by the post-step charge balance below.
+        # The fix_mask plumbing in jax_ros2_step implements exactly that
+        # row-pin, so OR in a constant e-column mask. Unlike fix_species,
+        # the e column must NOT be overwritten with fix_y afterwards —
+        # the pinned step already returns sol[e] == y[e].
+        if use_ion_static:
+            e_mask = jnp.zeros_like(s.fix_mask).at[:, e_idx_static].set(True)
+            step_mask = (s.fix_mask | e_mask) if use_fix_species_static else e_mask
+            sol, delta_arr = jax_ros2_step(
+                s.y, s.k_arr, s.dt, atm_step, net, fix_mask=step_mask
+            )
+            delta_arr = jnp.where(step_mask, 0.0, delta_arr)
+            if use_fix_species_static:
+                sol = jnp.where(s.fix_mask, s.fix_y, sol)
+        elif use_fix_species_static:
             sol, delta_arr = jax_ros2_step(
                 s.y, s.k_arr, s.dt, atm_step, net, fix_mask=s.fix_mask
             )
@@ -1944,6 +1962,11 @@ class OuterLoop:
         dbin2 = float(photo_static.dbin2)
 
         ag0 = float(_phy_const.ag0)
+        # Record the baked star's TOA flux for the prepare_runstate same-star
+        # guard. Set here (not only in prepare_runstate) so a runner pre-built
+        # by a single-profile run still rejects a later different-star batch.
+        if self._sflux_top_ref is None:
+            self._sflux_top_ref = np.asarray(var.sflux_top, dtype=np.float64)
         return _PhotoStatic(
             photo_data=photo_data,
             photo_J_data=photo_J_data,
@@ -2333,6 +2356,15 @@ class OuterLoop:
                 rs.photo_static.absp_T_cross, dtype=jnp.float64
             )
             p_cross_J_T = jnp.asarray(rs.photo_static.cross_J_T, dtype=jnp.float64)
+        elif self._cfg.use_photo and self._photo_static is not None:
+            # Legacy (var, atm, para) entry: the synthesized RunState has no
+            # photo_static slot. That path is single-profile only, so the
+            # closure-baked arrays ARE this profile's arrays — seed pv with
+            # them (value-identical to the pre-ProfileVars closure behavior).
+            p_absp_T_cross = jnp.asarray(
+                self._photo_static.photo_data.absp_T_cross, dtype=jnp.float64
+            )
+            p_cross_J_T = jnp.asarray(self._photo_static.cross_J_T, dtype=jnp.float64)
         else:
             p_absp_T_cross = jnp.zeros((0, 1, 1), dtype=jnp.float64)
             p_cross_J_T = jnp.zeros((0, 1, 1), dtype=jnp.float64)
@@ -3155,8 +3187,6 @@ class OuterLoop:
                     "this profile's photo statics do not match the first "
                     "profile's."
                 )
-        if rs.photo_static is not None and self._sflux_top_ref is None:
-            self._sflux_top_ref = np.asarray(rs.photo.sflux_top)
         self._ensure_runner(var, atm)
         ni = _NETWORK.ni
         nz = int(rs.atm.Tco.shape[0])

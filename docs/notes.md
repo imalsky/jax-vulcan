@@ -114,3 +114,36 @@ it behind a marker rather than deleting it.
 - **Earth inert-background gases**: not live master physics (see above);
   the Earth example config ships verbatim and is rejected with a clear
   upfront error.
+
+## Post-review additions (adversarial review round, same pass)
+
+A three-reviewer audit (goal completeness vs master, diff correctness,
+cleanliness) with adversarial verification confirmed three real issues, all
+fixed (see the parity report's "Post-review fixes"): the `use_ion`
+electron-row freeze inside the Ros2 stages was never ported (now wired
+through the `fix_mask` plumbing), the legacy `(var, atm, para)` entry crashed
+with non-empty `T_cross_sp` (pv now falls back to the baked photo static),
+and the same-star guard was vacuous when the runner was pre-built by a
+single-profile run (`_sflux_top_ref` now recorded at bake time).
+
+Remaining known items from that review, deliberately not changed:
+
+- **`use_print_delta` is declared but never consumed.** Master prints the
+  largest-truncation-error species at print cadence inside its solver; a
+  per-step host print is impractical inside the JIT'd runner. The knob stays
+  declared because `vulcan_cfg.py` intentionally mirrors master's config
+  surface; treat it as a dropped diagnostic. Wire it into the chunked-runner
+  print path if anyone misses it.
+- **H2S conden reaction fails late.** `condense_sp=['H2S']` passes upfront
+  validation (sat-only tier, master-legal), but a network that also carries
+  an H2S conden *reaction* still hits the `NotImplementedError` at runner
+  build, after pre-loop setup. The parsed `Network` carries `is_conden` and
+  reaction text, so an upfront cross-check is possible if this ever bites.
+- **The pass is uncommitted.** Commits are Isaac's to run; everything above
+  lives in the working tree on `main` (last commit: v0.1.13 release).
+- **The `use_ion` e-row freeze has no end-to-end test.** No vendored network
+  carries ion species ('e' is not in any shipped network), so the freeze can
+  only be exercised kernel-level (it reuses the fix_mask row-pin plumbing,
+  which is tested). Same coverage status as other live-but-non-default
+  branches per the scope rule. If an ion network is ever vendored, add a
+  solo run asserting e is constant within a step before charge balance.

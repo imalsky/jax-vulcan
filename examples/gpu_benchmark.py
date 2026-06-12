@@ -9,7 +9,8 @@ benchmark measures; `run_batch` also supports photo-on batches). That
 workload converges in ~600 accepted Ros2 steps (~50 s single-profile on a
 laptop CPU), so the default job is a few minutes, not an hour.
 
-Design (all four were problems in the first GH200 run):
+Design (items 1-4 were problems in the first GH200 run; item 5 came from
+its batch-512 OOM analysis):
 
 1.  **Profiles actually converge.** The real HD189 EQ-init regime needs only
     ~600 steps; the step cap defaults to 2500 (4x margin). The first GH200

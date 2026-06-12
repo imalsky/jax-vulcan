@@ -203,7 +203,6 @@ Parse a VULCAN-format reaction-network text file.
 - `_parse_term(term)` — parse a stoichiometric term like `"2*H"` into `(stoich, name)`.
 - `_parse_eq(eq)` — split `"A + B -> C + D"` into reactant / product lists.
 - `_detect_section(line, current)` — section-header dispatch.
-- `_configured_extra_species()` — pull cfg-referenced species not in the reaction text (e.g. condensate species declared only in `condense_sp`).
 - `parse_network(network_path)` — full parser.
 - `summarize(net)` — human-readable summary of a `Network`.
 **[Δ master]** Master's auto-generated `chem_funs` walks literal reactant/

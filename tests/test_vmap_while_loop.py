@@ -45,7 +45,8 @@ YMIX_FLOOR = 1e-15  # ignore ULP-noise trace species below this in the ref
 
 def _pin_cfg():
     """Pin vulcan_cfg for a fast, photo-off batched run (the emulator regime;
-    run_batch rejects photochemistry). Mirrors test_outer_loop_smoke."""
+    photo-on batching is covered by test_vmap_photo_batch). Mirrors
+    test_outer_loop_smoke."""
     import vulcan_jax.outer_loop as outer_loop
     import vulcan_jax.legacy_io as op
 
