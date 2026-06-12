@@ -1,20 +1,18 @@
 """Lock the self-consistent gravity in the hydrostatic atm-refresh.
 
-VULCAN-master's `build_atm.f_mu_dz` computes each layer's gravity
-`g[i] = gs * (Rp / (Rp + zco[i]))**2` from the *previous* refresh cycle's
-`zco`, not the value produced in the current scan, so its hydrostatic profile
-is not internally self-consistent (README "Correctness fixes": ~1.8% at the
-top of atmosphere for HD189). VULCAN-JAX's `atm_refresh.update_mu_dz_jax`
-runs a sequential `lax.scan` where each layer's `g` is computed from the
-freshly-updated `zco` carry, so the output satisfies the hydrostatic
-relation exactly.
+VULCAN-JAX's `atm_refresh.update_mu_dz_jax` runs a sequential `lax.scan`
+where each layer's `g` is computed from the freshly-updated `zco` carry, so
+the output satisfies the hydrostatic relation exactly. (VULCAN-master's
+`build_atm.f_mu_dz` / `op.update_mu_dz` satisfy the same invariant — the
+loop updates `zco` in place within the same sweep — so this is a parity
+property, not a fix relative to master.)
 
 This test pins that property. It is JAX-only (no VULCAN-master oracle needed):
 
   1. Self-consistency invariant: for every layer at/above the reference level,
      `g[i] == gs * (Rp / (Rp + zco[i]))**2` to machine precision, where `zco`
      is the array the same refresh produced. A regression that reverts to a
-     stale-`zco` gravity (master's behavior) breaks this immediately.
+     stale-`zco` gravity breaks this immediately.
   2. Non-triviality: a naive constant-`g` hydrostatic integration (g == gs at
      every layer) gives a top-of-atmosphere height that differs from the
      self-consistent profile by a physically significant amount (>0.5% for

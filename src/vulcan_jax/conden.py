@@ -7,7 +7,7 @@ each conden reaction:
 
 `apply_h2o_relax_jax` / `apply_nh3_relax_jax` run an implicit-Euler
 cold-trap relaxation toward saturation. NH3 additionally clamps the
-condensation region to layers at or below the static `conden_top` index.
+condensation region to layers at or below the `conden_top` index.
 """
 
 from __future__ import annotations
@@ -15,6 +15,23 @@ from __future__ import annotations
 from typing import NamedTuple, Tuple
 
 import jax.numpy as jnp
+
+# Gas-phase condensates with a fully-ported runtime kinetics path — exactly
+# VULCAN-master's op.conden branch set. `atm_setup._SUPPORTED_CONDENSABLES`
+# additionally lists H2S, which has saturation data only (capping/cold-trap),
+# no conden kinetics — in master too (master silently leaves an unknown
+# condensate's rate at zero; VULCAN-JAX raises instead). runtime_validation
+# checks condense_sp against these sets upfront; _build_conden_static keeps
+# its NotImplementedError as defense-in-depth.
+SUPPORTED_CONDEN_KINETICS: tuple[str, ...] = (
+    "H2O",
+    "NH3",
+    "H2SO4",
+    "S2",
+    "S4",
+    "S8",
+    "C",
+)
 
 
 class CondenStatic(NamedTuple):
@@ -47,7 +64,10 @@ class CondenStatic(NamedTuple):
     nh3_Dg: jnp.ndarray  # (nz,)
     nh3_sat: jnp.ndarray  # (nz,)
     nh3_m_over_rho_r2: float
-    nh3_conden_top: int  # static — argmin(sat_mix['NH3'])
+    # argmin(sat_mix['NH3']). Python int when closure-baked (single-profile);
+    # 0-d int32 array when spliced per lane from ProfileVars in the batched
+    # runner — the kernel only compares it against jnp.arange, so both work.
+    nh3_conden_top: int | jnp.ndarray
 
     n_0: jnp.ndarray  # (nz,)  total number density
     gas_indx_mask: jnp.ndarray  # (ni,)  bool — gas-only species mask

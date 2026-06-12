@@ -33,6 +33,18 @@ from .network import Network
 
 jax.config.update("jax_enable_x64", True)
 
+# Reaction-axis chunk size for the analytical-Jacobian scatter. The
+# per-reaction contribution tensor is (chunk, 2*max_terms, max_terms) per
+# layer; under vmap (nz layers x batch lanes) the un-chunked (nr+1, 6, 3)
+# form peaked at ~60 GiB for batch 512 x nz 150 on the SNCHO network
+# (878 reactions) and OOM'd a 96 GB GH200. lax.scan over 128-reaction
+# blocks bounds the transient at ~chunk/nr of that (~7x smaller) while
+# the carried accumulator is only (ni+1)^2 floats. Not a tuning knob:
+# changing it permutes float summation order (~1e-16 per cell), which is
+# within the documented step-level reproducibility envelope but would
+# still churn step counts, so it stays a code constant.
+_JAC_CHUNK_REACTIONS = 128
+
 
 class NetworkArrays:
     """Network stoichiometry packed for JAX.
@@ -212,19 +224,49 @@ def chem_jac_analytical_per_layer(
     out_stoich_signed = jnp.concatenate(
         [-net.reactant_stoich, net.product_stoich], axis=1
     )
-    contrib = out_stoich_signed[:, :, None] * drate_dy[:, None, :]
 
-    row = jnp.broadcast_to(out_idx[:, :, None], contrib.shape)
-    col = jnp.broadcast_to(net.reactant_idx[:, None, :], contrib.shape)
+    # Scatter in `lax.scan` chunks over the reaction axis instead of one flat
+    # (nr+1, 2*max_terms, max_terms) contrib tensor: under vmap every lane's
+    # transient is live at once, so the flat form is the batch-512 OOM driver
+    # (see _JAC_CHUNK_REACTIONS). Pad rows scatter exact zeros (stoich and
+    # drate_dy pads are 0) into the stripped padding row/col (index ni).
+    n_rows = out_idx.shape[0]
+    chunk = min(_JAC_CHUNK_REACTIONS, n_rows)
+    n_chunks = -(-n_rows // chunk)
+    pad = n_chunks * chunk - n_rows
+    max_terms = net.reactant_idx.shape[1]
 
-    # Scatter into a (ni+1)*(ni+1) grid, then strip the padding row/col.
-    flat_contrib = contrib.reshape(-1)
-    flat_keys = row.reshape(-1) * (ni + 1) + col.reshape(-1)
-    J_flat = jax.ops.segment_sum(
-        flat_contrib,
-        flat_keys,
-        num_segments=(ni + 1) * (ni + 1),
-        indices_are_sorted=False,
+    r_idx_c = jnp.pad(net.reactant_idx, ((0, pad), (0, 0)), constant_values=ni)
+    out_idx_c = jnp.pad(out_idx, ((0, pad), (0, 0)), constant_values=ni)
+    out_st_c = jnp.pad(out_stoich_signed, ((0, pad), (0, 0)))
+    drate_c = jnp.pad(drate_dy, ((0, pad), (0, 0)))
+
+    r_idx_c = r_idx_c.reshape(n_chunks, chunk, max_terms)
+    out_idx_c = out_idx_c.reshape(n_chunks, chunk, 2 * max_terms)
+    out_st_c = out_st_c.reshape(n_chunks, chunk, 2 * max_terms)
+    drate_c = drate_c.reshape(n_chunks, chunk, max_terms)
+
+    def _scatter_chunk(J_acc, xs):
+        o_idx, o_st, r_idx, dr = xs
+        contrib = o_st[:, :, None] * dr[:, None, :]
+        row = jnp.broadcast_to(o_idx[:, :, None], contrib.shape)
+        col = jnp.broadcast_to(r_idx[:, None, :], contrib.shape)
+        keys = row.reshape(-1) * (ni + 1) + col.reshape(-1)
+        J_acc = J_acc + jax.ops.segment_sum(
+            contrib.reshape(-1),
+            keys,
+            num_segments=(ni + 1) * (ni + 1),
+            indices_are_sorted=False,
+        )
+        return J_acc, None
+
+    # unroll=1 keeps XLA from fusing the chunks back into one flat scatter,
+    # which would silently reintroduce the un-bounded transient.
+    J_flat, _ = jax.lax.scan(
+        _scatter_chunk,
+        jnp.zeros((ni + 1) * (ni + 1), dtype=drate_dy.dtype),
+        (out_idx_c, out_st_c, r_idx_c, drate_c),
+        unroll=1,
     )
     return J_flat.reshape(ni + 1, ni + 1)[:ni, :ni]
 

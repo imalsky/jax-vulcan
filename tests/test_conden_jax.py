@@ -329,6 +329,132 @@ def test_apply_nh3_relax_jax():
     assert y_err <= KERNEL_RTOL
 
 
+def test_nh3_conden_top_traced_scalar_bitwise():
+    """A 0-d int32 `nh3_conden_top` (the batched ProfileVars form) must be
+    BITWISE identical to the Python-int closure form under jit — the mask
+    comparison against jnp.arange is exact integer arithmetic."""
+    import jax
+    import vulcan_jax.conden as _conden_mod
+
+    rng = np.random.default_rng(11)
+    nz, ni = 7, 3
+    nh3_idx, nh3_l_s_idx = 0, 1
+
+    sat = rng.uniform(0.05, 1.0, size=nz)
+    y = np.zeros((nz, ni))
+    y[:, nh3_idx] = sat * np.array([2.0, 1.4, 0.6, 1.1, 0.4, 1.3, 0.8])
+    y[:, nh3_l_s_idx] = np.array([0.05, 0.0, 0.4, 0.5, 1.0, 0.05, 0.05])
+    y[:, 2] = rng.uniform(0.5, 1.0, size=nz)
+    ymix = y / np.sum(y, axis=1, keepdims=True)
+    n_0 = np.sum(y, axis=1)
+    Dg = rng.uniform(0.5, 2.0, size=nz)
+    conden_top = int(np.argmin(sat / n_0))
+
+    common = dict(
+        nh3_active=True,
+        nh3_idx=nh3_idx,
+        nh3_l_s_idx=nh3_l_s_idx,
+        nh3_Dg=Dg,
+        nh3_sat=sat,
+        nh3_m_over_rho_r2=0.087,
+        n_0=n_0,
+    )
+    st_int = _make_static(
+        nz,
+        ni,
+        [],
+        [],
+        np.zeros((0, nz)),
+        np.zeros((0, nz)),
+        np.zeros(0),
+        nh3_conden_top=conden_top,
+        **common,
+    )
+
+    # Production pattern on both sides: the CondenStatic is CLOSED OVER (its
+    # Python-bool gates stay concrete); only the cold-trap index is traced in
+    # the batched form (spliced from the carry via _replace).
+    @jax.jit
+    def run_int(y_, ymix_, dt_):
+        return _conden_mod.apply_nh3_relax_jax(y_, ymix_, dt_, st_int)
+
+    @jax.jit
+    def run_arr(y_, ymix_, dt_, top_):
+        return _conden_mod.apply_nh3_relax_jax(
+            y_, ymix_, dt_, st_int._replace(nh3_conden_top=top_)
+        )
+
+    y_i, ymix_i = run_int(jnp.asarray(y), jnp.asarray(ymix), jnp.asarray(0.6))
+    y_a, ymix_a = run_arr(
+        jnp.asarray(y),
+        jnp.asarray(ymix),
+        jnp.asarray(0.6),
+        jnp.asarray(conden_top, dtype=jnp.int32),
+    )
+
+    assert np.array_equal(np.asarray(y_i), np.asarray(y_a)), "y drifted"
+    assert np.array_equal(np.asarray(ymix_i), np.asarray(ymix_a)), "ymix drifted"
+    print("traced-scalar conden_top bitwise check: OK")
+
+
+def test_nh3_conden_top_vmap_per_lane():
+    """vmap over a batch where ONLY `nh3_conden_top` differs per lane must
+    match per-lane single calls — the mechanism run_batch relies on after
+    threading the cold-trap index through ProfileVars."""
+    import jax
+    import vulcan_jax.conden as _conden_mod
+
+    rng = np.random.default_rng(23)
+    nz, ni = 7, 3
+    nh3_idx, nh3_l_s_idx = 0, 1
+
+    sat = rng.uniform(0.05, 1.0, size=nz)
+    y = np.zeros((nz, ni))
+    y[:, nh3_idx] = sat * np.array([2.0, 1.4, 0.6, 1.1, 0.4, 1.3, 0.8])
+    y[:, nh3_l_s_idx] = np.array([0.05, 0.0, 0.4, 0.5, 1.0, 0.05, 0.05])
+    y[:, 2] = rng.uniform(0.5, 1.0, size=nz)
+    ymix = y / np.sum(y, axis=1, keepdims=True)
+    n_0 = np.sum(y, axis=1)
+    Dg = rng.uniform(0.5, 2.0, size=nz)
+
+    st = _make_static(
+        nz,
+        ni,
+        [],
+        [],
+        np.zeros((0, nz)),
+        np.zeros((0, nz)),
+        np.zeros(0),
+        nh3_active=True,
+        nh3_idx=nh3_idx,
+        nh3_l_s_idx=nh3_l_s_idx,
+        nh3_Dg=Dg,
+        nh3_sat=sat,
+        nh3_m_over_rho_r2=0.087,
+        n_0=n_0,
+    )
+
+    tops = jnp.asarray([0, 2, 5], dtype=jnp.int32)
+    y_j, ymix_j, dt_j = jnp.asarray(y), jnp.asarray(ymix), jnp.asarray(0.6)
+
+    def call(top):
+        return _conden_mod.apply_nh3_relax_jax(
+            y_j, ymix_j, dt_j, st._replace(nh3_conden_top=top)
+        )
+
+    yb, ymixb = jax.vmap(call)(tops)
+    lanes_differ = 0
+    for lane in range(3):
+        y_solo, ymix_solo = call(tops[lane])
+        assert np.array_equal(np.asarray(yb[lane]), np.asarray(y_solo))
+        assert np.array_equal(np.asarray(ymixb[lane]), np.asarray(ymix_solo))
+        if not np.array_equal(np.asarray(ymixb[lane]), np.asarray(ymixb[0])):
+            lanes_differ += 1
+    # Vacuity guard: different tops must actually change the result.
+    assert lanes_differ > 0, "all lanes identical — conden_top had no effect"
+    print("vmap per-lane conden_top check: OK")
+
+
 def test_no_op_when_inactive():
     """When use_relax flags are False, the kernels must pass through unchanged."""
     import vulcan_jax.conden as _conden_mod

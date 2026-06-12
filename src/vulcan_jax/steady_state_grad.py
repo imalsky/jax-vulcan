@@ -10,10 +10,13 @@ and the cotangent VJP becomes
     ∂L/∂theta = -((∂f/∂y)^{-T} v) · (∂f/∂theta)
 
 This module exposes a `differentiable_steady_state` that wraps the
-integrator with a `jax.custom_vjp`: the backward pass does one
-transposed block-tridiagonal solve plus one VJP through `f`, bypassing
-the runner. Memory is O(1) in step count; gradient accuracy is bounded
-by the forward residual `||f(y*, theta)||` (i.e. `yconv_cri`).
+integrator with a `jax.custom_vjp`: the backward pass solves the exact
+adjoint system `(∂f/∂y)^T λ = v` — a transposed block-tridiagonal
+factorization used as a preconditioner, refined by defect-correction
+iterations with exact matrix-free `J^T` products — plus one VJP through
+`f`, bypassing the runner. Memory is O(1) in step count; gradient
+accuracy is bounded by the forward residual `||f(y*, theta)||`
+(i.e. `yconv_cri`).
 """
 
 from __future__ import annotations
@@ -38,7 +41,10 @@ from .jax_step import (
     _build_diff_coeffs_jax,
     _apply_diffusion_jax,
 )
-from .solver import block_thomas_diag_offdiag
+from .solver import (
+    factor_block_thomas_diag_offdiag,
+    solve_block_thomas_diag_offdiag,
+)
 
 jax.config.update("jax_enable_x64", True)
 
@@ -193,6 +199,66 @@ def _build_jacobian_blocks(y, k_arr, atm, net):
     return diag, sup_d, sub_d
 
 
+_ADJOINT_REFINE_RTOL = 1e-13
+# Target for the defect-correction refinement of the adjoint solve:
+# ||v - J^T λ||_inf relative to ||v||_inf. 1e-13 is float64 round-off for
+# well-scaled cotangents.
+_ADJOINT_REFINE_MAX_ITERS = 30
+# Backstop on the refinement loop. The contraction rate per pass equals the
+# relative error of the frozen-coefficient Jacobian (a few percent), so the
+# loop converges in well under 10 iterations in practice.
+
+
+def _solve_adjoint(y_star, inputs, net, v):
+    """Solve the exact adjoint system (∂f/∂y)^T λ = v.
+
+    `_build_jacobian_blocks` freezes the diffusion coefficients with respect
+    to y (the same approximation the Ros2 stepper uses), so its
+    block-tridiagonal matrix differs from the exact ∂f/∂y wherever the
+    coefficients depend on y through the mean molecular weight. Using it
+    directly would bias the implicit gradient by that approximation error.
+    It is therefore factorized once as a *preconditioner*, and the solution
+    is refined by defect-correction iterations with exact matrix-free J^T
+    products (`jax.vjp` of the residual) until the adjoint residual reaches
+    round-off.
+    """
+    atm = _atm_from_inputs(inputs)
+    diag, sup_d, sub_d = _build_jacobian_blocks(y_star, inputs.k_arr, atm, net)
+    # Transposing the block-tridiagonal system: the dense diagonal blocks
+    # transpose in place; the diagonal-in-species off-diagonals swap
+    # super <-> sub.
+    diag_T = jnp.transpose(diag, (0, 2, 1))
+    factors = factor_block_thomas_diag_offdiag(diag_T, sub_d, sup_d)
+
+    def f_of_y(y):
+        return steady_state_residual_inputs(y, inputs, net)
+
+    _, vjp_y = jax.vjp(f_of_y, y_star)
+
+    def jt_mv(lam):
+        (cot_y,) = vjp_y(lam)
+        return cot_y
+
+    v_norm = jnp.max(jnp.abs(v))
+    lam0 = solve_block_thomas_diag_offdiag(factors, v)
+    resid0 = v - jt_mv(lam0)
+
+    def cond_fn(carry):
+        _, resid, it = carry
+        return jnp.logical_and(
+            it < _ADJOINT_REFINE_MAX_ITERS,
+            jnp.max(jnp.abs(resid)) > _ADJOINT_REFINE_RTOL * v_norm,
+        )
+
+    def body_fn(carry):
+        lam, resid, it = carry
+        lam_next = lam + solve_block_thomas_diag_offdiag(factors, resid)
+        return lam_next, v - jt_mv(lam_next), it + 1
+
+    lam, _, _ = jax.lax.while_loop(cond_fn, body_fn, (lam0, resid0, jnp.int32(0)))
+    return lam
+
+
 def validate_steady_state_solution(
     y_star: jnp.ndarray,
     inputs: SteadyStateInputs,
@@ -231,10 +297,7 @@ def _ssi_fwd(inputs, y_star, net):
 
 def _ssi_bwd(net, res, v):
     inputs, y_star = res
-    atm = _atm_from_inputs(inputs)
-    diag, sup_d, sub_d = _build_jacobian_blocks(y_star, inputs.k_arr, atm, net)
-    diag_T = jnp.transpose(diag, (0, 2, 1))
-    lambda_ = block_thomas_diag_offdiag(diag_T, sub_d, sup_d, v)
+    lambda_ = _solve_adjoint(y_star, inputs, net, v)
 
     def f_of_inputs(inp):
         return steady_state_residual_inputs(y_star, inp, net)
@@ -324,15 +387,13 @@ def _ss_fwd(k_arr, y_star, atm, net):
 def _ss_bwd(atm, net, res, v):
     """Implicit-function-theorem backward.
 
-    Solve J_y^T λ = v, then cot_k = -(∂f/∂k)^T λ via jax.vjp. For our
-    block-tridiag with diagonal-in-species off-diagonals, transposing
-    swaps super and sub but keeps them diagonal.
+    Solve the exact adjoint system J_y^T λ = v (preconditioned
+    defect-correction, see `_solve_adjoint`), then cot_k = -(∂f/∂k)^T λ
+    via jax.vjp.
     """
     k_arr, y_star = res
-    diag, sup_d, sub_d = _build_jacobian_blocks(y_star, k_arr, atm, net)
-
-    diag_T = jnp.transpose(diag, (0, 2, 1))
-    lambda_ = block_thomas_diag_offdiag(diag_T, sub_d, sup_d, v)
+    inputs = build_steady_state_inputs(k_arr, atm)
+    lambda_ = _solve_adjoint(y_star, inputs, net, v)
 
     # Diffusion is k-independent so the f-VJP only sees chem_rhs.
     def f_of_k(k):

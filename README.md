@@ -326,6 +326,8 @@ loss, grad_inputs = steady_state_value_and_grad(
 )
 ```
 
+The backward pass solves the adjoint system with the **exact** residual Jacobian: the frozen-coefficient block-tridiagonal factorization (the Ros2 stepper's approximation, which drops the y-dependence of the diffusion coefficients through the mean molecular weight) is used as a preconditioner and refined by defect-correction iterations with matrix-free `J^T` products from `jax.vjp`. Without the refinement that approximation leaves a deterministic absolute bias in the gradient (~1e-2 of the gradient scale in the synthetic test — enough to flip the sign of small sensitivities); with it, every gradient entry matches re-converged centered finite differences to ~1e-9 of the gradient scale.
+
 See `examples/grad_implicit_example.py` and `examples/grad_jvp_example.py` for worked examples. See `tests/test_steady_state_grad.py` for the canonical validation pattern.
 
 **What's NOT differentiable** (by design): host-side file readers (`photo_setup.py`, `composition.py`, `atm_setup.py` CSV loaders), FastChem subprocess. To differentiate through these, build the corresponding pytree directly with JAX arrays.
@@ -391,7 +393,7 @@ The suite imports the *installed* `vulcan_jax` (src layout), so development requ
 
 Master-comparison tests (those comparing against `../VULCAN-master/`) require the sibling checkout and skip cleanly when it's absent. These tests run master imports in isolated subprocesses.
 
-The Earth example config (`cfg_examples/vulcan_cfg_Earth.py`) ships but is not covered by the setup/oracle tests. It lists Ar (and other inert background gases) in `atom_list` / `const_mix`, but Ar is chemically inert and is therefore not a species in any reaction network, so `ini_abun`'s `const_mix` initializer raises `'Ar' is not in list`. Running it needs the `const_mix` path to handle inert atoms that have no network species (an open item); until then the config is provided as a starting point, not a tested path.
+The Earth example config (`cfg_examples/vulcan_cfg_Earth.py`) ships but cannot run — **in VULCAN-master either**. It lists Ar in `atom_list` / `const_mix`, but Ar appears in no reaction of the SNCHO network, so it is not a network species; master's `build_atm.ini_y` calls `species.index(sp)` unconditionally and crashes with the identical `ValueError: 'Ar' is not in list` (`build_atm.py:200`, reproduced end-to-end on the shipped Earth example). Inert background gases without network reactions were never live master physics, so VULCAN-JAX does not invent them; `runtime_validation` rejects such a `const_mix` upfront with an explanation instead of failing mid-setup (`tests/test_validation_const_mix_conden.py`). The Earth config is kept verbatim as upstream ships it — running it means removing Ar from `const_mix`/`atom_list` (master would additionally NaN-poison its atom-conservation diagnostics for any `atom_list` atom carried by no species, via 0/0 in `atom_loss`).
 
 ---
 
@@ -453,7 +455,9 @@ Rate constants span ~50 orders of magnitude. float32 silently fails. `jax_enable
 
 The JAX port corrects several issues present in master:
 
-- **Self-consistent gravity in atmosphere refresh.** Master's `f_mu_dz` (build_atm.py:552) computes `g[i] = gs * (Rp/(Rp + zco[i]))^2` using the *previous refresh cycle's* `zco`, not the value just computed in the current scan. JAX's `update_mu_dz_jax` uses a sequential `lax.scan` where each layer's `g` is computed from the freshly-updated `zco` carry. This produces self-consistent hydrostatic profiles; the difference is ~1.8% at the top of atmosphere for HD189.
+- **H2S saturation-pressure conversion.** Upstream master converts the Giauque & Blue (1936) saturation-vapor-pressure formula — which is expressed in cm Hg — with the mm Hg constant (`0.001333` instead of `0.01333`), a factor-of-ten error in the H2S saturation pressure. (Upstream `build_atm.py`; the sibling `../VULCAN-master/` copy used as the test oracle carries the fix too.)
+
+- **NH3 ice molecular weight.** Upstream `thermo/all_compose.txt` lists `NH3_l_s` at 16.023 instead of 17.031. (Fixed in the vendored composition table and in the sibling master copy.)
 
 - **Diffusion Jacobian self-consistency.** Master's `op.lhs_jac_tot` disagrees with the analytical derivative of `op.diffdf` at a handful of diagonal cells for heavy condensable species (S8, layers 5 and 25). JAX's block-diagonal diffusion Jacobian matches the analytical derivative to machine precision. Impact on integration is negligible.
 

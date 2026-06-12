@@ -94,6 +94,14 @@ class ProfileVars(NamedTuple):
     c_h2o_sat: jnp.ndarray  # (nz,)
     c_nh3_Dg: jnp.ndarray  # (nz,)
     c_nh3_sat: jnp.ndarray  # (nz,)
+    c_nh3_conden_top: jnp.ndarray  # () int32 — argmin(sat_mix['NH3'])
+    # from _PhotoStatic — the only T-P-dependent photo statics (cross sections
+    # interpolated onto this profile's Tco at setup). Everything else in
+    # _PhotoStatic is fixed by star + network + wavelength grid + cfg and must
+    # be batch-constant (prepare_runstate guards the star/grid identity).
+    # Placeholder shape (0, 1, 1) when use_photo=False.
+    p_absp_T_cross: jnp.ndarray  # (n_absp_T, nz, nbin)
+    p_cross_J_T: jnp.ndarray  # (n_br_T, nz, nbin)
 
 
 class JaxIntegState(NamedTuple):
@@ -376,7 +384,6 @@ def _make_photo_branch(photo_static: _PhotoStatic):
     """
     photo_data = photo_static.photo_data
     cross_J = photo_static.cross_J
-    cross_J_T = photo_static.cross_J_T
     branch_re_idx = photo_static.branch_re_idx
     branch_active = photo_static.branch_active
     branch_T_re_idx = photo_static.branch_T_re_idx
@@ -398,8 +405,15 @@ def _make_photo_branch(photo_static: _PhotoStatic):
     ag0_is_zero = photo_static.ag0_is_zero
 
     def photo_branch(s: JaxIntegState) -> JaxIntegState:
+        # Splice this lane's T-dependent cross sections (interpolated onto its
+        # own Tco at setup) from the carry into the closure-baked photo data,
+        # mirroring the conden splice: a vmapped batch then uses each lane's
+        # atmosphere, not lane 0's. Single-profile pv is seeded with the same
+        # arrays the closure baked, so this is a value-level no-op there.
+        pd = photo_data._replace(absp_T_cross=s.pv.p_absp_T_cross)
+
         # Optical depth (mirrors op.compute_tau via op_jax.Ros2JAX.compute_tau).
-        tau_new = _photo_mod.compute_tau_jax(s.y, s.dz, photo_data)
+        tau_new = _photo_mod.compute_tau_jax(s.y, s.dz, pd)
 
         # Two-stream RT. `s.dflux_u` is the prior call's value (matches
         # op.py:2694's dflux_u-as-it-stood-before-the-up-sweep).
@@ -407,7 +421,7 @@ def _make_photo_branch(photo_static: _PhotoStatic):
             tau_new,
             sflux_top,
             s.ymix,
-            photo_data,
+            pd,
             bins,
             mu_zenith,
             edd,
@@ -419,7 +433,7 @@ def _make_photo_branch(photo_static: _PhotoStatic):
 
         # Per-branch J-rates (flat output; no Python dict).
         J_br_new, J_br_T_new = _photo_mod.compute_J_jax_flat(
-            aflux_new, cross_J, cross_J_T, din12_indx, dbin1, dbin2
+            aflux_new, cross_J, s.pv.p_cross_J_T, din12_indx, dbin1, dbin2
         )
 
         # Write into k_arr: k_arr[re_idx] = J * f_diurnal for each active branch.
@@ -521,12 +535,13 @@ def _make_conden_branch(conden_static: _conden_mod.CondenStatic):
     """
 
     def conden_branch(s: JaxIntegState) -> JaxIntegState:
-        # Splice this lane's per-profile conden arrays (T-P-dependent diffusion
-        # and saturation) from the carry into the closure-baked static so a
-        # vmapped batch uses each lane's own atmosphere, not lane 0's. The
-        # constant fields (indices, coeffs, masks, bools, nh3_conden_top) stay
-        # baked. nh3_conden_top is a Python int sizing a host branch, so
-        # batched NH3 condensation is rejected upstream (run_batch).
+        # Splice this lane's per-profile conden values (T-P-dependent diffusion,
+        # saturation, and the NH3 cold-trap index) from the carry into the
+        # closure-baked static so a vmapped batch uses each lane's own
+        # atmosphere, not lane 0's. The config/network-level fields (indices,
+        # coeffs, masks, bools) stay baked and must be batch-constant.
+        # nh3_conden_top arrives as a 0-d int32; the kernel only compares it
+        # against jnp.arange, so the traced scalar is exact.
         st = conden_static._replace(
             Dg_per_re=s.pv.c_Dg_per_re,
             sat_n_per_re=s.pv.c_sat_n_per_re,
@@ -534,6 +549,7 @@ def _make_conden_branch(conden_static: _conden_mod.CondenStatic):
             h2o_sat=s.pv.c_h2o_sat,
             nh3_Dg=s.pv.c_nh3_Dg,
             nh3_sat=s.pv.c_nh3_sat,
+            nh3_conden_top=s.pv.c_nh3_conden_top,
             n_0=s.pv.n_0,
         )
         k_arr_new = _conden_mod.update_conden_rates(s.k_arr, s.y, st)
@@ -1606,6 +1622,9 @@ class OuterLoop:
         self._refresh_static = None
         self._conden_static = None
         self._live_ui = None
+        # First batched photo profile's TOA stellar flux; prepare_runstate
+        # rejects later profiles with a different star (see the guard there).
+        self._sflux_top_ref = None
         # When use_condense=True, only gas columns get rebalanced after Ros2.
         self._hydro_partial = bool(self._cfg.use_condense)
 
@@ -1621,6 +1640,7 @@ class OuterLoop:
         self._refresh_static = None
         self._conden_static = None
         self._live_ui = None
+        self._sflux_top_ref = None
 
     def _build_statics(self, var, atm) -> _Statics:
         """Pack scalar config + per-run arrays into the closure inputs."""
@@ -2292,6 +2312,9 @@ class OuterLoop:
             c_h2o_sat = jnp.asarray(conden.h2o_sat, dtype=jnp.float64)
             c_nh3_Dg = jnp.asarray(conden.nh3_Dg, dtype=jnp.float64)
             c_nh3_sat = jnp.asarray(conden.nh3_sat, dtype=jnp.float64)
+            # Pin int32 explicitly: under x64, asarray(int) would default to
+            # int64 and lanes packed at different times could mismatch dtypes.
+            c_nh3_top = jnp.asarray(int(conden.nh3_conden_top), dtype=jnp.int32)
         else:
             zz = jnp.zeros((nz,), dtype=jnp.float64)
             c_Dg = jnp.zeros((1, nz), dtype=jnp.float64)
@@ -2300,6 +2323,19 @@ class OuterLoop:
             c_h2o_sat = zz
             c_nh3_Dg = zz
             c_nh3_sat = zz
+            c_nh3_top = jnp.int32(0)
+        if self._cfg.use_photo and rs.photo_static is not None:
+            # The two T-P-dependent photo statics, exactly the arrays
+            # _build_photo_static would bake for this profile (both pass
+            # through PhotoStaticInputs verbatim — see photo_data_from_static
+            # and photo_J_data_from_static).
+            p_absp_T_cross = jnp.asarray(
+                rs.photo_static.absp_T_cross, dtype=jnp.float64
+            )
+            p_cross_J_T = jnp.asarray(rs.photo_static.cross_J_T, dtype=jnp.float64)
+        else:
+            p_absp_T_cross = jnp.zeros((0, 1, 1), dtype=jnp.float64)
+            p_cross_J_T = jnp.zeros((0, 1, 1), dtype=jnp.float64)
         return ProfileVars(
             n_0=jnp.asarray(statics.n_0, dtype=jnp.float64),
             Kzz=jnp.asarray(statics.Kzz, dtype=jnp.float64),
@@ -2320,6 +2356,9 @@ class OuterLoop:
             c_h2o_sat=c_h2o_sat,
             c_nh3_Dg=c_nh3_Dg,
             c_nh3_sat=c_nh3_sat,
+            c_nh3_conden_top=c_nh3_top,
+            p_absp_T_cross=p_absp_T_cross,
+            p_cross_J_T=p_cross_J_T,
         )
 
     def _pack_state_from_runstate(self, rs) -> JaxIntegState:
@@ -3091,6 +3130,33 @@ class OuterLoop:
             and getattr(self.odesolver, "_photo_static", None) is None
         ):
             self.odesolver._photo_static = rs.photo_static
+        elif rs.photo_static is not None:
+            # The runner closure bakes the first profile's star + wavelength
+            # grid; only the T-dependent cross sections ride per lane (via
+            # ProfileVars). Reject a profile whose photo statics differ in
+            # anything else, instead of silently using lane 0's star.
+            baked = self.odesolver._photo_static
+            ps = rs.photo_static
+            same = (
+                int(ps.nbin) == int(baked.nbin)
+                and int(ps.din12_indx) == int(baked.din12_indx)
+                and np.array_equal(np.asarray(ps.bins), np.asarray(baked.bins))
+                and (
+                    self._sflux_top_ref is None
+                    or np.array_equal(
+                        np.asarray(rs.photo.sflux_top), self._sflux_top_ref
+                    )
+                )
+            )
+            if not same:
+                raise ValueError(
+                    "run_batch photo lanes must share the star, wavelength "
+                    "grid, and network (only the T-P profile may differ); "
+                    "this profile's photo statics do not match the first "
+                    "profile's."
+                )
+        if rs.photo_static is not None and self._sflux_top_ref is None:
+            self._sflux_top_ref = np.asarray(rs.photo.sflux_top)
         self._ensure_runner(var, atm)
         ni = _NETWORK.ni
         nz = int(rs.atm.Tco.shape[0])
@@ -3117,21 +3183,6 @@ class OuterLoop:
             raise RuntimeError(
                 "run_batch called before the runner was built; call "
                 "prepare_runstate on at least one profile first."
-            )
-        # Per-profile photo cross-sections and the NH3 host-int cold-trap index
-        # are not threaded through the batched carry; reject those configs
-        # rather than silently sharing lane 0's values across the batch.
-        if self._statics is not None and bool(self._statics.use_photo):
-            raise NotImplementedError(
-                "run_batch does not support photochemistry yet — per-profile "
-                "photo cross-sections are not batched."
-            )
-        if self._conden_static is not None and bool(
-            getattr(self._conden_static, "nh3_active", False)
-        ):
-            raise NotImplementedError(
-                "run_batch does not support NH3 condensation — nh3_conden_top "
-                "is a host-side integer branch that cannot be vmapped."
             )
         if self._vrunner is None:
             self._vrunner = jax.jit(

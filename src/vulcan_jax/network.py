@@ -15,7 +15,6 @@ cfg-only species (e.g. inert Ar) appended.
 
 from __future__ import annotations
 
-import importlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -150,46 +149,6 @@ def _detect_section(line: str, _current: str) -> str | None:
     if s.startswith("# ionisation") or s.startswith("# ionization"):
         return _SECTION_ION
     return None
-
-
-def _configured_extra_species() -> list[str]:
-    """Return config-referenced species that may not appear in reaction text."""
-    try:
-        cfg = importlib.import_module("vulcan_cfg")
-    except Exception:
-        return []
-
-    extra: list[str] = []
-
-    def _append_many(values) -> None:
-        if not values:
-            return
-        for value in values:
-            if isinstance(value, str) and value not in extra:
-                extra.append(value)
-
-    const_mix = getattr(cfg, "const_mix", {})
-    if isinstance(const_mix, dict):
-        _append_many(const_mix.keys())
-
-    fix_sp_bot = getattr(cfg, "use_fix_sp_bot", {})
-    if isinstance(fix_sp_bot, dict):
-        _append_many(fix_sp_bot.keys())
-
-    for field in (
-        "diff_esc",
-        "scat_sp",
-        "condense_sp",
-        "non_gas_sp",
-        "fix_species",
-        "use_relax",
-        "conver_ignore",
-        "plot_spec",
-        "T_cross_sp",
-    ):
-        _append_many(getattr(cfg, field, []))
-
-    return extra
 
 
 def parse_network(network_path: str | Path) -> Network:
@@ -344,9 +303,6 @@ def parse_network(network_path: str | Path) -> Network:
                     )
 
             parser_i += 2
-
-    for sp in _configured_extra_species():
-        _intern_species(sp)
 
     # parser_i has been bumped past the last reverse → nr = parser_i - 1.
     nr = parser_i - 1

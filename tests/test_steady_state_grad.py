@@ -241,14 +241,13 @@ def main() -> int:
 
     fd_grad_j = jnp.asarray(fd_grad)
     diff = jnp.abs(g_jax - fd_grad_j)
-    # Use absolute tolerance scaled by the gradient magnitude. For entries
-    # with meaningful gradient (e.g. k[1, *], k[5, *]) this gives ~rel-err
-    # behaviour. For entries where the analytical gradient is zero (k[3, *]
-    # — loss doesn't depend on the A→B rate in the well-mixed limit), both
-    # jax.grad and FD give noise around 0; the absolute-tolerance bound
-    # accepts that noise as long as it's small relative to the gradient
-    # scale. The Newton residual floor (~1e-9) amplifies through the
-    # implicit-VJP into ~1e-3 relative error on the small entries.
+    # Use absolute tolerance scaled by the gradient magnitude. The adjoint
+    # solve refines to the exact ∂f/∂y (defect correction over the
+    # frozen-coefficient preconditioner), so every entry — including the
+    # tiny k[3, *] sensitivities, ~3e5 below the gradient scale — must match
+    # FD to the centered-difference truncation floor. Before that refinement
+    # the frozen-coefficient bias left a deterministic ~1e-2 absolute error
+    # that flipped the sign of the k[3, *] entries.
     grad_scale = float(jnp.max(jnp.abs(fd_grad_j)))
     max_abs = float(jnp.max(diff))
     abs_relerr = max_abs / grad_scale
@@ -264,11 +263,10 @@ def main() -> int:
         )
     print(f"y_star (layer 0): {y_star[0]}")
 
-    # Tolerance: 1e-4 (relative to gradient scale). The non-trivial
-    # gradients (k[1,*], k[5,*]) match FD to ~5e-5 (4 sig figs); the
-    # near-zero entries have noise ~5e-3 absolute, which is still
-    # ~7e-5 relative to the gradient scale (~75).
-    ok = abs_relerr < 5e-4
+    # Tolerance: the agreement is limited by the FD truncation/Newton-tol
+    # floor (~1e-7 of the gradient scale with eps=1e-6, tol=1e-9), not by
+    # the adjoint solve. 1e-6 leaves ~10x headroom.
+    ok = abs_relerr < 1e-6
     print()
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1

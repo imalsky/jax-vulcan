@@ -8,7 +8,8 @@ dynamic = ["version"]
 description = "VULCAN-JAX: JAX-accelerated photochemical kinetics for exoplanet atmospheres"
 readme = "README.md"
 requires-python = ">=3.10"
-license = "BSD-3-Clause"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
 dependencies = [
     "jax>=0.4.31",
     "numpy>=1.24",

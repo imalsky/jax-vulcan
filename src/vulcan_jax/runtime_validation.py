@@ -345,6 +345,38 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
                     f"got species list without it."
                 )
 
+    if getattr(cfg, "ini_mix", None) == "const_mix":
+        species = list(getattr(chem_funs, "spec_list", []))
+        for sp in getattr(cfg, "const_mix", {}):
+            if sp not in species:
+                errors.append(
+                    f"const_mix key {sp!r} is not a species of the loaded "
+                    "network. Inert/background gases without network "
+                    "reactions are not supported — VULCAN-master fails on "
+                    "the same configuration (build_atm.ini_y calls "
+                    "species.index(sp) unconditionally, e.g. its shipped "
+                    "Earth example crashes on 'Ar'). Remove the key or use "
+                    "a network that contains the species."
+                )
+
+    if bool(getattr(cfg, "use_condense", False)):
+        # _SUPPORTED_CONDENSABLES is the saturation-formula tier (superset);
+        # SUPPORTED_CONDEN_KINETICS is the conden-reaction tier.
+        from .atm_setup import _SUPPORTED_CONDENSABLES
+        from .conden import SUPPORTED_CONDEN_KINETICS
+
+        sat_only = sorted(set(_SUPPORTED_CONDENSABLES) - set(SUPPORTED_CONDEN_KINETICS))
+        for sp in getattr(cfg, "condense_sp", []):
+            if sp not in _SUPPORTED_CONDENSABLES:
+                errors.append(
+                    f"condense_sp entry {sp!r} is not a supported condensate. "
+                    f"Condensation kinetics are ported for "
+                    f"{sorted(SUPPORTED_CONDEN_KINETICS)}; {sat_only} have "
+                    "saturation data only (capping/cold-trap, no conden "
+                    "reactions — as in VULCAN-master). New condensates must "
+                    "be added explicitly with physical constants and tests."
+                )
+
     required_paths = [
         ("network", getattr(cfg, "network", None)),
         ("gibbs_text", getattr(cfg, "gibbs_text", None)),
