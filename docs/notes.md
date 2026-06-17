@@ -424,3 +424,130 @@ Follow-up additions (review-driven, same pass):
   low-T-cap parity checks in `tests/test_rates_jax.py`. README gained a
   "what is differentiable" table distinguishing runtime-array inputs (on the
   graph now) from physical *setup* inputs (host-side; build the pytree yourself).
+
+### 2026-06-17: on-graph atmosphere builder — the physical-input plumbing
+
+The "build the pytree yourself" caveat above is now largely lifted for the
+atmosphere structure. The README's "what you CANNOT differentiate yet" list
+(T_irr, surface gravity, the pressure grid, T-driven `Dzz`) was all one missing
+piece: the host-side setup computes every atmosphere array with `jnp` and then
+`np.asarray`s it before the runner. New module `atm_jax.py` re-expresses that
+cascade as one differentiable function.
+
+- **`build_atm_static(PhysicalInputs, AtmSpec) -> AtmStatic`** reproduces the
+  host chain (`compute_mu_dz_g` height integration → `compute_mol_diff` →
+  settling → `make_atm_static` gating) entirely on the graph. `PhysicalInputs`
+  carries the differentiable leaves (`pco`, `Tco`, `ymix`, `Kzz`, `vz`, `gs`,
+  `Rp`); `AtmSpec` holds the static config (species, `atm_base`, toggles, and
+  the discrete hydrostatic anchor `pref_indx`). `make_physical_inputs(cfg, var,
+  atm, species_list)` bridges a legacy setup; `pco_from_endpoints` exposes
+  `P_b`/`P_t`.
+- **Single source of truth, not a fork.** The three genuinely-NumPy formulas got
+  `jnp` cores in `atm_setup.py` — `sat_p_jax` (Murray/Antoine), `settling_velocity_jax`
+  (Cloutman viscosity + Stokes), `kzz_profile_jax` (JM16/Pfunc/const) — and the
+  existing NumPy publics now delegate via `np.asarray`. Elementwise float64, so
+  parity is machine precision (≤2e-16 vs the old formulae) — production path
+  unchanged. The already-`jnp` primitives (`analytical_TP_H14`, the `_scan_*`
+  height integration, `compute_mean_mass`, `_Dzz_gen_for_base`) are reused
+  directly; only the `_scan_up` init was made tracer-safe (`jnp.asarray(gs)`).
+- **Verified.** `tests/test_atm_jax.py`: `build_atm_static` is field-for-field
+  equal to `make_atm_static` on the real HD189 setup (≤4e-16) plus the vm/settling
+  branches HD189 doesn't exercise; forward-mode `jvp` matches central FD for
+  `d(dzi)/dgs`, `d(M·Dzz·dzi)/dTco`, `d(M)/dP_b`. Example
+  `examples/grad_physical_example.py` (all three tangents FD-matched to ~6 digits).
+- **Left frozen by design.** (1) FastChem `[M/H] → t=0 speciation` (subprocess
+  wall; `const_lowT`'s Newton *residual* is differentiable w.r.t. the elemental
+  ratios, but its `ini_abun` entry point floats them — partial, not turn-key).
+  (2) Photo T-dependent cross-section rebake (`photo_setup._bin_T_dependent`) — a
+  per-layer host interpolation, the one remaining heavy port. (3) `alpha` and
+  `pref_indx` are discrete/static lookups (correct to first order).
+- **Known limit on T_irr.** `analytical_TP_H14` is on-graph and differentiable,
+  but `jax.scipy.special.expn`'s forward-mode is pathologically slow when its
+  argument spans a deep column's many decades (`expn(2,·)` over 1e-7…1e4 alone
+  does not finish in 90 s). So `dL/dT_irr` *through Heng+14* is impractical over a
+  full atmosphere — differentiate the `Tco` leaf directly (or use a cheaper
+  `T(P)`). The plumbing (Tco differentiable) is unaffected; this is purely an
+  `expn` cost. (`tests/test_atm_setup_matrix.py`'s `analytical` cases are slow for
+  the same pre-existing reason — they evaluate `expn` at argument ~9300.)
+
+### 2026-06-17: differentiability-surface review pass (external review "check if still live")
+
+Verified an external review of the broader differentiability claims against the
+current code. Outcome:
+- **NASA-9 gradients were broken, now FIXED.** `rates_jax.gibbs_sp_vector` did
+  `jnp.asarray(np.asarray(coeffs))` — the inner `np.asarray` raised
+  `TracerArrayConversionError` under `jvp`/`grad` w.r.t. `nasa9_coeffs`, so the
+  documented "NASA-9 differentiable via `nasa9_coeffs`" was false. Changed to
+  `jnp.asarray(coeffs, dtype=jnp.float64)`: static-input parity is exactly 0.0,
+  `build_rate_array` jvp w.r.t. `nasa9` is now finite, `test_rates_jax` green.
+- **Doc corrections (README, CLAUDE, this file).** (a) Photo: the README said
+  inject `PhotoStaticInputs.sflux` — that field does not exist (`PhotoInputs.sflux_top`),
+  and `sflux_top` + room-T `cross_J` are **closure-baked** in
+  `outer_loop._make_photo_branch`; only the T-dependent cross sections ride the
+  `ProfileVars` carry (`s.pv.p_cross_J_T`). (b) `const_lowT`: the Newton residual
+  is differentiable w.r.t. the elemental ratios but the `ini_abun` entry point
+  floats them — partial, not turn-key. (c) Removed two stale references to the
+  deleted residual-IFT reverse-mode route in CLAUDE.md's JAX/NumPy-boundary section.
+- **Real but out of scope:** condensation particle radius/density are
+  `float(atm.r_p[...])` / `float(atm.rho_p[...])` (`outer_loop` ~2104), so
+  `dL/d(r_p, rho_p)` is blocked (would need runner-level threading).
+- **Reviewer overstatements:** the Kzz `pv.Kzz` duplication is real (only the
+  convergence `slope_min`, `outer_loop:869`, reads it — the diffusion physics uses
+  `atm.Kzz`) but its impact is below the FD-validated <0.1% Kzz gradient; and
+  `state._replace(y=y0)` leaves `y_prev`/`ymix` stale, but they wash out by
+  convergence so the closed-column metallicity gradient is correct.
+
+### 2026-06-17: atm_jax adversarial review (13-agent workflow) — findings + fixes
+
+A multi-agent adversarial review (equivalence / port-parity / differentiability /
+cleanliness / docs) of the on-graph builder. 7 findings confirmed, 0 refuted; the
+completeness critic additionally RAN the gaps and confirmed: build_atm_static's
+AtmStatic drives a Ros2 step **bit-identically** to the production AtmStatic
+(0.0 rel), stacks + vmaps correctly, jit-compiles and matches eager, the
+moldiff-off divergence is runtime-inert (compute_diff_grav bit-identical), and the
+sat_p-consuming tests pass (40 passed). Differentiability dimension independently
+FD-validated every leaf (gs/Rp/Tco/pco/P_b/ymix; Kzz/vz exact identity) — no AD defects.
+
+Fixed:
+- **getattr fail-quiet (minor, real regression I introduced).** `load_TPK` had
+  routed all four Kzz knobs through `getattr(cfg, X, 0.0)`, turning a fail-loud
+  `AttributeError` into a silent `K_deep=0.0` (unfloored JM16 profile) for a
+  config selecting JM16 without `K_deep` (which no shipped config defines). Reverted
+  to per-branch DIRECT reads (`cfg.K_deep` for JM16, etc.) — fail-loud like HEAD and
+  master; `kzz_profile_jax` now defaults the unused knobs to 0.0.
+- **use_moldiff/use_settling default asymmetry (nit).** `make_physical_inputs` read
+  `bool(cfg.use_moldiff)` (raises if absent) while `make_atm_static` uses
+  `getattr(cfg,"use_moldiff",True)`. Aligned both to the getattr defaults.
+- **sat_p README overstatement (doc).** `sat_p_jax` was listed in the
+  "CAN differentiate, end-to-end" table, but it is a standalone helper — the runtime
+  condensation static still reads a host-frozen `sat_p`, so its d/dT does not flow
+  through the runner. Moved to a clearly-scoped standalone-helper note.
+- **"field-for-field identical" claim scoped (doc).** True for the default config
+  (`atm_type` file/analytical/isothermal, moldiff-on); two non-default modes differ,
+  in both cases because build_atm_static is the MORE self-consistent one (see below).
+  Scoped the claim in the build_atm_static docstring, the test docstring, and README.
+
+Flagged latent PRODUCTION bug (NOT fixed — out of scope, changes table-mode physics):
+- **`atm_type='table'` stale `pico`.** Production calls `f_pico` (sets
+  `atm.pico = compute_pico(atm.pco)` from the original logspace P_b/P_t grid) BEFORE
+  `load_TPK` overwrites `atm.pco` with the file pressures, and never recomputes
+  `atm.pico` (the only writer is `atm_setup.py`'s `f_pico`). So `f_mu_dz` integrates
+  the hydrostatic height with an internally-inconsistent (pco_rewritten, pico_stale)
+  pair — `g`/`Hpi` ~1%, `dzi` ~12% off from a self-consistent build, and `dzi` feeds
+  the eddy-diffusion operator. `build_atm_static` recomputes `pico` from the rewritten
+  `pco` (self-consistent, the correct value). **CONFIRMED upstream (2026-06-17):
+  VULCAN-master has the IDENTICAL behavior** — `vulcan.py:118` f_pico (pico from the
+  original logspace grid) -> `:120` load_TPK (`build_atm.py:406` overwrites
+  `data_atm.pco` from the table file, pico NOT recomputed) -> `:148` f_mu_dz
+  (`build_atm.py:530,554,562` integrate dz/dzi and `:535` pref_indx from the STALE
+  pico). So VULCAN-JAX's production path is a FAITHFUL PORT of a latent upstream bug;
+  build_atm_static is the (more-correct) deviation. Low-severity/latent: table mode
+  is restart-from-saved-profile (usually same grid -> masked); only an off-grid
+  table triggers it, and the length-only check at build_atm.py:403 misses it.
+  DECISION: keep VULCAN-JAX production matching master (parity), leave
+  build_atm_static self-consistent; the real fix is upstream (one line: recompute
+  pico after the table pco rewrite). Do NOT silently fix VULCAN-JAX production alone
+  -- it would diverge from master.
+  **Isaac (2026-06-17): NOT fixing in this release.** Keep the faithful port; the
+  build_atm_static self-consistency divergence in table mode is documented and
+  intentional. Revisit only if/when upstream VULCAN fixes the f_pico/pco ordering.

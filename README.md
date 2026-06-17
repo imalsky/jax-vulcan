@@ -128,6 +128,8 @@ VULCAN-JAX/
 │   ├── make_chem_funs.py    Per-network codegen for chemistry RHS
 │   ├── photo.py             JAX two-stream photochemistry kernels
 │   ├── steady_state_grad.py Reverse-mode reaction sensitivities (solver-map adjoint)
+│   ├── atm_jax.py           Differentiable on-graph atmosphere builder (PhysicalInputs -> AtmStatic)
+│   ├── rates_jax.py         Differentiable T -> k rate builder (forward-mode)
 │   ├── rates.py             Rate coefficients (Arrhenius/Lindemann/Troe)
 │   ├── gibbs.py             NASA-9 Gibbs / K_eq / reverse rates
 │   ├── network.py           Network file parser
@@ -333,47 +335,66 @@ All kernels are `jit`/`vmap`/`jvp`/`vjp` compatible:
 
 **The rule:** a quantity is differentiable **iff it reaches the runtime as a JAX
 array** — either because you supply it directly into the runtime pytrees
-(`AtmStatic` / `RateInputs` / `PhotoStaticInputs` / initial `y`), or because we
-provide an on-graph builder for it (`rates_jax` for `T -> k`). Drive the inner
+(`AtmStatic` / `RateInputs` / initial `y`; most of `PhotoStaticInputs`, but note
+some photo fields are closure-baked into the runner's photo branch — see the
+table below), or because we
+provide an **on-graph builder** for it: `rates_jax` for `T -> k`, and
+`atm_jax.build_atm_static` for the whole atmosphere structure (`pco`, `Tco`,
+gravity, composition `-> M`, `dz`, `Hp`, `Dzz`, `vm`, `vs`, ...). Drive the inner
 `integ._runner` (not `OuterLoop.__call__`, which copies to host and breaks
 tracing); forward-mode (`jvp`/`jacfwd`) then runs end-to-end through the converged
 integration (FD-validated <0.1%). A scalar *parameter* that a **host-side setup
-formula** expands into those arrays is **not** differentiable until that formula
-is on the graph — that is the one real boundary.
+formula** expands into those arrays is differentiable once that formula is on the
+graph — which, after `build_atm_static`, now covers the atmosphere cascade.
 
 ### What you CAN differentiate now (forward-mode, end-to-end)
 
 | Physical input | How |
 |---|---|
 | Reaction rates `k` (forward **and** reverse) | supply `k_arr`; reverse-mode reaction ranking via `steady_state_reaction_sensitivity` (all reactions, one solve) |
-| Temperature `T` (per-layer array) | rebuild `k` on-graph with `rates_jax.build_rate_array` (`use_lowT_caps=True` on cool networks) + recompute `n_0 = pco/(kb T)` |
+| Temperature `T` (per-layer array) | `atm_jax.build_atm_static` rebuilds `M`/`dz`/`Hp`/`Dzz`/`vm`/`vs` on-graph from `Tco`; also rebuild `k(T)` with `rates_jax.build_rate_array` for the rate path (`use_lowT_caps=True` on cool networks) |
+| **Surface gravity `gs`, planet radius `Rp`** | `build_atm_static` — `gs`/`Rp` drive the hydrostatic height integration (`g`, `Hp`, `dz`, `dzi`) on-graph |
+| **Pressure grid (`P_b`, `P_t`)** | `atm_jax.pco_from_endpoints(P_b, P_t, nz)` -> `pco` leaf of `PhysicalInputs`; reaches `M`, `Dzz`, `dz` |
+| **Molecular/thermal diffusion `Dzz`, `vm`, `vs` (T-/g-driven)** | `build_atm_static` ports the `T -> Dzz` (Moses fit), `vm`, and Cloutman settling formulae on-graph — a `T`- or `g`-driven change now flows through |
 | Rate coefficients — Arrhenius `a`/`n`/`E`, NASA-9 thermo | `rates_jax.build_rate_array(..., rate_coeffs={"a": ...})`; NASA-9 via `nasa9_coeffs` (one hardcoded Troe row excepted) |
-| Eddy diffusion `Kzz`, advection `vz` | `atm._replace(Kzz=...)`, drive `_runner` |
+| Eddy diffusion `Kzz`, advection `vz` | `atm._replace(Kzz=...)`, or `atm_setup.kzz_profile_jax` for `∂/∂K_deep`/`K_max` |
 | Boundary fluxes / deposition velocity | supply `top_flux` / `bot_flux` / `bot_vdep` |
 | Initial abundances `y0` | perturb `y0` directly |
 | **Metallicity `[M/H]`, C/O ratio** | a `y0` *tangent*: scale metal-bearing species for `[M/H]`, or C-bearing vs O-bearing for C/O (example below). This is the correct derivative for a closed column — `Z` is the conserved metal inventory and the steady state depends on element totals, not on the initial speciation. It is exactly Fig. 9 (`∂ln VMR/∂ln Z`, SO₂ `∝ Z^2.6`). |
-| Molecular/thermal diffusion `Dzz`, `vs`, `vm` (as arrays) | supply the arrays directly; note a `T`-*driven* `Dzz` change is frozen (the `T -> Dzz` formula is host-side) |
+
+Build the differentiable atmosphere with `phys, spec = atm_jax.make_physical_inputs(cfg, var, atm, species_list)`,
+then `atm_jax.build_atm_static(phys._replace(Tco=...), spec)` — it reproduces the
+production `make_atm_static` field-for-field (machine precision) for the default
+configuration (`atm_type` `file`/`analytical`/`isothermal` with `use_moldiff=on`,
+which is what the runner uses) while carrying tangents w.r.t. `phys`. See
+`examples/grad_physical_example.py`. (Two non-default modes differ — both because
+`build_atm_static` is the *more* self-consistent of the two: `atm_type='table'`
+recomputes the interface pressures from the rewritten grid where production keeps
+a stale `pico`, and `use_moldiff=off` computes `Ti`/`Hpi` as interface averages
+where production leaves them at legacy defaults; the latter is runtime-inert.)
+
+`atm_setup.sat_p_jax` differentiates the saturation-pressure formula w.r.t. `T`
+(Murray/Antoine, phase-boundary kinks aside), but it is a **standalone helper** —
+the runtime condensation static still reads a host-frozen `sat_p`, so this `∂/∂T`
+does **not** yet flow through the runner.
 
 ### What you CANNOT differentiate yet
 
-These are scalar / structural knobs that a **host-side NumPy formula** expands into
-(often several coupled) runtime arrays, so there is no single array to inject.
-They need that formula ported to JAX (the planned `PhysicalInputs -> on-graph
-builder` layer):
-
 | Blocked knob | Why it's blocked | Workaround today |
 |---|---|---|
-| TP-profile parameter, e.g. `∂L/∂T_irr` | `T_irr -> Tco(P)` is `atm_setup.analytical_TP_H14` (host-side), and `T_irr` also feeds `M`, `n_0`, `dz`, scale heights, `k(T)` — none rebuilt on-graph | differentiate the per-layer `T` array instead |
-| Surface gravity / planet mass, `∂L/∂g_p` | `atm_setup.compute_mu_dz_g` builds the hydrostatic grid (`dz`, `Hp`, `n_0`) host-side — no single injectable array | — |
-| Stellar-flux scale / spectrum | read + binned host-side in `photo_setup` | inject `PhotoStaticInputs.sflux` as a JAX array |
-| Photo cross-section perturbation (UQ) | CSV read + T-interpolation host-side | inject `PhotoStaticInputs` cross-sections as JAX arrays |
-| Condensation saturation-pressure / particle-size params | `atm_setup.compute_sat_p` + conden statics host-side | build the conden static yourself |
-| Pressure falloff via a `P` *parameter* | `P` reaches `n_0` on-graph, but `k(P)` falloff needs `M = P/(kb T)` rebuilt | use the on-graph rate builder with recomputed `M` |
+| TP-profile parameter `∂L/∂T_irr` via Heng+14 | `analytical_TP_H14` is on-graph, but its `jax.scipy.special.expn` forward-mode is very slow over a deep column's many decades | differentiate the per-layer `Tco` (or `Tco`-scale) leaf, or use a cheaper `T(P)` parameterisation |
+| Stellar-flux scale / spectrum | the stellar flux (`PhotoInputs.sflux_top`) and the room-T cross sections (`cross_J`, `absp_cross`) are **closure-baked** into the runner's photo branch (`outer_loop._make_photo_branch`), not read from a runtime pytree | perturb them requires a runner-level input, not a pytree field — not yet exposed |
+| Photo cross-section **`T`-rebake** | `photo_setup._bin_T_dependent` re-interpolates cross-sections per layer on host at setup | the *T-dependent* cross sections do ride the `ProfileVars` carry (`s.pv.p_cross_J_T` / `p_absp_T_cross`), so they are differentiable as arrays via the carry; the static cross sections and the `T`→cross-section map are not |
 
 **FastChem is the one true wall** (a subprocess): you cannot differentiate the
 scalar `[M/H] -> t=0 equilibrium speciation` map. But you almost never need to —
 a converged closed column forgets the initial speciation, so the metallicity /
 C-O derivatives above (via `y0` tangents) are the scientifically correct ones.
+(`ini_abun`'s `const_lowT` Newton *residual* (`_abun_lowT_residual`) is
+differentiable w.r.t. the elemental ratios `O_H`/`C_H`/`He_H`/`N_H` for the
+reduced H₂/H₂O/CH₄/He/NH₃ system, but the shipped `ini_abun` entry point reads
+them as Python floats — call the solver directly with JAX-array ratios to get
+that gradient.)
 
 ```python
 # Metallicity in one forward pass (Fig. 9). Closed column => scaling the
@@ -429,12 +450,13 @@ below does not. See `examples/grad_jvp_example.py`.
 frozen at setup (host-side NumPy `rates.build_rate_array`), so a `d/dT` jvp must
 rebuild it on the AD graph with `rates_jax.build_rate_array(net, T, M, nasa9,
 remove_list)` (the differentiable port of `rates`+`gibbs`, bit-exact to ~5e-14
-vs the NumPy build) and recompute `n_0 = pco/(kb*T)`. With that, forward-mode
-`d/dT` is validated against finite differences (HD189 dominant species to 3–4
-sig figs; WASP-39b SO2 to correlation 1.0). The molecular-diffusion coefficient
-`Dzz(T)` and the host-side photo cross-section T-interpolation stay frozen
-(second-order). See `../jax_paper/scripts/validate_T_grad.py` and
-`fig_so2_temperature.py`.
+vs the NumPy build) and recompute the structural cascade. `atm_jax.build_atm_static`
+now rebuilds `M = pco/(kb*T)`, `dz`, `Hp`, and the molecular-diffusion `Dzz(T)`
+on-graph from `Tco`, so those are no longer frozen; only the host-side photo
+cross-section T-interpolation (`photo_setup._bin_T_dependent`) stays frozen
+(second-order). Forward-mode `d/dT` is validated against finite differences
+(HD189 dominant species to 3–4 sig figs; WASP-39b SO2 to correlation 1.0). See
+`../jax_paper/scripts/validate_T_grad.py` and `fig_so2_temperature.py`.
 
 ### Reverse-mode (solver-map steady-state adjoint)
 

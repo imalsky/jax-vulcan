@@ -76,6 +76,47 @@ def analytical_TP_H14(pco: jnp.ndarray, params, *, gs: float, Pb: float) -> jnp.
     return T
 
 
+def kzz_profile_jax(
+    kzz_prof: str,
+    pico_int: jnp.ndarray,
+    *,
+    K_deep: float = 0.0,
+    K_max: float = 0.0,
+    K_p_lev: float = 0.0,
+    const_Kzz: float = 0.0,
+) -> jnp.ndarray:
+    """Analytic eddy-diffusion profile Kzz(P) at interior interfaces.
+
+    `pico_int` is ``pico[1:-1]`` (interface pressures, shape ``(nz-1,)``).
+    Single source of truth for the ``const``/``JM16``/``Pfunc`` branches of
+    :func:`load_TPK`, expressed in ``jnp`` so the profile is differentiable
+    w.r.t. its parameters (``K_deep``/``K_max``/``K_p_lev``) and the pressure
+    grid. The ``file`` profile has no closed form and is handled in
+    :func:`load_TPK`. Each branch reads only its own parameter; the others
+    default to 0.0 so a caller passes just the one its profile needs (the
+    caller is responsible for supplying it -- a missing required knob should
+    fail loud at the call site, not be silently defaulted here).
+    """
+    # jnp.asarray (not float()) keeps the profile parameters tracer-safe so the
+    # profile is differentiable w.r.t. K_deep / K_max / K_p_lev; for the
+    # production Python-float call path the value is bit-identical.
+    pico_int = jnp.asarray(pico_int, dtype=jnp.float64)
+    K_deep = jnp.asarray(K_deep, dtype=jnp.float64)
+    K_max = jnp.asarray(K_max, dtype=jnp.float64)
+    K_p_lev = jnp.asarray(K_p_lev, dtype=jnp.float64)
+    const_Kzz = jnp.asarray(const_Kzz, dtype=jnp.float64)
+    if kzz_prof == "const":
+        return jnp.zeros_like(pico_int) + const_Kzz
+    if kzz_prof == "JM16":
+        return jnp.maximum(K_deep, 1e5 * (300.0 / (pico_int * 1e-3)) ** 0.5)
+    if kzz_prof == "Pfunc":
+        return jnp.maximum(K_max, K_max * (K_p_lev * 1e6 / pico_int) ** 0.4)
+    raise IOError(
+        f'\n"Kzz_prof"={kzz_prof!r} cannot be recongized.\n'
+        f'Assign it as "file", "const", "JM16" or "Pfunc" in vulcan_cfg.'
+    )
+
+
 # ---------------------------------------------------------------------------
 # 3. Load TPK (T, Kzz, vz from cfg / file)  — host-side I/O
 # ---------------------------------------------------------------------------
@@ -203,14 +244,25 @@ def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray
         )
     out["Tco"] = Tco
 
+    # Read each profile's own parameter DIRECTLY (not getattr-with-default):
+    # a config selecting a branch without that branch's knob must fail loud,
+    # exactly as the previous code and VULCAN-master do (master reads
+    # `vulcan_cfg.K_deep` for JM16). kzz_profile_jax defaults the unused knobs.
     if Kzz_prof == "const":
-        out["Kzz"] = np.full(nz - 1, float(cfg.const_Kzz), dtype=np.float64)
+        out["Kzz"] = np.asarray(
+            kzz_profile_jax("const", pico[1:-1], const_Kzz=cfg.const_Kzz),
+            dtype=np.float64,
+        )
     elif Kzz_prof == "JM16":
-        Kzz = 1e5 * (300.0 / (pico[1:-1] * 1e-3)) ** 0.5
-        out["Kzz"] = np.maximum(float(cfg.K_deep), Kzz)
+        out["Kzz"] = np.asarray(
+            kzz_profile_jax("JM16", pico[1:-1], K_deep=cfg.K_deep),
+            dtype=np.float64,
+        )
     elif Kzz_prof == "Pfunc":
-        Kzz = float(cfg.K_max) * (float(cfg.K_p_lev) * 1e6 / pico[1:-1]) ** 0.4
-        out["Kzz"] = np.maximum(float(cfg.K_max), Kzz)
+        out["Kzz"] = np.asarray(
+            kzz_profile_jax("Pfunc", pico[1:-1], K_max=cfg.K_max, K_p_lev=cfg.K_p_lev),
+            dtype=np.float64,
+        )
     elif Kzz_prof == "file":
         if "Kzz" not in out:
             raise IOError('Kzz_prof="file" requires atm_type="file" with a Kzz column.')
@@ -286,7 +338,9 @@ def _scan_up_mu_dz_g(
         z_next = z_prev + dz_i
         return (z_next, gz_i, Hp_i), (gz_i, Hp_i, dz_i, z_next)
 
-    init = (jnp.float64(0.0), jnp.float64(gs), jnp.float64(0.0))
+    # jnp.asarray (not jnp.float64) keeps the carry tracer-safe so the
+    # differentiable builder in atm_jax.py can pass a traced `gs`.
+    init = (jnp.float64(0.0), jnp.asarray(gs, dtype=jnp.float64), jnp.float64(0.0))
     n_up = nz - pref_indx
     idx = jnp.arange(n_up)
     _, (gz_seq, Hp_seq, dz_seq, z_after_seq) = jax.lax.scan(
@@ -425,6 +479,30 @@ _VISCOSITY_TABLE: Mapping[str, tuple[float, float, float]] = {
 }
 
 
+def settling_velocity_jax(
+    na: float,
+    a: float,
+    b: float,
+    Tco: jnp.ndarray,
+    g: jnp.ndarray,
+    settle_coeff: jnp.ndarray,
+) -> jnp.ndarray:
+    """JAX core of the Stokes-regime settling velocity. Returns (nz-1, ni).
+
+    `settle_coeff` is the per-species ``rho_p * r_p**2`` (zero for gas
+    species); `(na, a, b)` is the Cloutman dynamic-viscosity polynomial for
+    the background gas. Single source of truth for
+    :func:`compute_settling_velocity`, expressed in ``jnp`` so the fall speed
+    is differentiable w.r.t. temperature, gravity and particle size/density.
+    """
+    Tco = jnp.asarray(Tco, dtype=jnp.float64)
+    g = jnp.asarray(g, dtype=jnp.float64)
+    dmu = a * Tco**na / (b + Tco)  # dynamic viscosity, (nz,) g/(cm·s)
+    gi = 0.5 * (g[:-1] + g[1:])  # (nz-1,)
+    factor = -(2.0 / 9.0) * gi / dmu[1:]  # (nz-1,)
+    return factor[:, None] * jnp.asarray(settle_coeff, dtype=jnp.float64)[None, :]
+
+
 def compute_settling_velocity(
     cfg,
     Tco: np.ndarray,
@@ -437,30 +515,43 @@ def compute_settling_velocity(
     only `non_gas_sp` entries are non-zero."""
     nz = int(Tco.shape[0])
     ni = len(species_list)
-    vs = np.zeros((nz - 1, ni), dtype=np.float64)
     if not bool(cfg.use_settling):
-        return vs
+        return np.zeros((nz - 1, ni), dtype=np.float64)
     atm_base = cfg.atm_base
     if atm_base == "CO2":
         print("NO CO2 viscosity yet! (using N2 instead)")
     if atm_base not in _VISCOSITY_TABLE:
         raise IOError(f"No viscosity polynomial for atm_base={atm_base!r}")
     na, a, b = _VISCOSITY_TABLE[atm_base]
-    Tco_np = np.asarray(Tco, dtype=np.float64)
-    g_np = np.asarray(g, dtype=np.float64)
-    dmu = a * Tco_np**na / (b + Tco_np)  # dynamic viscosity, (nz,) g/(cm·s)
-    gi = 0.5 * (g_np[:-1] + g_np[1:])
+    settle_coeff = settling_coeff_array(cfg, species_list, rho_p, r_p)
+    vs = settling_velocity_jax(
+        na, a, b, jnp.asarray(Tco), jnp.asarray(g), jnp.asarray(settle_coeff)
+    )
+    return np.asarray(vs, dtype=np.float64)
 
+
+def settling_coeff_array(
+    cfg,
+    species_list: list[str],
+    rho_p: Mapping[str, float],
+    r_p: Mapping[str, float],
+) -> np.ndarray:
+    """Per-species ``rho_p * r_p**2`` (g/cm), zero for gas species. (ni,).
+
+    The static, host-side half of the settling velocity: it validates that
+    every condensible in ``non_gas_sp`` has a prescribed size and density.
+    Split out so the differentiable builder can reuse it without re-running
+    the validation each step.
+    """
+    ni = len(species_list)
+    settle_coeff = np.zeros(ni, dtype=np.float64)
     for sp in cfg.non_gas_sp:
         if sp not in species_list:
             continue
         if sp not in rho_p or sp not in r_p:
             raise IOError(f"{sp} has not been prescribed size and density!")
-        idx = species_list.index(sp)
-        vs[:, idx] = -1.0 * (
-            2.0 / 9.0 * float(rho_p[sp]) * float(r_p[sp]) ** 2 * gi / dmu[1:]
-        )
-    return vs
+        settle_coeff[species_list.index(sp)] = float(rho_p[sp]) * float(r_p[sp]) ** 2
+    return settle_coeff
 
 
 def _Dzz_gen_for_base(atm_base: str):
@@ -730,13 +821,66 @@ _SUPPORTED_CONDENSABLES: tuple[str, ...] = (
 )
 
 
+def sat_p_jax(sp: str, T: jnp.ndarray) -> jnp.ndarray:
+    """JAX core of one condensable's saturation vapour pressure (dyne/cm^2).
+
+    Single source of truth for :func:`compute_sat_p`, expressed in ``jnp`` so
+    the saturation curve is differentiable w.r.t. temperature. The only
+    non-smooth points are the phase-boundary kinks (ice/liquid for H2O, the
+    413 K break for S2/S8, the 187.6 K break for H2S).
+    """
+    T = jnp.asarray(T, dtype=jnp.float64)
+    if sp == "H2O":
+        T_C = T - 273.0
+        c0, c1, c2, c3 = 6111.5, 23.036, -333.7, 279.82  # ice constants
+        w0, w1, w2, w3 = 6112.1, 18.729, -227.3, 257.87  # liquid constants
+        # Murray formulae: ice for T<0°C, liquid water for T>0°C.
+        ice = c0 * jnp.exp((c1 * T_C + T_C**2 / c2) / (T_C + c3))
+        liquid = w0 * jnp.exp((w1 * T_C + T_C**2 / w2) / (T_C + w3))
+        return jnp.where(T_C < 0, ice, 0.0) + jnp.where(T_C > 0, liquid, 0.0)
+    if sp == "NH3":
+        c0, c1, c2 = 10.53, -2161.0, -86596.0
+        return jnp.exp(c0 + c1 / T + c2 / T**2) * 1e6
+    if sp == "H2SO4":
+        return jnp.exp(-10156.0 / T + 16.259) * 1.01325 * 1e6
+    if sp == "S2":
+        return jnp.where(
+            T < 413,
+            jnp.exp(27.0 - 18500.0 / T) * 1e6,
+            jnp.exp(16.1 - 14000.0 / T) * 1e6,
+        )
+    if sp == "S4":
+        return 10 ** (6.0028 - 6047.5 / T) * 1.01325e6
+    if sp == "S8":
+        return jnp.where(
+            T < 413,
+            jnp.exp(20.0 - 11800.0 / T) * 1e6,
+            jnp.exp(9.6 - 7510.0 / T) * 1e6,
+        )
+    if sp == "C":
+        a, b, c = 3.27860e1, -8.65139e4, 4.80395e-1
+        return jnp.exp(a + b / (T + c))
+    if sp == "H2S":
+        # Giauque & Blue (1936) Antoine fits; output is in cmHg.
+        ice_log10 = -1329.0 / T + 9.28588 - 0.0051263 * T
+        l_log10 = -1145.0 / T + 7.94746 - 0.00322 * T
+        sat_p = 10 ** jnp.where(T <= 187.6, ice_log10, l_log10)
+        # cmHg -> bar (0.0133322) -> dyne/cm^2 (1e6). The literal 0.01333
+        # is the cmHg->bar factor; anchored by the H2S boiling point
+        # (T=212.8 K -> formula gives 76.1 cmHg = 1.015 bar ~ 1 atm).
+        return sat_p * 0.01333 * 1e6
+    raise IOError(
+        f"No saturation vapor data for {sp}. Check `sat_p_jax` in atm_setup.py"
+    )
+
+
 def compute_sat_p(condense_sp: list[str], Tco: np.ndarray) -> dict[str, np.ndarray]:
     """Saturation vapour pressure (dyne/cm^2) per condensable species.
 
     Each supported species uses a hand-coded explicit formula; anything
     in `condense_sp` outside `_SUPPORTED_CONDENSABLES` raises.
     """
-    Tco_np = np.asarray(Tco, dtype=np.float64)
+    Tco_j = jnp.asarray(Tco, dtype=jnp.float64)
     out: dict[str, np.ndarray] = {}
     for sp in condense_sp:
         if sp not in _SUPPORTED_CONDENSABLES:
@@ -744,48 +888,7 @@ def compute_sat_p(condense_sp: list[str], Tco: np.ndarray) -> dict[str, np.ndarr
                 f"No saturation vapor data for {sp}. "
                 f"Check `compute_sat_p` in atm_setup.py"
             )
-        T = Tco_np.copy()
-        if sp == "H2O":
-            T_C = T - 273.0
-            c0, c1, c2, c3 = 6111.5, 23.036, -333.7, 279.82  # ice constants
-            w0, w1, w2, w3 = 6112.1, 18.729, -227.3, 257.87  # liquid constants
-            # Murray formulae: ice for T<0°C, liquid water for T>0°C.
-            sat_p = (T_C < 0) * (c0 * np.exp((c1 * T_C + T_C**2 / c2) / (T_C + c3)))
-            sat_p += (T_C > 0) * (w0 * np.exp((w1 * T_C + T_C**2 / w2) / (T_C + w3)))
-            out[sp] = sat_p
-        elif sp == "NH3":
-            c0, c1, c2 = 10.53, -2161.0, -86596.0
-            out[sp] = np.exp(c0 + c1 / T + c2 / T**2) * 1e6
-        elif sp == "H2SO4":
-            p_atm = np.exp(-10156.0 / T + 16.259)
-            out[sp] = p_atm * 1.01325 * 1e6
-        elif sp == "S2":
-            sat_p = np.zeros_like(T)
-            mask_lo = T < 413
-            sat_p[mask_lo] = np.exp(27.0 - 18500.0 / T[mask_lo]) * 1e6
-            sat_p[~mask_lo] = np.exp(16.1 - 14000.0 / T[~mask_lo]) * 1e6
-            out[sp] = sat_p
-        elif sp == "S4":
-            out[sp] = 10 ** (6.0028 - 6047.5 / T) * 1.01325e6
-        elif sp == "S8":
-            sat_p = np.zeros_like(T)
-            mask_lo = T < 413
-            sat_p[mask_lo] = np.exp(20.0 - 11800.0 / T[mask_lo]) * 1e6
-            sat_p[~mask_lo] = np.exp(9.6 - 7510.0 / T[~mask_lo]) * 1e6
-            out[sp] = sat_p
-        elif sp == "C":
-            a, b, c = 3.27860e1, -8.65139e4, 4.80395e-1
-            out[sp] = np.exp(a + b / (T + c))
-        elif sp == "H2S":
-            # Giauque & Blue (1936) Antoine fits; output is in cmHg.
-            mask_ice = T <= 187.6
-            ice_log10 = -1329.0 / T + 9.28588 - 0.0051263 * T
-            l_log10 = -1145.0 / T + 7.94746 - 0.00322 * T
-            sat_p = 10 ** (mask_ice * ice_log10 + (~mask_ice) * l_log10)
-            # cmHg -> bar (0.0133322) -> dyne/cm^2 (1e6). The literal 0.01333
-            # is the cmHg->bar factor; anchored by the H2S boiling point
-            # (T=212.8 K -> formula gives 76.1 cmHg = 1.015 bar ~ 1 atm).
-            out[sp] = sat_p * 0.01333 * 1e6
+        out[sp] = np.asarray(sat_p_jax(sp, Tco_j), dtype=np.float64)
     return out
 
 

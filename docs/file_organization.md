@@ -130,14 +130,19 @@ Pure functions:
 - `compute_mean_mass(ymix, ms_arr)` — per-layer mean molecular mass.
 - `_scan_up_mu_dz_g(...)` / `_scan_down_mu_dz_g(...)` — sequential `lax.scan` halves of the hydrostatic loop.
 - `compute_mu_dz_g(cfg, ymix, ms_arr, pico, Tco)` — full hydrostatic refresh; returns `mu, g, gs, Hp, Hpi, dz, dzi, zco, zmco, pref_indx, Ti`.
-- `compute_settling_velocity(cfg, Tco, g, species_list, rho_p, r_p)` — gravitational-settling velocities for `cfg.non_gas_sp`.
+- `compute_settling_velocity(cfg, Tco, g, species_list, rho_p, r_p)` — gravitational-settling velocities for `cfg.non_gas_sp`; delegates to the jnp core `settling_velocity_jax` (+ `settling_coeff_array` for the static `rho_p·r_p²` validation).
+- `kzz_profile_jax(kzz_prof, pico_int, *, K_deep, K_max, K_p_lev, const_Kzz)` — jnp core of the analytic `const`/`JM16`/`Pfunc` Kzz(P) profiles; backs `load_TPK` and is differentiable w.r.t. the profile parameters.
 - `_Dzz_gen_for_base(atm_base)` — molecular-diffusion coefficients table for the chosen ambient gas (`H2`/`N2`/`O2`/`CO2`).
 - `_alpha_array_for_base(atm_base, species_list, mol_mass)` — thermal-diffusion exponents.
 - `compute_mol_diff(cfg, Tco, n_0, g, Hp, dz, ms, alpha, species)` — `Dzz` / `Dzz_cen` / `vm` assembly.
 - `read_sflux_binned(cfg, bins, sflux_raw=None)` — read the stellar flux file (or accept a pre-read `sflux_raw` for tests) and rebin onto the photo grid; returns `sflux_top`, the `dbin1→dbin2` transition index, and the raw read.
 - `_parse_bc_file(path)` — tab-delimited boundary-condition file reader.
 - `read_bc_flux(cfg, species_list)` — assemble top/bot flux and deposition-velocity arrays from cfg + BC files.
-- `compute_sat_p(condense_sp, Tco)` — per-species saturation pressure. Hardcoded formulae for `H2O`, `NH3`, `H2SO4`, `S2`, `S4`, `S8`, `C`, `H2S`.
+- `compute_sat_p(condense_sp, Tco)` — per-species saturation pressure. Hardcoded formulae for `H2O`, `NH3`, `H2SO4`, `S2`, `S4`, `S8`, `C`, `H2S`; delegates per species to the jnp core `sat_p_jax` (differentiable w.r.t. `T`, phase-boundary kinks aside).
+
+The three jnp cores (`sat_p_jax`, `settling_velocity_jax`, `kzz_profile_jax`) are
+the single source of truth — the NumPy publics wrap them with `np.asarray` — and
+are reused on-graph by `atm_jax.build_atm_static`.
 
 Facade:
 - `Atm` — thin facade that mutates `data_atm` / `data_var` for legacy callers. Methods (`f_pico`, `load_TPK`, `TP_H14`, `mol_mass`, `mean_mass`, `f_mu_dz`, `mol_diff`, `BC_flux`, `sp_sat`, `read_sflux`) wrap the pure functions above.
@@ -205,6 +210,23 @@ that the host-side frozen `k_arr` does not. Bit-close to the NumPy build
 - `apply_lowT_caps(net, k_fwd, T, M)` — JAX port of `rates.apply_lowT_caps` (Moses+2005 low-T caps); applied when `build_rate_array(use_lowT_caps=True)`.
 - `gibbs_sp_vector` / `K_eq_array` / `fill_reverse_k` — Gibbs reverse-rate path (NASA-9 thermo is differentiable via the `nasa9_coeffs` argument).
 - `build_rate_array(net, T, M, nasa9_coeffs, remove_list=None, use_lowT_caps=False, rate_coeffs=None)` — end-to-end differentiable build: `compute_forward_k → (lowT caps) → fill_reverse_k → remove`.
+
+### `atm_jax.py`
+Differentiable on-graph atmosphere builder: reconstructs the `AtmStatic` the
+runner consumes from a `PhysicalInputs` pytree, so forward-mode tangents flow
+from physical knobs (T(P), surface gravity, planet radius, pressure grid,
+composition, eddy diffusion) into every derived quantity (`M`, `dz`, `Hp`,
+`dzi`, `Ti`, `Hpi`, `Dzz`, `Dzz_cen`, `vm`, `vs`). Reproduces the host
+`make_atm_static` field-for-field at machine precision for the default
+configuration (`atm_type` file/analytical/isothermal, `use_moldiff=on`);
+`atm_type='table'` and `use_moldiff=off` intentionally differ (build_atm_static
+is the more self-consistent one — see its docstring). (`tests/test_atm_jax.py`).
+- `PhysicalInputs` — differentiable leaves (`pco`, `Tco`, `ymix`, `Kzz`, `vz`, `gs`, `Rp`).
+- `AtmSpec` — static config closed over (species, `atm_base`, transport toggles, the discrete hydrostatic anchor `pref_indx`, `ms`/`alpha`, masks, fluxes).
+- `build_atm_static(phys, spec)` — the on-graph cascade (`compute_mu_dz_g` + `compute_mol_diff` + settling reproduced with `jnp`), gated exactly as `make_atm_static`.
+- `make_physical_inputs(cfg, var, atm, species_list)` — bridge a legacy `(cfg, var, atm)` setup into `(PhysicalInputs, AtmSpec)`.
+- `pco_from_endpoints(P_b, P_t, nz)` — log-spaced pressure grid on-graph (for `∂/∂P_b`/`∂/∂P_t`).
+- Frozen by design: FastChem init, the photo T-dependent cross-section rebake. `analytical_TP_H14` differentiates but its `expn` forward-mode is slow over a deep column — differentiate the `Tco` leaf instead.
 
 ### `network.py`
 Parse a VULCAN-format reaction-network text file.
@@ -592,6 +614,7 @@ transform consistency. Run with
 - `test_steady_state_reaction_sensitivity.py` — reverse-mode reaction sensitivities: fast deflation/scaling/assembly unit tests + a slow HD189 fixture regression (`VULCAN_JAX_RUN_SLOW=1`).
 - `test_rates_jax.py` — differentiable `rates_jax` parity vs NumPy (incl. low-T caps) + finite `jvp` w.r.t. `T` and Arrhenius coefficients.
 - `test_forward_jvp_physical.py` — forward-mode AD through a physical transport knob (`Kzz`) over one Ros2 step: `jvp == vjp` + coarse FD sanity.
+- `test_atm_jax.py` — on-graph atmosphere builder: `build_atm_static` field-for-field equal to `make_atm_static` for the default config (HD189 + synthetic vm/settling branches; `table`/`moldiff-off` intentionally differ), FD-matched `jvp` for `dz/dgs`, `M·Dzz/dTco`, `M/dP_b`, the `sat_p`/`settling`/`Kzz` jnp-core parity, plus the Kzz-defaults / load_TPK fail-loud guards.
 - `test_cfg_examples.py` — each kept config loads + runs pre-loop setup.
 - `test_config_matrix.py` — config-flag combination coverage.
 
@@ -602,6 +625,7 @@ transform consistency. Run with
 - `batched_run.py` — `jax.vmap` over the per-step kernel for batched atmospheres.
 - `gpu_benchmark.py` — standalone GPU throughput benchmark driving `run_batch` to convergence over HD189-like planet batches (parallel host setup, chunked progress, `--device-batch` host-side tiling). Kept byte-identical with `vulcan-emulator/supercomputer_cmds/gpu_benchmark.py`.
 - `grad_jvp_example.py` — forward-mode AD through the per-step kernel.
+- `grad_physical_example.py` — forward-mode AD w.r.t. physical inputs (gravity, temperature, pressure grid) via `atm_jax.build_atm_static`, each tangent FD-matched.
 - `grad_reverse_example.py` — reverse-mode reaction ranking on a real HD189 column via `steady_state_reaction_sensitivity`.
 
 ### `tools/`

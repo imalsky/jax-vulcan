@@ -162,9 +162,14 @@ def apply_lowT_caps(
     return k
 
 
-def gibbs_sp_vector(coeffs: np.ndarray, T: jnp.ndarray) -> jnp.ndarray:
-    """g_sp/(RT) per species per layer. coeffs (ni,2,10) static, T (nz,) -> (ni,nz)."""
-    c = jnp.asarray(np.asarray(coeffs, dtype=np.float64))
+def gibbs_sp_vector(coeffs, T: jnp.ndarray) -> jnp.ndarray:
+    """g_sp/(RT) per species per layer. coeffs (ni,2,10), T (nz,) -> (ni,nz).
+
+    `coeffs` may be a NumPy array (the static thermo) or a JAX array/tracer:
+    `jnp.asarray` (not `np.asarray`) keeps it on the graph so reverse rates are
+    differentiable w.r.t. the NASA-9 coefficients.
+    """
+    c = jnp.asarray(coeffs, dtype=jnp.float64)
     a_low, a_high = c[:, 0, :], c[:, 1, :]
     Tg = jnp.asarray(T)[None, :]
 
