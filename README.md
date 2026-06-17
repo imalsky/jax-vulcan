@@ -331,33 +331,65 @@ All kernels are `jit`/`vmap`/`jvp`/`vjp` compatible:
 
 ## Differentiability
 
-**Two levels — be clear which one you mean:**
+**The rule:** a quantity is differentiable **iff it reaches the runtime as a JAX
+array** — either because you supply it directly into the runtime pytrees
+(`AtmStatic` / `RateInputs` / `PhotoStaticInputs` / initial `y`), or because we
+provide an on-graph builder for it (`rates_jax` for `T -> k`). Drive the inner
+`integ._runner` (not `OuterLoop.__call__`, which copies to host and breaks
+tracing); forward-mode (`jvp`/`jacfwd`) then runs end-to-end through the converged
+integration (FD-validated <0.1%). A scalar *parameter* that a **host-side setup
+formula** expands into those arrays is **not** differentiable until that formula
+is on the graph — that is the one real boundary.
 
-1. **Runtime arrays (differentiable now).** Any physical quantity supplied as a
-   JAX array into the runtime pytrees (`AtmStatic` / `RateInputs` /
-   `PhotoStaticInputs` / initial `y`) and driven through the inner `integ._runner`
-   is on the AD graph. Forward-mode (`jvp`/`jacfwd`) runs end-to-end through the
-   converged integration (FD-validated <0.1%).
-2. **Physical *setup* inputs (mostly not yet on the graph).** The host-side
-   builders (`atm_setup`, `photo_setup`, `ini_abun`/FastChem, condensation
-   saturation) run in NumPy. To differentiate a higher-level knob you either
-   build the corresponding runtime pytree field yourself as a JAX array (the
-   examples show how) or use the on-graph builders we provide (`rates_jax` for
-   `T -> k`). FastChem cannot be differentiated at all (it is a subprocess).
+### What you CAN differentiate now (forward-mode, end-to-end)
 
-| Physical input | Differentiable? | How |
+| Physical input | How |
+|---|---|
+| Reaction rates `k` (forward **and** reverse) | supply `k_arr`; reverse-mode reaction ranking via `steady_state_reaction_sensitivity` (all reactions, one solve) |
+| Temperature `T` (per-layer array) | rebuild `k` on-graph with `rates_jax.build_rate_array` (`use_lowT_caps=True` on cool networks) + recompute `n_0 = pco/(kb T)` |
+| Rate coefficients — Arrhenius `a`/`n`/`E`, NASA-9 thermo | `rates_jax.build_rate_array(..., rate_coeffs={"a": ...})`; NASA-9 via `nasa9_coeffs` (one hardcoded Troe row excepted) |
+| Eddy diffusion `Kzz`, advection `vz` | `atm._replace(Kzz=...)`, drive `_runner` |
+| Boundary fluxes / deposition velocity | supply `top_flux` / `bot_flux` / `bot_vdep` |
+| Initial abundances `y0` | perturb `y0` directly |
+| **Metallicity `[M/H]`, C/O ratio** | a `y0` *tangent*: scale metal-bearing species for `[M/H]`, or C-bearing vs O-bearing for C/O (example below). This is the correct derivative for a closed column — `Z` is the conserved metal inventory and the steady state depends on element totals, not on the initial speciation. It is exactly Fig. 9 (`∂ln VMR/∂ln Z`, SO₂ `∝ Z^2.6`). |
+| Molecular/thermal diffusion `Dzz`, `vs`, `vm` (as arrays) | supply the arrays directly; note a `T`-*driven* `Dzz` change is frozen (the `T -> Dzz` formula is host-side) |
+
+### What you CANNOT differentiate yet
+
+These are scalar / structural knobs that a **host-side NumPy formula** expands into
+(often several coupled) runtime arrays, so there is no single array to inject.
+They need that formula ported to JAX (the planned `PhysicalInputs -> on-graph
+builder` layer):
+
+| Blocked knob | Why it's blocked | Workaround today |
 |---|---|---|
-| Reaction rates `k` | Yes — forward **and** reverse | supply `k_arr`; reverse: `steady_state_reaction_sensitivity` (all reactions, one solve) |
-| Eddy diffusion `Kzz`, advection `vz` | Yes — forward | `atm._replace(Kzz=...)`, drive `_runner` |
-| Boundary fluxes / deposition velocity | Yes — forward | supply `top_flux` / `bot_flux` / `bot_vdep` |
-| Initial abundances `y0` (incl. metallicity / C-O by scaling) | Yes — forward | perturb `y0` directly; FastChem itself is **not** differentiable |
-| Temperature `T` | Yes — forward | rebuild `k` on-graph with `rates_jax.build_rate_array` (`use_lowT_caps=True` on cool networks) + recompute `n_0 = pco/(kb T)` |
-| Rate coefficients (Arrhenius `a`/`n`/`E`, NASA-9 thermo) | Yes — forward | `rates_jax.build_rate_array(net, T, M, nasa9, rate_coeffs={"a": ...})`; NASA-9 via the `nasa9_coeffs` arg (one hardcoded Troe row excepted) |
-| Molecular/thermal diffusion `Dzz`, `vs`, `vm` | Array-level only | supply the arrays; the `T -> Dzz` builder is host-side |
-| TP-profile params, pressure grid, gravity / scale-height chain | Not yet (setup) | host-side `atm_setup`; construct the `AtmStatic` fields yourself |
-| Cross sections / stellar flux / branching ratios | Not yet (setup) | host-side `photo_setup`; inject `PhotoStaticInputs` as JAX arrays |
-| Condensation saturation / static inputs | Not yet (setup) | host-side; build the conden static yourself |
-| Elemental abundances via FastChem (`ini_mix='EQ'`) | No (subprocess) | not differentiable; scale `y0` instead |
+| TP-profile parameter, e.g. `∂L/∂T_irr` | `T_irr -> Tco(P)` is `atm_setup.analytical_TP_H14` (host-side), and `T_irr` also feeds `M`, `n_0`, `dz`, scale heights, `k(T)` — none rebuilt on-graph | differentiate the per-layer `T` array instead |
+| Surface gravity / planet mass, `∂L/∂g_p` | `atm_setup.compute_mu_dz_g` builds the hydrostatic grid (`dz`, `Hp`, `n_0`) host-side — no single injectable array | — |
+| Stellar-flux scale / spectrum | read + binned host-side in `photo_setup` | inject `PhotoStaticInputs.sflux` as a JAX array |
+| Photo cross-section perturbation (UQ) | CSV read + T-interpolation host-side | inject `PhotoStaticInputs` cross-sections as JAX arrays |
+| Condensation saturation-pressure / particle-size params | `atm_setup.compute_sat_p` + conden statics host-side | build the conden static yourself |
+| Pressure falloff via a `P` *parameter* | `P` reaches `n_0` on-graph, but `k(P)` falloff needs `M = P/(kb T)` rebuilt | use the on-graph rate builder with recomputed `M` |
+
+**FastChem is the one true wall** (a subprocess): you cannot differentiate the
+scalar `[M/H] -> t=0 equilibrium speciation` map. But you almost never need to —
+a converged closed column forgets the initial speciation, so the metallicity /
+C-O derivatives above (via `y0` tangents) are the scientifically correct ones.
+
+```python
+# Metallicity in one forward pass (Fig. 9). Closed column => scaling the
+# metal-bearing initial abundances is the [M/H] knob. compo_array column 0 is H
+# (default atom_list order), so [:, 1:] selects metal atoms.
+import jax, jax.numpy as jnp
+from vulcan_jax import composition
+
+metal = jnp.asarray((composition.compo_array[:ni, 1:].sum(1) > 0).astype(float))
+
+def run_from_y0(y0):                       # converged VMR from an initial state
+    final = integ._runner(state0._replace(y=y0), atm)
+    return final.y / final.y.sum(1, keepdims=True)
+
+_, dlnVMR_dlnZ = jax.jvp(run_from_y0, (y0,), (y0 * metal[None, :],))
+```
 
 **Reverse-mode is reaction-ranking only.** The single reverse-mode entry point is
 `steady_state_reaction_sensitivity` (`dL/d ln k` for every reaction). It is *not*
