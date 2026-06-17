@@ -1,9 +1,7 @@
 # Implementation notes — parity-gap closure pass (2026-06-11)
 
-Companion to `VULCAN_PARITY_GAP_REPORT.md` (see its Resolution section for
-what was changed per gap) and `big_gpu_needed_change.md`. This file records
-what still needs clarification or off-machine verification, and the problems
-hit along the way.
+This file records the parity-gap closure pass: what still needs clarification
+or off-machine verification, and the problems hit along the way.
 
 ## Needs HPC verification (cannot be done on this CPU-only host)
 
@@ -155,3 +153,274 @@ Remaining known items from that review, deliberately not changed:
   which is tested). Same coverage status as other live-but-non-default
   branches per the scope rule. If an ion network is ever vendored, add a
   solo run asserting e is constant within a step before charge balance.
+
+## End-to-end AD: forward works, reverse does not (2026-06)
+
+Status after a full investigation (diagnostic scripts live in
+`../jax_paper/scripts/`: `fig_kzz_jvp_validate.py`, `diag_reverse_adjoint.py`,
+`diag_fixedpoint_adjoint*.py`).
+
+**Forward-mode (`jvp`/`jacfwd`) WORKS end-to-end through the converged runner.**
+The only blocker was the analytical-Jacobian `y^0` NaN-jvp at clipped cells;
+after that one value-identical fix, a single forward pass
+differentiates the whole production integration. Validated d(VMR)/d(ln Kzz) on a
+complete HD189 run (photo on, ~1300 steps) vs re-converged centered FD:
+correlation >0.9999, <0.1% on responding levels. **This is the supported route
+for end-to-end production gradients.** Cost: one pass per input direction.
+
+**Reverse-mode (`vjp`/`grad`) does NOT work end-to-end on production runs.** The
+true gradient exists (FD gives clean O(1) values), but every reverse path we
+tried fails because the steady-state Jacobian `J = df/dy` is simultaneously
+(a) **singular** — a closed column conserves each element, so `J` has a
+conserved-mass null space — and (b) **severely ill-conditioned** — chemistry is
+stiff, production/loss terms ~1e28 cancel at steady state (the `segment_sum`
+residual at the converged state is ~1e21, cancellation level 1.0). What was tried,
+all measured on HD189 (CH4 mid-layer loss, FD truth dL/dlnk_{r13} = -0.565):
+
+1. **Residual-IFT adjoint** (`steady_state_grad._solve_adjoint`, block-Thomas
+   defect-correction). Adjoint residual stalls near 1e5; gradient = +876 (wrong
+   sign and ~1500x off). Works only on the well-conditioned synthetic problem in
+   `tests/test_steady_state_grad.py` (~1e-9 there).
+2. **Matrix-free LSQR pseudoinverse** of `J^T` (`scipy.sparse.linalg.lsqr`,
+   matvec=vjp, rmatvec=jvp). Stagnates: `istop=7`, `lambda~6e-26`, gradient ~0.
+   `J`'s 1e21-scale entries make it hopeless without preconditioning.
+3. **Fixed-point (iteration-map) adjoint** `(I - dG/dy)^T z = v` on the body map
+   `G(y) = n_0*normalize(ros2_step(y))`. This is the principled fix: `G`'s
+   fixed point is y* (fp_err ~1e-9), and `(I - dG/dy)` rides the step's
+   regularized `(I/gamma*h - J)` solve, so it is far better conditioned than the
+   bare `J` (this is exactly why forward-mode works). BUT: the map is
+   **non-contractive** — a Neumann iteration diverges (gradient went
+   -3.9 -> -6.6 -> +0.56 -> -26 over 20/60/200/600 iters) — and `(I - dG/dy)`
+   inherits the conserved-mass null space, so it needs a Krylov solve. Every
+   matvec is a full reverse pass through one Ros2 step (~10350-dim operator), so
+   BiCGSTAB/GMRES are prohibitively slow to even compile here, and the singular
+   operator stalls them. Not practical as-is.
+
+**Why forward escapes it:** forward-mode never forms `J^{-1}`; it propagates the
+tangent through the integrator's own regularized stage solves. Reverse-mode can
+only inherit that regularization through the fixed-point adjoint, which then
+needs a *preconditioned* Krylov solver (e.g. reusing the step's block-Thomas
+factor as preconditioner). That is the natural future-work path to practical
+reverse-mode production gradients; it was out of scope for this pass.
+
+### 2026-06-16: reverse-mode steady-state adjoint — BREAKTHROUGH to ~6%, gold (<1%) still open
+
+Big picture after a long push: the **fundamental wall is broken** — reverse-mode
+at the converged steady state now produces a **correct-sign, right-ballpark
+(~6%)** gradient on a real closed column, where every earlier attempt failed
+*catastrophically* (wrong sign `+876`, NaN, or divergence to `1e57`). But
+**verified gold accuracy (<1%) was NOT reached** this session; it is a genuine
+numerical-stiffness research problem, not a tuning detail. Full play-by-play so a
+future session doesn't re-walk the dead ends.
+
+#### What worked (the breakthrough): log-space + deflation + Krylov on the body map
+
+Fixed-point adjoint `(I - dG/dy)^T z = v`, `dL/dlnk = z^T dG/dk`, with THREE
+coupled ingredients (each fixes one documented prior failure; all three needed):
+
+1. **Log-abundance scaling.** Solve in `eta = ln y`. Similarity transform
+   `D^{-1}(I-dG/dy)D`, `D=diag(y*)`: same spectrum, but operator norm `1e6 -> ~294`
+   and cotangent `|v| 3e-12 -> |v_eta| 0.43` (both O(1)). This is what LSQR/GMRES
+   never had. Identities (elementwise): `A_eta z = z - y* .* vjp_Gy(z/y*)`,
+   `v_eta = y* .* v`, `c_eta = y* .* (compo[:,e].*dz)`, recover `lambda = z/y*`,
+   `dL/dlnk = (k .* vjp_Gk(lambda)).sum`.
+2. **Conservation deflation** with analytic atom-count vectors `c_e=compo[:,e]*dz`
+   (QR -> projector). Only the LEFT-null is needed: the right-null cancels from
+   atom-conserving-knob gradients since `c_e^T df/dk = 0`. In log space the null
+   quality `||A c||/(||A||||c||) -> 0` and `||Pv||/||v|| = 1.0` (verified).
+3. **Krylov/Neumann, not raw Neumann.** After deflation, projected Neumann finally
+   *converges* (it diverged before).
+
+**Validation** (HD189, photo off; loss=`log10(CH4 mixing)` mid-layer; FD truth
+`dL/dlnk_{r13} = -0.565`): projected Neumann `N=200` gives `-0.598` (**5.8%,
+correct sign**). That is the breakthrough datum.
+
+#### Why it stalls at ~6% — the genuine obstacle
+
+The error is dominated by **slow near-conserved chemical modes**: ODE eigenvalues
+`mu -> 0^-` sitting just off the exact conserved null. The gradient `v` lives
+substantially IN this slow subspace, so you must resolve it — but it is what makes
+the operator ill-conditioned. Hard facts learned (do not re-derive):
+
+- **`dt` is NOT a free conditioning knob.** Larger body-map `dt` was hoped to damp
+  slow modes, but it is a *danger zone*: at `dt~1e11` the step's own implicit solve
+  `(I/(gamma h) - J)` goes near-singular (`1/(gamma h) ~ mu_slow ~ 3e-11`) and the
+  adjoint **diverges** (resid `-> 1e57`). Safe regime is moderate `dt~1e8`.
+- **`n_0*normalize(step)` body map BIASES the answer.** Its renormalization
+  projects out molecule-count changes, so number-changing reactions get the wrong
+  gradient (drifts `-0.598 -> -0.667` with more iterations, *away* from FD). Its
+  fixed point is tighter (`fp_err 5e-9` vs bare `1.3e-4`) but it is not the true
+  steady-state adjoint.
+- **The BARE step is unbiased but Neumann-UNSTABLE.** Its `dG/dy` has an unstable
+  total-density-per-layer mode (the one normalization removes), so Neumann diverges
+  at every `dt`. It would need GMRES + deflation of the `nz` total-density modes.
+- **The `~1e21` residual is NOT cancellation noise.** `||f(y*)||=1.56e21` is
+  *identical* for the segment-sum and the codegen RHS, so it is the genuine
+  (relative ~1e-7) residual, not a formulation artifact — switching RHS does not
+  help. (Disproved the noise hypothesis directly.)
+
+#### The residual-IFT route (cleaner formulation, also stalls on stiffness)
+
+`J^T lambda = v` with `J = df/dy` from one vjp of the steady-state residual
+`f = chem_rhs + diffusion` ("single RHS eval"). Unbiased; only null space is the
+element-conservation one. Components ALL verified correct (`adj_verify.py`):
+`||J^T c_e||/||c|| ~ 1e-5`, block-Thomas inverts `M = reg*I - J` (rel err 4e-4 at
+`reg=1e-2`), vjp `J^T` matches the analytical block Jacobian to `6e-14`. Solver
+lessons:
+
+- **Left-preconditioning minimizes the WRONG metric.** `Minv` eigenvalues span
+  `1e-10..100`, so the preconditioned residual down-weights exactly the fast modes
+  the gradient needs -> small preconditioned resid, huge true resid, garbage
+  gradient. Use **right-preconditioning** (GMRES residual == true residual).
+- **`reg` (preconditioner shift) faces an unfixable tradeoff:** the conserved null
+  forces `cond(M) ~ |mu_max|/reg`; resolving the slow mode needs `reg ~ mu_slow`
+  which makes `cond(M) ~ 3e20` -> block-Thomas is float64 garbage. No single `reg`
+  both keeps `Minv` accurate and separates the slow mode from the null.
+- **Orthogonal deflation of the slow modes BIASES the gradient** (it drops their
+  real contribution). The correct technique is **augmented GMRES** (keep the slow
+  modes in the search space). Implemented (power iteration on `Minv` for the slow
+  subspace + augmented Krylov least-squares), but with `n_slow=24, m=300` the true
+  residual only reached `~0.6` — the slow subspace `v` lives in is high-dimensional
+  / the real-block power iteration misses complex slow pairs. This is the open edge.
+
+#### THE working route to gold: bare solver-map + GMRES (not Neumann)
+
+The residual-IFT (separate `reg*I-J` preconditioner) cannot cluster the slow modes
+— the bordered/saddle fix removed the inconsistency but restarted GMRES still
+diverged (`0.56 -> 2.14`). The reason is structural: **the solver-map
+`(I - dG/dy)^T` is the integrator's EXACTLY-preconditioned `J`** (block-Thomas at
+the step `dt`, composed exactly inside the Ros2 step) — far better conditioned than
+any separately-computed `Minv*J^T`. You cannot replicate it with a standalone
+preconditioner. So ride the solver-map.
+
+Use the **BARE Ros2 step** (`G(y) = ros2_step(y,k)`, NOT `n_0*normalize(...)`):
+the normalize biases molecule-count-changing reactions (drifts away from FD). The
+bare step's only defect is an unstable total-density mode that diverges *Neumann* —
+but **GMRES handles indefinite spectra**, so just use GMRES. Recipe: log-space
+`A_eta`, deflate the conserved null `c_e`, host-side restarted GMRES (double
+Gram-Schmidt), gradient `(k .* vjp_Gk(z/y*)).sum`. Do NOT deflate the total-density
+mode (that re-introduces the normalize bias); let GMRES resolve it.
+
+**This converges, unbiased, toward FD** (HD189 photo-off, `adj_solvermap_gmres.py`,
+`dt=1e8`): with **restarted** GMRES(m=300) the gradient OSCILLATES around FD
+(`r13` ranges `-0.43..-0.63` vs FD `-0.565`, residual bounces `0.1..1.6`) — classic
+restarted-GMRES stagnation on an indefinite operator. **LGMRES** (scipy, augmented
+GMRES that carries vectors across restarts) fixes the oscillation and STABILIZES:
+`r13=-0.527 (6.8%)`, `r116=+2.78e-5 (2.4%)` at 3060 matvecs (residual 0.23, still
+under-iterated). So the solver is the bare solver-map + **LGMRES** (not restarted
+GMRES).
+
+#### The accuracy ceiling is a STEADY-STATE DEFINITION mismatch, not a solver bug
+
+LGMRES stabilizes the dominant/fast reactions near-gold (`r116` 2.4%) but the
+slow-mode-sensitive ones (`r13`) plateau at ~few %. The reason is fundamental and
+worth understanding before chasing <1%:
+
+- The slowest chemical mode has `tau ~ 3e10 s`, but the forward run "converges"
+  (longdy/dt criterion) at `~2e7 s` — so that mode is **essentially frozen at its
+  initial value, not relaxed** (it moved ~0.07% of the way). The criterion passes
+  because `dy/dt` of a `tau=3e10` mode is tiny, not because it reached steady state.
+- **FD and the IFT therefore differentiate DIFFERENT states.** FD re-integrates to
+  the same criterion → `dy*/dk` of the *practically-converged* state (slow mode
+  stays frozen). The IFT solves `f(y*)=0` → `dy*/dk` of the *idealized infinite-time*
+  steady state (slow mode fully relaxes in response to `dk`). For reactions that
+  move the slow mode, these disagree by O(few %); for fast-mode reactions (`r116`)
+  they agree (the slow mode is irrelevant).
+- This is exactly why **forward-mode `jvp` matches FD to <0.1%** but reverse-IFT
+  matches only to ~few %: forward-mode differentiates the *actual integration-to-
+  criterion map* (same as FD), while the IFT differentiates `f=0`. They are
+  genuinely different derivatives when the steady state isn't fully relaxed.
+
+So **<1% on every reaction is not achievable via the `f=0` IFT** at this
+convergence tolerance — not for lack of solver iterations. To close it you would
+need either (a) a fully-relaxed `y*` (integrate `>> 3e10 s`, ~1000x longer — usually
+impractical), or (b) to differentiate the criterion-map itself, which IS reverse-
+mode-through-the-loop (the thing `lax.while_loop` blocks). The honest, useful
+result: **reverse-mode at the steady state works, unbiased, and matches FD to ~few %
+(near-gold on the dominant/fast reactions)** — which is exactly the accuracy a
+reaction-importance ranking needs.
+
+**W39b/SO2 DONE (2026-06-16).** The same bare solver-map + log-scaling + conserved-
+null deflation + LGMRES, run on the converged WASP-39b state (photo on, ni=89,
+nr=1150), gives `dL/d(ln k)` for converged SO2 over ALL 1150 reactions in ONE
+adjoint solve — the steady-state analogue of `fig_diff_demo.py` (which is only an
+*instantaneous* single-RHS-eval gradient). It CONVERGED CLEANLY here (LGMRES
+residual `1.2e-2`, gradient stable across all chunks — better than HD189, because
+the SO2-at-peak-layer functional is more fast-mode-dominated). Physically sensible
+ranking: **OH + H2 ⇌ H2O + H (0.68)** sets the OH budget, then the direct
+**SO + OH → SO2 + H (0.37)** and **OH + S → H + SO (0.32)**; the top sensitivity is
+not even a sulphur reaction. Pipeline: `adj_save_state_w39b.py` (converge + dump)
+-> `adj_w39b_so2.py` (LGMRES adjoint, writes `outputs/w39b_so2_dLdlnk.npz`) ->
+`fig_w39b_so2_reactions.py` (`w39b_so2_reactions.png`, paper Fig `fig:so2_rev`).
+**Two caveats:** (1) photolysis is held FROZEN at the converged k_arr — leading-order
+thermochemistry; the `dJ/dy` feedback (`outer_loop._make_photo_branch` recomputes
+`J` from `y`) is omitted, a second-order refinement. (2) Accuracy is the few-%
+steady-state-definition ceiling. **Bug fixed en route:** W39b has species clipped to
+EXACTLY 0, so `inv_y = 1/y_star` was `inf` -> all-NaN; mask with
+`jnp.where(y_star>0, 1/y_star, 0)` (absent species become identity rows). HD189
+never hit this (no exact zeros).
+
+Compile gotcha: each fresh process pays a ~20-min COLD compile of the block-Thomas-
+scan step-vjp (a warm in-process cache makes a *second* run in the same session
+fast, but it doesn't survive process exit; setting `jax_compilation_cache_dir` did
+NOT help and seemed to *break* the warm path — left unset). This, plus macOS load
+spikes (load ~45 from desktop apps), is what made the gold-iteration loop slow.
+
+Operational note: macOS App Nap throttles backgrounded compiles ~5-10x under
+desktop load; wrap runs in `caffeinate -dimsu`. The codegen step-vjp compiles in
+~10 min; the segment-sum residual vjp in ~4 s (iterate the linear algebra on that).
+
+**Scripts** (`jax_paper/scripts/`): `adj_save_state.py` (converge+dump HD189 state
+once so the linear algebra iterates in seconds), **`adj_solvermap_gmres.py` (THE
+working route — bare solver-map + GMRES, converging toward FD; run more cycles to
+verify gold)**, `adj_debug.py` (log-space deflated Neumann on the body map — the
+first ~6% result), `adj_one.py` (single body-map `dt` run), `adj_dt_sweep.py` (`dt`
+regime sweep), `adj_verify.py` (component checks — all pass), `adj_ift_gmres.py` /
+`adj_ift2.py` / `adj_ift3.py` (residual-IFT with right-precond / augmented /
+bordered GMRES — the dead-end route, kept as evidence the separate preconditioner
+can't cluster the slow modes). These supersede the failed `diag_reverse_adjoint.py`
+/ `diag_fixedpoint_adjoint*.py`. A clean reusable solver should land in
+`steady_state_grad.py` once gold + photo-on are reached.
+
+### 2026-06-16: PRODUCTIONIZED — single reverse-mode path in the library
+
+The working route (bare solver-map + log-abundance + conserved-null deflation +
+host LGMRES) is now the public `steady_state_grad.steady_state_reaction_sensitivity`
+— `dL/d(ln k_r)` for all reactions in one solve. This is the **only** reverse-mode
+path now: the residual-IFT `custom_vjp` (`differentiable_steady_state*`,
+`_solve_adjoint` block-Thomas defect-correction, the `SteadyStateInputs` plumbing)
+and its synthetic test were **deleted** as the failed route — it converged only on
+the well-conditioned synthetic problem, never on a real closed column. The dead-end
+exploratory scripts (`adj_ift*`, `adj_debug`, `adj_one`, `adj_dt_sweep`,
+`adj_verify`) and the repo-root `ablation_*.py` were removed; the working scripts
+(`adj_solvermap_gmres.py`, `adj_w39b_so2.py`, `adj_save_state*.py`) stay as the
+reference + npz-state dumpers.
+
+Verification (all green): `tests/test_steady_state_reaction_sensitivity.py` —
+fast deflation/scaling/assembly unit tests always-on; slow HD189 fixture
+regression (`tests/data/adj_state_hd189.npz`, `VULCAN_JAX_RUN_SLOW=1`, ~18 min
+incl. step-vjp compile) reproduces the FD anchors (CH4 r13 ≈ -0.53 vs FD -0.565,
+sign-correct, top-ranked). WASP-39b SO2 (1150 reactions) ranks OH+H2⇌H2O+H top via
+`jax_paper/scripts/adj_equivalence_check.py` (library function on the saved W39b
+dump). Forward-mode re-confirmed: `tests/test_rates_jax.py` + `examples/grad_jvp_example.py`.
+The few-% ceiling and frozen-photo caveat are unchanged (steady-state-definition
+mismatch, not a solver bug); forward-mode stays the higher-accuracy route. Recipe:
+`examples/grad_reverse_example.py`.
+
+Follow-up additions (review-driven, same pass):
+- `rates_jax` is now the *complete* canonical differentiable rate path: the three
+  Moses+2005 low-T caps are ported (`apply_lowT_caps`, gated by
+  `build_rate_array(..., use_lowT_caps=True)`), so dL/dT is correct on cool
+  networks too (default off; hot benchmarks never trigger them).
+- `rates_jax` exposes Arrhenius coefficient overrides
+  (`build_rate_array(..., rate_coeffs={"a"|"n"|"E"|...})`) so rate-coefficient
+  *uncertainty* gradients are available; NASA-9 thermo was already differentiable
+  via the `nasa9_coeffs` argument. (The one hardcoded Troe row stays fixed.)
+- `steady_state_reaction_sensitivity` now warns by default (not only via `info`)
+  when the LGMRES residual or body-map fixed-point error is poor, so an
+  under-converged adjoint is not silently trusted.
+- New always-on tests: `tests/test_forward_jvp_physical.py` (forward-mode Kzz
+  through one step; jvp==vjp, FD sanity), plus rate-coefficient-override and
+  low-T-cap parity checks in `tests/test_rates_jax.py`. README gained a
+  "what is differentiable" table distinguishing runtime-array inputs (on the
+  graph now) from physical *setup* inputs (host-side; build the pytree yourself).

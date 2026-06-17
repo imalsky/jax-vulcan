@@ -27,45 +27,69 @@ jax.config.update("jax_enable_x64", True)
 
 _UNDERFLOW_DENOM = 1e-300
 
-_PROJECT_ATOMS = ("H", "O", "C", "N")
-_RESERVOIR_SPECIES = ("H2", "H2O", "CO", "N2")
+# Ordered (atom, reservoir-species) pairs for the chemistry atom-conservation
+# projection. Each atom the active network tracks is driven to exact
+# conservation by distributing its per-layer production residual onto the paired
+# abundant "reservoir" carrier of that atom. The projection is built over
+# whichever pairs the network actually supports, so the C--H--N--O networks
+# conserve H/O/C/N (reservoirs H2, H2O, CO, N2) and the S-bearing SNCHO network
+# additionally conserves S via H2S. Pairing one reservoir per atom keeps the
+# reservoir count matrix square, so a single linear solve zeros every atom
+# residual simultaneously -- including the H that H2S also carries.
+_ATOM_RESERVOIRS = (
+    ("H", "H2"),
+    ("O", "H2O"),
+    ("C", "CO"),
+    ("N", "N2"),
+    ("S", "H2S"),
+)
 
 
 def _build_chem_projection_tables() -> tuple[
     bool, jnp.ndarray, jnp.ndarray, jnp.ndarray
 ]:
-    """Build static reservoir-projection tables for chemistry conservation."""
-    atom_names = tuple(
-        atom
-        for atom in _PROJECT_ATOMS
-        if atom in getattr(vulcan_cfg, "atom_list", ())
-        and atom in _composition.compo.dtype.names
+    """Build static reservoir-projection tables for chemistry conservation.
+
+    The projection conserves every atom in ``vulcan_cfg.atom_list`` for which the
+    composition table carries the atom column and the paired reservoir species is
+    a tracked species. Selecting the pairs from the active network (rather than a
+    fixed H/O/C/N set) lets the S-bearing SNCHO network conserve sulfur through
+    H2S while leaving the C--H--N--O networks bit-for-bit unchanged. One
+    reservoir per atom keeps ``reservoir_counts`` square; it is invertible for
+    every subset of these atoms because the C, N and S columns each have a single
+    nonzero entry (their own reservoir), so the solve always reduces to the
+    invertible H/O block.
+    """
+    compo_names = _composition.compo.dtype.names
+    cfg_atoms = getattr(vulcan_cfg, "atom_list", ())
+    pairs = tuple(
+        (atom, reservoir)
+        for atom, reservoir in _ATOM_RESERVOIRS
+        if atom in cfg_atoms
+        and atom in compo_names
+        and reservoir in _SPEC_LIST
     )
-    if atom_names != _PROJECT_ATOMS:
+    if not pairs:
         return (
             False,
             jnp.zeros((len(_SPEC_LIST), 0), dtype=jnp.float64),
             jnp.zeros((0,), dtype=jnp.int32),
             jnp.zeros((0, 0), dtype=jnp.float64),
         )
-    if any(sp not in _SPEC_LIST for sp in _RESERVOIR_SPECIES):
-        return (
-            False,
-            jnp.zeros((len(_SPEC_LIST), len(_PROJECT_ATOMS)), dtype=jnp.float64),
-            jnp.zeros((0,), dtype=jnp.int32),
-            jnp.zeros((0, 0), dtype=jnp.float64),
-        )
+
+    project_atoms = tuple(atom for atom, _ in pairs)
+    reservoir_species = tuple(reservoir for _, reservoir in pairs)
 
     row_by_species = {str(row["species"]): row for row in _composition.compo}
     atom_counts = np.asarray(
         [
-            [float(row_by_species[sp][atom]) for atom in _PROJECT_ATOMS]
+            [float(row_by_species[sp][atom]) for atom in project_atoms]
             for sp in _SPEC_LIST
         ],
         dtype=np.float64,
     )
     reservoir_idx = np.asarray(
-        [_SPEC_LIST.index(sp) for sp in _RESERVOIR_SPECIES],
+        [_SPEC_LIST.index(sp) for sp in reservoir_species],
         dtype=np.int32,
     )
     reservoir_counts = atom_counts[reservoir_idx]
@@ -94,7 +118,11 @@ IMPORT_ATOM_LIST = tuple(getattr(vulcan_cfg, "atom_list", ()))
 
 
 def _project_chem_rhs(rhs: jnp.ndarray) -> jnp.ndarray:
-    """Project chemistry RHS onto H/O/C/N conservation via abundant reservoirs."""
+    """Project chemistry RHS onto per-atom conservation via abundant reservoirs.
+
+    Atoms and reservoirs are whichever the active network supports
+    (H/O/C/N for C--H--N--O networks; H/O/C/N/S via H2S for SNCHO).
+    """
     if not _CHEM_PROJECTION_ENABLED:
         return rhs
     residual = rhs @ _CHEM_ATOM_COUNTS  # shape: (nz, n_atoms)

@@ -209,10 +209,18 @@ def chem_jac_analytical_per_layer(
     leave_out = jnp.stack(leave_out_cols, axis=1)
 
     # The y^(stoich-1) form sidesteps the (stoich/y)*rate divide when y == 0.
+    # Forward-mode AD safety: a stoich-1 reactant gives exponent 0, and the
+    # outer `where` *selects* that branch, so `y_r ** 0` (primal 1.0) leaks a
+    # NaN jvp at y_r == 0 (d/dy y^0 = 0 * y^-1 = 0*inf). Clipped cells make
+    # y_r == 0 routine mid-run, so never raise to the 0 power: stoich==1 is a
+    # constant 1, stoich>=2 a real power with exponent >= 1 (finite jvp at 0).
+    # Primal is bit-identical to y_r**(stoich-1); masks fold at trace time
+    # (reactant_stoich is static), so there is no runtime cost.
+    safe_exp = jnp.where(net.reactant_stoich > 1, net.reactant_stoich - 1, 1)
     pow_minus_one = jnp.where(
-        net.reactant_stoich > 0,
-        y_r ** (net.reactant_stoich - 1),
-        0.0,
+        net.reactant_stoich >= 2,
+        y_r**safe_exp,
+        jnp.where(net.reactant_stoich == 1, 1.0, 0.0),
     )
     drate_dy = net.reactant_stoich * pow_minus_one * leave_out * k[:, None]
     drate_dy = jnp.where(net.is_three_body[:, None], drate_dy * M, drate_dy)

@@ -5,7 +5,12 @@
 import os
 
 # ====== Setting up the elements included in the network ======
-atom_list = ["H", "O", "C", "N"]
+# atom_list is import-frozen (jax_step bakes the reservoir-projection tables
+# from it at the first `import vulcan_jax`). To run a different element set
+# in-process (e.g. a sulfur network for WASP-39b SO2), set
+# $VULCAN_JAX_ATOM_LIST (comma-separated) before that first import — the same
+# pattern as $VULCAN_JAX_NETWORK below.
+atom_list = [s for s in os.environ.get("VULCAN_JAX_ATOM_LIST", "H,O,C,N").split(",") if s]
 # ====== Setting up paths and filenames for the input and output files  ======
 # input:
 # The reaction network is parsed ONCE at import time (chem_funs / outer_loop

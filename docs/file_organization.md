@@ -196,6 +196,16 @@ Forward rate-constant evaluation (modified Arrhenius, Lindemann falloff,
 - `setup_var_k(cfg, var, atm)` — parse the network, load NASA-9, populate `var.k_arr`. Returns the `Network`.
 - `apply_photo_remove(cfg, var, network, atm)` — re-apply `cfg.remove_list` after `compute_J` / `compute_Jion` has overwritten the photolysis rows.
 
+### `rates_jax.py`
+Differentiable (JAX) counterpart of `rates.py`: `T -> k_arr` on the AD graph, so a
+temperature (or rate-coefficient) perturbation flows through the rate constants
+that the host-side frozen `k_arr` does not. Bit-close to the NumPy build
+(`tests/test_rates_jax.py`).
+- `compute_forward_k(net, T, M, *, a, n, E, a_inf, n_inf, E_inf)` — vectorized forward rates; the six Arrhenius/Lindemann coefficient arrays default to `net`'s static values, or pass JAX arrays to differentiate w.r.t. rate-coefficient uncertainty.
+- `apply_lowT_caps(net, k_fwd, T, M)` — JAX port of `rates.apply_lowT_caps` (Moses+2005 low-T caps); applied when `build_rate_array(use_lowT_caps=True)`.
+- `gibbs_sp_vector` / `K_eq_array` / `fill_reverse_k` — Gibbs reverse-rate path (NASA-9 thermo is differentiable via the `nasa9_coeffs` argument).
+- `build_rate_array(net, T, M, nasa9_coeffs, remove_list=None, use_lowT_caps=False, rate_coeffs=None)` — end-to-end differentiable build: `compute_forward_k → (lowT caps) → fill_reverse_k → remove`.
+
 ### `network.py`
 Parse a VULCAN-format reaction-network text file.
 - `Network` — frozen dataclass holding the parsed arrays. Public fields: `species`, `species_idx`, `ni`, `nr`, `reactant_idx`, `product_idx`, `reactant_stoich`, `product_stoich`, Arrhenius params (`a`, `n`, `E`, `a_inf`, `n_inf`, `E_inf`), reaction-type masks (`is_forward`, `is_three_body`, `has_kinf`, `is_special`, `is_conden`, `is_radiative`, `is_photo`, `is_ion`), section delimiters (`stop_rev_indx`, `conden_indx`, `radiative_indx`, `photo_indx`, `ion_indx`), photo metadata (`photo_sp`, `pho_rate_index`, `n_branch`, `ion_sp`, `ion_rate_index`, `ion_branch`), reaction-text dicts (`Rf`, `Rindx`), and `network_path`.
@@ -445,26 +455,21 @@ For production, use `outer_loop.OuterLoop`.
 ## Differentiability
 
 ### `steady_state_grad.py`
-Implicit-function-theorem gradients of the converged photochemical
-state. Uses `jax.custom_vjp` for O(1)-memory reverse-mode AD.
+Reverse-mode reaction sensitivities at the converged photochemical
+state: `dL/d(ln k_r)` for all reactions in one solver-map adjoint solve.
 **[Δ master]** Master has no AD path. JAX's `lax.while_loop` blocks
-`vjp` directly, so reverse-mode through the integration goes through
-the implicit-function theorem: solve `(∂f/∂y) z = ∂L/∂y*` once at
-the converged state. O(1) memory in step count — no trajectory
-checkpointing.
-- `SteadyStateInputs` — NamedTuple of differentiable inputs (`k_arr`, plus the atm fields the diffusion solve consumes).
-- `build_steady_state_inputs(k_arr, atm)` — pack `k_arr` + an `AtmStatic` into a `SteadyStateInputs`.
-- `_atm_from_inputs(inputs)` — repack a `SteadyStateInputs` back into an `AtmStatic` for the residual.
-- `steady_state_residual_inputs(y, inputs, net, grav)` — `f(y, inputs) = chem_rhs + diffusion` on the structured input.
-- `steady_state_residual(y, k_arr, atm, net, grav)` — convenience wrapper for callers with a raw `AtmStatic`.
-- `_build_jacobian_blocks(y, k_arr, atm, net)` — per-layer dense diagonal block + diagonal off-diagonals.
-- `validate_steady_state_solution(y_star, inputs, net, residual_rtol=1e-6, residual_atol=0.0)` — sanity-check residual norm against the bound.
-- `differentiable_steady_state_inputs(inputs, y_star, net)` — `custom_vjp` returning `y_star`; forward is the identity, backward solves the implicit system. Primary public API.
-- `checked_differentiable_steady_state(...)` — same with `validate_steady_state_solution` chained in.
-- `_ssi_fwd(inputs, y_star, net)` / `_ssi_bwd(net, res, v)` — `custom_vjp` hooks for the structured-input API.
-- `steady_state_value_and_grad(loss_fn, inputs, y_star, net, residual_rtol=1e-6, residual_atol=0.0)` — full value-and-gradient routine; preferred entrypoint when differentiating against the full structured pytree.
-- `differentiable_steady_state(k_arr, y_star, atm, net)` — backwards-compatible wrapper that only differentiates against `k_arr`.
-- `_ss_fwd(k_arr, y_star, atm, net)` / `_ss_bwd(atm, net, res, v)` — `custom_vjp` hooks for the legacy `k_arr`-only API.
+`vjp` directly, so reverse-mode goes through the steady-state adjoint of
+the body map `G` (`(I - dG/dy)^T z = v` at the converged fixed point),
+in log-abundance coordinates, with the conserved-mass null space deflated,
+solved by host-side scipy LGMRES. Matches finite differences to ~few %
+(a steady-state-definition ceiling); forward-mode is the higher-accuracy
+route. See the module docstring + `docs/notes.md` for why it works and the
+residual-IFT attempts that failed.
+- `steady_state_reaction_sensitivity(loss_fn, y_star, k_arr, atm, net, *, compo_array, dz, ...)` — the public entry point; returns `dL/d(ln k_r)` `(nr+1,)` (and an info dict with `return_info=True`).
+- `_safe_inv_y(y_star)` — `1/y*` with exact zeros masked to 0 (the closed-column log-scaling NaN guard).
+- `_conserved_null_basis(y_star, compo_array, dz)` — orthonormal QR basis of the log-space conserved-mass null vectors `c_e = compo[:,e]*dz*y*` to deflate.
+- `_lgmres_solve(matvec, bvec, ...)` — host scipy LGMRES with chunked warm-start cycles.
+- Module constants `BODY_MAP_DT` (danger-zone-guarded), `LGMRES_INNER_M/OUTER_K/MAXITER/CYCLES`, `LGMRES_RTOL` — solver knobs with provenance.
 
 ---
 
@@ -584,7 +589,9 @@ transform consistency. Run with
 - `test_fastchem_element_order.py` — FastChem abundance-file element-order regression guard.
 - `test_diffusion_production_kernel.py`, `test_moldiff_disabled.py` — production diffusion kernel + moldiff-off variant.
 - `test_cli_smoke.py` — `vulcan-jax` CLI end-to-end smoke.
-- `test_steady_state_grad.py` — implicit-AD reverse-mode gradients.
+- `test_steady_state_reaction_sensitivity.py` — reverse-mode reaction sensitivities: fast deflation/scaling/assembly unit tests + a slow HD189 fixture regression (`VULCAN_JAX_RUN_SLOW=1`).
+- `test_rates_jax.py` — differentiable `rates_jax` parity vs NumPy (incl. low-T caps) + finite `jvp` w.r.t. `T` and Arrhenius coefficients.
+- `test_forward_jvp_physical.py` — forward-mode AD through a physical transport knob (`Kzz`) over one Ros2 step: `jvp == vjp` + coarse FD sanity.
 - `test_cfg_examples.py` — each kept config loads + runs pre-loop setup.
 - `test_config_matrix.py` — config-flag combination coverage.
 
@@ -595,7 +602,7 @@ transform consistency. Run with
 - `batched_run.py` — `jax.vmap` over the per-step kernel for batched atmospheres.
 - `gpu_benchmark.py` — standalone GPU throughput benchmark driving `run_batch` to convergence over HD189-like planet batches (parallel host setup, chunked progress, `--device-batch` host-side tiling). Kept byte-identical with `vulcan-emulator/supercomputer_cmds/gpu_benchmark.py`.
 - `grad_jvp_example.py` — forward-mode AD through the per-step kernel.
-- `grad_implicit_example.py` — reverse-mode AD through the converged steady state via `steady_state_grad`.
+- `grad_reverse_example.py` — reverse-mode reaction ranking on a real HD189 column via `steady_state_reaction_sensitivity`.
 
 ### `tools/`
 End-user utility scripts (data prep, debug, parity checks).

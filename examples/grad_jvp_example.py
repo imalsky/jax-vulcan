@@ -2,9 +2,9 @@
 
 `jax.lax.while_loop` (used by `outer_loop.runner`) supports `jax.jvp` /
 `jax.jacfwd` but raises on reverse-mode `jax.vjp` / `jax.grad`. So
-end-to-end `grad` of the converged state needs the implicit-VJP wrapper
-in `steady_state_grad.py`. Forward-mode tangents through the existing
-runner work today with no code change.
+reverse-mode at the converged state uses the steady-state solver-map adjoint
+in `steady_state_grad.py` (see `grad_reverse_example.py`). Forward-mode
+tangents through the existing runner work today with no code change.
 
 This script shows forward-mode through the per-step kernel `jax_ros2_step`,
 which is also `jit`/`vmap`/`jacfwd`/`jvp`/`vjp` compatible. Same pattern
@@ -91,9 +91,9 @@ def main() -> int:
     print(
         "Note: jax.jvp also works through the full `outer_loop.runner` "
         "(jax.lax.while_loop forward-mode is supported). For reverse-mode "
-        "AD through the converged state, see steady_state_grad.py "
-        "— the implicit-function-theorem custom_vjp there gives O(1) "
-        "memory in step count."
+        "reaction-importance sensitivities at the converged state, see "
+        "steady_state_grad.steady_state_reaction_sensitivity and "
+        "examples/grad_reverse_example.py."
     )
     return 0
 

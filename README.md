@@ -6,7 +6,7 @@ VULCAN-JAX runs the same configuration files, input data, and `.vul` output sche
 
 **Why use this over upstream VULCAN?**
 - ~3x faster per-step on CPU (single-threaded; see Benchmarks); end-to-end speedup is workload-dependent
-- Differentiable: forward-mode through the runner, reverse-mode via implicit steady-state gradients
+- Differentiable: **forward-mode works end-to-end** through the full converged model (validated vs finite differences); **reverse-mode** returns reaction-importance sensitivities (`dL/d ln k` for all reactions in one adjoint solve) at the converged state (see [Differentiability](#differentiability))
 - Same config format and `.vul` output: VULCAN's `plot_py/` scripts work unmodified
 - Vectorizable: tested `vmap` support for batched parameter sweeps
 - GPU-ready architecture (not yet benchmarked)
@@ -127,7 +127,7 @@ VULCAN-JAX/
 │   ├── chem_funs.py         Public surface (ni/nr/spec_list/chemdf)
 │   ├── make_chem_funs.py    Per-network codegen for chemistry RHS
 │   ├── photo.py             JAX two-stream photochemistry kernels
-│   ├── steady_state_grad.py Implicit-FT custom_vjp for reverse-mode AD
+│   ├── steady_state_grad.py Reverse-mode reaction sensitivities (solver-map adjoint)
 │   ├── rates.py             Rate coefficients (Arrhenius/Lindemann/Troe)
 │   ├── gibbs.py             NASA-9 Gibbs / K_eq / reverse rates
 │   ├── network.py           Network file parser
@@ -156,7 +156,7 @@ VULCAN-JAX/
 ├── tools/                   Data-prep and parity-audit utilities
 ├── output/                  Forward-model outputs (.vul files, not tracked)
 ├── plot/                    Generated figures (not tracked)
-├── docs/                    Project docs (file_organization.md, BUGS_FOUND.md)
+├── docs/                    Project docs (file_organization.md, notes.md)
 │
 ├── pyproject.toml           Build metadata and dependencies
 ├── setup.py                 Compatibility shim
@@ -172,7 +172,7 @@ VULCAN-JAX/
 | `benchmarks/` | `bench_step.py` -- per-step kernel timing vs NumPy | Yes |
 | `tests/` | Curated pytest suite: JAX-master parity, vmap, AD, integration smoke tests | Yes |
 | `tools/` | `audit_master_parity.py` (parity audit vs upstream), `make_mix_table.py`, `make_spectra_in_nm.py`, `print_actinic_flux.py` | Yes |
-| `docs/` | `file_organization.md` (per-module function index), `BUGS_FOUND.md` (validation bug log) | Yes |
+| `docs/` | `file_organization.md` (per-module function index), `notes.md` (implementation + end-to-end AD notes) | Yes |
 | `output/` | `.vul` pickle files from forward-model runs | No (gitignored) |
 | `plot/` | Generated figures from plot scripts | No (gitignored) |
 
@@ -331,33 +331,132 @@ All kernels are `jit`/`vmap`/`jvp`/`vjp` compatible:
 
 ## Differentiability
 
-### Forward-mode (works through entire integration)
+**Two levels — be clear which one you mean:**
+
+1. **Runtime arrays (differentiable now).** Any physical quantity supplied as a
+   JAX array into the runtime pytrees (`AtmStatic` / `RateInputs` /
+   `PhotoStaticInputs` / initial `y`) and driven through the inner `integ._runner`
+   is on the AD graph. Forward-mode (`jvp`/`jacfwd`) runs end-to-end through the
+   converged integration (FD-validated <0.1%).
+2. **Physical *setup* inputs (mostly not yet on the graph).** The host-side
+   builders (`atm_setup`, `photo_setup`, `ini_abun`/FastChem, condensation
+   saturation) run in NumPy. To differentiate a higher-level knob you either
+   build the corresponding runtime pytree field yourself as a JAX array (the
+   examples show how) or use the on-graph builders we provide (`rates_jax` for
+   `T -> k`). FastChem cannot be differentiated at all (it is a subprocess).
+
+| Physical input | Differentiable? | How |
+|---|---|---|
+| Reaction rates `k` | Yes — forward **and** reverse | supply `k_arr`; reverse: `steady_state_reaction_sensitivity` (all reactions, one solve) |
+| Eddy diffusion `Kzz`, advection `vz` | Yes — forward | `atm._replace(Kzz=...)`, drive `_runner` |
+| Boundary fluxes / deposition velocity | Yes — forward | supply `top_flux` / `bot_flux` / `bot_vdep` |
+| Initial abundances `y0` (incl. metallicity / C-O by scaling) | Yes — forward | perturb `y0` directly; FastChem itself is **not** differentiable |
+| Temperature `T` | Yes — forward | rebuild `k` on-graph with `rates_jax.build_rate_array` (`use_lowT_caps=True` on cool networks) + recompute `n_0 = pco/(kb T)` |
+| Rate coefficients (Arrhenius `a`/`n`/`E`, NASA-9 thermo) | Yes — forward | `rates_jax.build_rate_array(net, T, M, nasa9, rate_coeffs={"a": ...})`; NASA-9 via the `nasa9_coeffs` arg (one hardcoded Troe row excepted) |
+| Molecular/thermal diffusion `Dzz`, `vs`, `vm` | Array-level only | supply the arrays; the `T -> Dzz` builder is host-side |
+| TP-profile params, pressure grid, gravity / scale-height chain | Not yet (setup) | host-side `atm_setup`; construct the `AtmStatic` fields yourself |
+| Cross sections / stellar flux / branching ratios | Not yet (setup) | host-side `photo_setup`; inject `PhotoStaticInputs` as JAX arrays |
+| Condensation saturation / static inputs | Not yet (setup) | host-side; build the conden static yourself |
+| Elemental abundances via FastChem (`ini_mix='EQ'`) | No (subprocess) | not differentiable; scale `y0` instead |
+
+**Reverse-mode is reaction-ranking only.** The single reverse-mode entry point is
+`steady_state_reaction_sensitivity` (`dL/d ln k` for every reaction). It is *not*
+general reverse-mode through arbitrary physical inputs — for those, use
+forward-mode. See its limitations under
+[Reverse-mode](#reverse-mode-solver-map-steady-state-adjoint) below.
+
+### Forward-mode (works through the entire integration)
+
+`lax.while_loop` supports `jvp`, so one forward pass differentiates the whole
+converged integration. Drive the traced inner runner directly --- the public
+`OuterLoop.__call__` copies state to the host for `.vul` output, which breaks
+tracing:
 
 ```python
 import jax
+from vulcan_jax.jax_step import make_atm_static
 
-def integrate_fn(k_arr):
-    rs = build_runstate_from_k(k_arr)
-    return integ(rs).step.y
+state0 = integ._pack_state_from_runstate(rs)
+atm    = make_atm_static(data_atm, ni, nz, cfg=integ._cfg)
 
-y_star, dy_dk = jax.jvp(integrate_fn, (k_arr,), (k_arr_tangent,))
+def run(Kzz):                       # converged composition vs eddy mixing
+    final = integ._runner(state0, atm._replace(Kzz=Kzz))
+    return final.y / final.y.sum(axis=1, keepdims=True)
+
+# tangent = Kzz  =>  d(VMR)/d(ln Kzz) for every species/level, in one pass
+ymix, dymix = jax.jvp(run, (atm.Kzz,), (atm.Kzz,))
 ```
 
-### Reverse-mode (via implicit-function theorem)
+Validated end-to-end on a full HD 189733b production run (photochemistry on,
+~1300 accepted steps): the `jvp` tangent matches re-converged centered finite
+differences to <0.1% on the responding levels (correlation >0.9999). This route
+never inverts `df/dy`, so it stays well posed even where the reverse-mode adjoint
+below does not. See `examples/grad_jvp_example.py`.
 
-For high-dimensional inputs, use `steady_state_grad.py` -- O(1) memory in step count:
+**Temperature-profile gradients** are a special case: the runner's `k_arr` is
+frozen at setup (host-side NumPy `rates.build_rate_array`), so a `d/dT` jvp must
+rebuild it on the AD graph with `rates_jax.build_rate_array(net, T, M, nasa9,
+remove_list)` (the differentiable port of `rates`+`gibbs`, bit-exact to ~5e-14
+vs the NumPy build) and recompute `n_0 = pco/(kb*T)`. With that, forward-mode
+`d/dT` is validated against finite differences (HD189 dominant species to 3–4
+sig figs; WASP-39b SO2 to correlation 1.0). The molecular-diffusion coefficient
+`Dzz(T)` and the host-side photo cross-section T-interpolation stay frozen
+(second-order). See `../jax_paper/scripts/validate_T_grad.py` and
+`fig_so2_temperature.py`.
+
+### Reverse-mode (solver-map steady-state adjoint)
+
+Reverse-mode answers the many-inputs/one-output question: *which of the
+network's reactions set the converged abundance of a species*. One adjoint solve
+returns `dL/d(ln k_r)` for every reaction, where finite differences would cost
+one re-converged model each.
 
 ```python
-from vulcan_jax.steady_state_grad import steady_state_value_and_grad
+import jax.numpy as jnp
+from vulcan_jax import composition
+from vulcan_jax.steady_state_grad import steady_state_reaction_sensitivity
 
-loss, grad_inputs = steady_state_value_and_grad(
-    loss_fn, inputs, y_star, net, residual_rtol=1e-6
+def loss(y):                       # log10 SO2 VMR at its peak layer L
+    return jnp.log10(y[L, so2] / y[L].sum())
+
+dL_dlnk = steady_state_reaction_sensitivity(   # (nr+1,)
+    loss, y_star, k_arr, atm, net,
+    compo_array=composition.compo_array[:ni], dz=dz,
 )
 ```
 
-The backward pass solves the adjoint system with the **exact** residual Jacobian: the frozen-coefficient block-tridiagonal factorization (the Ros2 stepper's approximation, which drops the y-dependence of the diffusion coefficients through the mean molecular weight) is used as a preconditioner and refined by defect-correction iterations with matrix-free `J^T` products from `jax.vjp`. Without the refinement that approximation leaves a deterministic absolute bias in the gradient (~1e-2 of the gradient scale in the synthetic test — enough to flip the sign of small sensitivities); with it, every gradient entry matches re-converged centered finite differences to ~1e-9 of the gradient scale.
+`lax.while_loop` blocks `vjp`, so this is the steady-state adjoint of the body
+map, not a backprop through the loop: at convergence `G(y*) = y*`, and
+`(I - dG/dy)^T z = v` is solved with the integrator's own regularized step as the
+operator, in log-abundance coordinates, with the conserved-mass null space
+deflated, by LGMRES (an augmented Krylov method — restarted GMRES oscillates and
+a raw Neumann iteration diverges on this indefinite, singular operator). Earlier
+attempts that took the adjoint of the bare residual `df/dy` directly all failed —
+on a closed column it is both singular (mass conservation) and severely
+ill-conditioned (stiff chemistry) — which is why the solver-map route exists.
 
-See `examples/grad_implicit_example.py` and `examples/grad_jvp_example.py` for worked examples. See `tests/test_steady_state_grad.py` for the canonical validation pattern.
+**Limitations — this is a reaction-*ranking* tool, not a precision-gradient tool:**
+
+- **Accuracy ~few % vs finite differences, and it is a definition mismatch, not
+  solver error.** The adjoint differentiates the exact fixed point `f(y*)=0`, but
+  the run stops on a convergence *criterion* (`longdy < yconv_cri`) with the
+  slowest chemical mode still unrelaxed. FD and forward-mode differentiate that
+  criterion state (forward-mode can — `jvp` rides through the loop), so they
+  disagree with this adjoint by ~few % (more on slow-mode reactions, ~2% on fast
+  ones). More LGMRES iterations do not close it. The *ranking* is still robust:
+  dominant reactions stand 1-2 orders of magnitude above the noise.
+- **Photolysis is frozen** on photochemistry-on columns (`dJ/dy` omitted) →
+  leading-order sensitivities only.
+- **`k`-only.** Returns `dL/d ln k`; for `dL/dKzz`, `dL/dT`, etc. use forward-mode.
+- **Needs a genuine fixed point** (`y_star` tight under the bare body map) and a
+  `body_dt` in the safe regime (the danger zone is guarded).
+
+**Forward-mode (above) is the higher-accuracy route** for end-to-end gradients and
+the right tool when the number of input directions is small; reverse-mode is the
+right tool for all reactions at once. Validated on HD189 (CH4) and WASP-39b (SO2;
+paper Fig 8). The solve is host-side scipy LGMRES (JAX has no LGMRES), one-shot
+post-convergence, off the hot path. See `examples/grad_reverse_example.py`,
+`tests/test_steady_state_reaction_sensitivity.py`, and the full log in `docs/notes.md`.
 
 **What's NOT differentiable** (by design): host-side file readers (`photo_setup.py`, `composition.py`, `atm_setup.py` CSV loaders), FastChem subprocess. To differentiate through these, build the corresponding pytree directly with JAX arrays.
 
@@ -478,7 +577,7 @@ The production JAX path uses `make_chem_funs.build_chem_rhs(net)` to emit per-ne
 
 ### Step-count drift
 
-JIT compilation lets XLA reorder floating-point operations, so large production/loss cancellations don't round identically. The per-step C-atom residual (~5e-7 of per-layer budget) is corrected by `jax_step._project_chem_rhs`, which enforces exact H/O/C/N conservation after each RHS evaluation. Overhead is ~3% per step.
+JIT compilation lets XLA reorder floating-point operations, so large production/loss cancellations don't round identically. The per-step C-atom residual (~5e-7 of per-layer budget) is corrected by `jax_step._project_chem_rhs`, which enforces exact per-element conservation after each RHS evaluation — H/O/C/N on the C-H-N-O networks, and additionally S (via the H2S reservoir) on the sulfur network. Overhead is ~3% per step.
 
 ### float64 is non-negotiable
 
@@ -494,7 +593,7 @@ The JAX port corrects several issues present in master:
 
 - **Diffusion Jacobian self-consistency.** Master's `op.lhs_jac_tot` disagrees with the analytical derivative of `op.diffdf` at a handful of diagonal cells for heavy condensable species (S8, layers 5 and 25). JAX's block-diagonal diffusion Jacobian matches the analytical derivative to machine precision. Impact on integration is negligible.
 
-- **Atom conservation projection.** XLA's floating-point fusion breaks the stoichiometric nullspace of the chemistry RHS (production and loss terms that should cancel exactly don't, due to FMA rewriting). `jax_step._project_chem_rhs` distributes the per-layer atom residual (~5e-13 relative per step) across reservoir species (H2, H2O, CO, N2) after each RHS evaluation, enforcing exact H/O/C/N conservation. Master does not have this correction; its atom drift is comparable in magnitude but arises from a different source (Python evaluation order).
+- **Atom conservation projection.** XLA's floating-point fusion breaks the stoichiometric nullspace of the chemistry RHS (production and loss terms that should cancel exactly don't, due to FMA rewriting). `jax_step._project_chem_rhs` distributes the per-layer atom residual (~5e-13 relative per step) across one abundant reservoir species per conserved element — H2, H2O, CO, N2, and H2S on the sulfur network — after each RHS evaluation, enforcing exact conservation of H/O/C/N (and S where the network carries it). The reservoir/atom pairing is selected dynamically from `atom_list` (`jax_step._ATOM_RESERVOIRS`), so any atom subset with an abundant reservoir is conserved, not a hard-coded H/O/C/N set. Master does not have this correction; its atom drift is comparable in magnitude but arises from a different source (Python evaluation order).
 
 ---
 

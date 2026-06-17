@@ -1,410 +1,424 @@
-"""Implicit-function-theorem gradients of the converged photochemical state.
+"""Reverse-mode reaction sensitivities at the converged photochemical state.
 
 `outer_loop.OuterLoop`'s `lax.while_loop` supports `jvp`/`jacfwd` but not
-`vjp`/`grad`. The converged state `y*` satisfies `f(y*, theta) = 0`, so
+`vjp`/`grad`, so reverse-mode AD cannot be taken straight through the
+integration. The reverse-mode question this module answers is the one a
+many-inputs/one-output gradient is for: *which of the network's reactions set
+the converged abundance of a given species* — `dL/d(ln k_r)` for all `nr`
+reactions from a single adjoint solve, where finite differences would cost one
+re-converged model per reaction.
 
-    ∂y*/∂theta = -(∂f/∂y)^{-1} (∂f/∂theta)
+The route — the solver-map steady-state adjoint
+================================================
+At convergence the body map `G` (one bare Ros2 step) has a fixed point,
+`G(y*) = y*`, so the steady-state cotangent solves the *fixed-point* adjoint
 
-and the cotangent VJP becomes
+    (I - dG/dy)^T z = v ,        v = dL/dy* ,
 
-    ∂L/∂theta = -((∂f/∂y)^{-T} v) · (∂f/∂theta)
+after which `dL/d(ln k_r) = (k .* vjp_Gk(lambda))_r`, with `lambda` the
+unscaled cotangent. `(I - dG/dy)^T` is the integrator's *own* regularized
+implicit step (the block-Thomas solve at the body-map dt) transposed — it
+already embeds the preconditioner that tames the chemical stiffness, which is
+why it is far better conditioned than the bare residual Jacobian.
 
-This module exposes a `differentiable_steady_state` that wraps the
-integrator with a `jax.custom_vjp`: the backward pass solves the exact
-adjoint system `(∂f/∂y)^T λ = v` — a transposed block-tridiagonal
-factorization used as a preconditioner, refined by defect-correction
-iterations with exact matrix-free `J^T` products — plus one VJP through
-`f`, bypassing the runner. Memory is O(1) in step count; gradient
-accuracy is bounded by the forward residual `||f(y*, theta)||`
-(i.e. `yconv_cri`).
+Four coupled ingredients make the solve work on a real, closed atmospheric
+column (each fixes one concrete failure mode — see "What was tried and failed"):
+
+1. **The solver-map, not the residual Jacobian.** A separately-formed
+   `reg*I - df/dy` preconditioner cannot reproduce the integrator's step; the
+   solver-map can, because it *is* that step.
+2. **Log-abundance coordinates** `eta = ln y`. The similarity transform
+   `A_eta z = z - y* .* vjp_Gy(z ./ y*)` rescales the operator norm from ~1e6
+   to ~1e2 and the cotangent from ~1e-12 to O(1) — the scaling LSQR/GMRES never
+   had. `lambda = z ./ y*`, `v_eta = y* .* v`.
+3. **Conserved-mass null-space deflation.** A closed column conserves each
+   element, so `df/dy` (and `I - dG/dy`) is singular. We deflate the analytic
+   per-element atom-count vectors `c_e[z,i] = compo[i,e] * dz[z] * y*[z,i]`
+   (the log-space left-null vectors) with a QR projector. Only the *left* null
+   space is needed: the right null cancels from atom-conserving-knob gradients
+   because `c_e^T df/dk = 0`.
+4. **LGMRES, not restarted GMRES or Neumann.** The deflated operator is
+   indefinite; an augmented Krylov method (LGMRES carries vectors across
+   restarts) converges where restarted GMRES oscillates and a raw Neumann
+   iteration diverges.
+
+Limitations — read before using
+===============================
+This is a reaction-*ranking* tool, not a precision-gradient tool. Four limits,
+all structural — none is fixable by iterating the solver harder:
+
+1. **~few-% accuracy ceiling, and it is a definition mismatch, not solver error.**
+   `lax.while_loop` blocks `vjp`, so reverse-mode can only take the *steady-state*
+   adjoint — it differentiates the exact fixed point `f(y*) = 0`. But the forward
+   run stops on a convergence *criterion* (`longdy < yconv_cri`) with the slowest
+   near-conserved chemical mode still unrelaxed: a genuinely different state.
+   Finite differences and forward-mode both differentiate that criterion state
+   (forward-mode can, because `jvp` rides through the loop), so they agree with
+   each other and disagree with this adjoint by ~few % — larger on reactions
+   coupled to the slow mode, ~2% on fast ones. Reaching <1% would need integrating
+   to >> the slow-mode timescale (impractical). More LGMRES iterations do not help.
+2. **Photolysis is frozen on photochemistry-on columns.** `J(y)` depends on the
+   abundances through optical depth; the adjoint holds `J` at its converged value
+   and omits the `dJ/dy` feedback, so those sensitivities are leading-order only.
+3. **Reaction-rate (`k`) sensitivities only.** Returns `dL/d(ln k_r)`; it does not
+   give `dL/dKzz`, `dL/dT`, etc. Use forward-mode for those (few inputs, one pass).
+4. **Needs a genuine fixed point and a safe `body_dt`.** `y*` must be a tight fixed
+   point of the bare body map (`info["fp_err"]` reports how tight), and `body_dt`
+   must stay in the safe regime (see `BODY_MAP_DT`; the danger zone is guarded).
+
+The *ranking* is robust despite the ceiling because the dominant reactions stand
+1-2 orders of magnitude above the few-% noise. **Forward-mode** (`jvp`/`jacfwd`
+through the runner, FD-validated <0.1%) is the higher-accuracy route for
+end-to-end gradients and the right tool when the number of input directions is
+small (Kzz, metallicity, temperature); reverse-mode here is the right tool for
+the opposite shape — all `nr` reactions at once.
+
+What was tried and failed (do not re-walk)
+==========================================
+Earlier attempts took the adjoint of the *residual* `f = chem_rhs + diffusion`,
+solving `(df/dy)^T lambda = v` directly. On a real closed column `df/dy` is
+*both* singular (mass conservation) *and* severely ill-conditioned (stiff
+chemistry — the residual at the converged state is ~1e21), and every direct
+solver disagreed with finite differences: a frozen-coefficient block-Thomas
+factorization refined by defect-correction, and a matrix-free LSQR pseudoinverse,
+both diverged or stagnated. A fixed-point/iteration-map adjoint on the body map
+is better conditioned but, run as a *raw Neumann* iteration, is non-contractive
+(unstable total-density mode) and still singular. The working route above
+replaces all of these.
+
+Full development log and identities: `docs/notes.md` ("End-to-end AD" /
+"2026-06-16: reverse-mode steady-state adjoint"). Worked recipe:
+`examples/grad_reverse_example.py`; paper Fig `fig:so2_rev`.
 """
 
 from __future__ import annotations
 
-from functools import partial
-from typing import NamedTuple
+import warnings
+from collections.abc import Callable
 
+import numpy as np
 import jax
 import jax.numpy as jnp
 
-from .chem import chem_rhs_segment_sum as _chem_rhs, chem_jac_analytical, NetworkArrays
-
-# steady_state_grad uses the segment_sum RHS (parametric on `net`) so the
-# synthetic implicit-AD test can supply its own 2-species network. The
-# integrator's per-step trajectory uses chem_funs.chem_rhs_codegen — the
-# implicit-AD path computes ∂y*/∂theta at the converged y_star where
-# either RHS evaluates to ~0 by construction.
-from .jax_step import (
-    AtmStatic,
-    DiffGrav,
-    compute_diff_grav,
-    _build_diff_coeffs_jax,
-    _apply_diffusion_jax,
-)
-from .solver import (
-    factor_block_thomas_diag_offdiag,
-    solve_block_thomas_diag_offdiag,
-)
+from .chem import NetworkArrays
+from .jax_step import AtmStatic, jax_ros2_step
 
 jax.config.update("jax_enable_x64", True)
 
 
-class SteadyStateInputs(NamedTuple):
-    """Differentiable inputs to the steady-state residual."""
+# --- Solver-map / LGMRES knobs (adjoint-solver constants live here, beside the
+#     code, the same as the forward model's knobs live in vulcan_cfg.py). ---
 
-    k_arr: jnp.ndarray
-    Kzz: jnp.ndarray
-    Dzz: jnp.ndarray
-    dzi: jnp.ndarray
-    vz: jnp.ndarray
-    Hpi: jnp.ndarray
-    Ti: jnp.ndarray
-    Tco: jnp.ndarray
-    g: jnp.ndarray
-    ms: jnp.ndarray
-    alpha: jnp.ndarray
-    M: jnp.ndarray
-    vm: jnp.ndarray
-    vs: jnp.ndarray
-    top_flux: jnp.ndarray
-    bot_flux: jnp.ndarray
-    bot_vdep: jnp.ndarray
-    gas_indx_mask: jnp.ndarray
-    use_vm_mol: jnp.ndarray
-    use_settling: jnp.ndarray
-    use_topflux: jnp.ndarray
-    use_botflux: jnp.ndarray
+BODY_MAP_DT = 1e8
+# Time step for the bare Ros2 body map G(y) = ros2_step(y, k, dt). DANGER ZONE:
+# at dt ~ 1e11 the implicit stage solve (I/(gamma*h) - J) goes near-singular and
+# the adjoint diverges (residual ~1e57); 1e8 is the validated, well-conditioned
+# regime (docs/notes.md, 2026-06-16).
 
+_BODY_MAP_DT_MAX = 1e10
+# Hard guard above the safe regime — refuse a body_dt that would land in the
+# near-singular danger zone rather than return a silently divergent gradient.
 
-def build_steady_state_inputs(k_arr: jnp.ndarray, atm: AtmStatic) -> SteadyStateInputs:
-    """Pack a runtime `AtmStatic` plus `k_arr` into the differentiable API."""
-    return SteadyStateInputs(
-        k_arr=k_arr,
-        Kzz=atm.Kzz,
-        Dzz=atm.Dzz,
-        dzi=atm.dzi,
-        vz=atm.vz,
-        Hpi=atm.Hpi,
-        Ti=atm.Ti,
-        Tco=atm.Tco,
-        g=atm.g,
-        ms=atm.ms,
-        alpha=atm.alpha,
-        M=atm.M,
-        vm=atm.vm,
-        vs=atm.vs,
-        top_flux=atm.top_flux,
-        bot_flux=atm.bot_flux,
-        bot_vdep=atm.bot_vdep,
-        gas_indx_mask=atm.gas_indx_mask,
-        use_vm_mol=jnp.asarray(atm.use_vm_mol),
-        use_settling=jnp.asarray(atm.use_settling),
-        use_topflux=jnp.asarray(atm.use_topflux),
-        use_botflux=jnp.asarray(atm.use_botflux),
-    )
+LGMRES_INNER_M = 60
+# scipy.sparse.linalg.lgmres inner Krylov dimension. The HD189 validation used
+# 250 (nr=878); 60 is the conservative default that converged on WASP-39b
+# (nr=1150). Larger m costs memory and matvecs per cycle.
+
+LGMRES_OUTER_K = 40
+# Augmentation vectors carried across restarts — the LGMRES knob that fixes the
+# restarted-GMRES oscillation on this indefinite operator.
+
+LGMRES_MAXITER = 4
+# Inner iterations per warm-start cycle. The solve is chunked into cycles so the
+# residual/gradient trajectory is observable; the per-cycle x0 warm-start is the
+# validated configuration.
+
+LGMRES_CYCLES = 10
+# Number of warm-start cycles. ~6 sufficed on HD189, ~10 on WASP-39b.
+
+LGMRES_RTOL = 1e-12
+# Relative-residual target. The few-% accuracy ceiling is a steady-state
+# definition mismatch, not under-iteration, so an aggressive rtol is harmless.
+
+_ADJOINT_RESID_WARN = 0.1
+# Warn above this final relative LGMRES residual: the solve is under-converged
+# and the gradient may be unreliable (raise lgmres_cycles/inner_m, check body_dt).
+# This is distinct from the few-% accuracy ceiling (a definition mismatch).
+
+_FP_ERR_WARN = 1e-2
+# Warn above this body-map fixed-point error: y_star is not a tight fixed point,
+# so the adjoint is being evaluated off the steady-state manifold.
 
 
-def _atm_from_inputs(inputs: SteadyStateInputs) -> AtmStatic:
-    """Repack a `SteadyStateInputs` pytree into the `AtmStatic` the diffusion kernels expect."""
-    return AtmStatic(
-        Kzz=inputs.Kzz,
-        Dzz=inputs.Dzz,
-        dzi=inputs.dzi,
-        vz=inputs.vz,
-        Hpi=inputs.Hpi,
-        Ti=inputs.Ti,
-        Tco=inputs.Tco,
-        g=inputs.g,
-        ms=inputs.ms,
-        alpha=inputs.alpha,
-        M=inputs.M,
-        vm=inputs.vm,
-        vs=inputs.vs,
-        top_flux=inputs.top_flux,
-        bot_flux=inputs.bot_flux,
-        bot_vdep=inputs.bot_vdep,
-        gas_indx_mask=inputs.gas_indx_mask,
-        use_vm_mol=inputs.use_vm_mol,
-        use_settling=inputs.use_settling,
-        use_topflux=inputs.use_topflux,
-        use_botflux=inputs.use_botflux,
-    )
-
-
-def steady_state_residual_inputs(
-    y: jnp.ndarray,
-    inputs: SteadyStateInputs,
-    net: NetworkArrays,
-    grav: DiffGrav | None = None,
-) -> jnp.ndarray:
-    """Compute f(y, inputs) = chem_rhs(y) + diffusion(y)."""
-    atm = _atm_from_inputs(inputs)
-    if grav is None:
-        grav = compute_diff_grav(atm)
-    A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, _ = _build_diff_coeffs_jax(
-        y,
-        atm,
-        grav,
-    )
-    diff_at_y = _apply_diffusion_jax(
-        y, A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, atm
-    )
-    return _chem_rhs(y, atm.M, inputs.k_arr, net) + diff_at_y
-
-
-def steady_state_residual(
-    y: jnp.ndarray,
-    k_arr: jnp.ndarray,
-    atm: AtmStatic,
-    net: NetworkArrays,
-    grav: DiffGrav | None = None,
-) -> jnp.ndarray:
-    """f(y, k_arr) = chem_rhs(y) + diffusion(y). At convergence ||f|| → 0.
-
-    The residual norm bounds implicit-gradient accuracy. `grav` is recomputed
-    if not supplied; callers can pass it to skip the rebuild.
-    """
-    return steady_state_residual_inputs(
-        y,
-        build_steady_state_inputs(k_arr, atm),
-        net,
-        grav=grav,
-    )
-
-
-def _build_jacobian_blocks(y, k_arr, atm, net):
-    """Return (diag, sup_d, sub_d) for J_y = ∂f/∂y in the format
-    `block_thomas_diag_offdiag` expects (dense diag, diagonal-in-species
-    super/sub)."""
-    grav = compute_diff_grav(atm)
-    A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, _ = _build_diff_coeffs_jax(
-        y,
-        atm,
-        grav,
-    )
-    chem_J = chem_jac_analytical(y, atm.M, k_arr, net)  # (nz, ni, ni)
-    diag_d = A_eddy[:, None] + A_mol  # (nz, ni)
-    sup_d = B_eddy[:-1, None] + B_mol[:-1]  # (nz-1, ni)
-    sub_d = C_eddy[1:, None] + C_mol[1:]  # (nz-1, ni)
-
-    ni = atm.ms.shape[0]
-    di = jnp.arange(ni)
-    diag = chem_J.at[:, di, di].add(diag_d)  # (nz, ni, ni)
-    bot_vdep_term = jnp.where(
-        atm.use_botflux,
-        -atm.bot_vdep / atm.dzi[0],
-        jnp.zeros_like(atm.bot_vdep),
-    )
-    diag = diag.at[0, di, di].add(bot_vdep_term)
-    return diag, sup_d, sub_d
-
-
-_ADJOINT_REFINE_RTOL = 1e-13
-# Target for the defect-correction refinement of the adjoint solve:
-# ||v - J^T λ||_inf relative to ||v||_inf. 1e-13 is float64 round-off for
-# well-scaled cotangents.
-_ADJOINT_REFINE_MAX_ITERS = 30
-# Backstop on the refinement loop. The contraction rate per pass equals the
-# relative error of the frozen-coefficient Jacobian (a few percent), so the
-# loop converges in well under 10 iterations in practice.
-
-
-def _solve_adjoint(y_star, inputs, net, v):
-    """Solve the exact adjoint system (∂f/∂y)^T λ = v.
-
-    `_build_jacobian_blocks` freezes the diffusion coefficients with respect
-    to y (the same approximation the Ros2 stepper uses), so its
-    block-tridiagonal matrix differs from the exact ∂f/∂y wherever the
-    coefficients depend on y through the mean molecular weight. Using it
-    directly would bias the implicit gradient by that approximation error.
-    It is therefore factorized once as a *preconditioner*, and the solution
-    is refined by defect-correction iterations with exact matrix-free J^T
-    products (`jax.vjp` of the residual) until the adjoint residual reaches
-    round-off.
-    """
-    atm = _atm_from_inputs(inputs)
-    diag, sup_d, sub_d = _build_jacobian_blocks(y_star, inputs.k_arr, atm, net)
-    # Transposing the block-tridiagonal system: the dense diagonal blocks
-    # transpose in place; the diagonal-in-species off-diagonals swap
-    # super <-> sub.
-    diag_T = jnp.transpose(diag, (0, 2, 1))
-    factors = factor_block_thomas_diag_offdiag(diag_T, sub_d, sup_d)
-
-    def f_of_y(y):
-        return steady_state_residual_inputs(y, inputs, net)
-
-    _, vjp_y = jax.vjp(f_of_y, y_star)
-
-    def jt_mv(lam):
-        (cot_y,) = vjp_y(lam)
-        return cot_y
-
-    v_norm = jnp.max(jnp.abs(v))
-    lam0 = solve_block_thomas_diag_offdiag(factors, v)
-    resid0 = v - jt_mv(lam0)
-
-    def cond_fn(carry):
-        _, resid, it = carry
-        return jnp.logical_and(
-            it < _ADJOINT_REFINE_MAX_ITERS,
-            jnp.max(jnp.abs(resid)) > _ADJOINT_REFINE_RTOL * v_norm,
+def _warn_poor_convergence(resid: float, fp_err: float) -> None:
+    """Emit a warning (by default, not only when the caller inspects `info`) when
+    the adjoint solve looks under-converged or `y_star` is not a fixed point."""
+    if fp_err > _FP_ERR_WARN:
+        warnings.warn(
+            "steady_state_reaction_sensitivity: y_star is not a tight fixed point "
+            f"of the body map (fp_err={fp_err:.2e} > {_FP_ERR_WARN:.0e}); the adjoint "
+            "is evaluated off the steady-state manifold and the gradient may be "
+            "unreliable. Converge y_star tighter (or lower body_dt).",
+            stacklevel=3,
+        )
+    if resid > _ADJOINT_RESID_WARN:
+        warnings.warn(
+            f"steady_state_reaction_sensitivity: LGMRES relative residual {resid:.2e} "
+            f"exceeds {_ADJOINT_RESID_WARN:.0e}; the gradient may be under-converged "
+            "(increase lgmres_cycles or lgmres_inner_m, or check body_dt). The few-% "
+            "accuracy ceiling is separate (a steady-state-definition mismatch) and is "
+            "not fixed by more iterations.",
+            stacklevel=3,
         )
 
-    def body_fn(carry):
-        lam, resid, it = carry
-        lam_next = lam + solve_block_thomas_diag_offdiag(factors, resid)
-        return lam_next, v - jt_mv(lam_next), it + 1
 
-    lam, _, _ = jax.lax.while_loop(cond_fn, body_fn, (lam0, resid0, jnp.int32(0)))
-    return lam
+def _safe_inv_y(y_star: jnp.ndarray) -> jnp.ndarray:
+    """Elementwise 1/y* with exact zeros mapped to 0 (not inf).
+
+    Closed columns clip trace species to *exactly* 0.0; the log-abundance
+    scaling would otherwise hit 1/0 and poison the whole adjoint with NaN. A
+    zeroed species becomes an identity row of the log operator (its cotangent
+    is left untouched), which is the correct leading-order behaviour.
+    """
+    pos = y_star > 0.0
+    return jnp.where(pos, 1.0 / jnp.where(pos, y_star, 1.0), 0.0)
 
 
-def validate_steady_state_solution(
-    y_star: jnp.ndarray,
-    inputs: SteadyStateInputs,
-    net: NetworkArrays,
-    residual_rtol: float = 1e-6,
-    residual_atol: float = 0.0,
-) -> float:
-    """Require a residual-small steady state before attaching implicit AD."""
-    resid = steady_state_residual_inputs(y_star, inputs, net)
-    resid_inf = float(jnp.max(jnp.abs(resid)))
-    state_scale = float(jnp.max(jnp.abs(y_star)))
-    tol = max(residual_atol, residual_rtol * max(state_scale, 1.0))
-    if resid_inf > tol:
+def _conserved_null_basis(
+    y_star: jnp.ndarray, compo_array: jnp.ndarray, dz: jnp.ndarray
+) -> jnp.ndarray:
+    """Orthonormal basis Q (n, n_e) of the log-space conserved-mass null space.
+
+    For each tracked element `e`, mass conservation `sum_i compo[i,e]*dz*y_i`
+    is constant, whose log-space gradient is `c_e[z,i] = compo[i,e]*dz[z]*y*[z,i]`.
+    Stacking the active elements (columns of `compo` with any atoms) and taking
+    a QR gives the projector basis that deflates the singular directions.
+
+    Shapes: y_star (nz, ni), compo_array (ni, n_atoms), dz (nz,) -> Q (nz*ni, n_e).
+    Built on the host (one-shot, off the hot path).
+    """
+    y_np = np.asarray(y_star)
+    compo_np = np.asarray(compo_array)
+    dz_np = np.asarray(dz)
+    atom_cols = np.where(compo_np.sum(axis=0) > 0)[0]
+    if atom_cols.size == 0:
         raise ValueError(
-            "Steady-state residual is too large for reliable implicit differentiation: "
-            f"||f||_inf={resid_inf:.3e} exceeds tolerance {tol:.3e}. "
-            "Tighten the forward convergence criterion or provide a more converged state."
+            "compo_array has no populated atom columns; cannot build the "
+            "conserved-mass null space. Pass composition.compo_array[:ni]."
         )
-    return resid_inf
+    cols = [
+        (y_np * (compo_np[:, e][None, :] * dz_np[:, None])).ravel() for e in atom_cols
+    ]
+    C = np.stack(cols, axis=1)
+    Q, _ = np.linalg.qr(C)
+    return jnp.asarray(Q)
 
 
-@partial(jax.custom_vjp, nondiff_argnums=(2,))
-def differentiable_steady_state_inputs(
-    inputs: SteadyStateInputs,
-    y_star: jnp.ndarray,
-    net: NetworkArrays,
-) -> jnp.ndarray:
-    """Treat ``y_star`` as the converged state of `f(y*, inputs) = 0`."""
-    del net
-    return y_star
+def _lgmres_solve(
+    matvec: Callable[[np.ndarray], np.ndarray],
+    bvec: np.ndarray,
+    *,
+    inner_m: int,
+    outer_k: int,
+    maxiter: int,
+    cycles: int,
+    rtol: float,
+) -> np.ndarray:
+    """Solve A x = b with scipy LGMRES, chunked over warm-start cycles.
 
-
-def _ssi_fwd(inputs, y_star, net):
-    return y_star, (inputs, y_star)
-
-
-def _ssi_bwd(net, res, v):
-    inputs, y_star = res
-    lambda_ = _solve_adjoint(y_star, inputs, net, v)
-
-    def f_of_inputs(inp):
-        return steady_state_residual_inputs(y_star, inp, net)
-
-    _, vjp_fn = jax.vjp(f_of_inputs, inputs)
-    (cot_inputs,) = vjp_fn(lambda_)
-    cot_inputs = jax.tree.map(
-        lambda x: x if getattr(x, "dtype", None) == jax.dtypes.float0 else -x,
-        cot_inputs,
-    )
-    return (cot_inputs, jnp.zeros_like(y_star))
-
-
-differentiable_steady_state_inputs.defvjp(_ssi_fwd, _ssi_bwd)
-
-
-def checked_differentiable_steady_state(
-    inputs: SteadyStateInputs,
-    y_star: jnp.ndarray,
-    net: NetworkArrays,
-    residual_rtol: float = 1e-6,
-    residual_atol: float = 0.0,
-) -> jnp.ndarray:
-    """Attach implicit reverse-mode AD only after a residual check passes."""
-    validate_steady_state_solution(
-        y_star,
-        inputs,
-        net,
-        residual_rtol=residual_rtol,
-        residual_atol=residual_atol,
-    )
-    return differentiable_steady_state_inputs(inputs, y_star, net)
-
-
-def steady_state_value_and_grad(
-    loss_fn,
-    inputs: SteadyStateInputs,
-    y_star: jnp.ndarray,
-    net: NetworkArrays,
-    residual_rtol: float = 1e-6,
-    residual_atol: float = 0.0,
-):
-    """Evaluate a loss of the steady state and its gradient wrt structured inputs.
-
-    This is the preferred entrypoint when differentiating with respect to the
-    full `SteadyStateInputs` pytree because that pytree intentionally contains
-    non-inexact leaves (boolean masks / mode flags) that should be carried
-    through structurally, not differentiated.
+    The Krylov solve is host-side scipy because JAX exposes no LGMRES (only
+    restarted `gmres`, which oscillates on this indefinite operator). Each
+    matvec is a single host<->device round trip through the jitted JAX
+    operator; this routine runs once, post-convergence, off the hot path.
     """
-    validate_steady_state_solution(
-        y_star,
-        inputs,
-        net,
-        residual_rtol=residual_rtol,
-        residual_atol=residual_atol,
-    )
+    import scipy.sparse.linalg as spla
 
-    def wrapped(inp):
-        y_diff = differentiable_steady_state_inputs(inp, y_star, net)
-        return loss_fn(y_diff)
+    n = bvec.shape[0]
+    A_op = spla.LinearOperator((n, n), matvec=matvec, dtype=np.float64)
+    x = np.zeros(n)
+    for _ in range(cycles):
+        x, _info = spla.lgmres(
+            A_op,
+            bvec,
+            x0=x,
+            rtol=rtol,
+            atol=0.0,
+            inner_m=inner_m,
+            outer_k=outer_k,
+            maxiter=maxiter,
+        )
+    return x
 
-    return jax.value_and_grad(wrapped, allow_int=True)(inputs)
 
-
-@partial(jax.custom_vjp, nondiff_argnums=(2, 3))
-def differentiable_steady_state(
-    k_arr: jnp.ndarray,
+def steady_state_reaction_sensitivity(
+    loss_fn: Callable[[jnp.ndarray], jnp.ndarray],
     y_star: jnp.ndarray,
+    k_arr: jnp.ndarray,
     atm: AtmStatic,
     net: NetworkArrays,
-) -> jnp.ndarray:
-    """Expose `y_star` as a differentiable function of `k_arr` via the
-    implicit-function theorem.
+    *,
+    compo_array: jnp.ndarray,
+    dz: jnp.ndarray,
+    body_dt: float = BODY_MAP_DT,
+    lgmres_inner_m: int = LGMRES_INNER_M,
+    lgmres_outer_k: int = LGMRES_OUTER_K,
+    lgmres_maxiter: int = LGMRES_MAXITER,
+    lgmres_cycles: int = LGMRES_CYCLES,
+    rtol: float = LGMRES_RTOL,
+    return_info: bool = False,
+):
+    """Reverse-mode `dL/d(ln k_r)` at a converged steady state.
 
-    Forward returns y_star unchanged; backward uses the IFT so
-    `jax.grad(loss)(k_arr)` accounts for the implicit dependence of y*
-    on k_arr without backpropagating through the runner's while_loop.
+    One solver-map adjoint solve returns the sensitivity of a scalar loss of the
+    converged composition to every reaction-rate constant — the reaction-ranking
+    use case (which reactions set the converged SO2, CH4, ...).
+
+    Limitations (this is a ranking tool, not a precision-gradient tool — see the
+    module docstring for the full reasoning):
+
+    * Accuracy is ~few % vs finite differences, a steady-state-*definition*
+      ceiling (the `f=0` adjoint vs the convergence-criterion state the run
+      actually stops at), not solver error — more iterations do not close it.
+    * Photolysis is held frozen on photochemistry-on columns (`dJ/dy` omitted);
+      those sensitivities are leading-order only.
+    * Returns `k`-only sensitivities (`dL/d ln k`); for `dL/dKzz`, `dL/dT`, etc.
+      use forward-mode (`jvp`).
+    * Requires `y_star` to be a tight fixed point of the bare body map and a
+      `body_dt` in the safe regime.
+
+    Parameters
+    ----------
+    loss_fn
+        `loss_fn(y) -> scalar` on the full `(nz, ni)` number-density state. The
+        caller closes over the species/layer of interest, e.g.
+        `lambda y: jnp.log10(y[L, so2] / y[L].sum())`.
+    y_star : (nz, ni)
+        Converged state (a tight fixed point of the renormalized body map).
+    k_arr : (nr+1, nz)
+        Converged rate-constant table. Photolysis rows may be frozen at their
+        converged values (leading-order; `dJ/dy` is omitted).
+    atm : AtmStatic
+        Atmosphere with the converged refresh fields (g, dzi, Hpi, ...), as fed
+        to the runner's body map.
+    net : NetworkArrays
+        Active network.
+    compo_array : (ni, n_atoms)
+        Per-species atom counts; pass `composition.compo_array[:ni]`.
+    dz : (nz,)
+        Layer thickness. Required — `AtmStatic` carries only the interface
+        average `dzi`, which is not invertible to `dz`. Use `AtmInputs.dz`.
+    body_dt
+        Body-map time step; keep in the safe regime (see `BODY_MAP_DT`).
+    lgmres_inner_m, lgmres_outer_k, lgmres_maxiter, lgmres_cycles, rtol
+        LGMRES knobs (see the module constants).
+    return_info
+        If True, also return a diagnostics dict.
+
+    Returns
+    -------
+    dL_dlnk : (nr+1,)
+        `dL/d(ln k_r)` for every reaction (index 0 is the unused 1-based pad).
+    info : dict, optional
+        `fp_err` (body-map fixed-point error at y*), `null_quality`
+        (orthonormality defect of the QR deflation basis; ~0 means the projector
+        cleanly removes the conserved-mass directions), `resid` (final relative
+        LGMRES residual), `n_matvec`, and `n_null` (deflated dimensions).
     """
-    inputs = build_steady_state_inputs(k_arr, atm)
-    return differentiable_steady_state_inputs(inputs, y_star, net)
+    if body_dt > _BODY_MAP_DT_MAX:
+        raise ValueError(
+            f"body_dt={body_dt:.1e} is in the near-singular danger zone "
+            f"(> {_BODY_MAP_DT_MAX:.0e}); the implicit step goes singular and "
+            f"the adjoint diverges. Use body_dt <= {_BODY_MAP_DT_MAX:.0e} "
+            f"(default {BODY_MAP_DT:.0e})."
+        )
 
+    nz, ni = y_star.shape
+    inv_y = _safe_inv_y(y_star)
 
-def _ss_fwd(k_arr, y_star, atm, net):
-    return y_star, (k_arr, y_star)
+    # Bare Ros2 body map and its y-VJP (the transposed solver-map operator).
+    @jax.jit
+    def body_map(y):
+        sol, _ = jax_ros2_step(y, k_arr, jnp.float64(body_dt), atm, net)
+        return sol
 
+    fp_err = float(
+        jnp.max(jnp.abs(body_map(y_star) - y_star))
+        / jnp.maximum(jnp.max(jnp.abs(y_star)), 1e-300)
+    )
+    _, vjp_Gy = jax.vjp(body_map, y_star)
 
-def _ss_bwd(atm, net, res, v):
-    """Implicit-function-theorem backward.
+    def a_eta(z):  # (I - dG/deta)^T in log-abundance coordinates
+        return z - y_star * vjp_Gy(z * inv_y)[0]
 
-    Solve the exact adjoint system J_y^T λ = v (preconditioned
-    defect-correction, see `_solve_adjoint`), then cot_k = -(∂f/∂k)^T λ
-    via jax.vjp.
-    """
-    k_arr, y_star = res
-    inputs = build_steady_state_inputs(k_arr, atm)
-    lambda_ = _solve_adjoint(y_star, inputs, net, v)
+    # Conserved-mass deflation projector.
+    Q = _conserved_null_basis(y_star, compo_array, dz)
 
-    # Diffusion is k-independent so the f-VJP only sees chem_rhs.
-    def f_of_k(k):
-        return _chem_rhs(y_star, atm.M, k, net)
+    def proj(z):
+        zf = z.reshape(-1)
+        return (zf - Q @ (Q.T @ zf)).reshape(nz, ni)
 
-    _, vjp_fn = jax.vjp(f_of_k, k_arr)
-    (cot_k,) = vjp_fn(lambda_)
+    deflated = jax.jit(lambda z: proj(a_eta(proj(z))))
 
-    # The minus sign comes from ∂y*/∂k = -(∂f/∂y)^{-1} (∂f/∂k). y_star
-    # is treated as constant — it comes from an external solver.
-    return (-cot_k, jnp.zeros_like(y_star))
+    # Orthonormality defect of the QR deflation basis (~0 when `proj` cleanly
+    # annihilates span(C), i.e. the conserved-mass null space).
+    null_quality = float(jnp.linalg.norm(Q - Q @ (Q.T @ Q)) / max(Q.shape[1], 1))
 
+    # RHS: log-space cotangent of the loss, deflated.
+    v = jax.grad(loss_fn)(y_star)
+    b = proj(y_star * v)
+    bvec = np.asarray(b).ravel()
+    bnorm = float(np.linalg.norm(bvec))
 
-differentiable_steady_state.defvjp(_ss_fwd, _ss_bwd)
+    n_matvec = [0]
+
+    def matvec(x):
+        n_matvec[0] += 1
+        return np.asarray(deflated(jnp.asarray(x.reshape(nz, ni)))).ravel()
+
+    x = _lgmres_solve(
+        matvec,
+        bvec,
+        inner_m=lgmres_inner_m,
+        outer_k=lgmres_outer_k,
+        maxiter=lgmres_maxiter,
+        cycles=lgmres_cycles,
+        rtol=rtol,
+    )
+
+    z = proj(jnp.asarray(x.reshape(nz, ni)))
+    resid = float(
+        jnp.linalg.norm(proj(a_eta(z)).reshape(-1) - jnp.asarray(bvec))
+        / max(bnorm, 1e-300)
+    )
+    # Default-on diagnostics: a poorly-converged solve still returns a
+    # finite-looking gradient, so warn even when the caller ignores `info`.
+    _warn_poor_convergence(resid, fp_err)
+
+    # Reaction cotangent: lambda = z ./ y*, then dL/d(ln k_r) = (k .* G_k^T lambda)_r.
+    lam = z * inv_y
+
+    def body_map_k(k):
+        sol, _ = jax_ros2_step(y_star, k, jnp.float64(body_dt), atm, net)
+        return sol
+
+    _, vjp_Gk = jax.vjp(body_map_k, k_arr)
+    (cot_k,) = vjp_Gk(lam)  # (nr+1, nz)
+    dL_dlnk = (k_arr * cot_k).sum(axis=1)  # (nr+1,)
+
+    if not bool(jnp.all(jnp.isfinite(dL_dlnk))):
+        raise ValueError(
+            "Reaction sensitivity is non-finite. Common causes: a body_dt in "
+            "the danger zone, or a y_star that is not a fixed point of the body "
+            f"map (fp_err={fp_err:.2e})."
+        )
+
+    if not return_info:
+        return dL_dlnk
+    info = {
+        "fp_err": fp_err,
+        "null_quality": null_quality,
+        "resid": resid,
+        "n_matvec": int(n_matvec[0]),
+        "n_null": int(Q.shape[1]),
+    }
+    return dL_dlnk, info

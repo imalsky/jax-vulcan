@@ -13,7 +13,7 @@ license-files = ["LICENSE"]
 dependencies = [
     "jax>=0.4.31",
     "numpy>=1.24",
-    "scipy>=1.10",
+    "scipy>=1.12",  # lgmres(rtol=...) for the reverse-mode steady-state adjoint
     "h5py>=3.8",
     "sympy>=1.12",
 ]
@@ -85,7 +85,7 @@ testpaths = ["tests"]
 # relative paths resolve, or to stage VULCAN-master) before importing, so the
 # module-level imports legitimately come after executable statements (E402).
 [tool.ruff.lint.per-file-ignores]
-"examples/grad_implicit_example.py" = ["E402"]
+"examples/grad_reverse_example.py" = ["E402"]
 "examples/grad_jvp_example.py" = ["E402"]
 "examples/quickstart.ipynb" = ["E402"]
 "tests/test_atom_conservation_projection.py" = ["E402"]
@@ -95,6 +95,6 @@ testpaths = ["tests"]
 "tests/test_default_master_parity.py" = ["E402"]
 "tests/test_oracle.py" = ["E402"]
 "tests/test_photo_ion.py" = ["E402"]
-"tests/test_steady_state_grad.py" = ["E402"]
+"tests/test_steady_state_reaction_sensitivity.py" = ["E402"]
 "tests/test_w39b_fastchem_invariant.py" = ["E402"]
 "src/vulcan_jax/vulcan_jax_cli.py" = ["E402"]
