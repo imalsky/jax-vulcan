@@ -1,4 +1,5 @@
-"""Physical constants in CGS, sourced from astropy."""
+"""Physical constants in CGS (from astropy), plus the radiative-transfer
+asymmetry factor `ag0`."""
 
 kb = 1.38064852e-16  # Boltzmann constant (erg/K)
 Navo = 6.02214086e23  # Avogadro's number

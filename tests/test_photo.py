@@ -131,14 +131,19 @@ def main() -> int:
 
     from vulcan_jax.phy_const import hc
 
+    # Master's op.compute_flux reads sl_angle/edd from *its own* sibling
+    # vulcan_cfg (op.vulcan_cfg), which differs from VULCAN-JAX's vulcan_cfg
+    # (master ships sl_angle=83 deg, JAX ships 48 deg). The JAX kernel takes
+    # the zenith cosine as an argument, so the comparison is only valid when
+    # we feed it the same angle master actually used.
     aflux_jax, _, _, _ = photo_mod.compute_flux_jax(
         jnp.asarray(tau_ref),
         jnp.asarray(data_var.sflux_top),
         jnp.asarray(data_var.ymix),
         photo_data,
         jnp.asarray(data_var.bins),
-        float(np.cos(vulcan_cfg.sl_angle)),
-        float(vulcan_cfg.edd),
+        float(np.cos(op.vulcan_cfg.sl_angle)),
+        float(op.vulcan_cfg.edd),
         float(0.0),  # ag0=0 in phy_const
         float(hc),
         jnp.zeros_like(

@@ -164,8 +164,11 @@ def _mol_diff(phys: PhysicalInputs, spec: AtmSpec, n_0, gz, Hp, dz):
     """
     nz, ni = spec.nz, spec.ni
     if not spec.use_moldiff:
-        z = jnp.zeros((nz, ni), dtype=jnp.float64)
-        return jnp.zeros((nz - 1, ni), dtype=jnp.float64), z, z
+        return (
+            jnp.zeros((nz - 1, ni), dtype=jnp.float64),  # Dzz (interface)
+            jnp.zeros((nz, ni), dtype=jnp.float64),  # Dzz_cen (cell)
+            jnp.zeros((nz - 1, ni), dtype=jnp.float64),  # vm (interface)
+        )
 
     Dzz_gen = _Dzz_gen_for_base(spec.atm_base)
     Tco = phys.Tco
@@ -174,24 +177,31 @@ def _mol_diff(phys: PhysicalInputs, spec: AtmSpec, n_0, gz, Hp, dz):
     Dzz = jax.vmap(lambda mi: Dzz_gen(Tco_i, n0_i, mi), out_axes=1)(spec.ms)
     Dzz_cen = jax.vmap(lambda mi: Dzz_gen(Tco, n_0, mi), out_axes=1)(spec.ms)
 
-    # Non-gaseous species get zero diffusion on interfaces (vm uses Dzz_cen,
-    # so this zeroing does not feed back into the advective term).
+    # Non-gaseous species get zero diffusion on the interfaces; because the
+    # advective term vm = -Dzz * drift below reuses this interface Dzz, the
+    # zeroing carries straight into vm (no separate condensation gate needed).
     nongas = spec.nongas_mask[None, :]
     Dzz = jnp.where(nongas, 0.0, Dzz)
 
-    vm = jnp.zeros((nz, ni), dtype=jnp.float64)
+    vm = jnp.zeros((nz - 1, ni), dtype=jnp.float64)
     if spec.use_vm_mol:
-        # delta_T[i] = T[i+1] - T[i]; alias delta_T[0] to delta_T[1].
-        delta_T = jnp.roll(Tco, -1) - Tco
-        delta_T = delta_T.at[0].set(delta_T[1])
-        gravity_term = spec.ms[None, :] * gz[:, None] / (Navo * kb * Tco[:, None])
-        scale_term = 1.0 / Hp[:, None]
-        thermal_term = (
-            spec.alpha[None, :] / Tco[:, None] * delta_T[:, None] / dz[:, None]
+        # Interface-centered upwind advective velocity (nz-1, ni), matching
+        # VULCAN's vm_branch op.update_mu_dz. See atm_setup.compute_mol_diff
+        # for the derivation; Ti/Hpi/dzi are the same interface means used by
+        # _mu_dz_g, recomputed here so this stays a pure function of (gz,Hp,dz).
+        Ti = 0.5 * (Tco[:-1] + Tco[1:])
+        Hpi = 0.5 * (Hp[:-1] + Hp[1:])
+        dzi = 0.5 * (dz[1:] + dz[:-1])
+        delta_Ti = Tco[1:] - Tco[:-1]
+        inv_Hi = spec.ms[None, :] * gz[:, None] / (Navo * kb * Tco[:, None])
+        H_cell = 1.0 / inv_Hi
+        Hi_interf = 1.0 / (0.5 * (H_cell[:-1] + H_cell[1:]))
+        drift = (
+            Hi_interf
+            - 1.0 / Hpi[:, None]
+            + spec.alpha[None, :] / Ti[:, None] * delta_Ti[:, None] / dzi[:, None]
         )
-        vm = -Dzz_cen * (gravity_term - scale_term + thermal_term)
-        if spec.use_condense:
-            vm = jnp.where(nongas, 0.0, vm)
+        vm = -Dzz * drift
     return Dzz, Dzz_cen, vm
 
 
@@ -233,7 +243,7 @@ def build_atm_static(phys: PhysicalInputs, spec: AtmSpec) -> AtmStatic:
 
     # Mirror make_atm_static's final toggle gating.
     if not use_vm:
-        vm = jnp.zeros((nz, ni), dtype=jnp.float64)
+        vm = jnp.zeros((nz - 1, ni), dtype=jnp.float64)
     if not spec.use_moldiff:
         Dzz = jnp.zeros((nz - 1, ni), dtype=jnp.float64)
 

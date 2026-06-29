@@ -51,7 +51,7 @@ Rp = 1.138 * 7.1492e9  # Planetary radius (cm) (for computing gravity)
 orbit_radius = 0.03142  # planet-star distance in A.U.
 sl_angle = (
     48 / 180.0 * 3.14159
-)  # the zenith angle of the star in degree (usually 58 deg for the dayside average)
+)  # zenith angle of the star, stored in radians (here 48 deg; ~58 deg is a common dayside-average choice)
 f_diurnal = 1.0  # to account for the diurnal average of solar flux (i.e. 0.5 for Earth; 1 for tidally-locked planets)
 scat_sp = ["H2", "He"]  # the bulk gases that contribute to Rayleigh scattering
 T_cross_sp = []  # warning: slower start! available atm: 'CO2','H2O','NH3', 'SH','H2S','SO2', 'S2', 'COS', 'CS2'

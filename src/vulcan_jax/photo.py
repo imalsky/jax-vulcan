@@ -154,6 +154,10 @@ def compute_flux_jax(
     The down sweep reads dflux_u as it stood after the previous call (since
     the up sweep that overwrites it runs second). Callers must thread the
     prior call's dflux_u through `dflux_u_prev`; on the first call, pass zeros.
+
+    Returns (aflux, sflux, dflux_d, dflux_u): aflux (nz, nbin) actinic flux;
+    sflux (nz+1, nbin) direct attenuated stellar flux; dflux_d / dflux_u
+    (nz+1, nbin) downward / upward diffuse flux.
     """
     mu_ang = -1.0 * mu_zenith
     nz_plus1, nbin = tau.shape

@@ -169,6 +169,141 @@ def test_mol_diff_vm_branch_matches_host():
     assert _rel(vm, ref["vm"]) < 1e-12
 
 
+def _reference_vm_branch_vm(
+    Tco, n_0, g, Hp, dz, ms, alpha, species_list, non_gas_sp, atm_base
+):
+    """Transparent NumPy port of the canonical vm_branch interface vm.
+
+    Mirrors `op.update_mu_dz` from
+    https://github.com/shami-EEG/VULCAN/tree/vm_branch *verbatim* (including its
+    `np.roll(species_Hi, -1, axis=0)` layer-averaging — the build_atm.py copy
+    drops `axis=0`, a latent species-mixing bug that op.update_mu_dz overrides
+    during the run). Used to pin `compute_mol_diff`'s physics to the upstream
+    expression independently of VULCAN-JAX's own slicing-based refactor.
+    """
+    from vulcan_jax.atm_setup import _Dzz_gen_for_base
+    from vulcan_jax.phy_const import Navo, kb
+
+    Tco = np.asarray(Tco, np.float64)
+    n_0 = np.asarray(n_0, np.float64)
+    g = np.asarray(g, np.float64)
+    Hp = np.asarray(Hp, np.float64)
+    dz = np.asarray(dz, np.float64)
+    ms = np.asarray(ms, np.float64)
+    alpha = np.asarray(alpha, np.float64)
+    nz, ni = Tco.shape[0], len(species_list)
+
+    Dzz_gen = _Dzz_gen_for_base(atm_base)
+    Tco_i = 0.5 * (Tco[:-1] + Tco[1:])
+    n0_i = 0.5 * (n_0[:-1] + n_0[1:])
+    Dzz = np.zeros((nz - 1, ni), dtype=np.float64)
+    for i in range(ni):
+        Dzz[:, i] = np.asarray(Dzz_gen(Tco_i, n0_i, ms[i]))
+    for sp in non_gas_sp:
+        if sp in species_list:
+            Dzz[:, species_list.index(sp)] = 0.0
+
+    Ti = 0.5 * (Tco[:-1] + Tco[1:])
+    Hpi = 0.5 * (Hp[:-1] + Hp[1:])
+    dzi = 0.5 * (dz[1:] + dz[:-1])
+    delta_Ti = (np.roll(Tco, -1) - Tco)[:-1]
+    species_Hi = ms[None, :] * g[:, None] / (Navo * kb * Tco[:, None])
+    Hi_interf = 1.0 / (0.5 * (1.0 / species_Hi + 1.0 / np.roll(species_Hi, -1, axis=0)))
+    Hi_interf = Hi_interf[:-1, :]
+    return -Dzz * (
+        Hi_interf
+        - 1.0 / Hpi[:, None]
+        + alpha[None, :] / Ti[:, None] * delta_Ti[:, None] / dzi[:, None]
+    )
+
+
+def test_compute_mol_diff_vm_matches_vm_branch_reference():
+    """compute_mol_diff's upwind vm equals the canonical vm_branch expression.
+
+    This pins the *physics* of the advective molecular-diffusion velocity to the
+    extensively-tested upstream branch, independent of the production kernel's
+    discretization (covered separately in test_diffusion_production_kernel)."""
+    species_list, ms_arr, nz, ni, Tco, n_0, g, Hp, dz, alpha = (
+        _synthetic_mol_diff_setup()
+    )
+    cfg = types.SimpleNamespace(
+        use_moldiff=True,
+        atm_base="H2",
+        non_gas_sp=["H2O_l_s"],
+        use_vm_mol=True,
+        use_condense=True,
+    )
+    out = atm_setup.compute_mol_diff(
+        cfg, Tco, n_0, g, Hp, dz, ms_arr, alpha, species_list
+    )
+    vm_ref = _reference_vm_branch_vm(
+        Tco, n_0, g, Hp, dz, ms_arr, alpha, species_list, ["H2O_l_s"], "H2"
+    )
+    assert out["vm"].shape == (nz - 1, ni), out["vm"].shape
+    assert _rel(out["vm"], vm_ref) < 1e-12
+    # Non-gaseous species carry zero advective velocity (Dzz==0 there).
+    j_nongas = species_list.index("H2O_l_s")
+    assert np.allclose(np.asarray(out["vm"])[:, j_nongas], 0.0)
+    # Gas species carry a finite, nonzero drift on this non-isothermal column.
+    gas_cols = [k for k in range(ni) if k != j_nongas]
+    assert np.all(np.isfinite(np.asarray(out["vm"])))
+    assert np.any(np.abs(np.asarray(out["vm"])[:, gas_cols]) > 0.0)
+
+
+def test_vm_branch_differentiates_wrt_Tco():
+    """Forward-mode tangent of the interface vm w.r.t. a Tco scale is finite and
+    matches a central difference -- the new vm expression is on the AD surface."""
+    from vulcan_jax.atm_jax import _mol_diff
+
+    species_list, ms_arr, nz, ni, Tco, n_0, g, Hp, dz, alpha = (
+        _synthetic_mol_diff_setup()
+    )
+    nongas = np.array([s in ("H2O_l_s",) for s in species_list])
+    phys = PhysicalInputs(
+        pco=jnp.ones(nz),
+        Tco=jnp.asarray(Tco),
+        ymix=jnp.ones((nz, ni)),
+        Kzz=jnp.ones(nz - 1),
+        vz=jnp.zeros(nz - 1),
+        gs=jnp.float64(2140.0),
+        Rp=jnp.float64(8e9),
+    )
+    spec = AtmSpec(
+        nz=nz,
+        ni=ni,
+        pref_indx=0,
+        atm_base="H2",
+        ms=jnp.asarray(ms_arr),
+        alpha=jnp.asarray(alpha),
+        gas_indx_mask=jnp.asarray(~nongas),
+        nongas_mask=jnp.asarray(nongas),
+        settle_coeff=jnp.zeros(ni),
+        top_flux=jnp.zeros(ni),
+        bot_flux=jnp.zeros(ni),
+        bot_vdep=jnp.zeros(ni),
+        use_moldiff=True,
+        use_vm_mol=True,
+        use_settling=False,
+        use_condense=True,
+        use_topflux=False,
+        use_botflux=False,
+    )
+    Tco_j = jnp.asarray(Tco)
+    n0_j, g_j, Hp_j, dz_j = (jnp.asarray(a) for a in (n_0, g, Hp, dz))
+
+    def vm_sum(scale):
+        _, _, vm = _mol_diff(
+            phys._replace(Tco=Tco_j * scale), spec, n0_j, g_j, Hp_j, dz_j
+        )
+        return jnp.sum(vm)
+
+    _, tangent = jax.jvp(vm_sum, (jnp.float64(1.0),), (jnp.float64(1.0),))
+    eps = 1e-6
+    fd = (vm_sum(jnp.float64(1.0 + eps)) - vm_sum(jnp.float64(1.0 - eps))) / (2 * eps)
+    assert np.isfinite(float(tangent)) and float(tangent) != 0.0
+    assert abs(float(tangent) - float(fd)) / (abs(float(fd)) + 1e-300) < 1e-5
+
+
 def test_settling_velocity_jax_matches_host():
     """settling_velocity_jax (via the coeff array) reproduces the host vs."""
     species_list, ms_arr, nz, ni, Tco, n_0, g, Hp, dz, alpha = (
@@ -321,9 +456,18 @@ def test_load_TPK_missing_kzz_param_fails_loud():
     pco = np.logspace(9, -2, 20)
     pico = np.asarray(compute_pico(pco))
     cfg = types.SimpleNamespace(
-        atm_type="isothermal", Kzz_prof="JM16", vz_prof="const",
-        use_Kzz=True, use_vz=False, const_Kzz=1e10, const_vz=0.0,
-        K_max=2e5, K_p_lev=0.05, Tiso=1500.0, P_b=1e9, gs=2140.0,
+        atm_type="isothermal",
+        Kzz_prof="JM16",
+        vz_prof="const",
+        use_Kzz=True,
+        use_vz=False,
+        const_Kzz=1e10,
+        const_vz=0.0,
+        K_max=2e5,
+        K_p_lev=0.05,
+        Tiso=1500.0,
+        P_b=1e9,
+        gs=2140.0,
     )  # note: no K_deep
     with pytest.raises(AttributeError):
         load_TPK(cfg, pco, pico=pico)

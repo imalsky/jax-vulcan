@@ -51,10 +51,14 @@ def main() -> int:
     data_var, data_atm, _ = legacy_view(rs)
     nz, ni = data_var.y.shape
 
-    # Populate atm.vs with synthetic settling velocities for non-zero variant test
+    # Populate atm.vs and atm.vm with synthetic interface velocities so the
+    # upwind branches (sign-dependent) are actually exercised. HD189's default
+    # cfg has use_vm_mol=False, so setup leaves atm.vm all-zero; a nonzero
+    # synthetic vm (mixed sign, both shape (nz-1, ni)) makes diffdf_vm /
+    # diffdf_settling_vm a real comparison rather than a trivial vm==0 one.
     rng = np.random.default_rng(0)
     data_atm.vs = (rng.standard_normal((nz - 1, ni)) * 0.01).astype(np.float64)
-    # atm.vm already populated by make_atm.mol_diff
+    data_atm.vm = (rng.standard_normal((nz - 1, ni)) * 50.0).astype(np.float64)
 
     # Synthetic cfg with mode flags
     class _CfgShim:
@@ -102,12 +106,38 @@ def main() -> int:
     coeffs_setvm = diff_mod.build_diffusion_coeffs(data_var.y, data_atm, cfg_setvm)
     diff_setvm_jax = diff_mod.apply_diffusion(data_var.y, coeffs_setvm)
 
+    # KNOWN upstream self-inconsistency: op.diffdf_settling_vm OMITS the vm
+    # advective term at the bottom boundary (j=0) -- it keeps only vs there --
+    # even though op.diffdf_vm DOES include vm at j=0 (and so do the interior /
+    # top of diffdf_settling_vm itself). The canonical vm_branch carries the same
+    # quirk. VULCAN-JAX keeps vm consistent at j=0 across all modes, mirroring
+    # the documented op.lhs_jac_tot stance (we stay self-consistent rather than
+    # replicating an upstream boundary oversight). So in the doubly-non-default
+    # settling+vm combo the two agree everywhere except the j=0 row, and there
+    # they differ by *exactly* the omitted vm bottom-flux term. Verify rows 1..
+    # at the FP floor and pin the j=0 gap to that exact term.
     abs_floor3 = 1e-12 * np.abs(diff_setvm_ref).max()
-    pseudo_relerr_setvm = np.abs(diff_setvm_jax - diff_setvm_ref) / np.maximum(
-        np.abs(diff_setvm_ref), abs_floor3
+    pseudo_relerr_setvm = np.abs(diff_setvm_jax[1:] - diff_setvm_ref[1:]) / np.maximum(
+        np.abs(diff_setvm_ref[1:]), abs_floor3
     )
     print(
-        f"diffdf_settling_vm: max relerr (with floor) = {pseudo_relerr_setvm.max():.3e}"
+        "diffdf_settling_vm (rows 1..): max relerr (with floor) = "
+        f"{pseudo_relerr_setvm.max():.3e}"
+    )
+    vm0 = np.asarray(data_atm.vm)[0]
+    dzi0 = float(np.asarray(data_atm.dzi)[0])
+    y0 = np.asarray(data_var.y)[0]
+    y1 = np.asarray(data_var.y)[1]
+    # Operator gap at j=0 = (vm upwind that JAX keeps but master drops) applied
+    # to (y0, y1):  -[ (vm0>0)*vm0*y0 + (vm0<0)*vm0*y1 ] / dzi0.
+    expected_j0_gap = -((vm0 > 0) * vm0 * y0 + (vm0 < 0) * vm0 * y1) / dzi0
+    j0_gap = diff_setvm_jax[0] - diff_setvm_ref[0]
+    j0_floor = 1e-10 * np.abs(expected_j0_gap).max()
+    j0_relerr = np.abs(j0_gap - expected_j0_gap) / np.maximum(
+        np.abs(expected_j0_gap), j0_floor
+    )
+    print(
+        f"diffdf_settling_vm j=0 gap == omitted vm term: max relerr = {j0_relerr.max():.3e}"
     )
 
     # === All modes: also test that the original 'gravity' mode still works ===
@@ -126,6 +156,7 @@ def main() -> int:
         pseudo_relerr.max() < 1e-3
         and pseudo_relerr_set.max() < 1e-5
         and pseudo_relerr_setvm.max() < 1e-5
+        and j0_relerr.max() < 1e-6
         and pseudo_relerr_gravity.max() < 1e-3
     )
     print("PASS" if ok else "FAIL")

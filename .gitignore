@@ -118,3 +118,6 @@ plot/*.svg
 
 # Generated example figures (examples/output/ is already covered by output/)
 examples/plot/
+
+# Local parity-comparison artifacts (figures, scripts, .vul/.npz dumps) vs shami vm_branch / VULCAN-master — not shipped
+parity-tests/

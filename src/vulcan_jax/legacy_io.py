@@ -742,6 +742,9 @@ class Output(object):
     """
 
     def __init__(self, cfg=vulcan_cfg):
+        """Set up the `.vul` writer for one run: create the output/plot dirs
+        and warn if the target file already exists.
+        """
         # cfg defaults to the global vulcan_cfg module so the CLI and legacy
         # callers (which pass nothing) are unchanged. make_config() users pass
         # their namespace so output paths, the .vul writer, and progress prints
@@ -764,6 +767,10 @@ class Output(object):
             print("Warning... the output file: " + str(out_name) + " already exists.\n")
 
     def print_prog(self, var, para):
+        """Print one progress block: elapsed model time, step count vs
+        `count_max`, longdy / longdy_dt / dt, and the most-varying
+        (level, species).
+        """
         indx_max = np.nanargmax(para.where_varies_most)
         print(
             "Elapsed time: "
@@ -787,6 +794,10 @@ class Output(object):
         )
 
     def print_end_msg(self, var, para):
+        """Print the steady-state success summary: CPU wall time, step count,
+        final model time, long dy / dy_dt, per-atom loss (skipping
+        `cfg.loss_ex`), and the negative/loss/delta rejection counters.
+        """
         print(
             "After ------- %s seconds -------" % (time.time() - para.start_time)
             + " s CPU time"
@@ -822,6 +833,10 @@ class Output(object):
         print("------ Live long and prosper \\V/ ------")
 
     def print_unconverged_msg(self, var, para, case):
+        """Print the non-converged summary for termination `case` (2 = runtime
+        budget, 3 = max steps, 4 = wall-clock budget exceeded); any other case
+        raises RuntimeError. Also prints per-atom loss and rejection counters.
+        """
         if case == 2:
             print(
                 "After ------- %s seconds -------" % (time.time() - para.start_time)
@@ -888,6 +903,10 @@ class Output(object):
         print(para.delta_count)
 
     def save_cfg(self, dname):
+        """Write a repr snapshot of the active cfg (including make_config
+        overrides) to `cfg_<out_name>.txt` under `dname/output_dir`, skipping
+        private, callable, type, and module attributes so it re-reads as Python.
+        """
         # Create the target directory at the actual write location
         # (dname/output_dir), not relative to the current working directory —
         # save_cfg writes under dname, so a cwd != dname caller (the public API)
@@ -1024,6 +1043,9 @@ class Output(object):
     # is imported lazily so non-plotting tests don't pull matplotlib in.
 
     def plot_end(self, var, atm, para):
+        """Save the final mixing-ratio profile (`cfg.plot_spec`) vs pressure
+        (or height when `cfg.plot_height`) to `plot_dir/mix2.png`.
+        """
         plt = _import_plt()
         plot_dir = self._cfg.plot_dir
         colors = [
@@ -1084,6 +1106,10 @@ class Output(object):
             plt.close()
 
     def plot_evo(self, var, atm, plot_j=-1, plot_ymin=1e-20, dn=1):
+        """Save the mixing-ratio time evolution for `cfg.plot_spec` to
+        `plot_dir/evo.png`. `plot_j` selects the layer (-1 = top), `plot_ymin`
+        sets the y-axis floor, `dn` strides the stored time samples.
+        """
         plt = _import_plt()
         plot_spec = self._cfg.plot_spec
         plot_dir = self._cfg.plot_dir
@@ -1106,6 +1132,9 @@ class Output(object):
         plt.close()
 
     def plot_TP(self, atm):
+        """Save the temperature and Kzz profiles vs pressure (or height when
+        `cfg.plot_height`) on twin x-axes to `plot_dir/TPK.png`.
+        """
         plt = _import_plt()
         plot_dir = self._cfg.plot_dir
         fig, ax1 = plt.subplots()

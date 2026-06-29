@@ -52,7 +52,7 @@ def main() -> int:
         ms=jnp.full((ni,), 1e-23),
         alpha=jnp.zeros(ni),
         M=jnp.full((nz,), 1e15),
-        vm=jnp.zeros((nz, ni)),
+        vm=jnp.zeros((nz - 1, ni)),
         vs=jnp.zeros((nz - 1, ni)),
         top_flux=jnp.zeros((ni,)),
         bot_flux=jnp.zeros((ni,)),

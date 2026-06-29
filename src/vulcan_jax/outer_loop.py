@@ -598,8 +598,8 @@ class _Statics(NamedTuple):
     mtol_conv: float
     conver_ignore_mask: jnp.ndarray  # (ni,) bool — species to drop from longdy
     condense_zero_conv_mask: jnp.ndarray  # (nz, ni) bool — non_gas_sp columns
-    n_0: jnp.ndarray  # (nz,) — atm.n_0 for the (y - y_old)/n_0 ratio
-    Kzz: jnp.ndarray  # (nz-1,) — for slope_min recomputation each step
+    n_0: jnp.ndarray  # (nz,) — atm.n_0; seeds pv.n_0 (the (y-y_old)/n_0 ratio)
+    Kzz: jnp.ndarray  # (nz-1,) — atm.Kzz; seeds pv.Kzz (slope_min recompute)
 
     # Photo / adaptive-rtol cadence statics. The dynamic counterparts ride
     # in the carry (s.update_photo_frq / s.rtol / s.loss_criteria).

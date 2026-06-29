@@ -115,9 +115,10 @@ def emit_chem_rhs_source(net: Network) -> str:
 def chem_rhs_cache_key(net: Network) -> str:
     """SHA-256 of the network identity, truncated to 16 hex chars.
 
-    Inputs cover every byte the codegen consumes: file path/mtime,
-    stoichiometry tables, reaction-type masks, ni, nr. A pure rename of
-    the network file (no content change) re-keys via mtime.
+    Inputs cover every byte the codegen consumes: resolved file path, mtime,
+    stoichiometry tables, reaction-type masks, ni, nr. A pure rename re-keys
+    via the resolved path string (a rename leaves mtime unchanged); an in-place
+    edit re-keys via mtime and the array bytes.
     """
     h = hashlib.sha256()
     p = Path(net.network_path)

@@ -105,7 +105,8 @@ def apply_h2o_relax_jax(
     h2o_l_s = st.h2o_l_s_idx
 
     # Tiny floor on the denominator avoids NaN in cells where y[H2O]==sat;
-    # those cells fall outside both conden_mask and evap_mask anyway.
+    # there tau becomes ~+1e300, so dt/tau ~ 0 makes y_conden ~ ymix and the
+    # condensation delta is effectively zero.
     denom = st.h2o_Dg * st.h2o_m_over_rho_r2 * (y[:, h2o] - st.h2o_sat)
     denom_safe = jnp.where(jnp.abs(denom) < 1e-300, 1e-300, denom)
     tau = 1.0 / denom_safe

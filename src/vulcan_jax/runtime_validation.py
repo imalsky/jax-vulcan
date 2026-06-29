@@ -308,7 +308,13 @@ def _validate_numerical_bounds(cfg) -> list[str]:
 
 
 def validate_runtime_config(cfg, root: Path | None = None) -> None:
-    """Raise RuntimeError if cfg is unsupported or required files are missing."""
+    """Raise RuntimeError if cfg is unsupported or required files are missing.
+
+    Aggregates every configuration error (solver/flag consistency, required
+    files, network assets, FastChem input, numerical bounds) and raises once
+    so the user sees all problems at once; returns None on success. `root`
+    sets where relative asset paths resolve (defaults to the package dir).
+    """
     root = Path(__file__).resolve().parent if root is None else Path(root)
     errors: list[str] = []
 

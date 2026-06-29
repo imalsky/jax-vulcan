@@ -1,3 +1,10 @@
+"""One-off data-prep: concatenate per-species NASA9 thermo files into one.
+
+Reads each `<species>.txt` in `spec_list` from the current directory and
+writes `issi_nasa9.txt`, with each species' block prefixed by its name and
+separated by blank lines.
+"""
+
 # species list
 spec_list = [
     "H",
@@ -30,7 +37,6 @@ spec_list = [
     "HCCO",
     "He",
 ]
-# spec_list = ['H']
 
 ost = ""
 for sp in spec_list:
@@ -38,7 +44,6 @@ for sp in spec_list:
         ost += sp + "\n"
         lines = f.read()
         ost += lines + "\n" + "\n"
-        # print (lines)
 
 with open("issi_nasa9.txt", "w") as fout:  # This removes the file contents
     fout.write(ost)

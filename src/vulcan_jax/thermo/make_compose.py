@@ -1,4 +1,12 @@
 # ruff: noqa
+"""One-off data-prep: append a molar-mass column to the composition table.
+
+Reads `nomass_all_compose.txt`, computes each species' molar mass from its
+per-element atom counts (looked up by column name, so the result is
+independent of column order), and writes `all_compose.txt` with the mass
+column appended.
+"""
+
 import numpy as np
 
 com_file = "nomass_all_compose.txt"

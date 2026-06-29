@@ -10,7 +10,9 @@ import os
 # in-process (e.g. a sulfur network for WASP-39b SO2), set
 # $VULCAN_JAX_ATOM_LIST (comma-separated) before that first import — the same
 # pattern as $VULCAN_JAX_NETWORK below.
-atom_list = [s for s in os.environ.get("VULCAN_JAX_ATOM_LIST", "H,O,C,N").split(",") if s]
+atom_list = [
+    s for s in os.environ.get("VULCAN_JAX_ATOM_LIST", "H,O,C,N").split(",") if s
+]
 # ====== Setting up paths and filenames for the input and output files  ======
 # input:
 # The reaction network is parsed ONCE at import time (chem_funs / outer_loop
@@ -25,7 +27,7 @@ gibbs_text = "thermo/gibbs_text.txt"  # (all the nasa9 files must be placed in t
 cross_folder = "thermo/photo_cross/"
 com_file = "thermo/all_compose.txt"
 atm_file = "atm/atm_HD189_Kzz.txt"  # TP and Kzz (optional) file
-sflux_file = "atm/stellar_flux/sflux-HD189_Moses11.txt"  # sflux-HD189_B2020.txt This is the flux density at the stellar surface
+sflux_file = "atm/stellar_flux/sflux-HD189_Moses11.txt"  # the flux density at the stellar surface (alternative file: sflux-HD189_B2020.txt)
 top_BC_flux_file = "atm/BC_top.txt"  # the file for the top boundary conditions
 bot_BC_flux_file = "atm/BC_bot.txt"  # the file for the lower boundary conditions
 vul_ini = "output/HD189-nominal.vul"  # the file to initialize the abundances for ini_mix = 'vulcan_ini'
@@ -64,7 +66,7 @@ Rp = 1.138 * 7.1492e9  # Planetary radius (cm) (for computing gravity)
 orbit_radius = 0.03142  # planet-star distance in A.U.
 sl_angle = (
     48 / 180.0 * 3.14159
-)  # the zenith angle of the star in degree (usually 58 deg for the dayside average)
+)  # zenith angle of the star, stored in radians (here 48 deg; ~58 deg is a common dayside-average choice)
 f_diurnal = 1.0  # to account for the diurnal average of solar flux (i.e. 0.5 for Earth; 1 for tidally-locked planets)
 scat_sp = ["H2", "He"]  # the bulk gases that contribute to Rayleigh scattering
 T_cross_sp = []  # warning: slower start! available atm: 'CO2','H2O','NH3', 'SH','H2S','SO2', 'S2', 'COS', 'CS2'
@@ -240,7 +242,7 @@ use_fix_all_bot = False
 use_fix_H2He = False
 use_chunked_runner = False
 
-# ====== Setting up for ouwtput and plotting ======
+# ====== Setting up for output and plotting ======
 # plotting:
 plot_TP = False
 use_live_plot = False

@@ -1,11 +1,11 @@
 # ruff: noqa
-"""
-Normally the observation like MUSCLES provides the flux observed from Earth.
-So we need to scale it back to the surface of the star.
-In SIMBAD, mas = 0.001 arcsec:
-1 ly = 1000./ (X mas from SIMBAD) * 3.2616
-( 1 parsec = 1/p (arcsecond) , 1 ly = parsec * 3.2616 )
+"""One-off data-prep: convert a MUSCLES SED to stellar-surface flux in nm.
 
+Reads the GJ1214 MUSCLES broadband FITS SED, converts wavelength
+(Angstrom -> nm) and flux (erg/s/cm^2/Angstrom -> ergs/cm^2/s/nm), scales the
+observed flux back to the stellar surface using GJ1214's distance (47.5 ly)
+and radius (0.2064 r_sun), and writes `sflux-GJ1214.txt`. The distance/radius
+are hardcoded inline (see the per-star reference block below).
 """
 
 import numpy as np
@@ -49,14 +49,6 @@ for n, wl in enumerate(spec["WAVELENGTH"]):
         + "\n"
     )
 
-
-# with open('VPL_solar.txt') as f:
-#     for line in f.readlines():
-#         if not line.startswith("#") and line.split():
-#             li = line.split()
-#             if float(li[0]) < 115.:
-#                 new_str += '{:<12}'.format(li[0]) + "{:>12.2E}".format(float(li[1])) + '\n'
-#             else: break
 
 with open("sflux-GJ1214.txt", "w+") as f:
     f.write(new_str)

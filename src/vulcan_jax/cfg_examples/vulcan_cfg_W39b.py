@@ -100,8 +100,8 @@ Kzz_prof = "file"
 K_max = 1e5
 K_p_lev = 0.1
 vz_prof = "const"
-# Surface gravity for Mp = 0.28 M_jup, Rp = 1.279 R_jup:
-# g = G * Mp / Rp^2 = 6.674e-8 * (0.28 * 1.898e30) / (1.279 * 7.1492e9)^2
+# Surface gravity for Mp = 0.28 M_jup, Rp = 1.279 R_jup (Mancini 2018):
+# g = G * Mp / Rp^2 ~ 424 cm/s^2; gs = 422.0 is the adopted published value.
 gs = 422.0
 Tiso = 1000
 para_warm = [120.0, 1500.0, 0.1, 0.02, 1.0, 1.0]

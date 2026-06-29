@@ -65,9 +65,7 @@ def _build_chem_projection_tables() -> tuple[
     pairs = tuple(
         (atom, reservoir)
         for atom, reservoir in _ATOM_RESERVOIRS
-        if atom in cfg_atoms
-        and atom in compo_names
-        and reservoir in _SPEC_LIST
+        if atom in cfg_atoms and atom in compo_names and reservoir in _SPEC_LIST
     )
     if not pairs:
         return (
@@ -164,7 +162,7 @@ class AtmStatic(NamedTuple):
     ms: jnp.ndarray  # (ni,)
     alpha: jnp.ndarray  # (ni,)
     M: jnp.ndarray  # (nz,)
-    vm: jnp.ndarray  # (nz, ni)
+    vm: jnp.ndarray  # (nz-1, ni) — interface molecular-diffusion drift velocity
     vs: jnp.ndarray  # (nz-1, ni)
     top_flux: jnp.ndarray  # (ni,)
     bot_flux: jnp.ndarray  # (ni,)
@@ -275,7 +273,9 @@ def compute_diff_grav(atm: AtmStatic) -> DiffGrav:
         )
     )
 
-    # Upwind molecular-diffusion advection variant (`use_vm_mol`).
+    # Upwind molecular-diffusion advection variant (`use_vm_mol`). `vm` is the
+    # interface drift velocity (nz-1, ni): vm[k] acts on the interface between
+    # cells k and k+1, so vm[-1] is the top interface (matches op.diffdf_vm).
     A_vm_int = (
         -((vm[j_int] > 0) * vm[j_int] - (vm[j_int - 1] < 0) * vm[j_int - 1])
         / dz_ave[:, None]
@@ -593,7 +593,7 @@ def make_atm_static(atm, ni: int, nz: int, cfg=vulcan_cfg) -> AtmStatic:
     use_botflux = bool(getattr(cfg, "use_botflux", False))
     gas_mask = jnp.zeros((ni,), dtype=jnp.bool_)
     gas_mask = gas_mask.at[jnp.asarray(atm.gas_indx, dtype=jnp.int32)].set(True)
-    vm = atm.vm if use_vm else jnp.zeros((nz, ni), dtype=jnp.float64)
+    vm = atm.vm if use_vm else jnp.zeros((nz - 1, ni), dtype=jnp.float64)
     vs = atm.vs if use_set else jnp.zeros((nz - 1, ni), dtype=jnp.float64)
     Dzz = (
         atm.Dzz

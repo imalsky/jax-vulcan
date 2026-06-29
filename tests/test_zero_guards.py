@@ -45,7 +45,7 @@ def test_diffusion_ysum_zero_layer():
         ms=jnp.full(ni, 2.0 * 1.66e-24),
         alpha=jnp.zeros(ni),
         M=jnp.full(nz, 1e18),
-        vm=jnp.zeros((nz, ni)),
+        vm=jnp.zeros((nz - 1, ni)),
         vs=jnp.zeros((nz - 1, ni)),
         top_flux=jnp.zeros(ni),
         bot_flux=jnp.zeros(ni),

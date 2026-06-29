@@ -14,8 +14,6 @@ dependencies = [
     "jax>=0.4.31",
     "numpy>=1.24",
     "scipy>=1.12",  # lgmres(rtol=...) for the reverse-mode steady-state adjoint
-    "h5py>=3.8",
-    "sympy>=1.12",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -36,6 +34,7 @@ dev = [
     "vulture>=2.11",
     "build>=1.2",
     "twine>=5",
+    "sympy>=1.12",  # only to run the VULCAN-master oracle tests (master's SymPy chem_funs codegen)
 ]
 plot = [
     "matplotlib>=3.7",
@@ -77,9 +76,6 @@ vulcan_jax = [
 
 [tool.setuptools.dynamic]
 version = { attr = "vulcan_jax._version.__version__" }
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
 
 # These modules intentionally set up sys.path / os.chdir (so vulcan_cfg's
 # relative paths resolve, or to stage VULCAN-master) before importing, so the

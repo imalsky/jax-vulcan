@@ -30,7 +30,8 @@ class Ros2JAX:
         self._photo_ion_data = None
 
     def _ensure_photo_static(self, var, atm):
-        """Build (or refresh) the cached `PhotoStaticInputs` for `(var, atm)`."""
+        """Build (or refresh) and return the cached `PhotoStaticInputs` for
+        `(var, atm)`."""
         if self._photo_static is None:
             from . import photo_setup as _photo_setup
 

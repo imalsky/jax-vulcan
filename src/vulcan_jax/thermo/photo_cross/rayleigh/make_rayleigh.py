@@ -1,14 +1,23 @@
-# Generating Rayleigh scattering cross cestions
+"""One-off data-prep: tabulate a Rayleigh scattering cross section vs wavelength.
+
+For the species selected by the `sp` constant below, evaluates the cross
+section over `lmd_array` (0.1-800 nm) and writes `<sp>_rayleigh.txt`. The
+refractive-index and King-factor dispersion formulae follow Daniel's note.
+"""
+
 import numpy as np
 
 # 1./(lmd/1.e7) converts the wavength (nm) to the wavenumber, nu (cm^-1) in Daniel's note
 
 
 def cross(lmd, n_ref, nr, K):
-    """
-    The cross sections times n_ref ^2 from Daniel's note
-    lmd: wavelength (nm in the code; cm in the note); n_ref: a reference number density (not the actual # density);
-    nr(lmd): the refractive index; K(lmd): the King factor
+    """Rayleigh scattering cross section (cm^2) from Daniel's note, scaled by n_ref^2.
+
+    lmd: wavelength (nm in the code; cm in the note).
+    n_ref: reference number density the refractive index is tabulated at
+        (not the actual number density).
+    nr: refractive index evaluated at lmd.
+    K: King correction factor evaluated at lmd.
     """
     cross_ns = (
         24

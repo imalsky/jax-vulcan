@@ -1,4 +1,12 @@
 # ruff: noqa
+"""One-off plotting script: overlay binned stellar spectra for several stars.
+
+Reads `sflux-*.txt` for the Sun, GJ876, GJ436, GJ551, and GJ1214 and writes
+`../../plot/stellar-flux.png` / `.eps`. NOTE: stale relic — it references
+`vulcan_cfg` without importing it and unconditionally opens the PNG with PIL,
+so it only runs in an interactive session with Pillow installed.
+"""
+
 import numpy as np
 import matplotlib.pyplot as plt
 

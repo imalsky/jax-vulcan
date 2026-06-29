@@ -1,4 +1,11 @@
 # ruff: noqa
+"""One-off data-prep: convert the VPL solar spectrum to surface flux in nm.
+
+Reads `vpl_sun_original.txt` (wavelength in micron, flux in W/cm^2/micron at
+1 AU), converts to wavelength in nm and flux in ergs/cm^2/s/nm at the solar
+surface (scaled by (au/r_sun)^2), and writes `VPL_solar.txt`.
+"""
+
 import numpy as np
 import scipy
 

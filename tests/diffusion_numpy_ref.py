@@ -144,7 +144,7 @@ def build_diffusion_coeffs(
     use_mol = bool(cfg.use_moldiff)
     use_vm = mode in ("vm", "settling_vm")
     use_set = mode in ("settling", "settling_vm")
-    vm = atm.vm if use_vm else np.zeros((y.shape[0], y.shape[1]), dtype=np.float64)
+    vm = atm.vm if use_vm else np.zeros((y.shape[0] - 1, y.shape[1]), dtype=np.float64)
     vs = atm.vs if use_set else np.zeros((y.shape[0] - 1, y.shape[1]), dtype=np.float64)
 
     # --- Surface (j = 0) ---

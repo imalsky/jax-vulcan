@@ -232,8 +232,8 @@ def _bin_cross_and_branches(
             )
         except Exception:
             print(
-                "The branches in the network file does not match the "
-                "branchong ratio file for "
+                "The branches in the network file do not match the "
+                "branching ratio file for "
             )
             raise
         branches[i] = disso_at_bins * ratio_at_bins
@@ -450,7 +450,7 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
         try:
             sp_diss = float(threshold[sp])
         except KeyError:
-            print(sp + " not in threshol.txt")
+            print(sp + " not in thresholds.txt")
             raise
         if n_idx == 0:
             bin_min, bin_max, diss_max = sp_min, sp_max, sp_diss

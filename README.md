@@ -68,10 +68,10 @@ plain `jax` (see the [JAX installation guide](https://docs.jax.dev/en/latest/ins
 
 ### Dependencies
 
-Core (installed automatically): `jax>=0.4.31`, `numpy>=1.24`, `scipy>=1.10`, `h5py>=3.8`, `sympy>=1.12`
+Core (installed automatically): `jax>=0.4.31`, `numpy>=1.24`, `scipy>=1.12`
 
 Optional extras:
-- `pip install -e ".[dev]"` adds `pytest`, `pytest-xdist`, `ruff`, `vulture`, `build`, `twine`
+- `pip install -e ".[dev]"` adds `pytest`, `pytest-xdist`, `ruff`, `vulture`, `build`, `twine`, `sympy` (`sympy` is only used to run the VULCAN-master oracle tests)
 - `pip install -e ".[plot]"` adds `matplotlib`, `Pillow` (needed for live plots and the quickstart notebook)
 
 ### Verifying the install
@@ -195,7 +195,7 @@ python -m vulcan_jax.vulcan_jax_cli
 JAX_PLATFORM_NAME=gpu vulcan-jax
 ```
 
-The `-n` flag is accepted as a no-op for upstream compatibility.
+Command-line flags like `-n` are ignored -- the CLI reads its configuration from `vulcan_cfg.py` -- so upstream `vulcan.py -n` habits still run.
 
 ### As a library
 
@@ -274,7 +274,7 @@ On the first import with a given network, `make_chem_funs` generates and caches 
 
 The "Element # not found. Neglected!" messages from FastChem are normal -- the solar abundance file has heavy elements not in the C-H-O-N network, which are safely ignored.
 
-The FastChem binary is **not** vendored as a pre-built executable; the C++ source and makefiles are. The first time `ini_mix='EQ'` runs, `ini_abun._ensure_fastchem_binary()` compiles it from source (`make` in `fastchem_vulcan/`, creating `obj/` and the runtime `input/`/`output/` dirs as needed) and reuses it thereafter. The build is serialized by the same `fcntl.flock` that guards the EQ subprocess, so `pytest -n auto` and parallel host-setup workers won't race to build. A C++ toolchain (`c++`/`make`) must be on `PATH`; if the build fails, run `make` manually under `fastchem_vulcan/`.
+The FastChem binary is **not** vendored as a pre-built executable; the C++ source and makefiles are. The first time `ini_mix='EQ'` runs, `ini_abun._ensure_fastchem_binary()` compiles it from source (`make` in `fastchem_vulcan/`, which creates the `obj/` build dir; `input/` and `output/` are vendored) and reuses it thereafter. The build is serialized by the same `fcntl.flock` that guards the EQ subprocess, so `pytest -n auto` and parallel host-setup workers won't race to build. A C++ toolchain (`c++`/`make`) must be on `PATH`; if the build fails, run `make` manually under `fastchem_vulcan/`.
 
 ---
 
@@ -598,6 +598,7 @@ backing test; re-run those for the current numbers on your host.
 | Chemistry RHS (`chem_rhs_codegen` vs oracle) | ~2e-13 worst cell; bulk species ~1e-16 | `test_chem_rhs_codegen` |
 | Chemistry Jacobian (analytical vs jacrev oracle) | 2.8e-15 | `test_chem_jac_sparse` |
 | Diffusion operator (vs `op.diffdf`) | ~1e-5 (FP-cancellation-bound); Jacobian blocks bit-exact | `test_diffusion` |
+| Upwind molecular diffusion (`use_vm_mol`, vs `op.diffdf_vm`) | drift `vm` bit-identical to the shami `vm_branch` formula; operator ~2.7e-6 (FP-cancellation-bound) | `test_diffusion_variants`, `test_diffusion_production_kernel` |
 | Block-Thomas solver | 3e-15 | `test_block_thomas_diag` |
 | Single Ros2 step (vs `op.Ros2.solver`) | 1.6e-9 (full step) | `test_ros2_step` |
 | Photo kernels (tau/flux/J) | 7e-16 / 1.2e-11 / 6.8e-12 | `test_photo` |
@@ -620,6 +621,7 @@ backing test; re-run those for the current numbers on your host.
 - Convergence stall fallback (`conv_stall_window`) handles heavy-hydrocarbon oscillation
 - Upfront config validation is stricter than master: non-network `const_mix` keys and unsupported `condense_sp` entries fail at validate time with an explanation (master crashes deep in setup for the former and silently zero-rates the latter)
 - `use_print_delta` (master's largest-truncation-error print inside the solver) is declared for config-surface compatibility but not consumed — a per-step host print is impractical inside the JIT'd runner
+- Upwind molecular diffusion (`use_vm_mol`) uses the interface-centered drift velocity from the shami `vm_branch` `op.update_mu_dz` (shape `(nz-1, ni)`, harmonic-mean interface scale height). VULCAN-JAX keeps `vm` consistent at the bottom boundary (`j=0`) in every mode; upstream `op.diffdf_settling_vm` drops `vm` at `j=0` (a self-inconsistency vs its own `op.diffdf_vm`), so the doubly-non-default `use_vm_mol + use_settling` combination differs from upstream only at that one cell. We also port the *correct* `axis=0` layer-averaging form (`op.update_mu_dz`); the `build_atm.py` copy of that formula omits `axis=0`, a latent species-mixing bug — see CLAUDE.md.
 
 ---
 

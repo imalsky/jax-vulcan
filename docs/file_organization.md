@@ -262,7 +262,7 @@ SymPy step is required.
 - `h_RT(T, a)` / `s_R(T, a)` / `g_RT(T, a_low, a_high)` — NASA-9 thermodynamic functions.
 - `gibbs_sp(name, T)` — per-species `g/(RT)`.
 - `cp_R(T, a)` / `cp_R_sp(name, T)` — heat capacity / R.
-- `_K_eq_array_cached(T_np)` — memoised per-T equilibrium-constant array (LRU-cached on `T`).
+- `_K_eq_array_cached(T_np)` — memoised per-T equilibrium-constant array (keyed by `T` byte identity; the whole cache is cleared on full at 4 entries — not LRU).
 - `Gibbs(i, T)` — equilibrium constant for forward reaction `i` at temperature(s) `T`.
 - Re-exports: `chem_rhs_codegen` (the JIT'd codegen RHS, identical to `_CHEM_RHS_CODEGEN`) and `chem_rhs_segment_sum` (the reference segment-sum RHS, for tests and oracles).
 - Module-level: `NETWORK = _NETWORK`, `re_dict`, `re_wM_dict`.
@@ -617,6 +617,10 @@ transform consistency. Run with
 - `test_atm_jax.py` — on-graph atmosphere builder: `build_atm_static` field-for-field equal to `make_atm_static` for the default config (HD189 + synthetic vm/settling branches; `table`/`moldiff-off` intentionally differ), FD-matched `jvp` for `dz/dgs`, `M·Dzz/dTco`, `M/dP_b`, the `sat_p`/`settling`/`Kzz` jnp-core parity, plus the Kzz-defaults / load_TPK fail-loud guards.
 - `test_cfg_examples.py` — each kept config loads + runs pre-loop setup.
 - `test_config_matrix.py` — config-flag combination coverage.
+- `test_atom_conservation_s_subprocess.py` — S-network atom conservation (subprocess via `$VULCAN_JAX_NETWORK`).
+- `test_outer_loop_ion_run_subprocess.py` — end-to-end ion-chemistry run (subprocess).
+- `test_sat_p_h2s_anchor.py` — H2S saturation-pressure anchor value.
+- `test_zero_guards.py` — zero-denominator / underflow guards (atm-refresh mu-zero layer, photo chi sign).
 
 ### `benchmarks/`
 - `bench_step.py` — per-step JAX timing + comparison to VULCAN-master if a sibling checkout is present.
@@ -627,6 +631,7 @@ transform consistency. Run with
 - `grad_jvp_example.py` — forward-mode AD through the per-step kernel.
 - `grad_physical_example.py` — forward-mode AD w.r.t. physical inputs (gravity, temperature, pressure grid) via `atm_jax.build_atm_static`, each tangent FD-matched.
 - `grad_reverse_example.py` — reverse-mode reaction ranking on a real HD189 column via `steady_state_reaction_sensitivity`.
+- `quickstart.ipynb` — introductory notebook walkthrough (needs the `[plot]` extra).
 
 ### `tools/`
 End-user utility scripts (data prep, debug, parity checks).

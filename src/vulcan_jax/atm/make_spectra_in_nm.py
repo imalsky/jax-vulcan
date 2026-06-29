@@ -1,4 +1,11 @@
 # ruff: noqa
+"""One-off data-prep: splice VPL solar + Epsilon Eridani UV into one nm spectrum.
+
+Reads `VPL_solar.txt` (using < 115 nm and >= 283 nm) and `h_epseri_uvsum_spc.txt`
+(Angstrom -> nm, scaled by distance/radius to the stellar surface),
+concatenates them, and writes `flux-HD189_Moses11.txt`.
+"""
+
 import numpy as np
 import scipy
 
@@ -28,7 +35,7 @@ with open("h_epseri_uvsum_spc.txt") as f:  # wl was in Angstroms in the file
             wl = float(li[0]) * 0.1
             flux = (
                 float(li[1]) * 10.0 * (10.475 * 63241 * au / r_sun * 0.735) ** 2
-            )  # eps Eradian is 10.475 light years away
+            )  # eps Eridani is 10.475 light years away (distance/radius scaling to the stellar surface)
 
             if flux > 0:
                 new_str += "{:<12}".format(wl) + "{:>12.2E}".format(flux) + "\n"

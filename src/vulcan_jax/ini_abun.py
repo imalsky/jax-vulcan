@@ -60,10 +60,9 @@ _ROOT = Path(__file__).resolve().parent
 
 
 def _fastchem_dir() -> Path:
-    """FastChem working tree: $VULCAN_JAX_FASTCHEM_DIR if set, else package copy.
-
-    Read at import (these are module-level constants), so the override must be
-    in the environment before the first `import vulcan_jax`.
+    """FastChem working tree: $VULCAN_JAX_FASTCHEM_DIR if set, else the package
+    copy. The module-level `_FC_DIR` captures this at import, so the override
+    must be set in the environment before the first `import vulcan_jax`.
     """
     override = os.environ.get("VULCAN_JAX_FASTCHEM_DIR")
     if override:
@@ -77,8 +76,8 @@ _FC_SENTINEL = _FC_DIR / ".fastchem_lock"
 
 
 def _ensure_fastchem_binary() -> None:
-    """Compile FastChem from vendored C++ source if the binary is missing or
-    was built for a different platform."""
+    """Compile FastChem from vendored C++ source (via `make`) if the binary is
+    missing or not executable."""
     if _FC_BIN.is_file() and os.access(_FC_BIN, os.X_OK):
         return
     makefile = _FC_DIR / "makefile"
@@ -541,9 +540,15 @@ class InitialAbun:
     """Legacy-mutation facade matching `atm_setup.Atm`'s pattern."""
 
     def __init__(self):
+        """Capture `cfg.atom_list` (cfg's possibly reordered/subset atom set)
+        for use in `ele_sum`.
+        """
         self.atom_list = vulcan_cfg.atom_list
 
     def ini_y(self, data_var, data_atm):
+        """Compute the initial abundance and mutate `data_var.y` / `ymix` /
+        `y_ini` (plus `charge_list` when `use_ion`); returns `data_var`.
+        """
         outputs = compute_initial_abundance(data_atm)
         data_var.y = np.asarray(outputs.y)
         data_var.ymix = np.asarray(outputs.ymix)
@@ -553,6 +558,11 @@ class InitialAbun:
         return data_var
 
     def ele_sum(self, data_var):
+        """Write per-atom initial totals onto `data_var.atom_ini` (with
+        `atom_loss` / `atom_conden` zeroed) from `data_var.y`, looking up each
+        cfg atom's column by name and skipping atoms in `cfg.loss_ex`; returns
+        `data_var`.
+        """
         atoms_jax = compute_atom_ini(jnp.asarray(data_var.y))
         atoms_np = np.asarray(atoms_jax)
         loss_ex = list(getattr(vulcan_cfg, "loss_ex", []))

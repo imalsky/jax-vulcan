@@ -582,10 +582,11 @@ def _Dzz_gen_for_base(atm_base: str):
 def _alpha_array_for_base(
     atm_base: str, species_list: list[str], mol_mass
 ) -> np.ndarray:
-    """Thermal-diffusion factor per species, atm_base-dependent.
+    """Thermal-diffusion factor per species, atm_base-dependent. Returns (ni,).
 
-    Defaults to zero. For H2 base, every species heavier than 4 amu gets
-    alpha=0.25 (with H, He overrides).
+    Defaults to zero. For an H2 base, H gets -0.1, He gets 0.145, and every
+    other species heavier than 4 amu gets 0.25. For an N2/O2/CO2 base, H/H2/He
+    get -0.25 and Ar gets 0.17. Any other atm_base raises IOError.
     """
     ni = len(species_list)
     alpha = np.zeros(ni, dtype=np.float64)
@@ -621,8 +622,11 @@ def compute_mol_diff(
 ) -> dict[str, np.ndarray]:
     """Build (Dzz, Dzz_cen, vm) for the cfg's `atm_base`.
 
-    `vm` is the advective component (zero unless use_vm_mol). When
-    use_moldiff=False, all three return as zeros.
+    `Dzz` is the molecular-diffusion coefficient on the cell interfaces
+    (nz-1, ni); `Dzz_cen` is the cell-centered companion kept for the `.vul`
+    diagnostic surface. `vm` is the interface-centered advective (drift)
+    component of molecular diffusion (nz-1, ni), zero unless `use_vm_mol`.
+    When use_moldiff=False, all three return as zeros.
     """
     nz = int(Tco.shape[0])
     ni = len(species_list)
@@ -633,7 +637,7 @@ def compute_mol_diff(
     out: dict[str, np.ndarray] = {
         "Dzz": np.zeros((nz - 1, ni), dtype=np.float64),
         "Dzz_cen": np.zeros((nz, ni), dtype=np.float64),
-        "vm": np.zeros((nz, ni), dtype=np.float64),
+        "vm": np.zeros((nz - 1, ni), dtype=np.float64),
     }
     if not bool(cfg.use_moldiff):
         return out
@@ -657,23 +661,32 @@ def compute_mol_diff(
     out["Dzz_cen"] = np.asarray(Dzz_cen)
 
     if bool(getattr(cfg, "use_vm_mol", False)):
-        Hp_j = jnp.asarray(Hp, dtype=jnp.float64)
         g_j = jnp.asarray(g, dtype=jnp.float64)
+        Hp_j = jnp.asarray(Hp, dtype=jnp.float64)
         dz_j = jnp.asarray(dz, dtype=jnp.float64)
         alpha_j = jnp.asarray(alpha_arr, dtype=jnp.float64)
-        # delta_T[i] = T[i+1] - T[i]; alias delta_T[0] to delta_T[1] (extrapolation).
-        delta_T = jnp.roll(Tco_j, -1) - Tco_j
-        delta_T = delta_T.at[0].set(delta_T[1])
-        gravity_term = ms_j[None, :] * g_j[:, None] / (Navo * kb * Tco_j[:, None])
-        scale_term = 1.0 / Hp_j[:, None]
-        thermal_term = (
-            alpha_j[None, :] / Tco_j[:, None] * delta_T[:, None] / dz_j[:, None]
+        # Interface-centered upwind advective velocity, matching VULCAN's
+        # vm_branch (op.update_mu_dz): vm = -Dzz * (1/H_i - 1/Hp + thermal) on
+        # the cell interfaces. Interface temperature, scale height and spacing
+        # are the same arithmetic means compute_mu_dz_g forms for Ti/Hpi/dzi.
+        Ti = 0.5 * (Tco_j[:-1] + Tco_j[1:])  # (nz-1,)
+        Hpi = 0.5 * (Hp_j[:-1] + Hp_j[1:])  # (nz-1,)
+        dzi = 0.5 * (dz_j[1:] + dz_j[:-1])  # (nz-1,)
+        delta_Ti = Tco_j[1:] - Tco_j[:-1]  # (nz-1,) = T[k+1]-T[k]
+        # 1/H_i of each species at the cell centers, then average the scale
+        # heights H_i across adjacent cells and invert back to 1/H_i at the
+        # interface (harmonic-type interface average; vm_branch axis=0 form).
+        inv_Hi = ms_j[None, :] * g_j[:, None] / (Navo * kb * Tco_j[:, None])  # (nz, ni)
+        H_cell = 1.0 / inv_Hi
+        Hi_interf = 1.0 / (0.5 * (H_cell[:-1] + H_cell[1:]))  # (nz-1, ni)
+        drift = (
+            Hi_interf
+            - 1.0 / Hpi[:, None]
+            + alpha_j[None, :] / Ti[:, None] * delta_Ti[:, None] / dzi[:, None]
         )
-        vm = -Dzz_cen * (gravity_term - scale_term + thermal_term)
-        if bool(cfg.use_condense):
-            for sp in cfg.non_gas_sp:
-                if sp in species_list:
-                    vm = vm.at[:, species_list.index(sp)].set(0.0)
+        # `Dzz` is already zeroed on the non-gas interfaces above, so vm
+        # vanishes there with no separate condensation gate.
+        vm = -Dzz * drift  # (nz-1, ni)
         out["vm"] = np.asarray(vm)
     return out
 
@@ -918,7 +931,8 @@ class Atm:
         return data_atm
 
     def load_TPK(self, data_atm):
-        """Populate `Tco / Kzz / vz / M / n_0` per `atm_type` (analytical, file, or table)."""
+        """Populate `Tco / Kzz / vz / M / n_0` per `atm_type` (isothermal,
+        analytical, file, vulcan_ini, or table)."""
         out = load_TPK(
             vulcan_cfg, np.asarray(data_atm.pco), pico=np.asarray(data_atm.pico)
         )

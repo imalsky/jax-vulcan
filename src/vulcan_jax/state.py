@@ -41,7 +41,7 @@ class AtmInputs(NamedTuple):
     alpha: jnp.ndarray  # (ni,)    — thermal diffusion factor
     Dzz: jnp.ndarray  # (nz-1, ni) — molecular diffusion (interface)
     Dzz_cen: jnp.ndarray  # (nz, ni)   — molecular diffusion (cell)
-    vm: jnp.ndarray  # (nz, ni)   — thermal diffusion velocity
+    vm: jnp.ndarray  # (nz-1, ni) — molecular-diffusion drift velocity (interface)
     vs: jnp.ndarray  # (nz-1, ni) — settling velocity
     top_flux: jnp.ndarray  # (ni,) — top BC flux (#/cm^2/s)
     bot_flux: jnp.ndarray  # (ni,) — bottom BC flux
@@ -1355,7 +1355,7 @@ class _AtmData(object):
         self.ms = np.empty(_ni)
         self.Dzz = np.zeros((_nz - 1, _ni))
         self.Dzz_cen = np.zeros((_nz, _ni))
-        self.vm = np.zeros((_nz, _ni))
+        self.vm = np.zeros((_nz - 1, _ni))
         self.vs = np.zeros((_nz - 1, _ni))
         self.alpha = np.zeros(_ni)
         self.gs = _vcfg.gs

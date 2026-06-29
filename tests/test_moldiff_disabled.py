@@ -27,7 +27,7 @@ def test_zero_dzz_with_zero_hpi_keeps_molecular_terms_finite() -> None:
         ms=jnp.ones(ni, dtype=jnp.float64),
         alpha=jnp.zeros(ni, dtype=jnp.float64),
         M=jnp.ones(nz, dtype=jnp.float64),
-        vm=jnp.zeros((nz, ni), dtype=jnp.float64),
+        vm=jnp.zeros((nz - 1, ni), dtype=jnp.float64),
         vs=jnp.zeros((nz - 1, ni), dtype=jnp.float64),
         top_flux=jnp.zeros(ni, dtype=jnp.float64),
         bot_flux=jnp.zeros(ni, dtype=jnp.float64),

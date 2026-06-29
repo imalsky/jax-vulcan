@@ -134,7 +134,10 @@ def fill_reverse_k(
 ) -> np.ndarray:
     """Fill reverse rate slots from forward rates and K_eq.
 
-    Slots beyond stop_rev_indx are zeroed (photo/conden have no reverse).
+    For each forward/reverse pair below stop_rev_indx, sets the reverse rate
+    k[i] = k[i_fwd] / K_eq[i_fwd] (0 where K_eq <= 0). Reactions whose forward
+    or reverse index appears in `remove_list` have both rates zeroed. Slots
+    beyond stop_rev_indx are zeroed (photo/conden have no reverse).
     """
     k = np.asarray(k, dtype=np.float64).copy()
     remove = set(remove_list or [])

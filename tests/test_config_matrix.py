@@ -262,7 +262,8 @@ def test_use_vm_mol_populates_vm():
         make_atm.mol_diff(data_atm)
 
     vm = np.asarray(data_atm.vm)
-    assert vm.shape == data_var.y.shape
+    # vm is the interface-centered drift velocity: one entry per cell interface.
+    assert vm.shape == (data_var.y.shape[0] - 1, data_var.y.shape[1])
     assert np.all(np.isfinite(vm))
     # use_vm_mol should produce nonzero advective velocity for at least
     # one (layer, species) pair given non-isothermal HD189 Tco.

@@ -39,10 +39,11 @@ class AtmRefreshStatic(NamedTuple):
 
 
 def update_mu_dz_jax(ymix: jnp.ndarray, st: AtmRefreshStatic):
-    """Recompute (mu, g, Hp, dz, zco, dzi, Hpi) from the current ymix.
+    """Recompute (mu, g, Hp, dz, zco, dzi, Hpi) from the current ymix (nz, ni).
 
-    `Ti` is intentionally not returned — it depends only on the static `Tco`
-    and is captured once at OuterLoop init.
+    Shapes: mu (nz,), g (nz,), Hp (nz,), dz (nz,), zco (nz+1,), dzi (nz-1,),
+    Hpi (nz-1,). `Ti` is intentionally not returned — it depends only on the
+    static `Tco` and is captured once at OuterLoop init.
     """
     Tco = st.Tco
     pico = st.pico
@@ -117,7 +118,12 @@ def update_phi_esc_jax(
     st: AtmRefreshStatic,
 ) -> jnp.ndarray:
     """Diffusion-limited escape flux at TOA for each species in `diff_esc_idx`,
-    floored at `-max_flux`. Other species pass through unchanged."""
+    floored at `-max_flux`; other species pass through unchanged.
+
+    Inputs: y (nz, ni) number densities, g / Hp (nz,) — only the top layer is
+    used, top_flux_in (ni,). Returns (ni,), the top boundary flux with the
+    escape species overwritten.
+    """
     diff_esc_idx = st.diff_esc_idx
     Tco_top = st.Tco[-1]
     kb = st.kb
