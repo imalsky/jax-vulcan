@@ -110,6 +110,42 @@ def update_mu_dz_jax(ymix: jnp.ndarray, st: AtmRefreshStatic):
     return mu, g, Hp, dz, zco, dzi, Hpi
 
 
+def recompute_vm_jax(
+    g: jnp.ndarray,
+    Hpi: jnp.ndarray,
+    dzi: jnp.ndarray,
+    Dzz: jnp.ndarray,
+    ms: jnp.ndarray,
+    alpha: jnp.ndarray,
+    Tco: jnp.ndarray,
+    kb: float,
+    Navo: float,
+) -> jnp.ndarray:
+    """Recompute the interface molecular-diffusion drift velocity `vm` (nz-1, ni).
+
+    `vm` is composition-dependent — it varies with the mean molecular weight
+    through the pressure scale height (`1/Hpi = mu*g/(kT)`) and with `g` through
+    the per-species scale height. VULCAN's vm_branch recomputes it every
+    `update_frq` steps inside `op.update_mu_dz` ("# Also update vm"), so the
+    runner must refresh it alongside `g`/`Hpi`/`dzi` rather than freeze it at
+    setup; otherwise a molecular-diffusion-dominated upper atmosphere (low Kzz)
+    converges to a different steady state than upstream. The frozen `Dzz`, `ms`,
+    `alpha`, and `Tco` come from `AtmStatic`; `g`/`Hpi`/`dzi` are the refreshed
+    geometry from the carry. Formula is identical to `atm_setup.compute_mol_diff`.
+    """
+    Ti = 0.5 * (Tco[:-1] + Tco[1:])  # (nz-1,)
+    delta_Ti = Tco[1:] - Tco[:-1]  # (nz-1,)
+    inv_Hi = ms[None, :] * g[:, None] / (Navo * kb * Tco[:, None])  # (nz, ni)
+    H_cell = 1.0 / inv_Hi
+    Hi_interf = 1.0 / (0.5 * (H_cell[:-1] + H_cell[1:]))  # (nz-1, ni)
+    drift = (
+        Hi_interf
+        - 1.0 / Hpi[:, None]
+        + alpha[None, :] / Ti[:, None] * delta_Ti[:, None] / dzi[:, None]
+    )
+    return -Dzz * drift  # (nz-1, ni)
+
+
 def update_phi_esc_jax(
     y: jnp.ndarray,
     g: jnp.ndarray,

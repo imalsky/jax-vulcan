@@ -605,6 +605,7 @@ class _Statics(NamedTuple):
     # in the carry (s.update_photo_frq / s.rtol / s.loss_criteria).
     use_photo: bool
     use_atm_refresh: bool
+    use_vm_mol: bool  # upwind molecular diffusion → refresh vm in-loop with mu
     use_conden: bool
     ini_update_photo_frq: int
     final_update_photo_frq: int
@@ -729,6 +730,7 @@ def _make_runner(
     condense_zero_conv_mask = statics.condense_zero_conv_mask
     use_photo_static = statics.use_photo
     use_atm_refresh_static = statics.use_atm_refresh
+    use_vm_mol_static = statics.use_vm_mol
     use_conden_static = statics.use_conden
     final_update_photo_frq = statics.final_update_photo_frq
     update_frq = statics.update_frq
@@ -935,6 +937,26 @@ def _make_runner(
         atm_step = atm_static_._replace(
             g=s.g, dzi=s.dzi, Hpi=s.Hpi, top_flux=s.top_flux, vs=s.vs
         )
+        # Upwind molecular diffusion: vm depends on the mean molecular weight
+        # (through Hpi) and on g, so it must be refreshed with the rest of the
+        # geometry — VULCAN's op.update_mu_dz recomputes it every update_frq
+        # steps. Freezing it at setup biases a mol-diff-dominated upper
+        # atmosphere. Inputs change only at refresh cadence, so recomputing
+        # each step reproduces upstream's cadence. Static-gated to the vm path.
+        if use_vm_mol_static and refresh_static is not None:
+            atm_step = atm_step._replace(
+                vm=_atm_refresh_mod.recompute_vm_jax(
+                    s.g,
+                    s.Hpi,
+                    s.dzi,
+                    atm_static_.Dzz,
+                    atm_static_.ms,
+                    atm_static_.alpha,
+                    atm_static_.Tco,
+                    refresh_static.kb,
+                    refresh_static.Navo,
+                )
+            )
 
         # Master pins the electron rows inside BOTH Ros2 stages when use_ion
         # (op.py:2949-2952, 2966-2967): df[e]=0 + LHS rows zeroed with
@@ -1792,6 +1814,10 @@ class OuterLoop:
             Kzz=jnp.asarray(atm.Kzz, dtype=jnp.float64),
             use_photo=bool(self._cfg.use_photo),
             use_atm_refresh=True,
+            use_vm_mol=bool(
+                getattr(self._cfg, "use_vm_mol", False)
+                and getattr(self._cfg, "use_moldiff", True)
+            ),
             use_conden=bool(self._cfg.use_condense),
             ini_update_photo_frq=int(getattr(self._cfg, "ini_update_photo_frq", 1)),
             final_update_photo_frq=int(getattr(self._cfg, "final_update_photo_frq", 1)),
