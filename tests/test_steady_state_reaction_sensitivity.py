@@ -100,6 +100,29 @@ def test_conserved_null_basis_requires_populated_columns():
         _conserved_null_basis(y_star, compo, dz)
 
 
+def test_conserved_null_basis_rejects_rank_deficiency():
+    """Linearly dependent atom columns fail fast instead of silently deflating
+    an arbitrary (non-null) direction from the unpivoted QR."""
+    rng = np.random.default_rng(3)
+    nz, ni = 4, 3
+    y_star = jnp.asarray(rng.uniform(1.0, 5.0, size=(nz, ni)))
+    dz = jnp.asarray(rng.uniform(0.5, 2.0, size=nz))
+    # Two identical atom columns -> the c_e stack is rank 1.
+    col = np.array([1.0, 2.0, 0.0])
+    compo = jnp.asarray(np.stack([col, col], axis=1))
+    with pytest.raises(ValueError, match="rank-deficient"):
+        _conserved_null_basis(y_star, compo, dz)
+
+
+def test_conserved_null_basis_rejects_zero_column():
+    """An atom whose every carrier has y* == 0 is degenerate -> hard error."""
+    y_star = jnp.asarray(np.array([[1.0, 0.0], [2.0, 0.0], [1.0, 0.0]]))
+    dz = jnp.ones((3,))
+    compo = jnp.asarray(np.array([[1.0, 0.0], [0.0, 1.0]]))  # atom 1 only in sp 1
+    with pytest.raises(ValueError, match="all-zero"):
+        _conserved_null_basis(y_star, compo, dz)
+
+
 def test_deflation_projector_idempotent():
     """proj(proj(z)) == proj(z) and proj removes the spanned directions."""
     rng = np.random.default_rng(1)
@@ -157,13 +180,15 @@ def test_poor_convergence_warns():
 
     from vulcan_jax.steady_state_grad import _warn_poor_convergence
 
-    with pytest.warns(UserWarning, match="under-converged"):
+    with pytest.warns(UserWarning, match="stagnation"):
         _warn_poor_convergence(0.5, 0.0)
     with pytest.warns(UserWarning, match="fixed point"):
         _warn_poor_convergence(0.0, 0.1)
+    with pytest.warns(UserWarning, match="ensemble spread"):
+        _warn_poor_convergence(0.0, 0.0, 0.3)
     with _w.catch_warnings():
         _w.simplefilter("error")  # a well-converged solve must not warn
-        _warn_poor_convergence(1e-3, 1e-4)
+        _warn_poor_convergence(1e-3, 1e-4, 0.05)
 
 
 def test_body_dt_danger_zone_rejected():
@@ -196,10 +221,16 @@ def test_body_dt_danger_zone_rejected():
 def test_hd189_reaction_sensitivity_regression():
     """Reproduce the documented HD189 reaction-ranking finite-difference anchors.
 
-    Runs the full solver-map adjoint on the saved converged HD189 (photo-off)
-    state and checks the CH4 sensitivity against the centered finite-difference
-    truth from `adj_solvermap_gmres.py`. Tolerances are loose (10-15%): the
-    few-% gap is a steady-state-definition ceiling, not solver error.
+    Runs the full solver-map adjoint (defaults: body_dt=1e7, n_solves=3
+    ensemble) on the saved converged HD189 (photo-off) state and checks the
+    ensemble-mean CH4 sensitivity against the centered finite-difference truth
+    from `adj_solvermap_gmres.py`. At body_dt=1e7 the solve reaches a low
+    residual (0.04-0.15 measured) and independent twins land 0.3-6% from FD
+    (mean 3.5%; docs/notes.md 2026-07-01 campaign), so the anchor tolerance is
+    12% on the ensemble mean, with resid/spread guards. At the old body_dt=1e8
+    default the solve stagnated and single samples bounced ±25% (band
+    -0.43..-0.63 vs FD -0.565) — the dt map lives in `BODY_MAP_DT`'s comment.
+    Sign and top-6 ranking remain the strongest assertions.
     """
     import vulcan_jax.chem_funs as chem_funs
     from vulcan_jax.jax_step import AtmStatic
@@ -239,7 +270,22 @@ def test_hd189_reaction_sensitivity_regression():
     assert info["fp_err"] < 1e-1, (
         f"y* is not a body-map fixed point: {info['fp_err']:.2e}"
     )
-    assert info["null_quality"] < 1e-8
+    # null_quality is max_e ||A_eta^T q_e|| relative to the operator's action
+    # on a random unit direction. Measured ~3e-5 at body_dt=1e8 (2026-07-01);
+    # a genuinely non-null deflated direction (broken conservation) reads O(1).
+    assert info["null_quality"] < 1e-3
+    # Solver-regime guards, calibrated 2026-07-01 (measured per-twin residuals
+    # {0.29, 0.05, 0.10}, spread 0.047): the ensemble MEDIAN residual must stay
+    # out of the stagnation regime (one wandering twin is tolerated — the
+    # best-iterate safeguard bounds it and the mean absorbs it), and the twins
+    # must agree on the top-10 reactions.
+    assert float(np.median(info["resids"])) < 0.2, (
+        f"median resid {np.median(info['resids']):.2e} — stagnation regime"
+    )
+    assert info["resid"] < 0.5, f"max twin resid {info['resid']:.2e}"
+    assert info["ensemble_spread"] < 0.15, (
+        f"ensemble spread {info['ensemble_spread']:.2e} — twins disagree"
+    )
     assert np.all(np.isfinite(dLdlnk))
 
     # Sign and ranking are the most robust assertions.
@@ -247,10 +293,11 @@ def test_hd189_reaction_sensitivity_regression():
     top = np.argsort(np.abs(dLdlnk[: net.nr + 1]))[::-1][:6]
     assert 13 in top or 14 in top, f"dominant CH4 reaction missing from top-6: {top}"
 
-    # Loose finite-difference agreement on the dominant pair.
+    # Finite-difference agreement of the ensemble mean on the dominant pair
+    # (measured 3.5% mean over twins at body_dt=1e7; 12% gives headroom).
     for r in (13, 14):
         rel = abs(dLdlnk[r] - HD189_FD_ANCHORS[r]) / abs(HD189_FD_ANCHORS[r])
-        assert rel < 0.15, (
+        assert rel < 0.12, (
             f"r{r}: {dLdlnk[r]:+.3e} vs FD {HD189_FD_ANCHORS[r]:+.3e} (rel {rel:.2f})"
         )
 
@@ -260,6 +307,8 @@ def main() -> int:
     test_safe_inv_y_masks_exact_zeros()
     test_conserved_null_basis_annihilates_atom_vectors()
     test_conserved_null_basis_requires_populated_columns()
+    test_conserved_null_basis_rejects_rank_deficiency()
+    test_conserved_null_basis_rejects_zero_column()
     test_deflation_projector_idempotent()
     test_reaction_cotangent_chain_rule_identity()
     return 0

@@ -22,7 +22,7 @@ class AtmRefreshStatic(NamedTuple):
     Tco: jnp.ndarray  # (nz,)        layer-center temperature (K)
     pico: jnp.ndarray  # (nz+1,)      interface pressure (dyne/cm^2)
     mol_mass: jnp.ndarray  # (ni,)        molar mass per species (g/mol)
-    ms: jnp.ndarray  # (ni,)        per-particle mass (g)
+    ms: jnp.ndarray  # (ni,)        molar mass per species (g/mol; /Navo in formulas)
     Dzz_top: jnp.ndarray  # (ni,)        molecular diffusion at the top interface
     diff_esc_idx: (
         jnp.ndarray

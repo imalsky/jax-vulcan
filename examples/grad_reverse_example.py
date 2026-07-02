@@ -6,12 +6,15 @@ the converged abundance of species X". By finite differences this ranking would
 cost one re-converged model per reaction; reverse-mode returns all of them at
 once.
 
-This is a reaction-*ranking* tool, not a precision-gradient tool: accuracy is
-~few % vs finite differences (a steady-state-definition ceiling, not solver
-error — the FD-anchor comparison printed below shows it), photolysis is frozen
-on photo-on columns, and it returns `k`-only sensitivities. Forward-mode
-(`grad_jvp_example.py`) is the higher-accuracy route for end-to-end gradients.
-See the `steady_state_reaction_sensitivity` docstring for the full list.
+The result is the mean over an ensemble of twin solves (default n_solves=3,
+body_dt=1e7 — the validated low-residual regime; the twin spread printed below
+is the magnitude error bar). Accuracy on HD189 is ~few % vs finite differences
+(0.3-6% across twins, mean 3.5%; the residual FD gap is a steady-state-
+definition ceiling, not solver error). Photolysis is frozen on photo-on
+columns, and it returns `k`-only sensitivities. Forward-mode
+(`grad_jvp_example.py`) remains the higher-accuracy route for end-to-end
+gradients. See the `steady_state_reaction_sensitivity` docstring and
+`BODY_MAP_DT`'s dt map for the full picture.
 
 This script loads a saved converged HD189 (photo-off) state
 (`tests/data/adj_state_hd189.npz`, a local artifact — `*.npz` is gitignored) so
@@ -100,6 +103,8 @@ def main() -> int:
     print(
         f"Done in {time.time() - t1:.1f}s  "
         f"fp_err={info['fp_err']:.2e} resid={info['resid']:.2e} "
+        f"twin_spread={info['ensemble_spread']:.2e} "
+        f"(n_solves={info['n_solves']}, body_dt={info['body_dt']:.0e}) "
         f"matvecs={info['n_matvec']} deflated_dims={info['n_null']}"
     )
 

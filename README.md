@@ -497,8 +497,21 @@ ill-conditioned (stiff chemistry) — which is why the solver-map route exists.
   slowest chemical mode still unrelaxed. FD and forward-mode differentiate that
   criterion state (forward-mode can — `jvp` rides through the loop), so they
   disagree with this adjoint by ~few % (more on slow-mode reactions, ~2% on fast
-  ones). More LGMRES iterations do not close it. The *ranking* is still robust:
-  dominant reactions stand 1-2 orders of magnitude above the noise.
+  ones). More LGMRES iterations do not close it.
+- **The solver regime is set by `body_dt`** (an adjoint-only probe-step knob —
+  the forward model is untouched). The default `body_dt=1e7` sits in the
+  measured low-residual regime (HD189: resid 0.04–0.15, twins land 0.3–6% from
+  FD, mean 3.5%); at `body_dt≥1e8` (the old default) the solve *stagnates*
+  (resid 0.2–0.7 — the body map has unstable top-layer H/H₂ eigenmodes and the
+  matvec's FP floor grows with dt) and single-solve magnitudes bounce ~±25%;
+  `body_dt~3e6` converges fully but deterministically underweights slow
+  chemistry (~28% bias). The window is column-dependent: scan a few dt values
+  and keep the lowest `info["resid"]` (dt map in `BODY_MAP_DT`'s comment).
+  The gradient is returned as the **mean over an `n_solves` twin ensemble**
+  (default 3, deterministic seeded RHS perturbations), with the twin spread in
+  `info["ensemble_spread"]` as the honest magnitude error bar. The *ranking* is
+  robust in every non-divergent regime: dominant reactions stand 1-2 orders of
+  magnitude above the noise with stable signs.
 - **Photolysis is frozen** on photochemistry-on columns (`dJ/dy` omitted) →
   leading-order sensitivities only.
 - **`k`-only.** Returns `dL/d ln k`; for `dL/dKzz`, `dL/dT`, etc. use forward-mode.
@@ -509,7 +522,16 @@ ill-conditioned (stiff chemistry) — which is why the solver-map route exists.
 the right tool when the number of input directions is small; reverse-mode is the
 right tool for all reactions at once. Validated on HD189 (CH4) and WASP-39b (SO2;
 paper Fig 8). The solve is host-side scipy LGMRES (JAX has no LGMRES), one-shot
-post-convergence, off the hot path. See `examples/grad_reverse_example.py`,
+post-convergence, off the hot path; warm-start cycles stop early once scipy
+reports convergence. Diagnostics are default-on: warnings fire on a poor LGMRES
+residual, a loose fixed point, or a large twin-ensemble spread, an LGMRES
+breakdown or a rank-deficient
+deflation basis raises instead of returning garbage, and `info["null_quality"]`
+reports how null the deflated conserved-mass directions actually are, relative
+to the operator's scale (~3e-5 on the healthy closed HD189 column — the atom-count
+vectors are only *approximately* null because the diffusion discretization is not
+exactly conservative under the dz weights; O(1) means broken conservation, e.g.
+open boundary fluxes). See `examples/grad_reverse_example.py`,
 `tests/test_steady_state_reaction_sensitivity.py`, and the full log in `docs/notes.md`.
 
 **What's NOT differentiable** (by design): host-side file readers (`photo_setup.py`, `composition.py`, `atm_setup.py` CSV loaders), FastChem subprocess. To differentiate through these, build the corresponding pytree directly with JAX arrays.

@@ -551,3 +551,156 @@ Flagged latent PRODUCTION bug (NOT fixed — out of scope, changes table-mode ph
   **Isaac (2026-06-17): NOT fixing in this release.** Keep the faithful port; the
   build_atm_static self-consistency divergence in table mode is documented and
   intentional. Revisit only if/when upstream VULCAN fixes the f_pico/pco ordering.
+
+### 2026-07-01: adjoint diagnostics hardening (external review pass)
+
+Four small fixes to `steady_state_grad.py` from a full-repo review (no gradient
+values change; the solve path is identical when healthy):
+
+- **`null_quality` made meaningful.** The old metric (`||Q - Q(Q^T Q)||/n_e`) was
+  QR-orthonormality — vacuously ~1e-15 for ANY basis, including a random one, so
+  it could not detect a wrong deflation. It is now
+  `max_e ||A_eta^T q_e|| / ||A_eta^T r||` (unit-norm basis columns vs a fixed-seed
+  random unit direction). Measured on the HD189 fixture: per-direction defects
+  1.9e-3..3.1e-1 absolute vs 1.1e4 on a random direction → relative ~2.8e-5. So
+  the conserved-mass vectors are only *approximately* null in discrete practice
+  (the diffusion stencil is not exactly conservative under the dz weights) — a
+  real, previously-hidden contribution to the few-% ceiling. Slow-test assertion
+  recalibrated 1e-8 → 1e-3 (35x headroom over measured; broken conservation reads O(1)).
+- **Rank guard on the deflation basis.** `_conserved_null_basis` now unit-normalizes
+  the c_e stack and fails fast on |R_jj| < 1e-10 (and on an all-zero column):
+  unpivoted `np.linalg.qr` maps a rank-deficient stack to arbitrary orthonormal
+  directions OUTSIDE span(C), which would silently project a needed direction out
+  of the solve. New unit tests cover both failure modes.
+- **LGMRES cycle hygiene.** Warm-start cycles now stop early when scipy reports
+  convergence (info==0) and raise on breakdown/illegal input (info<0) instead of
+  silently returning garbage; info>0 (not yet converged) continues as before.
+- **Doc unification.** y_star is a fixed point of the *bare* body map (what
+  fp_err measures); the parameter docstring previously said "renormalized body
+  map". Also: the step-VJP is now jitted once (`a_eta_j`) and shared between the
+  null-quality diagnostic and the LGMRES matvec (proj moved outside the jit), so
+  the expensive transpose compile is paid exactly once.
+
+Also fixed while in the area: `AtmRefreshStatic.ms` docstring said "per-particle
+mass (g)" — it is the molar mass (g/mol; divided by Navo in the formulas),
+matching master's `atm.ms`.
+
+#### 2026-07-01 addendum: e2e re-measurement — the HD189 solve stagnates and its endpoint is bit-sensitive
+
+Full-budget re-run of the HD189 CH4 adjoint (inner_m=250, cycles=8, warm XLA
+cache) after the diagnostics hardening: `resid=0.47` at 8032 matvecs,
+`r13=-0.449` (20.6% off FD -0.565), `fp_err=1.35e-4`, `null_quality=2.76e-5`
+(new relative metric). The 15% FD-anchor tolerance in the slow test FAILED.
+
+A/B isolation (one LGMRES cycle, identical 1004 matvecs, same fixture):
+pre-edit HEAD gives `resid=0.293, r13=-0.505`; the edited module gives
+`resid=0.659, r13=-0.717`. The edits are mathematically neutral (same operator,
+same projector span — column normalization provably preserves the Householder
+Q; early-exit only fires on info==0), so the divergence is ulp-level trajectory
+sensitivity of a STAGNATING Krylov solve — consistent with the 2026-06-16 log
+("r13 ranges -0.43..-0.63, residual bounces 0.1..1.6"). HEAD itself samples
+10.6% off in this probe; the June 6.8% was one draw from the same band. Nothing
+regressed — the solve was never converging to rtol on this fixture, and any
+FP-level change (jit boundaries, jax/scipy versions, the 2026-06-29 body-map
+restructure) re-samples the ~±25% bounce band around FD.
+
+Consequences applied:
+- Slow-test FD-anchor tolerance recalibrated 15% -> 30% (15% sat inside the
+  bounce band = flaky by construction); sign + top-6-ranking assertions stay.
+- Module/README/warn text updated: magnitudes in the stagnation regime (resid
+  warn firing) are ranking weights with ~±25% bounce; sign and ranking are the
+  stable outputs. The prior "few-%" claim was one lucky trajectory sample.
+
+### 2026-07-01: adjoint solver campaign (10 experiments, no code changes) — body_dt=1e7 fixes the bounce
+
+Scratch-driven A/B campaign on the HD189 fixture (scripts external to the repo;
+library building blocks only). Root cause of the stagnation/bounce identified
+and a one-argument fix validated.
+
+**Root cause.** The bare body map at y* is NOT a contraction: ARPACK on the
+(vjp-side) operator finds >=8 eigenvalues OUTSIDE the unit circle (|lambda| up
+to 2.66 at dt=1e8), localized on H/H2 in the top ~5 layers (z144-149, y*~1e10 —
+the H<->H2 + escape/diffusion system). Independent confirmation: iterating the
+bare body map diverges to NaN in ~45 steps (2.66^45 growth). Consequences:
+(I - dG^T) is indefinite (eigenvalues straddle 0) -> restarted-Krylov
+stagnation; and the matvec has an FP-cancellation floor that scales with dt
+(stiff amplification through the step), which is what the residual plateaus at.
+The loss cotangent is orthogonal to all unstable modes (<v_i, b> ~ 0), which is
+why the ranking survives everything.
+
+**body_dt map** (LGMRES 250/40/4, 4 warm cycles, CH4 r13 vs FD -0.5651):
+
+| body_dt | final resid   | r13 error   | reproducibility (ulp twins) |
+|---------|---------------|-------------|------------------------------|
+| 1e6     | 346 (diverges)| wrong sign  | —                            |
+| 3e6     | 0.003-0.008 (CONVERGES) | 27.6% (deterministic bias: slow modes with tau>~dt underweighted) | +/-0.25% |
+| 1e7     | 0.04-0.15     | 0.3-6.0% over 4 twins, mean 3.5% | +/-3% |
+| 3e7     | 0.40          | 7.5% (1 sample) | —                        |
+| 1e8 (default) | 0.2-1.5 stalled | 0.5-20.6% samples | +/-20% lottery |
+| >=3e8   | 1e5-3e6       | garbage     | —                            |
+
+**Alternatives all refuted** (same operator/b, dt=1e8): un-restarted
+GMRES(2500) breaks down (resid 60); GCROT(m,k) blows up (resid 191); LSMR is
+FP-dead — the jvp-side rmatvec is unusable in these coordinates (transpose-pair
+checks fail by 1e17 even on structured vectors; raw-coordinate tangents span
+~50 decades -> catastrophic cancellation), independently validating the
+vjp-only design; naive one-sided eigendeflation of the unstable modes makes it
+WORSE (resid 21 — non-normal operator, orthogonal projection of right
+eigenvectors does not decouple; proper RPM needs the left/oblique treatment,
+which needs the FP-dead jvp side). The library's LGMRES config is the only
+bounded solver of the five tried — the 2026-06-16 choice is a genuine local
+optimum. Also confirmed: 14k matvecs at dt=1e8 show NO convergence trend
+(bounce is stationary), and identical code paths reproduce trajectories
+bit-exactly (the bounce is across ulp-level FP variants only).
+
+**Practical recipe (no code change): pass `body_dt=1e7`** to
+`steady_state_reaction_sensitivity` for magnitude work — resid floor drops
+~10x and the FD gap becomes 0.3-6% (4 ulp-twins, mean 3.5%), i.e. the
+originally-claimed "few-%" accuracy, now reproducible. Use `body_dt=3e6` when
+determinism matters more than the ~28% slow-mode bias. Ranking (sign + top-k)
+is robust in every non-divergent config. Caveats: single fixture (HD189
+photo-off, CH4 mid-column); spot-check W39b/SO2 before adopting 1e7 as a new
+default — the sweet spot should track the slow-mode timescales of each
+network/column; the dt>=3e8 cliff (unstable-mode amplification) and the dt<=1e6
+divergence bracket the usable window.
+
+### 2026-07-01: reverse-mode hardening shipped (AD-only changes; core physics untouched)
+
+Per maintainer instruction ("AD may be slow; core VULCAN config/physics must not
+change"), the campaign recipe is now the library default in
+`steady_state_grad.py` — the ONLY runtime file touched:
+
+- `BODY_MAP_DT` default 1e8 -> **1e7** (the measured low-residual regime; the
+  full dt map lives in the constant's comment). Adjoint-only knob; the forward
+  model, `vulcan_cfg`, and every kernel under `jax_step`/`outer_loop` are
+  byte-identical.
+- **Twin-ensemble solves** (`n_solves=3` default): the gradient is the mean
+  over deterministic ulp-perturbed-RHS solves; `info["ensemble_spread"]` is the
+  magnitude error bar (warn at >0.15). `n_solves=1` restores the old behavior.
+- `_ADJOINT_RESID_WARN` 0.1 -> 0.2 with measured bands in the comment
+  (0.04-0.15 <-> 0.3-6% of FD; >~0.3 <-> ranking-only regime).
+- `info` gains `resids` (per twin), `ensemble_spread`, `n_solves`, `body_dt`;
+  `resid` is now the ensemble max.
+- Slow test recalibrated: ensemble-mean FD anchors at 12% (measured mean 3.5%),
+  plus resid<0.3 and spread<0.15 guards; docstring records the dt story.
+- README / CLAUDE.md / example updated in the same pass.
+
+#### 2026-07-01 final calibration: best-iterate safeguard + top-10 spread + median warn
+
+Two refinements after the first ensemble calibration exposed a wandering twin
+(resid 0.16 at cycle 4 drifting to 0.55 by cycle 8 — warm-restart trajectories
+are not monotone):
+
+- `_lgmres_solve` now returns the BEST-residual iterate across cycles (one
+  extra matvec per cycle), not the last one.
+- `ensemble_spread` is defined over the TOP-10 reactions by |mean| (weak
+  reactions carry naturally large relative bounce that never enters a ranking
+  figure); the residual warning gates on the ensemble MEDIAN (robust to one
+  wandering twin); `info["resid"]` reports the max.
+
+Final calibration (HD189 fixture, defaults body_dt=1e7 / n_solves=3,
+inner_m=250, cycles=8): ensemble-mean CH4 r13 = -0.5369 vs FD -0.5651 (5.0%),
+r14 symmetric, top-6 ranking exact, per-twin residuals {0.29, 0.05, 0.10}
+(median 0.10), top-10 twin spread 0.047, fp_err 1.4e-4, null_quality 2.2e-5,
+24k matvecs / ~27 min warm. Slow-test guards set with margin: mean anchors
+<12%, median resid <0.2, max resid <0.5, spread <0.15. Full suite 174 passed.
