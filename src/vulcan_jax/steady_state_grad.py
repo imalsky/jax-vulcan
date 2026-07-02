@@ -469,8 +469,12 @@ def steady_state_reaction_sensitivity(
         is suspect), `resid` (max relative LGMRES residual over the ensemble),
         `resids` (per-twin residuals), `ensemble_spread` (max over the top-10
         reactions by |mean| of (max-min)/|mean| across twins; 0.0 when
-        `n_solves=1`), `n_matvec`, `n_null` (deflated dimensions), `n_solves`,
-        and `body_dt`.
+        `n_solves=1`), `pair_antisym` (worst forward/reverse asymmetry
+        `|g_f+g_r|/max(|g_f|,|g_r|)` over the top-10 genuinely-reversible
+        pairs — 0.01-0.3 on healthy losses, O(1) when the adjoint is
+        internally inconsistent, e.g. a loss coupled to the unstable
+        top-of-atmosphere modes), `n_matvec`, `n_null` (deflated dimensions),
+        `n_solves`, and `body_dt`.
     """
     if body_dt > _BODY_MAP_DT_MAX:
         raise ValueError(
@@ -610,6 +614,30 @@ def steady_state_reaction_sensitivity(
     else:
         ensemble_spread = 0.0
 
+    # Forward/reverse pair antisymmetry over the top-10 reactions: for a
+    # reversible pair near partial equilibrium, dL/dln k_f ~ -dL/dln k_r, so
+    # |g_f + g_r| / max(|g_f|, |g_r|) is small (measured 0.01-0.3 on healthy
+    # HD189/W39b losses) and O(1) when the adjoint is internally inconsistent
+    # (e.g. a loss coupled to the unstable top-of-atmosphere modes read 1.0
+    # while its residuals were tiny — 2026-07-02 battery). Photolysis /
+    # irreversible rows (all-zero reverse k) are skipped. Free to compute;
+    # diagnostic only, no warning.
+    g_mean_full = np.asarray(dL_dlnk)
+    k_np = np.asarray(k_arr)
+    pair_antisym = 0.0
+    for r in np.argsort(np.abs(g_mean_full))[::-1][:10]:
+        r = int(r)
+        f = r if r % 2 == 1 else r - 1
+        rev = f + 1
+        if f < 1 or rev >= g_mean_full.shape[0]:
+            continue
+        if not (np.any(k_np[f] != 0.0) and np.any(k_np[rev] != 0.0)):
+            continue  # photo/conden/irreversible slot — no genuine pair
+        denom = max(abs(g_mean_full[f]), abs(g_mean_full[rev]), 1e-300)
+        pair_antisym = max(
+            pair_antisym, abs(g_mean_full[f] + g_mean_full[rev]) / denom
+        )
+
     # Default-on diagnostics: a poorly-converged solve still returns a
     # finite-looking gradient, so warn even when the caller ignores `info`.
     # The residual warning gates on the ensemble MEDIAN (robust to one
@@ -631,6 +659,7 @@ def steady_state_reaction_sensitivity(
         "resid": resid,
         "resids": resids,
         "ensemble_spread": ensemble_spread,
+        "pair_antisym": pair_antisym,
         "n_matvec": int(n_matvec[0]),
         "n_null": int(Q.shape[1]),
         "n_solves": n_solves,

@@ -512,6 +512,19 @@ ill-conditioned (stiff chemistry) — which is why the solver-map route exists.
   `info["ensemble_spread"]` as the honest magnitude error bar. The *ranking* is
   robust in every non-divergent regime: dominant reactions stand 1-2 orders of
   magnitude above the noise with stable signs.
+- **Cross-regime validation (2026-07-02 battery).** WASP-39b (SNCHO photo-on,
+  1150 reactions, SO₂ loss) is an *easy* regime: residuals 0.005–0.05 at every
+  `body_dt` in 3e6–1e8, answers dt-insensitive to <1%, twin spread ~6e-4, and
+  the ranking reproduces the paper exactly. On HD189, three loss regimes
+  degrade and **all are flagged by default-on diagnostics**: buffered species
+  (H₂O/CO mid-column — spread warns on the twin-noisy tail; the insensitivity
+  conclusion itself is robust), upper-atmosphere losses (true stagnation —
+  median-residual warns), and losses coupled to the unstable top-layer H/H₂
+  modes (tiny residuals but `ensemble_spread` ~0.9 and
+  `info["pair_antisym"]` ~1 — the forward/reverse pair-antisymmetry check
+  catches internal inconsistency that residuals miss). Mid-column
+  composition losses (the design use case) are safe because their cotangent
+  is orthogonal to the unstable subspace.
 - **Photolysis is frozen** on photochemistry-on columns (`dJ/dy` omitted) →
   leading-order sensitivities only.
 - **`k`-only.** Returns `dL/d ln k`; for `dL/dKzz`, `dL/dT`, etc. use forward-mode.

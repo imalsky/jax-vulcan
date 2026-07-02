@@ -286,6 +286,9 @@ def test_hd189_reaction_sensitivity_regression():
     assert info["ensemble_spread"] < 0.15, (
         f"ensemble spread {info['ensemble_spread']:.2e} — twins disagree"
     )
+    # Healthy losses measured 0.01-0.3 across the 2026-07-02 battery; the
+    # unstable-mode-coupled failure case read 1.0.
+    assert info["pair_antisym"] < 0.5, f"pair antisymmetry {info['pair_antisym']:.2e}"
     assert np.all(np.isfinite(dLdlnk))
 
     # Sign and ranking are the most robust assertions.

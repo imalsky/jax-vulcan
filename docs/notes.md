@@ -704,3 +704,42 @@ r14 symmetric, top-6 ranking exact, per-twin residuals {0.29, 0.05, 0.10}
 (median 0.10), top-10 twin spread 0.047, fp_err 1.4e-4, null_quality 2.2e-5,
 24k matvecs / ~27 min warm. Slow-test guards set with margin: mean anchors
 <12%, median resid <0.2, max resid <0.5, spread <0.15. Full suite 174 passed.
+
+### 2026-07-02: cross-regime hardening battery (W39b + HD189 loss sweep)
+
+Three parallel batteries drove the SHIPPED library function across regimes.
+
+**W39b (SNCHO photo-on, nr=1150, SO2@peak loss) — easy regime, defaults confirmed.**
+Residuals 0.005-0.045 at every body_dt in 3e6..1e8 (the HD189 stagnation is
+absent); the ANSWER is dt-insensitive to <1% across that whole window
+(g1 = -0.679..-0.683) — the HD189 small-dt slow-mode bias does not appear
+here; twin spread 5.8e-4; conservation directions are exactly null
+(null_quality ~1e-10, vs 2e-5 on HD189 — open-vs-closed column contrast);
+unstable modes mild (|lambda| <= 1.66) with zero loss overlap. Ranking
+reproduces the paper exactly: OH+H2 <-> H2O+H pair leads (-/+0.682), then
+SO+OH->SO2+H (+0.367), OH+S->H+SO (+0.319). Ensembles at dt=1e7 and dt=1e8
+agree to 0.2%. New gated regression: tests/test_w39b_adjoint_subprocess.py
+(fixture tests/data/adj_state_w39b.npz, local artifact).
+
+**HD189 loss sweep — three failure regimes, all flagged by default-on
+diagnostics; no silent failures.**
+- Buffered species (H2O/CO @ mid-column, max|g|~8e-3 — "no reaction controls
+  this"): excellent residuals (~4e-3) but twin-noisy top-10 tails -> spread
+  warn fires (0.17-0.44). The physical conclusion (insensitivity) is robust.
+- Upper-atmosphere CH4 (z140): genuine stagnation (resids 0.4-1.7) -> median-
+  resid warn fires; twins AGREE (spread 0.045) on a possibly-biased answer —
+  spread alone would miss this; the residual gate catches it.
+- Loss coupled to the unstable top-layer H/H2 modes (H@z146, cotangent
+  overlap 0.49 with the unstable eigenvectors): tiny residuals (3e-3!) but
+  spread 0.90 and forward/reverse pair antisymmetry 1.0 -> flagged hard.
+  Confirms the b-perp-unstable-modes condition is what makes mid-column
+  losses safe.
+- Healthy cases: trace species (C2@mid: spread 0.019) and bottom-boundary
+  CH4 (spread 0.14, antisym 0.008) work fine.
+
+**Shipped from the battery:** `info["pair_antisym"]` — worst forward/reverse
+asymmetry |g_f+g_r|/max over the top-10 genuinely-reversible pairs (photo/
+irreversible rows skipped; free to compute). Healthy 0.01-0.3; O(1) flags
+internal inconsistency even when residuals are tiny (the H@z146 case). Slow
+tests updated: HD189 asserts pair_antisym < 0.5; new W39b regression pins
+ranking/values/diagnostics.
