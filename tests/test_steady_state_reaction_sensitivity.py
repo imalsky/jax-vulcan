@@ -207,6 +207,22 @@ def test_body_dt_danger_zone_rejected():
         )
 
 
+def test_solver_map_invalid_rejected():
+    """An unknown solver_map is refused up front (before any heavy compute)."""
+    dummy = jnp.ones((2, 2))
+    with pytest.raises(ValueError, match="solver_map"):
+        steady_state_reaction_sensitivity(
+            lambda y: y.sum(),
+            dummy,
+            jnp.ones((3, 2)),
+            None,
+            None,
+            compo_array=jnp.ones((2, 1)),
+            dz=jnp.ones((2,)),
+            solver_map="hydrostatic",
+        )
+
+
 # --------------------------------------------------------------------------- #
 # Slow end-to-end regression on a real HD189 column                           #
 # --------------------------------------------------------------------------- #
@@ -219,17 +235,17 @@ def test_body_dt_danger_zone_rejected():
     reason="slow reverse-mode HD189 regression; set VULCAN_JAX_RUN_SLOW=1 to run",
 )
 def test_hd189_reaction_sensitivity_regression():
-    """Reproduce the documented HD189 reaction-ranking finite-difference anchors.
+    """Reproduce the documented HD189 CH4 finite-difference anchors at percent level.
 
-    Runs the full solver-map adjoint (defaults: body_dt=1e7, n_solves=3
-    ensemble) on the saved converged HD189 (photo-off) state and checks the
-    ensemble-mean CH4 sensitivity against the centered finite-difference truth
-    from `adj_solvermap_gmres.py`. At body_dt=1e7 the solve reaches a low
-    residual (0.04-0.15 measured) and independent twins land 0.3-6% from FD
-    (mean 3.5%; docs/notes.md 2026-07-01 campaign), so the anchor tolerance is
-    12% on the ensemble mean, with resid/spread guards. At the old body_dt=1e8
-    default the solve stagnated and single samples bounced ±25% (band
-    -0.43..-0.63 vs FD -0.565) — the dt map lives in `BODY_MAP_DT`'s comment.
+    Runs the full solver-map adjoint (defaults: solver_map="renorm",
+    body_dt=1e7, n_solves=3 ensemble) on the saved converged HD189 (photo-off)
+    state and checks the ensemble-mean CH4 sensitivity against the centered
+    finite-difference truth from `adj_solvermap_gmres.py`. With the default
+    renormalized map the converged state is a tight fixed point (fp_err ~1e-9)
+    and the dominant CH4 rows land at percent level (~0.7% measured
+    2026-07-03), so the anchor tolerance is 3%. A `solver_map="bare"`
+    cross-check then confirms the legacy raw-step map is looser on this fixture
+    (fp_err ~1e-4, ~6-8% vs FD), documenting why "renorm" is now the default.
     Sign and top-6 ranking remain the strongest assertions.
     """
     import vulcan_jax.chem_funs as chem_funs
@@ -267,13 +283,16 @@ def test_hd189_reaction_sensitivity_regression():
     )
     dLdlnk = np.asarray(dLdlnk)
 
-    assert info["fp_err"] < 1e-1, (
-        f"y* is not a body-map fixed point: {info['fp_err']:.2e}"
+    assert info["solver_map"] == "renorm", "default solver_map should be renorm"
+    assert info["fp_err"] < 1e-6, (
+        f"renorm y* is not a tight fixed point: {info['fp_err']:.2e}"
     )
     # null_quality is max_e ||A_eta^T q_e|| relative to the operator's action
-    # on a random unit direction. Measured ~3e-5 at body_dt=1e8 (2026-07-01);
-    # a genuinely non-null deflated direction (broken conservation) reads O(1).
-    assert info["null_quality"] < 1e-3
+    # on a random unit direction. The renorm map conserves atoms only
+    # approximately near the fixed point, so its atom-count vectors are only
+    # approximately null (larger than the bare map's ~3e-5); a genuinely
+    # non-null deflated direction (broken conservation) still reads O(1).
+    assert info["null_quality"] < 1e-2
     # Solver-regime guards, calibrated 2026-07-01 (measured per-twin residuals
     # {0.29, 0.05, 0.10}, spread 0.047): the ensemble MEDIAN residual must stay
     # out of the stagnation regime (one wandering twin is tolerated — the
@@ -286,9 +305,12 @@ def test_hd189_reaction_sensitivity_regression():
     assert info["ensemble_spread"] < 0.15, (
         f"ensemble spread {info['ensemble_spread']:.2e} — twins disagree"
     )
-    # Healthy losses measured 0.01-0.3 across the 2026-07-02 battery; the
-    # unstable-mode-coupled failure case read 1.0.
-    assert info["pair_antisym"] < 0.5, f"pair antisymmetry {info['pair_antisym']:.2e}"
+    # pair_antisym is a bare-map-calibrated diagnostic; the renormalized default
+    # redistributes reverse-row sensitivity so it can read O(1) even when the
+    # directional rows are FD-accurate (see the module docstring "Pair sums"
+    # note), so it is NOT a strict gate here. The FD-agreement checks below are
+    # the real validation. We only assert it stays finite/bounded.
+    assert 0.0 <= info["pair_antisym"] <= 1.1, info["pair_antisym"]
     assert np.all(np.isfinite(dLdlnk))
 
     # Sign and ranking are the most robust assertions.
@@ -296,13 +318,36 @@ def test_hd189_reaction_sensitivity_regression():
     top = np.argsort(np.abs(dLdlnk[: net.nr + 1]))[::-1][:6]
     assert 13 in top or 14 in top, f"dominant CH4 reaction missing from top-6: {top}"
 
-    # Finite-difference agreement of the ensemble mean on the dominant pair
-    # (measured 3.5% mean over twins at body_dt=1e7; 12% gives headroom).
+    # Percent-level finite-difference agreement with the DEFAULT renorm map
+    # (measured ~0.7% on this fixture, 2026-07-03; 3% gives headroom).
     for r in (13, 14):
         rel = abs(dLdlnk[r] - HD189_FD_ANCHORS[r]) / abs(HD189_FD_ANCHORS[r])
-        assert rel < 0.12, (
-            f"r{r}: {dLdlnk[r]:+.3e} vs FD {HD189_FD_ANCHORS[r]:+.3e} (rel {rel:.2f})"
+        assert rel < 0.03, (
+            f"r{r}: {dLdlnk[r]:+.3e} vs FD {HD189_FD_ANCHORS[r]:+.3e} (rel {rel:.2f}) "
+            "— renorm default should be percent level"
         )
+
+    # Cross-check the legacy solver_map="bare": on this (renorm-polished) fixture
+    # y* is only a ~1e-4 fixed point of the raw step, so bare is strictly looser
+    # than the renorm default — the mechanism that motivated flipping the default
+    # (2026-07-03: bare ~6.6% vs renorm ~0.7% here).
+    dLdlnk_b, info_b = steady_state_reaction_sensitivity(
+        loss, y_star, k_arr, atm, net, compo_array=compo, dz=dz,
+        solver_map="bare", lgmres_inner_m=250, lgmres_cycles=8,
+        return_info=True,
+    )
+    dLdlnk_b = np.asarray(dLdlnk_b)
+    assert info_b["fp_err"] > 10.0 * info["fp_err"], (
+        f"bare fp_err {info_b['fp_err']:.2e} not looser than renorm "
+        f"{info['fp_err']:.2e}"
+    )
+    rel_bare = max(abs(dLdlnk_b[r] - HD189_FD_ANCHORS[r]) / abs(HD189_FD_ANCHORS[r])
+                   for r in (13, 14))
+    rel_renorm = max(abs(dLdlnk[r] - HD189_FD_ANCHORS[r]) / abs(HD189_FD_ANCHORS[r])
+                     for r in (13, 14))
+    assert rel_bare > rel_renorm, (
+        f"bare rel {rel_bare:.3f} should exceed renorm rel {rel_renorm:.3f}"
+    )
 
 
 def main() -> int:

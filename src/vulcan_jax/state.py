@@ -278,6 +278,13 @@ class StellarFlux(NamedTuple):
     def_bin_max: float
 
 
+# Photolysis wavelength window (nm): cross sections / stellar flux are only
+# used inside this band, so the stellar-flux bin range is clamped to it. Matches
+# VULCAN-master's fixed 2-700 nm photo grid.
+_SFLUX_BIN_MIN_NM = 2.0
+_SFLUX_BIN_MAX_NM = 700.0
+
+
 def load_stellar_flux(cfg) -> StellarFlux:
     """Read the stellar flux file and compute the spectral-bin extents.
 
@@ -299,8 +306,8 @@ def load_stellar_flux(cfg) -> StellarFlux:
     )
     wavelength = np.asarray(sflux_data["lambda"], dtype=np.float64)
     flux = np.asarray(sflux_data["flux"], dtype=np.float64)
-    def_bin_min = float(max(wavelength[0], 2.0))
-    def_bin_max = float(min(wavelength[-1], 700.0))
+    def_bin_min = float(max(wavelength[0], _SFLUX_BIN_MIN_NM))
+    def_bin_max = float(min(wavelength[-1], _SFLUX_BIN_MAX_NM))
     return StellarFlux(
         wavelength_nm=wavelength,
         flux=flux,
@@ -967,11 +974,10 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
     var.dy_prev = np.copy(var.dy)
     var.atom_loss_prev = var.atom_loss.copy()
 
+    # runstate_from_store already builds metadata from this same (var, atm, para);
+    # only the photo_static pytree needs attaching here.
     rs = runstate_from_store(var, atm, para)
-    return rs._replace(
-        metadata=_runmetadata_from_legacy(var, atm, para),
-        photo_static=photo_static_pytree,
-    )
+    return rs._replace(photo_static=photo_static_pytree)
 
 
 def _fresh_step_inputs(rs: RunState) -> StepInputs:

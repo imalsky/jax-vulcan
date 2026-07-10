@@ -81,9 +81,12 @@ def any_live_flag_on(cfg=vulcan_cfg) -> bool:
 class LiveUI:
     """Host-side dispatcher for live mixing-ratio + actinic-flux plots."""
 
-    def __init__(self) -> None:
+    def __init__(self, cfg=vulcan_cfg) -> None:
+        # Read the run's cfg (make_config() users pass their own namespace),
+        # not the bare vulcan_cfg module — otherwise make_config overrides of
+        # the live-UI flags / plot_spec / movie_dir are silently ignored.
+        self._cfg = cfg
         self.pic_count = 0
-        self.flux_pic_count = 0
         self._species_index: dict[str, int] | None = None
         self._plt = None
 
@@ -113,10 +116,10 @@ class LiveUI:
 
     def dispatch(self, var, atm, para) -> None:
         """Route to mixing-ratio and/or flux updaters based on cfg flags."""
-        live_plot = bool(getattr(vulcan_cfg, "use_live_plot", False))
-        live_flux = bool(getattr(vulcan_cfg, "use_live_flux", False))
-        save_movie = bool(getattr(vulcan_cfg, "use_save_movie", False))
-        flux_movie = bool(getattr(vulcan_cfg, "use_flux_movie", False))
+        live_plot = bool(getattr(self._cfg, "use_live_plot", False))
+        live_flux = bool(getattr(self._cfg, "use_live_flux", False))
+        save_movie = bool(getattr(self._cfg, "use_save_movie", False))
+        flux_movie = bool(getattr(self._cfg, "use_flux_movie", False))
         if not (live_plot or live_flux or save_movie or flux_movie):
             return
 
@@ -124,7 +127,7 @@ class LiveUI:
             self.update_mix(var, atm, para, save_movie=save_movie, show=live_plot)
             setattr(para, "pic_count", self.pic_count)
 
-        if (live_flux or flux_movie) and bool(getattr(vulcan_cfg, "use_photo", False)):
+        if (live_flux or flux_movie) and bool(getattr(self._cfg, "use_photo", False)):
             self.update_flux(var, atm, para, save_movie=flux_movie, show=live_flux)
 
     def update_mix(
@@ -139,7 +142,7 @@ class LiveUI:
             plt.ion()
 
         palette = list(_TABLEAU20)
-        plot_spec = list(getattr(vulcan_cfg, "plot_spec", []))
+        plot_spec = list(getattr(self._cfg, "plot_spec", []))
         for color_index, sp in enumerate(plot_spec):
             if sp not in species_idx:
                 continue
@@ -149,11 +152,11 @@ class LiveUI:
             color = palette[color_index]
             sp_i = species_idx[sp]
 
-            if not getattr(vulcan_cfg, "plot_height", False):
+            if not getattr(self._cfg, "plot_height", False):
                 plt.plot(var.ymix[:, sp_i], atm.pco / 1.0e6, color=color, label=sp_lab)
                 if (
-                    getattr(vulcan_cfg, "use_condense", False)
-                    and sp in getattr(vulcan_cfg, "condense_sp", [])
+                    getattr(self._cfg, "use_condense", False)
+                    and sp in getattr(self._cfg, "condense_sp", [])
                     and hasattr(atm, "sat_mix")
                     and sp in atm.sat_mix
                 ):
@@ -169,12 +172,12 @@ class LiveUI:
                     plt.gca().invert_yaxis()
                     self._mix_axis_inverted = True
                 plt.ylabel("Pressure (bar)")
-                plt.ylim((vulcan_cfg.P_b / 1.0e6, vulcan_cfg.P_t / 1.0e6))
+                plt.ylim((self._cfg.P_b / 1.0e6, self._cfg.P_t / 1.0e6))
             else:
                 plt.plot(var.ymix[:, sp_i], atm.zmco / 1.0e5, color=color, label=sp_lab)
                 if (
-                    getattr(vulcan_cfg, "use_condense", False)
-                    and sp in getattr(vulcan_cfg, "condense_sp", [])
+                    getattr(self._cfg, "use_condense", False)
+                    and sp in getattr(self._cfg, "condense_sp", [])
                     and hasattr(atm, "sat_mix")
                     and sp in atm.sat_mix
                 ):
@@ -199,7 +202,7 @@ class LiveUI:
             plt.pause(0.001)
 
         if save_movie:
-            movie_dir = Path(getattr(vulcan_cfg, "movie_dir", "plot/movie/"))
+            movie_dir = Path(getattr(self._cfg, "movie_dir", "plot/movie/"))
             movie_dir.mkdir(parents=True, exist_ok=True)
             plt.savefig(str(movie_dir / f"{self.pic_count}.png"), dpi=200)
             self.pic_count += 1
@@ -251,6 +254,5 @@ class LiveUI:
             flux_dir = Path("plot/movie")
             flux_dir.mkdir(parents=True, exist_ok=True)
             plt.savefig(str(flux_dir / f"flux-{int(para.count)}.jpg"))
-            self.flux_pic_count += 1
 
         plt.clf()

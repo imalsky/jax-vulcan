@@ -1,20 +1,26 @@
 """Reverse-mode reaction ranking on a real HD189 column.
 
-`steady_state_grad.steady_state_reaction_sensitivity` returns
-`dL/d(ln k_r)` for every reaction in one adjoint solve — "which reactions set
-the converged abundance of species X". By finite differences this ranking would
-cost one re-converged model per reaction; reverse-mode returns all of them at
-once.
+`steady_state_grad.steady_state_reaction_sensitivity` returns row-wise
+`dL/d(ln k_r)` for every directional rate-table entry in one adjoint solve:
+"which rows set the converged abundance of species X". By finite differences
+this ranking would cost one re-converged model per row; reverse-mode returns
+all of them at once.
 
 The result is the mean over an ensemble of twin solves (default n_solves=3,
-body_dt=1e7 — the validated low-residual regime; the twin spread printed below
-is the magnitude error bar). Accuracy on HD189 is ~few % vs finite differences
-(0.3-6% across twins, mean 3.5%; the residual FD gap is a steady-state-
-definition ceiling, not solver error). Photolysis is frozen on photo-on
-columns, and it returns `k`-only sensitivities. Forward-mode
-(`grad_jvp_example.py`) remains the higher-accuracy route for end-to-end
-gradients. See the `steady_state_reaction_sensitivity` docstring and
-`BODY_MAP_DT`'s dt map for the full picture.
+body_dt=1e7; the twin spread printed below is a magnitude-stability diagnostic).
+This example runs both the default `solver_map="renorm"` and the legacy
+`solver_map="bare"`: the default linearizes the hydrostatic-renormalized map the
+runner actually iterates, so `y_star` is a tight fixed point of it and the CH4
+rows are sub-percent vs the finite-difference anchors, whereas the raw-step
+`"bare"` map is ~6-7% off (2026-07-03). On photochemistry-on columns pass
+`photo_recompute_k` (see `make_photo_recompute_k`) to also include the dJ/dy
+feedback and reach percent level on photo-coupled rows (e.g. WASP-39b OH+H2,
+~11% -> ~0.2%); it is the standard companion to the renorm default there. The
+function returns `k`-only directional-row sensitivities; for a physical
+detailed-balance perturbation of a reversible thermal reaction, sum the forward
+and reverse rows. Forward-mode (`grad_jvp_example.py`) is exact and stays the
+route for any single hard row. See the `steady_state_reaction_sensitivity`
+docstring and `scan_body_dt_reaction_sensitivity` for more.
 
 This script loads a saved converged HD189 (photo-off) state
 (`tests/data/adj_state_hd189.npz`, a local artifact — `*.npz` is gitignored) so
@@ -84,39 +90,44 @@ def main() -> int:
         ymix = y / jnp.sum(y, axis=1, keepdims=True)
         return jnp.log10(ymix[L0, ch4])
 
-    print("Solving the steady-state adjoint (one solve, all reactions)...")
-    print("  (first call pays the step-VJP XLA compile; minutes)")
-    t1 = time.time()
-    dLdlnk, info = steady_state_reaction_sensitivity(
-        loss,
-        y_star,
-        k_arr,
-        atm,
-        net,
-        compo_array=compo,
-        dz=dz,
-        lgmres_inner_m=250,
-        lgmres_cycles=8,
-        return_info=True,
-    )
-    dLdlnk = np.asarray(dLdlnk)
-    print(
-        f"Done in {time.time() - t1:.1f}s  "
-        f"fp_err={info['fp_err']:.2e} resid={info['resid']:.2e} "
-        f"twin_spread={info['ensemble_spread']:.2e} "
-        f"(n_solves={info['n_solves']}, body_dt={info['body_dt']:.0e}) "
-        f"matvecs={info['n_matvec']} deflated_dims={info['n_null']}"
-    )
+    print("Solving the steady-state adjoint (one solve, all rate-table rows)...")
+    print("  (first call per solver_map pays the step-VJP XLA compile; minutes)")
 
-    print(f"\nTop 8 reactions setting log10(CH4 VMR) at layer {L0}:")
-    order = np.argsort(np.abs(dLdlnk[: net.nr + 1]))[::-1][:8]
+    grads = {}
+    for smap in ("renorm", "bare"):  # renorm is the default; bare is legacy
+        t1 = time.time()
+        dLdlnk, info = steady_state_reaction_sensitivity(
+            loss,
+            y_star,
+            k_arr,
+            atm,
+            net,
+            compo_array=compo,
+            dz=dz,
+            solver_map=smap,
+            lgmres_inner_m=250,
+            lgmres_cycles=8,
+            return_info=True,
+        )
+        grads[smap] = np.asarray(dLdlnk)
+        print(
+            f"  solver_map={smap:<6} {time.time() - t1:5.1f}s  "
+            f"fp_err={info['fp_err']:.2e} resid={info['resid']:.2e} "
+            f"twin_spread={info['ensemble_spread']:.2e} "
+            f"(n_solves={info['n_solves']}, body_dt={info['body_dt']:.0e})"
+        )
+
+    print(f"\nTop 8 reactions setting log10(CH4 VMR) at layer {L0} (solver_map=renorm):")
+    order = np.argsort(np.abs(grads["renorm"][: net.nr + 1]))[::-1][:8]
     for r in order:
-        print(f"  r{int(r):4d}  dL/dln k = {dLdlnk[r]:+.3e}   {rf.get(int(r), '?')}")
+        print(f"  r{int(r):4d}  dL/dln k = {grads['renorm'][r]:+.3e}   {rf.get(int(r), '?')}")
 
-    print("\nFinite-difference anchors (adj_solvermap_gmres.py):")
+    print("\nFinite-difference anchors (adj_solvermap_gmres.py) — renorm (default) vs bare (legacy):")
     for r, fd in FD_ANCHORS.items():
-        rel = abs(dLdlnk[r] - fd) / abs(fd)
-        print(f"  r{r:4d}  adjoint={dLdlnk[r]:+.4e}  FD={fd:+.4e}  rel={rel:.1%}")
+        rel_b = abs(grads["bare"][r] - fd) / abs(fd)
+        rel_r = abs(grads["renorm"][r] - fd) / abs(fd)
+        print(f"  r{r:4d}  FD={fd:+.4e}  renorm={grads['renorm'][r]:+.4e} ({rel_r:.1%})"
+              f"  bare={grads['bare'][r]:+.4e} ({rel_b:.1%})")
     return 0
 
 

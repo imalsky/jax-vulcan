@@ -6,7 +6,7 @@ VULCAN-JAX runs the same configuration files, input data, and `.vul` output sche
 
 **Why use this over upstream VULCAN?**
 - ~3x faster per-step on CPU (single-threaded; see Benchmarks); end-to-end speedup is workload-dependent
-- Differentiable: **forward-mode works end-to-end** through the full converged model (validated vs finite differences); **reverse-mode** returns reaction-importance sensitivities (`dL/d ln k` for all reactions in one adjoint solve) at the converged state (see [Differentiability](#differentiability))
+- Differentiable: **forward-mode works end-to-end** through the full converged model (validated vs finite differences); **reverse-mode** returns reaction-importance sensitivities (`dL/d ln k` for all reactions in one adjoint solve) at the converged state — percent-level by default (renormalized-map operator, plus automatic photolysis feedback when runner context is supplied for photochemistry-on models; see [Differentiability](#differentiability))
 - Same config format and `.vul` output: VULCAN's `plot_py/` scripts work unmodified
 - Vectorizable: tested `vmap` support for batched parameter sweeps
 - GPU-ready architecture (not yet benchmarked)
@@ -290,8 +290,10 @@ JAX-only config additions (all have sensible defaults):
 | `conv_stall_window` | `200` | Stall-detector window for convergence |
 | `conver_ignore` | `[heavy hydrocarbons]` | Species excluded from convergence test |
 | `rtol_min` / `rtol_max` | `0.0` / `1.0` | Bounds for adaptive rtol |
+| `loss_criteria` | `5e-4` | Max-column atom-loss gate for the adaptive-rtol controller |
 | `step_size_safety` | `0.9` | Ros2 step-size safety factor |
 | `fastchem_newton_tol` | `1e-12` | Newton solver tolerance for `ini_mix='EQ'` |
+| `wall_clock_max` | `None` | Wall-clock budget (s); a positive value forces the chunked runner and bails between chunks (`end_case=4`) |
 
 See the example configs and `vulcan_cfg.py` for the full list of supported knobs.
 
@@ -476,6 +478,7 @@ def loss(y):                       # log10 SO2 VMR at its peak layer L
 dL_dlnk = steady_state_reaction_sensitivity(   # (nr+1,)
     loss, y_star, k_arr, atm, net,
     compo_array=composition.compo_array[:ni], dz=dz,
+    integ=integ, converged_state=final_state,  # enables default dJ/dy on photo-on runs
 )
 ```
 
@@ -489,15 +492,32 @@ attempts that took the adjoint of the bare residual `df/dy` directly all failed 
 on a closed column it is both singular (mass conservation) and severely
 ill-conditioned (stiff chemistry) — which is why the solver-map route exists.
 
-**Limitations — this is a reaction-*ranking* tool, not a precision-gradient tool:**
+**Accuracy — percent-level by default; a legacy raw-step map is the only ~few-% case.**
 
-- **Accuracy ~few % vs finite differences, and it is a definition mismatch, not
-  solver error.** The adjoint differentiates the exact fixed point `f(y*)=0`, but
-  the run stops on a convergence *criterion* (`longdy < yconv_cri`) with the
-  slowest chemical mode still unrelaxed. FD and forward-mode differentiate that
-  criterion state (forward-mode can — `jvp` rides through the loop), so they
-  disagree with this adjoint by ~few % (more on slow-mode reactions, ~2% on fast
-  ones). More LGMRES iterations do not close it.
+- **Default `solver_map="renorm"`: percent level.** HD189 CH4 **~0.7%** vs
+  finite differences (`y*` is a ~1e-9 fixed point of the renormalized map the
+  loop actually iterates); HD209 forward rows 35% → 1%. A 2026-07-03 campaign
+  (HD189/HD209/WASP-39b, checked against re-converged FD *and* forward-mode
+  `jvp`, which agree to 0.02%) established that the residual error is a
+  **linearized-map** effect, not the "convergence-criterion mismatch" once
+  documented here: FD is invariant across `yconv` 1e-2..1e-4, and stricter
+  convergence, a `body_dt` scan, and a bigger LGMRES budget do not move it.
+- **On photochemistry-on columns, the default `photo_recompute_k="auto"` reaches
+  percent level** when given the finished runner context
+  (`runner_photo_static=integ._photo_static, converged_state=final`, or
+  `integ=integ, converged_state=final`). It rebuilds `J(y)` through the runner's
+  two-stream RT each application so the operator carries `dJ/dy`, removing the
+  frozen-photolysis error that otherwise leaves those rows leading-order (~11%).
+  With the default renorm map, **WASP-39b SO2 dominant rows reach r1 0.2% /
+  r691 0.1%** vs re-converged FD — the paper's science case at percent level. It
+  costs an RT solve per Krylov matvec. Pass `photo_recompute_k=None` only to
+  reproduce the legacy frozen-photolysis result.
+- **Legacy `solver_map="bare"`** linearizes the raw Ros2 step (`y*` only a ~1e-4
+  fixed point) and lands at ~few % (HD189 CH4 ~6.6%, WASP-39b OH+H2 ~11%); kept
+  only to reproduce the pre-2026-07 behavior.
+- **Genuinely hard residue:** HD209 CH2OH near-equilibrium *reverse* rows stay
+  ill-conditioned (LGMRES resid ~0.1 even with renorm) and are flagged by the
+  default-on diagnostics — treat as ranking there; forward-mode is exact.
 - **The solver regime is set by `body_dt`** (an adjoint-only probe-step knob —
   the forward model is untouched). The default `body_dt=1e7` sits in the
   measured low-residual regime (HD189: resid 0.04–0.15, twins land 0.3–6% from
@@ -525,11 +545,49 @@ ill-conditioned (stiff chemistry) — which is why the solver-map route exists.
   catches internal inconsistency that residuals miss). Mid-column
   composition losses (the design use case) are safe because their cotangent
   is orthogonal to the unstable subspace.
-- **Photolysis is frozen** on photochemistry-on columns (`dJ/dy` omitted) →
-  leading-order sensitivities only.
-- **`k`-only.** Returns `dL/d ln k`; for `dL/dKzz`, `dL/dT`, etc. use forward-mode.
-- **Needs a genuine fixed point** (`y_star` tight under the bare body map) and a
-  `body_dt` in the safe regime (the danger zone is guarded).
+- **Photolysis feedback is the default** on photochemistry-on columns when the
+  finished runner context is supplied; without that context the default raises
+  instead of silently returning the leading-order frozen-photolysis result.
+- **Physical-input gradients via the same solve:**
+  `steady_state_input_sensitivity(loss, y_star, k_arr, atm, net, p0, rebuild, ...)`
+  returns `dL/dp` for an arbitrary input pytree — e.g. a full (nz,)
+  temperature profile in ONE adjoint solve plus one VJP — given a
+  differentiable `rebuild(p) -> (k(p), atm(p))` (`rates_jax` + `_replace`;
+  non-thermal rows spliced frozen). The rebuild is consistency-checked at
+  `p0` (warn/refuse on mismatch), the renorm is differentiated through
+  `atm(p).M` (temperature moves the rebalance), and the chemistry path
+  `∂L/∂y*·dy*/dp` is returned — a spectrum loss's direct `∂L/∂p` term (T in
+  the RT) is added separately by the caller. Forward-mode `jvp` stays the
+  exact route for a handful of directions.
+- **Needs a genuine fixed point** (`y_star` tight under the *chosen* body map —
+  tight for `"renorm"`, ~1e-4 for `"bare"`) and a `body_dt` in the safe regime
+  (the danger zone is guarded).
+- **The body map contains `ros2_step (+ renorm) (+ photo) (+ body_terms)`.**
+  The optional `body_terms` (build with
+  `make_body_terms(integ, converged_state, atm_static)` — it also returns the
+  correctly spliced `atm`, including a live `vm` for `use_vm_mol`) carries the
+  per-step processes a non-default config turns on: the in-window
+  **condensation** composite (conden/evap k-rows recomputed from `y` — the
+  dk/dy feedback analogous to photolysis dJ/dy — plus the H2O/NH3 relax
+  kernels and the gas-only partial rebalance), the **fix_species** pins
+  (species clamped inside the Ros2 step), and the **layer-0 boundary pins**
+  (`use_fix_all_bot` / `use_fix_sp_bot` / tripped hycean H2-He). Everything
+  else — clip (identity a.e.), ion charge balance (unsupported, raises), the
+  escape-flux recompute and the composition→μ atm-refresh feedback (frozen,
+  second-order) — stays outside the linearization. **A fingerprint guard
+  raises instead of returning a silently wrong gradient**: a state converged
+  with condensation active (nonzero conden rows or populated `*_l_s`
+  condensates) is refused without matching terms, active ion rows are always
+  refused, and frozen photolysis warns.
+  **Run `audit_adjoint_scope(y_star, k_arr, atm, net, cfg=..., final_state=...,
+  loss_fn=..., body_terms=...)` before trusting the gradient on any
+  non-default config:** it classifies every dropped process for that config
+  (error/warning/info), verifies the converged geometry was spliced into
+  `atm`, and measures the **per-cell** fixed-point defect `|G(y*)−y*|/y*` of
+  the exact map the solver uses — which catches unmodeled active processes
+  that the global `fp_err` max-norm structurally masks (a pinned bottom trace
+  row can be 100% off while `fp_err` reads 1e-9), plus the defect inside the
+  loss's own footprint.
 
 **Forward-mode (above) is the higher-accuracy route** for end-to-end gradients and
 the right tool when the number of input directions is small; reverse-mode is the

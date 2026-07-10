@@ -37,14 +37,14 @@ para)` view if the corresponding cfg flags are set.
 `while not stop()` loop.
 
 ### `vulcan_cfg.py`
-The config the runtime reads. The canonical committed default is a
-thin wrapper:
-```python
-from cfg_examples.vulcan_cfg_HD189 import *
-```
-plus a small override block for plotting / output. Replace the import to
-switch presets (`vulcan_cfg_HD209`, `vulcan_cfg_Earth`, `vulcan_cfg_W39b`),
-or copy a preset over the file outright.
+The config the runtime reads. The canonical committed default is the
+**full HD189 config inline** — every knob (paths, elemental abundance,
+photochemistry, atmosphere, boundary conditions, condensation, steady-state
+check, Ros2 solver, output) is declared directly in this file, mirroring
+VULCAN-master's `vulcan_cfg.py` format. `atom_list` and `network` read
+`$VULCAN_JAX_ATOM_LIST` / `$VULCAN_JAX_NETWORK` at import (import-frozen).
+To switch presets, copy a `cfg_examples/` file (`vulcan_cfg_HD209`,
+`vulcan_cfg_Earth`, `vulcan_cfg_W39b`) over this file outright.
 
 ### `phy_const.py`
 Physical constants in CGS, sourced from astropy. Module-level only — no
@@ -166,10 +166,10 @@ through a small `_MODE_DISPATCH` table.
 - `_abun_lowT_residual(x, O_H, C_H, He_H, N_H)` — 5-mol residual for the cold-start system (`ini_mix='const_lowT'`).
 - `_jax_newton(residual_fn, m0, args, max_iter, tol)` — small dense Newton solver via `lax.while_loop`. Defaults come from `cfg.fastchem_newton_*`.
 - `compute_atom_ini(y, compo_arr=compo_array)` — per-element column sum of initial abundances.
-- `_run_fastchem(data_atm)` — run the FastChem binary under the cross-process flock.
-- `_run_fastchem_locked(data_atm)` — inner FastChem driver (caller holds the lock).
+- `_ensure_fastchem_binary()` — compile the FastChem binary from vendored C++ source (`make` in `fastchem_vulcan/`) if it is missing or not executable; called from inside `_run_fastchem_locked`.
+- `_run_fastchem_locked(data_atm)` — inner FastChem driver (writes the element/TP inputs, ensures the binary, invokes the subprocess); the caller holds the lock.
 - `_build_charge_list_if_ion(charge_list)` — populate the ion species charge list from `cfg.atom_list`.
-- `_load_eq_y(data_atm)` — FastChem `'EQ'` path.
+- `_load_eq_y(data_atm)` — FastChem `'EQ'` path. Acquires the cross-process `fcntl.flock` and holds it across the whole invoke + read + cleanup span (`_run_fastchem_locked` + `genfromtxt` parse + output unlink), so a concurrent worker can't clobber the output mid-read. (The old thin `_run_fastchem` wrapper was removed; the flock now lives here.)
 - `_load_vulcan_ini_y(data_atm)` — read previous `.vul` output.
 - `_load_table_y(data_atm)` — read a tab-delimited mixing-ratio table (see `tools/make_mix_table.py`).
 - `_load_const_mix_y(data_atm)` — apply `cfg.const_mix` per layer.
@@ -186,7 +186,6 @@ NASA-9 polynomial Gibbs energy + reverse-rate computation.
 - `gibbs_sp_vector(coeffs, T)` — per-species `g/(RT)` at the layer T grid.
 - `K_eq_array(net, gibbs_sp, T)` — reaction equilibrium constants.
 - `fill_reverse_k(net, k, K_eq, remove_list=None)` — write reverse rates into `k` slots `i+1`.
-- `compute_all_k(net, T, M, nasa9_coeffs, remove_list=None)` — full forward + reverse rate assembly.
 
 ### `rates.py`
 Forward rate-constant evaluation (modified Arrhenius, Lindemann falloff,
@@ -194,7 +193,6 @@ Forward rate-constant evaluation (modified Arrhenius, Lindemann falloff,
 - `_arrhenius(a, n, E, T)` — modified Arrhenius.
 - `_troe_OH_CH3(T, M)` — hardcoded Troe form for `OH+CH3+M` (Jasper 2017).
 - `compute_forward_k(net, T, M)` — full forward-rate assembly.
-- `k_dict_from_array(net, k_arr)` / `k_array_from_dict(net, k_dict, nz)` — convert between dict and array forms.
 - `apply_lowT_caps(net, k, T, M)` — Moses+2005 low-T rate caps for the three reactions VULCAN-master caps explicitly. Caller gates on `cfg.use_lowT_limit_rates`.
 - `apply_remove_list(net, k, remove_list)` — zero rows listed in `remove_list`. **No auto-pairing** — passing a lone forward leaves its reverse intact (matches master's semantics).
 - `build_rate_array(cfg, net, atm, nasa9_coeffs)` — end-to-end pre-loop rate assembly: `compute_forward_k → apply_lowT_caps → fill_reverse_k → apply_remove_list`.
@@ -329,7 +327,7 @@ master), and `vmap` over layers is the default.
 - `_build_diff_coeffs_jax(y, atm, grav)` — eddy + molecular diffusion coefficient assembly (sup / sub / diag blocks).
 - `_apply_diffusion_jax(y, A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, atm)` — solve the block-tridiagonal diffusion system via `solver.block_thomas_diag_offdiag`.
 - `jax_ros2_step(y, k_arr, dt, atm, net, fix_mask=None)` — one Rosenbrock-2 step. Returns `(sol, delta_arr)` where `delta_arr` is the truncation-error proxy `(sol - yk2)`.
-- `make_atm_static(atm, ni, nz)` — build an `AtmStatic` from a legacy `data_atm` container.
+- `make_atm_static(atm, ni, nz, cfg=vulcan_cfg)` — build an `AtmStatic` from a legacy `data_atm` container. Takes `cfg` (defaulting to the global `vulcan_cfg` module) so `make_config()` overrides reach the integration-time atm build, per the make_config wiring.
 
 ### `outer_loop.py`
 Single-JIT outer integration loop. Runs the full integration inside one
@@ -483,11 +481,19 @@ state: `dL/d(ln k_r)` for all reactions in one solver-map adjoint solve.
 `vjp` directly, so reverse-mode goes through the steady-state adjoint of
 the body map `G` (`(I - dG/dy)^T z = v` at the converged fixed point),
 in log-abundance coordinates, with the conserved-mass null space deflated,
-solved by host-side scipy LGMRES. Matches finite differences to ~few %
-(a steady-state-definition ceiling); forward-mode is the higher-accuracy
-route. See the module docstring + `docs/notes.md` for why it works and the
-residual-IFT attempts that failed.
-- `steady_state_reaction_sensitivity(loss_fn, y_star, k_arr, atm, net, *, compo_array, dz, ...)` — the public entry point; returns `dL/d(ln k_r)` `(nr+1,)` (and an info dict with `return_info=True`).
+solved by host-side scipy LGMRES. **Accuracy is percent-level by default**
+(2026-07-03/04): the default `solver_map="renorm"` linearizes the
+hydrostatic-renormalized map the loop actually iterates, reaching HD189 CH4
+~0.7% vs re-converged FD; on photochemistry-on columns the default
+`photo_recompute_k="auto"` uses the finished runner context to carry `dJ/dy`,
+taking WASP-39b SO2 dominant rows to ~0.1–0.2%. The earlier "~few %" was a
+**linearized-map** effect (the old `solver_map="bare"` route), NOT the
+steady-state-definition ceiling once documented here; `"bare"` is retained
+only to reproduce the pre-2026-07 raw-step behavior. Forward-mode is the
+exact route for any single ill-conditioned row. See the module docstring +
+`docs/notes.md` for why it works and the residual-IFT attempts that failed.
+- `steady_state_reaction_sensitivity(loss_fn, y_star, k_arr, atm, net, *, compo_array, dz, solver_map="renorm", photo_recompute_k="auto", runner_photo_static=None, converged_state=None, integ=None, ...)` — the public entry point; returns `dL/d(ln k_r)` `(nr+1,)` (and an info dict with `return_info=True`).
+- `make_photo_recompute_k(runner_photo_static, converged_state)` — build the `photo_recompute_k` callable (reuses the runner's two-stream RT photo branch) so photo-coupled rows carry `dJ/dy`; needs `integ._photo_static`, not the public `PhotoStaticInputs`.
 - `_safe_inv_y(y_star)` — `1/y*` with exact zeros masked to 0 (the closed-column log-scaling NaN guard).
 - `_conserved_null_basis(y_star, compo_array, dz)` — orthonormal QR basis of the log-space conserved-mass null vectors `c_e = compo[:,e]*dz*y*` to deflate.
 - `_lgmres_solve(matvec, bvec, ...)` — host scipy LGMRES with chunked warm-start cycles.
@@ -561,9 +567,9 @@ on the host and never enter a JIT'd region.
 ## Subdirectories
 
 ### `cfg_examples/`
-Reference configs. Copy one to `vulcan_cfg.py` at the repository root and
-run `vulcan-jax`, or import via `from cfg_examples.vulcan_cfg_HD189
-import *` from a thin wrapper.
+Reference configs. Copy one over `src/vulcan_jax/vulcan_cfg.py` and run
+`vulcan-jax`. (The shipped `vulcan_cfg.py` is the full HD189 config inline,
+not a wrapper around these — see its entry above.)
 
 - `vulcan_cfg_HD189.py` — HD 189733b reference. Matches `VULCAN-master/cfg_examples/vulcan_cfg_HD189.py` for cross-version smoke tests. **Canonical parity target.**
 - `vulcan_cfg_HD209.py` — HD 209458b (no S species, weaker gravity).
@@ -653,9 +659,14 @@ composition table, NASA-9 polynomial coefficients
 under `thermo/photo_cross/`.
 
 ### `fastchem_vulcan/`
-Vendored FastChem binary plus its runtime payload (`input/`, `output/`).
-Concurrent invocations are serialised via `fcntl.flock` inside
-`ini_abun._run_fastchem` so `pytest -n auto` is safe.
+Vendored FastChem **C++ source** (`makefile`, `*.cpp`/`*.h`) plus its I/O
+runtime payload (`input/`, `output/`). The FastChem *binary* is **not**
+vendored — `ini_abun._ensure_fastchem_binary()` compiles it from source
+(`make`, creating `obj/`) on the first `ini_mix='EQ'` use and reuses it
+thereafter (pyproject ships the source and excludes the built `fastchem`
+binary + `obj/`). Concurrent invocations (including the first-use build) are
+serialised via `fcntl.flock` inside `ini_abun._load_eq_y` (around
+`_run_fastchem_locked`) so `pytest -n auto` is safe.
 
 ### `output/`, `plot/`
 Created at run time by the driver and live-UI. Both are safe to delete

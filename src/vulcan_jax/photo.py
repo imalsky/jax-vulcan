@@ -100,7 +100,7 @@ def compute_tau_jax(y: jnp.ndarray, dz: jnp.ndarray, photo: PhotoData) -> jnp.nd
         tau:     (nz+1, nbin) staggered. tau[nz] = 0 (top boundary), tau[0]
                               is the total column.
     """
-    nz, ni = y.shape
+    nz = y.shape[0]
     nbin = photo.absp_cross.shape[1]
 
     if photo.absp_idx.shape[0] > 0:
@@ -212,8 +212,6 @@ def compute_flux_jax(
             ll * (1.0 / edd - 1.0 / (mu_ang * (1.0 - w0 * ag0)))
             - w0 * ag0 * mu_ang / (1.0 - w0 * ag0)
         )
-
-    ll = jnp.clip(ll, -1e10, 1e10)
 
     chi = zeta_m**2 * tran**2 - zeta_p**2
     chi = jnp.where(chi > -_UNDERFLOW_DENOM, -_UNDERFLOW_DENOM, chi)

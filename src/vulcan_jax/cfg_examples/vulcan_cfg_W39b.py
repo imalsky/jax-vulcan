@@ -215,6 +215,8 @@ post_conden_rtol = 0.1
 use_adapt_rtol = False
 rtol_min = 0.0
 rtol_max = 1.0
+# Adaptive-rtol loss gate (raise rtol while max column atom-loss < this).
+loss_criteria = 5e-4
 adapt_rtol_dec_period = 10
 adapt_rtol_inc_period = 1000
 adapt_rtol_dec = 0.75

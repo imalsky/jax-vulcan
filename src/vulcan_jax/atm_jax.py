@@ -136,7 +136,7 @@ def _mu_dz_g(phys: PhysicalInputs, spec: AtmSpec):
     pico = compute_pico(phys.pco)
     mu = compute_mean_mass(phys.ymix, spec.ms)
 
-    gz_up, Hp_up, dz_up, z_after_up = _scan_up_mu_dz_g(
+    gz_up, Hp_up, dz_up, _z_after_up = _scan_up_mu_dz_g(
         pref, phys.gs, phys.Rp, phys.Tco, mu, pico, nz
     )
     gz = jnp.zeros(nz, dtype=jnp.float64).at[pref:nz].set(gz_up)

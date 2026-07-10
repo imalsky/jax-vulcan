@@ -12,6 +12,10 @@ from .phy_const import kb
 _P0 = 1.0e6
 CORR = kb / _P0
 
+# NASA-9 polynomials are fit in two temperature segments; the low-T coefficient
+# set applies below this breakpoint and the high-T set above it (NASA/TP-2002-211556).
+_NASA9_BRANCH_T = 1000.0
+
 
 def load_nasa9(
     species: tuple[str, ...], thermo_dir: str | Path
@@ -74,7 +78,7 @@ def gibbs_sp_vector(coeffs: np.ndarray, T: np.ndarray) -> np.ndarray:
     g_low = _g_branch(T_2d, a_low_2d)
     g_high = _g_branch(T_2d, a_high_2d)
 
-    mask_low = (T < 1000.0)[None, :]
+    mask_low = (T < _NASA9_BRANCH_T)[None, :]
     return np.where(mask_low, g_low, g_high)
 
 
@@ -156,19 +160,3 @@ def fill_reverse_k(
         k[i] = 0.0
 
     return k
-
-
-def compute_all_k(
-    net: Network,
-    T: np.ndarray,
-    M: np.ndarray,
-    nasa9_coeffs: np.ndarray,
-    remove_list: list[int] | None = None,
-) -> np.ndarray:
-    """Forward rates from rate constants + reverse fill from NASA-9 Gibbs."""
-    from .rates import compute_forward_k
-
-    k_fwd = compute_forward_k(net, T, M)
-    g_sp = gibbs_sp_vector(nasa9_coeffs, T)
-    K_eq = K_eq_array(net, g_sp, T)
-    return fill_reverse_k(net, k_fwd, K_eq, remove_list=remove_list)

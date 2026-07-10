@@ -1,5 +1,7 @@
-Reference configurations for VULCAN-JAX. Copy one to ``vulcan_cfg.py`` at
-the repository root and run ``python vulcan_jax.py``.
+Reference configurations for VULCAN-JAX. Copy one over
+``src/vulcan_jax/vulcan_cfg.py`` (the installed package's config) and run
+``vulcan-jax`` (equivalently ``python -m vulcan_jax.vulcan_jax_cli``). In a
+library context, pass overrides via ``vulcan_jax.make_config(...)`` instead.
 
 - vulcan_cfg_HD189.py  — HD 189733b hot-Jupiter reference case. Matches
                          the same-named config in ../VULCAN-master/ and is

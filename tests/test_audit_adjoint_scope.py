@@ -1,0 +1,283 @@
+"""Fast always-on units for the adjoint scope machinery: the static findings
+half of `audit_adjoint_scope`, the `_guard_unmodeled_processes` fingerprints,
+and the `BodyTerms` plumbing. The scan/guard exist because the adjoint's body
+map deliberately contains only `ros2_step (+ renorm) (+ photo) (+ body_terms)`;
+these tests pin the classification of every dropped runner process (error =
+active and physically wrong, warning = leading-order-only, info =
+second-order) so a future body-map change that starts covering one of them
+must update the scan in the same pass. The empirical per-cell defect half
+needs a converged column and is exercised by the gated slow adjoint
+regression path plus the conden/T validation scripts.
+"""
+
+from types import SimpleNamespace
+
+import numpy as np
+import jax.numpy as jnp
+import pytest
+
+from vulcan_jax.steady_state_grad import (
+    BodyTerms,
+    PHOTO_RECOMPUTE_AUTO,
+    _adjoint_scope_findings,
+    _guard_unmodeled_processes,
+    _make_body_map,
+    _resolve_photo_recompute_k,
+)
+
+
+def _cfg(**overrides):
+    base = dict(
+        use_photo=False,
+        use_ion=False,
+        use_condense=False,
+        use_topflux=False,
+        use_botflux=False,
+        use_fix_sp_bot={},
+        use_fix_all_bot=False,
+        use_fix_H2He=False,
+        use_vm_mol=False,
+        diff_esc=[],
+        fix_species=[],
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _codes(findings, severity=None):
+    return {
+        f["code"] for f in findings if severity is None or f["severity"] == severity
+    }
+
+
+def test_default_photo_off_column_has_no_errors():
+    findings = _adjoint_scope_findings(_cfg())
+    assert _codes(findings, "error") == set()
+    # The atm-refresh feedback truncation is unconditional (always on in the
+    # runner, never in the body map) and must always be reported.
+    assert "atm_refresh_feedback" in _codes(findings, "info")
+
+
+def test_photo_without_recompute_warns_and_with_recompute_downgrades():
+    frozen = _adjoint_scope_findings(_cfg(use_photo=True))
+    assert "photolysis_feedback" in _codes(frozen, "warning")
+
+    fed = _adjoint_scope_findings(_cfg(use_photo=True), photo_recompute_k=lambda y: y)
+    assert "photolysis_feedback" not in _codes(fed)
+    assert "photo_dflux_recursion" in _codes(fed, "info")
+
+
+def test_ion_column_is_an_error():
+    findings = _adjoint_scope_findings(_cfg(use_ion=True))
+    assert "ion_charge_balance" in _codes(findings, "error")
+
+
+def test_condensation_is_an_error_and_state_refines_fix_species():
+    plain = _adjoint_scope_findings(_cfg(use_condense=True))
+    assert "condensation" in _codes(plain, "error")
+
+    # Without a final state but with fix_species configured, the pin is
+    # flagged conservatively.
+    configured = _adjoint_scope_findings(_cfg(use_condense=True, fix_species=["H2O"]))
+    assert "fix_species_pins" in _codes(configured, "error")
+
+    # A converged state with the pin tripped flags it as active...
+    tripped = _adjoint_scope_findings(
+        _cfg(use_condense=True, fix_species=["H2O"]),
+        final_state=SimpleNamespace(fix_species_started=np.bool_(True)),
+    )
+    assert "fix_species_pins" in _codes(tripped, "error")
+
+    # ...and one with the pin not yet tripped drops the pin finding while
+    # keeping the condensation error itself.
+    untripped = _adjoint_scope_findings(
+        _cfg(use_condense=True, fix_species=["H2O"]),
+        final_state=SimpleNamespace(fix_species_started=np.bool_(False)),
+    )
+    assert "fix_species_pins" not in _codes(untripped)
+    assert "condensation" in _codes(untripped, "error")
+
+
+def test_bottom_pins_error_and_open_boundary_info():
+    for cfg in (
+        _cfg(use_fix_all_bot=True),
+        _cfg(use_fix_sp_bot={"H2O": 1e-3}),
+    ):
+        findings = _adjoint_scope_findings(cfg)
+        assert "bottom_boundary_pins" in _codes(findings, "error")
+        assert "open_boundary_deflation" in _codes(findings, "info")
+
+
+def test_hycean_pin_severity_tracks_trip_state():
+    armed = _adjoint_scope_findings(_cfg(use_fix_H2He=True))
+    assert "hycean_h2he_pin" in _codes(armed, "error")
+
+    pre_trip = _adjoint_scope_findings(
+        _cfg(use_fix_H2He=True),
+        final_state=SimpleNamespace(h2he_pinned=np.bool_(False)),
+    )
+    assert "hycean_h2he_pin" in _codes(pre_trip, "warning")
+    assert "hycean_h2he_pin" not in _codes(pre_trip, "error")
+
+
+def test_escape_vm_mol_and_boundary_flux_classification():
+    findings = _adjoint_scope_findings(
+        _cfg(diff_esc=["H"], use_vm_mol=True, use_topflux=True)
+    )
+    assert "escape_flux_feedback" in _codes(findings, "warning")
+    assert "vm_mol_feedback" in _codes(findings, "warning")
+    assert "open_boundary_deflation" in _codes(findings, "info")
+    assert _codes(findings, "error") == set()
+
+
+# --- body_terms downgrades the findings the terms actually cover ---
+
+
+def test_body_terms_downgrade_conden_and_pins():
+    conden_terms = BodyTerms(conden_static=object(), hydro_partial=True)
+    f = _adjoint_scope_findings(_cfg(use_condense=True), body_terms=conden_terms)
+    assert "condensation" in _codes(f, "info")
+    assert "condensation" not in _codes(f, "error")
+
+    pin_terms = BodyTerms(bot_idx=jnp.asarray([0], dtype=jnp.int32))
+    f = _adjoint_scope_findings(_cfg(use_fix_all_bot=True), body_terms=pin_terms)
+    assert "bottom_boundary_pins" in _codes(f, "info")
+    assert "bottom_boundary_pins" not in _codes(f, "error")
+
+    fix_terms = BodyTerms(fix_mask=object(), fix_y=object())
+    f = _adjoint_scope_findings(
+        _cfg(use_condense=True, fix_species=["H2O"]),
+        final_state=SimpleNamespace(fix_species_started=np.bool_(True)),
+        body_terms=fix_terms,
+    )
+    assert "fix_species_pins" not in _codes(f)
+    assert "condensation" in _codes(f, "info")
+
+
+# --- fingerprint guard: raise/warn instead of silently-wrong gradients ---
+
+
+def _fake_network(nr, ion_rows=(), conden_rows=(), photo_rows=()):
+    def mask(rows):
+        m = np.zeros(nr + 1, dtype=bool)
+        for r in rows:
+            m[r] = True
+        return m
+
+    return SimpleNamespace(
+        nr=nr,
+        is_ion=mask(ion_rows),
+        is_conden=mask(conden_rows),
+        is_photo=mask(photo_rows),
+    )
+
+
+def test_guard_raises_on_active_conden_rows_without_terms():
+    nz, ni, nr = 3, 4, 6
+    y = np.ones((nz, ni))
+    k = np.zeros((nr + 1, nz))
+    k[5] = 1.0  # active conden row
+    net = SimpleNamespace(nr=nr)
+    fake = _fake_network(nr, conden_rows=(5,))
+    with pytest.raises(ValueError, match="condensation active"):
+        _guard_unmodeled_processes(y, k, net, None, None, network=fake, species=[])
+    # conden terms (or fix_species pins) clear it
+    _guard_unmodeled_processes(
+        y, k, net, BodyTerms(conden_static=object()), None, network=fake, species=[]
+    )
+    _guard_unmodeled_processes(
+        y, k, net, BodyTerms(fix_mask=object()), None, network=fake, species=[]
+    )
+
+
+def test_guard_raises_on_populated_condensate_species():
+    nz, ni, nr = 3, 3, 2
+    y = np.zeros((nz, ni))
+    y[:, :2] = 1.0
+    k = np.zeros((nr + 1, nz))
+    net = SimpleNamespace(nr=nr)
+    fake = _fake_network(nr)
+    species = ["H2", "H2O", "H2O_l_s"]
+    # dry condensate column: fine
+    _guard_unmodeled_processes(y, k, net, None, None, network=fake, species=species)
+    y[10 % nz, 2] = 1e3  # populated condensate -> conden was active
+    with pytest.raises(ValueError, match="condensation active"):
+        _guard_unmodeled_processes(y, k, net, None, None, network=fake, species=species)
+
+
+def test_guard_raises_on_active_ion_rows():
+    nz, ni, nr = 2, 3, 4
+    y = np.ones((nz, ni))
+    k = np.zeros((nr + 1, nz))
+    k[2] = 1.0
+    net = SimpleNamespace(nr=nr)
+    fake = _fake_network(nr, ion_rows=(2,))
+    with pytest.raises(NotImplementedError, match="ion"):
+        _guard_unmodeled_processes(y, k, net, None, None, network=fake, species=[])
+
+
+def test_guard_warns_on_frozen_photolysis():
+    nz, ni, nr = 2, 3, 4
+    y = np.ones((nz, ni))
+    k = np.zeros((nr + 1, nz))
+    k[1] = 1.0
+    net = SimpleNamespace(nr=nr)
+    fake = _fake_network(nr, photo_rows=(1,))
+    with pytest.warns(UserWarning, match="photolysis"):
+        _guard_unmodeled_processes(y, k, net, None, None, network=fake, species=[])
+    # passing photo_recompute_k silences it
+    _guard_unmodeled_processes(y, k, net, None, lambda yy: yy, network=fake, species=[])
+
+
+def test_auto_photo_recompute_requires_context_on_default_map():
+    nz, ni, nr = 2, 3, 4
+    k = np.zeros((nr + 1, nz))
+    k[1] = 1.0
+    net = SimpleNamespace(nr=nr)
+    fake = _fake_network(nr, photo_rows=(1,))
+
+    with pytest.raises(ValueError, match="photo_recompute_k='auto'"):
+        _resolve_photo_recompute_k(
+            PHOTO_RECOMPUTE_AUTO,
+            k,
+            net,
+            "renorm",
+            network=fake,
+        )
+
+    assert (
+        _resolve_photo_recompute_k(
+            PHOTO_RECOMPUTE_AUTO,
+            k,
+            net,
+            "bare",
+            network=fake,
+        )
+        is None
+    )
+    assert _resolve_photo_recompute_k(None, k, net, "renorm", network=fake) is None
+
+
+def test_auto_photo_recompute_is_noop_without_active_photo_rows():
+    nz, nr = 2, 4
+    k = np.zeros((nr + 1, nz))
+    net = SimpleNamespace(nr=nr)
+    fake = _fake_network(nr, photo_rows=(1,))
+
+    assert (
+        _resolve_photo_recompute_k(
+            PHOTO_RECOMPUTE_AUTO,
+            k,
+            net,
+            "renorm",
+            network=fake,
+        )
+        is None
+    )
+
+
+def test_body_terms_require_renorm_map():
+    terms = BodyTerms(gas_mask=jnp.ones(3, dtype=bool))
+    atm = SimpleNamespace(M=jnp.ones(2))
+    with pytest.raises(ValueError, match="renorm"):
+        _make_body_map(None, None, atm, None, 1e7, "bare", None, terms)

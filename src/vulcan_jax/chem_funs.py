@@ -185,12 +185,19 @@ def s_R(T, a):
     )
 
 
+# NASA-9 low/high-T polynomial breakpoint and validity window
+# (NASA/TP-2002-211556); same breakpoint as gibbs._NASA9_BRANCH_T.
+_NASA9_BRANCH_T = 1000.0
+_NASA9_T_MIN = 200.0
+_NASA9_T_MAX = 6000.0
+
+
 def g_RT(T, a_low, a_high):
-    """g(T) / (RT) = h/RT - s/R, with low-T branch for T<1000 and high-T branch for T>=1000."""
+    """g(T)/(RT) = h/RT - s/R, low-T branch below _NASA9_BRANCH_T, high-T above."""
     T = np.asarray(T, dtype=np.float64)
-    return (T < 1000.0) * (h_RT(T, a_low) - s_R(T, a_low)) + (T >= 1000.0) * (
-        h_RT(T, a_high) - s_R(T, a_high)
-    )
+    return (T < _NASA9_BRANCH_T) * (h_RT(T, a_low) - s_R(T, a_low)) + (
+        T >= _NASA9_BRANCH_T
+    ) * (h_RT(T, a_high) - s_R(T, a_high))
 
 
 def gibbs_sp(name, T):
@@ -216,12 +223,12 @@ def cp_R(T, a):
 def cp_R_sp(name, T):
     """Per-species cp/R."""
     T = np.asarray(T, dtype=np.float64)
-    if np.any(np.logical_or(T < 200.0, T > 6000.0)):
+    if np.any(np.logical_or(T < _NASA9_T_MIN, T > _NASA9_T_MAX)):
         print("T exceeds the valid range.")
     j = spec_list.index(name)
-    return (T < 1000.0) * cp_R(T, _NASA9_COEFFS[j, 0]) + (T >= 1000.0) * cp_R(
-        T, _NASA9_COEFFS[j, 1]
-    )
+    return (T < _NASA9_BRANCH_T) * cp_R(T, _NASA9_COEFFS[j, 0]) + (
+        T >= _NASA9_BRANCH_T
+    ) * cp_R(T, _NASA9_COEFFS[j, 1])
 
 
 # Cache K_eq arrays by T identity. `Gibbs(i, T)` is typically called in a loop

@@ -205,6 +205,10 @@ post_conden_rtol = 0.1  # switched to this value after fix_species_time
 use_adapt_rtol = False
 rtol_min = 0.0
 rtol_max = 1.0
+# Adaptive-rtol loss gate: the controller raises rtol only while the max column
+# atom-loss sits below loss_criteria, and tightens loss_criteria by
+# adapt_rtol_loss_mul when the loss stays high (outer_loop adaptive-rtol block).
+loss_criteria = 5e-4
 adapt_rtol_dec_period = 10
 adapt_rtol_inc_period = 1000
 adapt_rtol_dec = 0.75
@@ -241,6 +245,10 @@ fastchem_newton_max_iter = 50
 use_fix_all_bot = False
 use_fix_H2He = False
 use_chunked_runner = False
+# Wall-clock budget (seconds) for one run. None/<=0 disables it; a positive
+# value forces the chunked runner and bails between chunks once exceeded
+# (reported as end_case=4, "runtime budget exceeded"). Off by default.
+wall_clock_max = None
 
 # ====== Setting up for output and plotting ======
 # plotting:

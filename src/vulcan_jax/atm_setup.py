@@ -584,9 +584,11 @@ def _alpha_array_for_base(
 ) -> np.ndarray:
     """Thermal-diffusion factor per species, atm_base-dependent. Returns (ni,).
 
-    Defaults to zero. For an H2 base, H gets -0.1, He gets 0.145, and every
-    other species heavier than 4 amu gets 0.25. For an N2/O2/CO2 base, H/H2/He
-    get -0.25 and Ar gets 0.17. Any other atm_base raises IOError.
+    Defaults to zero. For an H2 base, H gets -0.1 and every species heavier than
+    4 amu gets 0.25; the He=0.145 line below is then overwritten to 0.25 because
+    He is 4.0026 amu > 4 — this faithfully reproduces VULCAN-master
+    (build_atm.py:690-693), so the effective He factor is 0.25, not 0.145. For an
+    N2/O2/CO2 base, H/H2/He get -0.25 and Ar gets 0.17. Other atm_base raises.
     """
     ni = len(species_list)
     alpha = np.zeros(ni, dtype=np.float64)

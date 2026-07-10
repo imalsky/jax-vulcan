@@ -122,23 +122,6 @@ def compute_forward_k(net: Network, T: np.ndarray, M: np.ndarray) -> np.ndarray:
     return k
 
 
-def k_dict_from_array(net: Network, k_arr: np.ndarray) -> dict:
-    """Convert (nr+1, nz) into a `{i: array(nz)}` dict; skips index 0."""
-    out: dict = {}
-    for i in range(1, net.nr + 1):
-        out[i] = np.asarray(k_arr[i]).copy()
-    return out
-
-
-def k_array_from_dict(net: Network, k_dict: dict, nz: int) -> np.ndarray:
-    """Pack a `{i: array(nz)}` dict into a (nr+1, nz) ndarray."""
-    out = np.zeros((net.nr + 1, nz), dtype=np.float64)
-    for i, vec in k_dict.items():
-        if 1 <= i <= net.nr:
-            out[i] = np.asarray(vec, dtype=np.float64)
-    return out
-
-
 def apply_lowT_caps(
     net: Network, k: np.ndarray, T: np.ndarray, M: np.ndarray
 ) -> np.ndarray:
@@ -188,7 +171,8 @@ def build_rate_array(cfg, net: Network, atm, nasa9_coeffs: np.ndarray) -> np.nda
     Index 0 is unused (1-based reactions); reverse slots beyond
     `net.stop_rev_indx` are zero.
     """
-    # Late import: gibbs.compute_all_k → rates.compute_forward_k cycle.
+    # Imported lazily (not at module top) to keep the rates<->gibbs import
+    # order flexible; gibbs pulls physical constants + the network, not rates.
     from .gibbs import K_eq_array, fill_reverse_k, gibbs_sp_vector
 
     T = np.asarray(atm.Tco, dtype=np.float64)
@@ -208,6 +192,40 @@ def build_rate_array(cfg, net: Network, atm, nasa9_coeffs: np.ndarray) -> np.nda
     return apply_remove_list(net, k, getattr(cfg, "remove_list", None))
 
 
+def _assert_reversible_thermo_present(net: Network, present: np.ndarray) -> None:
+    """Fail loudly if a species in a reversible reaction lacks NASA-9 thermo.
+
+    A missing `thermo/NASA9/<sp>.txt` leaves that species' Gibbs coefficients
+    zero (`load_nasa9` returns `present[j] = False`), which silently corrupts
+    `K_eq` and every reverse rate the species participates in. VULCAN-master
+    raises `FileNotFoundError` here; we mirror that instead of returning a
+    plausible-but-wrong rate array. Only species used in a *reversible* reaction
+    (index below `stop_rev_indx`) need thermo -- condensate/photo/ion-only
+    species legitimately have no NASA-9 file.
+    """
+    needed: set[int] = set()
+    last_rev = min(net.stop_rev_indx, net.nr + 1)
+    for i in range(1, last_rev):
+        for idx_arr, st_arr in (
+            (net.reactant_idx, net.reactant_stoich),
+            (net.product_idx, net.product_stoich),
+        ):
+            for slot in range(idx_arr.shape[1]):
+                if st_arr[i, slot] == 0.0:
+                    continue
+                sp = int(idx_arr[i, slot])
+                if 0 <= sp < net.ni:
+                    needed.add(sp)
+    missing = [net.species[j] for j in sorted(needed) if not bool(present[j])]
+    if missing:
+        raise FileNotFoundError(
+            "Missing NASA-9 thermo file(s) for species used in reversible "
+            f"reactions: {', '.join(missing)}. Each needs thermo/NASA9/<sp>.txt "
+            "(a missing file silently zeros its Gibbs energy and corrupts the "
+            "reverse rates). Add the file or list the reaction in remove_list."
+        )
+
+
 def setup_var_k(cfg, var, atm) -> Network:
     """Parse network, load NASA-9 coeffs, write `var.k_arr`. Returns the Network."""
     from .gibbs import load_nasa9
@@ -217,7 +235,8 @@ def setup_var_k(cfg, var, atm) -> Network:
     thermo_dir = resolve_data_path(cfg.network).parent
     if not (thermo_dir / "NASA9").exists():
         thermo_dir = _RATES_ROOT / "thermo"
-    nasa9_coeffs, _ = load_nasa9(network.species, thermo_dir)
+    nasa9_coeffs, present = load_nasa9(network.species, thermo_dir)
+    _assert_reversible_thermo_present(network, present)
     var.k_arr = build_rate_array(cfg, network, atm, nasa9_coeffs)
     return network
 

@@ -318,9 +318,10 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
     root = Path(__file__).resolve().parent if root is None else Path(root)
     errors: list[str] = []
 
-    if getattr(cfg, "ode_solver", None) != "Ros2":
+    ode_solver = getattr(cfg, "ode_solver", None)
+    if ode_solver != "Ros2":
         errors.append(
-            f"ode_solver={cfg.ode_solver!r} is unsupported; VULCAN-JAX only supports 'Ros2'."
+            f"ode_solver={ode_solver!r} is unsupported; VULCAN-JAX only supports 'Ros2'."
         )
 
     if bool(getattr(cfg, "use_live_flux", False)) and not bool(

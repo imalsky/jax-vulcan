@@ -198,8 +198,8 @@ class JaxIntegState(NamedTuple):
     evo_idx: jnp.ndarray  # ()  int32  next slot to fill
 
     # Cap for the chunked-runner path: the body terminates when
-    # `accept_count >= chunk_target`. Single-shot runs seed it to
-    # `count_max + 1` so the cap never trips.
+    # `accept_count >= chunk_target`. Single-shot runs seed it to a large
+    # sentinel (2**30, well above any count_max) so the cap never trips.
     chunk_target: jnp.ndarray  # ()  int32
 
     # Per-profile termination state for the vmapped batched runner
@@ -286,7 +286,7 @@ def _step_size(
     from `vulcan_cfg.step_size_safety` / `step_size_zero_delta_frac`;
     the defaults here are kept for direct callers (tests / standalone use).
     """
-    delta_eff = jnp.where(delta < 1e-300, zero_delta_frac * rtol, delta)
+    delta_eff = jnp.where(delta < _UNDERFLOW_DENOM, zero_delta_frac * rtol, delta)
     h_factor = safety * (rtol / delta_eff) ** 0.5
     h_factor = jnp.clip(h_factor, dt_var_min, dt_var_max)
     return jnp.clip(dt * h_factor, dt_min, dt_max)
@@ -571,7 +571,6 @@ class _Statics(NamedTuple):
 
     compo_arr: jnp.ndarray  # (ni, n_atoms)
     atom_ini_arr: jnp.ndarray  # (n_atoms,)
-    initial_rtol: float  # used to seed s.rtol; mid-run rtol lives in the carry
     loss_eps: float
     pos_cut: float
     nega_cut: float
@@ -607,13 +606,11 @@ class _Statics(NamedTuple):
     use_atm_refresh: bool
     use_vm_mol: bool  # upwind molecular diffusion → refresh vm in-loop with mu
     use_conden: bool
-    ini_update_photo_frq: int
     final_update_photo_frq: int
     update_frq: int
     use_adapt_rtol: bool
     rtol_min: float
     rtol_max: float
-    initial_loss_criteria: float
     adapt_rtol_dec_period: int
     adapt_rtol_inc_period: int
     adapt_rtol_dec: float
@@ -767,19 +764,6 @@ def _make_runner(
     fix_species_idx = statics.fix_species_idx
     fix_species_wholecol = statics.fix_species_wholecol
 
-    if non_gas_present:
-
-        def _mix_from_y(y_in):
-            ysum = jnp.sum(
-                jnp.where(gas_indx_mask[None, :], y_in, 0.0), axis=1, keepdims=True
-            )
-            return y_in / ysum
-    else:
-
-        def _mix_from_y(y_in):
-            ysum = jnp.sum(y_in, axis=1, keepdims=True)
-            return y_in / ysum
-
     def _activate_fix_species(s_in: JaxIntegState) -> JaxIntegState:
         nz_fix = s_in.pv.n_0.shape[0]
         n_fix = fix_species_idx.shape[0]
@@ -857,8 +841,10 @@ def _make_runner(
 
         Mirrors `cond_fn`'s terminate logic minus the chunk-cap yield, and
         also returns a reason code so the batched runner can report why each
-        lane stopped. Reason priority matches the single-profile `end_case`
-        ladder in `_call_runstate` (step-count over runtime over converged):
+        lane stopped. Reason priority matches VULCAN-master's `stop()`
+        (op.py:1072-1118) and the single-profile `end_case` ladder in
+        `_call_runstate`: converged over runtime over step-count, so a step
+        that is simultaneously converged and at count_max reports success.
         0 running, 1 converged, 2 runtime exceeded, 3 step-count exceeded,
         4 stalled-convergence.
         """
@@ -896,16 +882,19 @@ def _make_runner(
         ready = (s.t > jnp.float64(trun_min)) & (s.accept_count > jnp.int32(count_min))
         conv_term = ready & is_converged
         real_term = too_long | too_many | conv_term
+        # Convergence wins over runtime wins over step-count, matching master's
+        # stop() (op.py:1072-1118): a step that is both converged and at
+        # count_max/runtime reports success (1/4), not exceeded (2/3).
         reason = jnp.where(
-            too_many,
-            jnp.int32(3),
+            conv_term & conv_normal,
+            jnp.int32(1),
             jnp.where(
-                too_long,
-                jnp.int32(2),
+                conv_term & is_stalled,
+                jnp.int32(4),
                 jnp.where(
-                    conv_term & conv_normal,
-                    jnp.int32(1),
-                    jnp.where(conv_term & is_stalled, jnp.int32(4), jnp.int32(0)),
+                    too_long,
+                    jnp.int32(2),
+                    jnp.where(too_many, jnp.int32(3), jnp.int32(0)),
                 ),
             ),
         )
@@ -1005,13 +994,18 @@ def _make_runner(
         force_accept = (dt_underflow | retry_exhausted) & ~accept
         do_accept = accept | force_accept
 
-        # Exactly one of (delta_count, nega_count, loss_count) increments per reject.
+        # Exactly one of (delta_count, nega_count, loss_count) increments per
+        # FAILED attempt — classified on `~accept`, not `~do_accept`, so a step
+        # that fails but is force-accepted (dt underflow / retry budget spent)
+        # still bumps its counter. Master increments a reject counter inside
+        # step_reject before the dt<dt_min force-accept clamp (op.py:2536-2563);
+        # gating on do_accept would silently drop those.
         delta_too_big = delta > s.rtol
         any_neg = jnp.any(sol_clip < 0)
-        is_reject = ~do_accept
-        delta_count_inc = (is_reject & delta_too_big).astype(jnp.int32)
-        nega_count_inc = (is_reject & ~delta_too_big & any_neg).astype(jnp.int32)
-        loss_count_inc = (is_reject & ~delta_too_big & ~any_neg).astype(jnp.int32)
+        attempt_failed = ~accept
+        delta_count_inc = (attempt_failed & delta_too_big).astype(jnp.int32)
+        nega_count_inc = (attempt_failed & ~delta_too_big & any_neg).astype(jnp.int32)
+        loss_count_inc = (attempt_failed & ~delta_too_big & ~any_neg).astype(jnp.int32)
 
         # Time advance: dt for accept, dt_min for force_accept, 0 for reject.
         dt_used_for_t = jnp.where(force_accept, jnp.float64(dt_min), s.dt)
@@ -1617,7 +1611,7 @@ class OuterLoop:
         self.atol = float(self._cfg.atol)
         self.output = output
         self.odesolver = odesolver
-        self.loss_criteria = 0.0005
+        self.loss_criteria = float(getattr(self._cfg, "loss_criteria", 0.0005))
 
         self._species = list(_NETWORK.species)
 
@@ -1785,7 +1779,6 @@ class OuterLoop:
         return _Statics(
             compo_arr=jnp.asarray(self._compo_arr),
             atom_ini_arr=jnp.asarray(atom_ini_arr),
-            initial_rtol=float(self._cfg.rtol),
             loss_eps=float(self._cfg.loss_eps),
             pos_cut=float(self._cfg.pos_cut),
             nega_cut=float(self._cfg.nega_cut),
@@ -1819,13 +1812,11 @@ class OuterLoop:
                 and getattr(self._cfg, "use_moldiff", True)
             ),
             use_conden=bool(self._cfg.use_condense),
-            ini_update_photo_frq=int(getattr(self._cfg, "ini_update_photo_frq", 1)),
             final_update_photo_frq=int(getattr(self._cfg, "final_update_photo_frq", 1)),
             update_frq=int(self._cfg.update_frq),
             use_adapt_rtol=bool(getattr(self._cfg, "use_adapt_rtol", False)),
             rtol_min=float(getattr(self._cfg, "rtol_min", 0.0)),
             rtol_max=float(getattr(self._cfg, "rtol_max", 1.0)),
-            initial_loss_criteria=float(getattr(self, "loss_criteria", 0.0005)),
             adapt_rtol_dec_period=int(getattr(self._cfg, "adapt_rtol_dec_period", 10)),
             adapt_rtol_inc_period=int(
                 getattr(self._cfg, "adapt_rtol_inc_period", 1000)
@@ -2088,8 +2079,8 @@ class OuterLoop:
 
         # Per-formula physical constants, baked literally from op.conden
         # (op.py:1128-1291). Mass values are kept verbatim including the
-        # known oddities (S2 uses 45.019 g/mol per op.py:1206; S8 uses
-        # 360.152 per op.py:1252).
+        # known oddities (S2 uses 45.019 g/mol per op.py:1244; S8 uses
+        # 360.152 per op.py:1290).
         gas_mass_g_per_mol = {
             "H2O": 18.0,
             "NH3": 17.0,
@@ -2492,10 +2483,10 @@ class OuterLoop:
                 dtype=jnp.float64,
             ),
             evo_idx=jnp.int32(0),
-            # chunk_target seed = INT32_MAX disables the chunk cap, so
-            # single-shot __call__ runs without an early chunk return. The
-            # chunked driver mutates this between chunks; the seed is
-            # only used when the driver doesn't run.
+            # chunk_target seed = a large sentinel (2**30, well above any
+            # count_max) disables the chunk cap, so single-shot __call__ runs
+            # without an early chunk return. The chunked driver mutates this
+            # between chunks; the seed is only used when the driver doesn't run.
             chunk_target=jnp.int32(2**30),
             # Batched-runner termination flags. The single-profile path
             # never reads these; the vmapped `run_batch` flips `is_done`
@@ -2852,7 +2843,7 @@ class OuterLoop:
         if live_on:
             chunk_size = max(int(getattr(self._cfg, "live_plot_frq", 10)), 1)
             if self._live_ui is None:
-                self._live_ui = LiveUI()
+                self._live_ui = LiveUI(self._cfg)
         else:
             chunk_size = max(int(getattr(self._cfg, "print_prog_num", 100)), 1)
         count_max_static = int(self._statics.count_max)
@@ -2953,7 +2944,7 @@ class OuterLoop:
         """
         del make_atm  # captured into _refresh_static at OuterLoop init
         validate_runtime_config(self._cfg)
-        self.loss_criteria = 0.0005
+        self.loss_criteria = float(getattr(self._cfg, "loss_criteria", 0.0005))
 
         # Build the JAX runner on first entry — cached for the run.
         self._ensure_runner(var, atm)
@@ -3051,7 +3042,7 @@ class OuterLoop:
         back-compat with the `integ(rs, var, atm, para)` signature.
         """
         validate_runtime_config(self._cfg)
-        self.loss_criteria = 0.0005
+        self.loss_criteria = float(getattr(self._cfg, "loss_criteria", 0.0005))
 
         # When called as `integ(rs)`, derive a legacy-shaped shim from the
         # RunState so the existing `_build_*_static` helpers and
@@ -3124,6 +3115,15 @@ class OuterLoop:
                 if t_now > self._cfg.runtime
                 else 1
             )
+        # Persist the authoritative end_case into the returned RunState (and
+        # thus the .vul 'parameter' dict). _unpack_state_to_runstate derives
+        # end_case from the carry's count/t alone, so it cannot see a
+        # wall-clock bail (count<count_max, t<runtime) and would otherwise
+        # mislabel a truncated run as converged (end_case=1).
+        if rs_out.params is not None:
+            rs_out = rs_out._replace(
+                params=rs_out.params._replace(end_case=end_case)
+            )
         if end_case == 3:
             print(
                 "Integration not completed...\nMaximal allowed steps "
@@ -3181,7 +3181,7 @@ class OuterLoop:
         does up to (but not including) the runner call.
         """
         validate_runtime_config(self._cfg)
-        self.loss_criteria = 0.0005
+        self.loss_criteria = float(getattr(self._cfg, "loss_criteria", 0.0005))
         var, atm, _ = _state_mod.legacy_view(rs)
         if (
             rs.photo_static is not None

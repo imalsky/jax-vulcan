@@ -7,7 +7,6 @@ import jax
 import jax.numpy as jnp
 
 from . import vulcan_cfg
-from .chem_funs import ni as _ni, nr as _nr  # noqa: F401
 
 from . import network as _net_mod
 from . import photo as _photo_mod

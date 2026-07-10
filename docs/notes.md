@@ -1,7 +1,14 @@
-# Implementation notes — parity-gap closure pass (2026-06-11)
+# Implementation notes — running experiments & implementation log
 
-This file records the parity-gap closure pass: what still needs clarification
-or off-machine verification, and the problems hit along the way.
+This is the running implementation / experiments log for VULCAN-JAX,
+in rough chronological order. It opens with the 2026-06-11 parity-gap
+closure pass (what still needs clarification or off-machine verification,
+and the problems hit along the way) and continues through the later
+differentiability work: end-to-end forward/reverse-mode AD, the on-graph
+atmosphere builder, and the reverse-mode adjoint accuracy campaigns
+(dated sections run through 2026-07-04). Newer entries are appended at the
+end; earlier entries are kept as-is for provenance, so where a later dated
+section supersedes an earlier claim, the later one wins.
 
 ## Needs HPC verification (cannot be done on this CPU-only host)
 
@@ -743,3 +750,94 @@ irreversible rows skipped; free to compute). Healthy 0.01-0.3; O(1) flags
 internal inconsistency even when residuals are tiny (the H@z146 case). Slow
 tests updated: HD189 asserts pair_antisym < 0.5; new W39b regression pins
 ranking/values/diagnostics.
+
+### 2026-07-03: the "~few %" ceiling SOLVED to percent level — it was the linearized MAP, not convergence
+
+Goal: get reverse-mode to percent level for all planets, for the paper's SO2
+science case; first ask whether it "just needs stricter convergence." Answer:
+**no** — and the real cause was mis-attributed in every doc up to here.
+
+**Method.** Per-planet sweeps (HD189 photo-off CH4, W39b photo-on SO2, HD209
+photo-on CH4), each adjoint value checked against re-converged centered FD AND
+forward-mode `jvp` through the loop. jvp==FD to ~0.02% everywhere, so FD is
+ground truth and any adjoint-vs-FD gap is a real adjoint error. Scripts in
+`jax_paper/scripts/`: `adj_conv_sweep.py`, `adj_knob_scan.py`,
+`adj_solvermap_variants.py`, `adj_photo_feedback.py`, `fd_validate_w39b_reverse.py`,
+`adj_conv_analyze.py`; JSONs in `jax_paper/outputs/adj_conv_sweep/`.
+
+**What does NOT help (all measured, not argued):**
+- *Stricter convergence.* HD189 CH4 = 7.0 / 6.3 / 8.4 % at `longdy` 1e-2 / 1e-3 /
+  1e-4 (FD invariant at -0.5651). Gotcha: the runner's OR-branch
+  `longdy<yconv_min` (default 0.1) + stall detector cap `longdy` ~0.1 regardless
+  of `yconv_cri`; to actually tighten, set `yconv_cri=yconv_min=target` and raise
+  `conv_stall_window` — and it *still* doesn't move accuracy. `fp_err` also stuck
+  at 1.42e-4 across all three (a fixed offset, not a convergence artifact).
+- *body_dt scan.* Non-monotonic, optimum ~1e7. HD189: 1e6 80%, 3e6 47%, 1e7 6.6%,
+  3e7 14%, 1e8 40%.
+- *LGMRES budget.* cycles 10→40, inner_m 60→150: 6.6% → ~5% floor.
+
+**Root cause.** The adjoint linearized the BARE Ros2 step, but `OuterLoop`
+iterates the HYDROSTATIC-RENORMALIZED map (`sol_balanced = M[:,None]*ymix`,
+outer_loop.py:1145). So `y*` is a tight fixed point of the renorm map (fp_err
+~1e-9) but only ~1e-4 of the bare map — that 1.42e-4 is the renormalization
+correction, and it biases the gradient ~6%. Nothing about the *convergence*
+tolerance changes it.
+
+**Fix #1 — `solver_map="renorm"`** (linearize the renorm map). HD189 CH4
+6.6% → **0.7%** (fp_err 1.4e-4→2.6e-9, resid 3.3e-2→4.6e-3); HD209 forward row
+r121 35% → 1.1%. Dead end checked: additionally deflating the per-layer
+total-density direction (`renorm_td`) OVER-corrects (HD189 0.7%→2.5%) — not added.
+
+**Fix #2 — `photo_recompute_k` (dJ/dy).** After renorm, photo-on columns keep a
+*separate* frozen-photolysis error on photo-coupled rows: W39b OH+H2->H2O+H
+bare 11.2% / renorm 13.0% (the HD189-photo-off control at 0.7% isolates it as
+the photo term, not the map). The runner's own photo branch
+(`outer_loop._make_photo_branch`) recomputes J(y) via the two-stream RT, which
+is `lax.scan`-based → reverse-mode differentiable; feeding it as the body map's
+k(y) makes `dG/dy` carry dJ/dy. `renorm + dJ/dy`: **W39b r1 -0.7692 (0.2%),
+r691 +0.3647 (0.1%)** vs FD -0.7679 / +0.3645 — both dominant SO2 rows at
+percent level, the science case achieved. `body_map_k` stays frozen (a thermal
+k perturbation doesn't change J directly; the indirect path is in the state
+operator). Cost: an RT solve per Krylov matvec.
+
+**Still hard.** HD209 CH2OH near-equilibrium *reverse* rows: operator genuinely
+ill-conditioned (LGMRES resid ~0.1 even with renorm), r122 goes 32%→83% under
+renorm while r121 goes 35%→1.1% — the default-on residual/spread/pair_antisym
+diagnostics flag it; use forward-mode for that single row.
+
+**Shipped (defaults unchanged so the paper's numbers stand):** `steady_state_grad`
+gained `SOLVER_MAP_DEFAULT`/`SOLVER_MAP_CHOICES`, `solver_map` +
+`photo_recompute_k` params (threaded through `scan_body_dt_reaction_sensitivity`),
+`info["solver_map"]`/`["photo_feedback"]`, and the helper
+`make_photo_recompute_k(runner_photo_static, converged_state)` (reuses
+`_make_photo_branch`; needs `integ._photo_static`, not the public
+`PhotoStaticInputs`). Module + parameter docstrings and limitations 1/2/4
+rewritten. Tests: `test_solver_map_invalid_rejected` (fast) + a renorm sub-check
+in the slow HD189 regression (fp_err<1e-6, r13/r14<3%). **Recipe:** always
+`solver_map="renorm"`; add `photo_recompute_k` on photo-on columns.
+
+### 2026-07-04: `solver_map="renorm"` made the DEFAULT
+
+Per user request ("make the percent-level accuracy the default"), flipped
+`SOLVER_MAP_DEFAULT` from `"bare"` to `"renorm"`, so the shipped reverse-mode
+adjoint is percent-level out of the box (HD189 CH4 ~0.7%). `"bare"` is retained
+only to reproduce the pre-2026-07 raw-step behavior. At that point
+`photo_recompute_k` stayed an explicit standard companion on photochemistry-on
+columns because the function had no handle on the runner's photolysis state.
+Tests updated:
+the slow HD189 regression's primary call now asserts the renorm default at
+percent level (fp_err<1e-6, r13/r14<3%) with a `bare` cross-check confirming the
+legacy map is strictly looser; the W39b subprocess pins re-measured for renorm.
+Docs (CLAUDE.md, README, this file, `examples/grad_reverse_example.py`) and the
+paper (main.tex, in `\rev`, incl. a fifth reverse-mode AD bullet documenting the
+differentiated photolysis) updated to present renorm as the default.
+
+### 2026-07-06: photolysis feedback made the photo-on default
+
+Per review, `photo_recompute_k` now defaults to `"auto"` instead of `None`.
+On active photochemistry columns the public adjoint builds the runner's
+differentiated photolysis recompute when given `runner_photo_static` +
+`converged_state` (or `integ` + `converged_state`), so the default photo-on path
+is `renorm + dJ/dy`. If those runner-context fields are missing, the default
+raises instead of silently returning the frozen-photolysis leading-order result;
+pass `photo_recompute_k=None` only to reproduce that legacy behavior.

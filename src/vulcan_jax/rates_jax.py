@@ -32,6 +32,19 @@ _P0 = 1.0e6
 CORR = kb / _P0
 _SPECIAL_OH_CH3 = "OH + CH3 + M -> CH3OH + M"
 
+# Upper bound on the Gibbs exponent (reac - prod) before exp() in K_eq_array.
+# float64 exp overflows at ~709; on cold columns (upper atmospheres of cool
+# planets, ~100-160 K) a strongly forward-favored reaction's exponent can exceed
+# it, sending K_eq -> +inf. The primal is unaffected (k_rev = k_fwd / inf -> 0,
+# which is physically correct for an effectively-irreversible cold reaction), but
+# the forward-mode jvp of k_fwd/K then evaluates finite*(inf/inf) = NaN, silently
+# poisoning d(k)/dT for the whole column. Clipping the *upper* side only keeps K
+# huge-but-finite (so k_rev stays ~0 to float precision, matching the unclamped
+# primal) while making the tangent finite. The lower side needs no clip: exp
+# underflow gives K -> 0, and fill_reverse_k's `where(K > 0, ...)` already returns
+# a tangent-safe 0 there.
+_EXP_ARG_MAX = 500.0
+
 # Three Moses+2005 low-T rate caps (mirror rates.py), applied to the forward
 # slot below a temperature threshold on cool-atmosphere networks.
 _LOWT_CAP_RXN_CH3 = "H + CH3 + M -> CH4 + M"  # T <= 277.5 K, Lindemann cap
@@ -211,7 +224,10 @@ def K_eq_array(net: Network, gibbs_sp: jnp.ndarray, T: jnp.ndarray) -> jnp.ndarr
     prod = jnp.einsum("rs,rsz->rz", p_st, g_pad[p_idx])
     delta_n = (r_st.sum(axis=1) - p_st.sum(axis=1))[:, None]  # (nr+1, 1)
     Tg = jnp.asarray(T)[None, :]
-    K_raw = jnp.exp(reac - prod) * (CORR * Tg) ** delta_n
+    # Clip the upper side of the exponent so exp() cannot overflow to +inf on
+    # cold columns (would give a NaN forward-mode tangent in the reverse divide;
+    # see _EXP_ARG_MAX). Primal is unchanged to float precision.
+    K_raw = jnp.exp(jnp.minimum(reac - prod, _EXP_ARG_MAX)) * (CORR * Tg) ** delta_n
 
     # Valid forward slots get a real K; everything else stays 1 (sentinel).
     nr = net.nr

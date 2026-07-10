@@ -499,6 +499,13 @@ def _apply_diffusion_jax(
     return diff
 
 
+# Ros2 free parameter gamma = 1 + 1/sqrt(2) (Verwer et al. 1997, the L-stable
+# 2nd-order Rosenbrock). The stage-2 RHS factor 2/(gamma*dt) and the solution
+# weights 3/(2*gamma), 1/(2*gamma) below all derive from it; matches
+# VULCAN-master op.py:2931/2969/2973.
+_ROS2_GAMMA = 1.0 + 2.0**-0.5
+
+
 @jax.jit
 def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=None):
     """One 2nd-order Rosenbrock step.
@@ -507,7 +514,7 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
     pins selected (layer, species) entries by zeroing the corresponding
     rows/cols of the LHS and RHS.
     """
-    r = 1.0 + 1.0 / jnp.sqrt(2.0)
+    r = _ROS2_GAMMA
     c0 = 1.0 / (r * dt)
     ni = atm.ms.shape[0]
     M = atm.M

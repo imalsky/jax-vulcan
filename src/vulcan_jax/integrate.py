@@ -16,6 +16,11 @@ from .jax_step import AtmStatic, jax_ros2_step
 
 jax.config.update("jax_enable_x64", True)
 
+# Denominator floor for the relative-error estimate (below-which-is-zero, not a
+# tuning knob). This is a benchmark/validation harness, so it only needs to
+# avoid a 0/0; the production runner uses outer_loop._UNDERFLOW_DENOM.
+_REL_ERR_DENOM = 1e-30
+
 
 @partial(jax.jit, static_argnames=("n_steps",))
 def jax_integrate_fixed_dt(
@@ -30,7 +35,7 @@ def jax_integrate_fixed_dt(
 
     def body_fn(y, _):
         sol, delta_arr = jax_ros2_step(y, k_arr, dt, atm, net)
-        delta = jnp.max(delta_arr / jnp.maximum(jnp.abs(sol), 1e-30))
+        delta = jnp.max(delta_arr / jnp.maximum(jnp.abs(sol), _REL_ERR_DENOM))
         return sol, delta
 
     y_final, deltas = jax.lax.scan(body_fn, y0, jnp.arange(n_steps))

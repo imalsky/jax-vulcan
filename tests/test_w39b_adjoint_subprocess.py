@@ -53,8 +53,17 @@ Lz = int(np.argmax(ys[:, so2] / ys.sum(axis=1)))
 def loss(y):  # log10 SO2 VMR at the peak-SO2 layer (the paper's loss)
     return jnp.log10(y[Lz, so2] / jnp.sum(y[Lz]))
 
+# This fixture is a saved FROZEN-photolysis state (no runner attached), so it
+# cannot exercise the photochemistry-on default path (renorm + photo_recompute_k
+# for the dJ/dy feedback). On a photo-on column without that feedback the
+# renormalized map is internally inconsistent (pair_antisym ~1), which the
+# diagnostics correctly flag -- so this regression pins the legacy
+# solver_map="bare" behavior instead. The percent-level DEFAULT path
+# (renorm + dJ/dy) is validated end-to-end through the runner in
+# jax_paper/scripts/fd_validate_w39b_reverse.py (r1 0.17%, r691 0.07%).
 g, info = steady_state_reaction_sensitivity(
     loss, y_star, k_arr, atm, net, compo_array=compo, dz=dz,
+    solver_map="bare",
     lgmres_inner_m=60, lgmres_cycles=10, return_info=True,
 )
 g = np.asarray(g)

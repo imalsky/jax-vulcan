@@ -166,18 +166,6 @@ def compute_atom_ini(y, compo_arr=compo_array):
     return jnp.einsum("zi,ia->a", y, compo_arr)
 
 
-def _run_fastchem(data_atm) -> None:
-    """Write FastChem inputs and invoke the binary, holding the cross-process lock."""
-    _FC_DIR.mkdir(exist_ok=True)
-    _FC_SENTINEL.touch(exist_ok=True)
-    with open(_FC_SENTINEL, "r") as lock_f:
-        fcntl.flock(lock_f, fcntl.LOCK_EX)
-        try:
-            _run_fastchem_locked(data_atm)
-        finally:
-            fcntl.flock(lock_f, fcntl.LOCK_UN)
-
-
 def _run_fastchem_locked(data_atm) -> None:
     """Inner FastChem driver. Caller must already hold the flock."""
     solar_ele = _fastchem_solar_abundance_path()
