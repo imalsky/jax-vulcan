@@ -457,8 +457,9 @@ now rebuilds `M = pco/(kb*T)`, `dz`, `Hp`, and the molecular-diffusion `Dzz(T)`
 on-graph from `Tco`, so those are no longer frozen; only the host-side photo
 cross-section T-interpolation (`photo_setup._bin_T_dependent`) stays frozen
 (second-order). Forward-mode `d/dT` is validated against finite differences
-(HD189 dominant species to 3–4 sig figs; WASP-39b SO2 to correlation 1.0). See
-`../jax_paper/scripts/validate_T_grad.py` and `fig_so2_temperature.py`.
+(HD189 dominant species to 3–4 sig figs; WASP-39b SO2 to correlation 1.0; the
+validation scripts live in the maintainer's internal manuscript repo, not in
+this package).
 
 ### Reverse-mode (solver-map steady-state adjoint)
 

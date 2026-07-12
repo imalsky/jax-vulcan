@@ -730,9 +730,10 @@ def _guard_unmodeled_processes(
     `NetworkArrays` carries no photo/ion/conden row masks, so the row checks
     use the import-locked parsed network (when its `nr` matches `net`) and the
     condensate check uses the import-locked species list (when its width
-    matches `y_star`). A non-matching custom network silently skips the
-    fingerprints — run `audit_adjoint_scope` with the run's cfg for full
-    coverage there. `network`/`species` exist for tests.
+    matches `y_star`). A non-matching custom network skips the fingerprints
+    with a RuntimeWarning (skipped != passed) — run `audit_adjoint_scope`
+    with the run's cfg for full coverage there. `network`/`species` exist
+    for tests.
 
     Raises on: nonzero ion rows (charge balance is not in any body map);
     condensation fingerprints (nonzero conden rate rows, or a populated
@@ -752,6 +753,24 @@ def _guard_unmodeled_processes(
                     species = list(chem_funs.spec_list)
         except Exception:
             pass
+
+    if network is None or species is None:
+        skipped = [
+            name
+            for name, missing in (
+                ("photo/ion/conden rate-row fingerprints", network is None),
+                ("condensate-species fingerprint", species is None),
+            )
+            if missing
+        ]
+        warnings.warn(
+            "adjoint fingerprint guard could not resolve the import-locked "
+            f"host network/species for this k_arr (custom network?): {' and '.join(skipped)} "
+            "SKIPPED, not passed. Run audit_adjoint_scope(...) with the run's "
+            "cfg to check for dropped processes explicitly.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
 
     k_np = np.asarray(k_arr)
     terms_conden = body_terms is not None and body_terms.conden_static is not None

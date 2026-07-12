@@ -12,12 +12,11 @@ from typing import Any
 
 from ._version import __version__
 
-try:
-    from jax import config as _config
+# Unguarded on purpose (loud-errors rule): a jax that cannot enable x64 must
+# fail the import, not run float32 chemistry (rate constants span ~50 dex).
+from jax import config as _config
 
-    _config.update("jax_enable_x64", True)
-except Exception:
-    pass
+_config.update("jax_enable_x64", True)
 
 from .state import RunState
 from . import vulcan_cfg

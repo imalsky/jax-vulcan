@@ -1,10 +1,12 @@
-"""Validate `photo_setup.build_photo_static` against checked-in npz
-fixtures.
+"""Validate `photo_setup.build_photo_static` against locally captured
+npz fixtures.
 
 The fixtures (`tests/data/photo_setup_hd189_baseline.npz` and
-`tests/data/photo_setup_hd189_T_dep.npz`) were captured by
-`tests/_gen_photo_baseline.py` and are the canonical oracle for the
-photo cross-section preprocessing.
+`tests/data/photo_setup_hd189_T_dep.npz`) are the canonical oracle for
+the photo cross-section preprocessing. They are NOT tracked in git (the
+blanket *.npz gitignore; the T-dep file is ~31 MB) -- on a fresh clone
+these tests skip; regenerate the fixtures with
+`python tests/_gen_photo_baseline.py`.
 
 The fixture comparison is exact except for NumPy-version ULP drift in
 `np.arange` wavelength bins and the interpolated cross sections derived
@@ -29,6 +31,9 @@ os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
 FIXTURE_DIR = ROOT / "tests" / "data"
+_BASELINE_FIXTURE = FIXTURE_DIR / "photo_setup_hd189_baseline.npz"
+_T_DEP_FIXTURE = FIXTURE_DIR / "photo_setup_hd189_T_dep.npz"
+_REGEN_HINT = "local fixture missing; regenerate with: python tests/_gen_photo_baseline.py"
 BIN_ATOL = 2e-14
 CROSS_ATOL = 1e-30
 
@@ -150,6 +155,7 @@ def _check_static_against_fixture(
         )
 
 
+@pytest.mark.skipif(not _BASELINE_FIXTURE.exists(), reason=_REGEN_HINT)
 def test_photo_setup_matches_baseline_fixture():
     """HD189 default — T_cross_sp=[], use_ion=False."""
     import vulcan_jax.photo_setup as photo_setup
@@ -169,6 +175,7 @@ def test_photo_setup_matches_baseline_fixture():
 
 
 @pytest.mark.strict_isolation
+@pytest.mark.skipif(not _T_DEP_FIXTURE.exists(), reason=_REGEN_HINT)
 def test_photo_setup_matches_T_dep_fixture(monkeypatch):
     """HD189 with T_cross_sp=['CO2','H2O','NH3'] patched on."""
     import vulcan_jax.photo_setup as photo_setup

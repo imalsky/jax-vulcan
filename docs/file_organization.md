@@ -494,6 +494,11 @@ exact route for any single ill-conditioned row. See the module docstring +
 `docs/notes.md` for why it works and the residual-IFT attempts that failed.
 - `steady_state_reaction_sensitivity(loss_fn, y_star, k_arr, atm, net, *, compo_array, dz, solver_map="renorm", photo_recompute_k="auto", runner_photo_static=None, converged_state=None, integ=None, ...)` — the public entry point; returns `dL/d(ln k_r)` `(nr+1,)` (and an info dict with `return_info=True`).
 - `make_photo_recompute_k(runner_photo_static, converged_state)` — build the `photo_recompute_k` callable (reuses the runner's two-stream RT photo branch) so photo-coupled rows carry `dJ/dy`; needs `integ._photo_static`, not the public `PhotoStaticInputs`.
+- `steady_state_input_sensitivity(loss_fn, y_star, k_arr, atm, net, p0, rebuild, ...)` — reverse-mode w.r.t. arbitrary physical inputs (e.g. a full `(nz,)` T profile) from the same adjoint solve plus one VJP of a differentiable `rebuild(p) -> (k(p), atm(p))`; consistency-checked at `p0`.
+- `make_body_terms(integ, converged_state, atm_static)` — pack the per-step processes non-default configs turn on (in-window condensation composite, fix-species pins, layer-0 boundary pins) into a `BodyTerms` for the body map, and return the correctly spliced `atm` (incl. live `vm` for `use_vm_mol`).
+- `BodyTerms` — the NamedTuple carrying those optional body-map terms (conden static, relax kernels, fix/boundary pin masks).
+- `audit_adjoint_scope(...)` — scan a run's config + converged state for processes the adjoint body map drops, and measure the per-cell fixed-point defect the global `fp_err` max-norm masks.
+- `scan_body_dt_reaction_sensitivity(...)` — sweep `body_dt` values and report per-value residual/spread diagnostics (pick the lowest-`resid` probe step on a new column).
 - `_safe_inv_y(y_star)` — `1/y*` with exact zeros masked to 0 (the closed-column log-scaling NaN guard).
 - `_conserved_null_basis(y_star, compo_array, dz)` — orthonormal QR basis of the log-space conserved-mass null vectors `c_e = compo[:,e]*dz*y*` to deflate.
 - `_lgmres_solve(matvec, bvec, ...)` — host scipy LGMRES with chunked warm-start cycles.
@@ -618,6 +623,8 @@ transform consistency. Run with
 - `test_diffusion_production_kernel.py`, `test_moldiff_disabled.py` — production diffusion kernel + moldiff-off variant.
 - `test_cli_smoke.py` — `vulcan-jax` CLI end-to-end smoke.
 - `test_steady_state_reaction_sensitivity.py` — reverse-mode reaction sensitivities: fast deflation/scaling/assembly unit tests + a slow HD189 fixture regression (`VULCAN_JAX_RUN_SLOW=1`).
+- `test_audit_adjoint_scope.py` — `audit_adjoint_scope` dropped-process scanner + per-cell fixed-point defect reporting.
+- `test_w39b_adjoint_subprocess.py` — W39b (SNCHO network) adjoint regression in a subprocess (`$VULCAN_JAX_NETWORK`), gated on its local npz fixture.
 - `test_rates_jax.py` — differentiable `rates_jax` parity vs NumPy (incl. low-T caps) + finite `jvp` w.r.t. `T` and Arrhenius coefficients.
 - `test_forward_jvp_physical.py` — forward-mode AD through a physical transport knob (`Kzz`) over one Ros2 step: `jvp == vjp` + coarse FD sanity.
 - `test_atm_jax.py` — on-graph atmosphere builder: `build_atm_static` field-for-field equal to `make_atm_static` for the default config (HD189 + synthetic vm/settling branches; `table`/`moldiff-off` intentionally differ), FD-matched `jvp` for `dz/dgs`, `M·Dzz/dTco`, `M/dP_b`, the `sat_p`/`settling`/`Kzz` jnp-core parity, plus the Kzz-defaults / load_TPK fail-loud guards.
@@ -633,7 +640,7 @@ transform consistency. Run with
 
 ### `examples/`
 - `batched_run.py` — `jax.vmap` over the per-step kernel for batched atmospheres.
-- `gpu_benchmark.py` — standalone GPU throughput benchmark driving `run_batch` to convergence over HD189-like planet batches (parallel host setup, chunked progress, `--device-batch` host-side tiling). Kept byte-identical with `vulcan-emulator/supercomputer_cmds/gpu_benchmark.py`.
+- `gpu_benchmark.py` — standalone GPU throughput benchmark driving `run_batch` to convergence over HD189-like planet batches (parallel host setup, chunked progress, `--device-batch` host-side tiling).
 - `grad_jvp_example.py` — forward-mode AD through the per-step kernel.
 - `grad_physical_example.py` — forward-mode AD w.r.t. physical inputs (gravity, temperature, pressure grid) via `atm_jax.build_atm_static`, each tangent FD-matched.
 - `grad_reverse_example.py` — reverse-mode reaction ranking on a real HD189 column via `steady_state_reaction_sensitivity`.

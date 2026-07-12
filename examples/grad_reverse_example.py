@@ -60,7 +60,11 @@ FD_ANCHORS = {13: -5.651e-01, 14: +5.651e-01, 115: -1.919e-05, 116: +2.712e-05}
 
 def main() -> int:
     if not FIXTURE.exists():
-        print(f"Missing fixture {FIXTURE}; generate it with adj_save_state.py.")
+        print(
+            f"Missing fixture {FIXTURE}: a converged HD189 state capture "
+            "(run the CLI to convergence and np.savez the runner state; the "
+            "maintainer's capture script lives in an internal repo)."
+        )
         return 1
 
     import vulcan_jax.chem_funs as chem_funs
