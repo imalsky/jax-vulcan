@@ -64,7 +64,9 @@ git status
 git add -u
 git add src/vulcan_jax/_version.py
 git commit -m "Release v$VER"
+git tag -a "v$VER" -m "Release v$VER"
 git push origin main
+git push origin "v$VER"
 
 export TWINE_USERNAME="__token__"
 python -m twine upload --verbose --repository-url https://test.pypi.org/legacy/ dist/*

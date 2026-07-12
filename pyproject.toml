@@ -1,5 +1,7 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+# >=77: first setuptools with PEP 639 support (the SPDX `license = "GPL-3.0-only"`
+# string + `license-files` below); 68-76 fails to build this metadata.
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -25,6 +27,10 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Operating System :: OS Independent",
 ]
+
+[project.urls]
+Homepage = "https://github.com/imalsky/jax-vulcan"
+Repository = "https://github.com/imalsky/jax-vulcan"
 
 [project.optional-dependencies]
 dev = [
