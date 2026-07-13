@@ -196,6 +196,11 @@ batch_max_retries = 64
 step_size_safety = 0.9
 step_size_zero_delta_frac = 0.01
 
+# Gustafsson PI step-size controller (off = master-faithful I-control).
+use_pi_controller = False
+pi_controller_alpha = 0.7
+pi_controller_beta = 0.4
+
 # Photo-frequency switch thresholds.
 photo_switch_longdy_thresh = yconv_min * 10.0
 photo_switch_longdydt_thresh = 1e-6

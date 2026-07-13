@@ -274,6 +274,21 @@ def _validate_numerical_bounds(cfg) -> list[str]:
     if zdf <= 0.0:
         errors.append(f"step_size_zero_delta_frac={zdf} must be > 0.")
 
+    # PI step-size controller exponents (only consumed when
+    # use_pi_controller=True; alpha=1, beta=0 reproduces I-control).
+    pi_a = float(getattr(cfg, "pi_controller_alpha", 0.7))
+    if not (0.0 < pi_a <= 1.0):
+        errors.append(
+            f"pi_controller_alpha={pi_a} must satisfy 0 < pi_controller_alpha <= 1 "
+            f"(proportional exponent of the PI step-size controller)."
+        )
+    pi_b = float(getattr(cfg, "pi_controller_beta", 0.4))
+    if not (0.0 <= pi_b <= 1.0):
+        errors.append(
+            f"pi_controller_beta={pi_b} must satisfy 0 <= pi_controller_beta <= 1 "
+            f"(integral/history exponent of the PI step-size controller)."
+        )
+
     # Photo-frequency switch
     for key in ("photo_switch_longdy_thresh", "photo_switch_longdydt_thresh"):
         v = float(getattr(cfg, key, 1.0))

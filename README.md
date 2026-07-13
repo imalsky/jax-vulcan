@@ -292,6 +292,8 @@ JAX-only config additions (all have sensible defaults):
 | `rtol_min` / `rtol_max` | `0.0` / `1.0` | Bounds for adaptive rtol |
 | `loss_criteria` | `5e-4` | Max-column atom-loss gate for the adaptive-rtol controller |
 | `step_size_safety` | `0.9` | Ros2 step-size safety factor |
+| `use_pi_controller` | `False` | Gustafsson (1991) PI step-size controller (ported from neoVULCAN). Off = master-faithful I-control. When on, accepted steps use `h_factor = safety * (rtol/delta)^(alpha/2) * (delta_prev/delta)^(beta/2)`, falling back to I-control on the first step and after any rejection. Forward-mode AD-safe |
+| `pi_controller_alpha` / `pi_controller_beta` | `0.7` / `0.4` | PI controller exponents (divided by the Ros2 error order p=2) |
 | `fastchem_newton_tol` | `1e-12` | Newton solver tolerance for `ini_mix='EQ'` |
 | `wall_clock_max` | `None` | Wall-clock budget (s); a positive value forces the chunked runner and bails between chunks (`end_case=4`) |
 

@@ -119,6 +119,11 @@ class JaxIntegState(NamedTuple):
     dt: jnp.ndarray  # ()              step size to use for the next attempt
     t: jnp.ndarray  # ()              elapsed integration time
     delta: jnp.ndarray  # ()              truncation-error proxy of last attempt
+    delta_prev: jnp.ndarray  # ()          previous kept step's effective delta for
+    #                                      the PI controller; -1.0 sentinel = no
+    #                                      valid history (entry / after a reject).
+    #                                      Inert pass-through when use_pi_controller
+    #                                      is off.
     accept_count: jnp.ndarray  # ()  int32       accepted steps in this batch
     retry_count: jnp.ndarray  # ()  int32       retries on the in-flight step
     atom_loss: jnp.ndarray  # (n_atoms,)
@@ -276,18 +281,41 @@ def _step_size(
     dt_max: float,
     safety: float = 0.9,
     zero_delta_frac: float = 0.01,
+    delta_prev: Optional[jnp.ndarray] = None,
+    pi_alpha: float = 0.7,
+    pi_beta: float = 0.4,
 ) -> jnp.ndarray:
     """Adaptive Ros2 dt update.
 
+    I-control (default, master-faithful):
     `h_factor = clip(safety * (rtol/delta)^0.5, dt_var_min, dt_var_max)`,
     `h_new = clip(dt * h_factor, dt_min, dt_max)`. `delta == 0` uses
     `zero_delta_frac * rtol` to avoid div-by-zero and give a moderate
     growth factor. Production callers pass `safety` and `zero_delta_frac`
     from `vulcan_cfg.step_size_safety` / `step_size_zero_delta_frac`;
     the defaults here are kept for direct callers (tests / standalone use).
+
+    When `delta_prev` is given, the Gustafsson (1991) PI controller
+    `h_factor = safety * (rtol/delta)^(pi_alpha/2) * (delta_prev/delta)^(pi_beta/2)`
+    (exponents divided by the Ros2 error order p=2) applies wherever
+    `delta_prev > 0`; the -1.0 no-history sentinel (first step / after a
+    rejection) falls back to I-control, matching neoVULCAN's
+    `ode_solver.step_size`.
     """
     delta_eff = jnp.where(delta < _UNDERFLOW_DENOM, zero_delta_frac * rtol, delta)
-    h_factor = safety * (rtol / delta_eff) ** 0.5
+    h_i = safety * (rtol / delta_eff) ** 0.5
+    if delta_prev is None:
+        h_factor = h_i
+    else:
+        # Sanitize the history ratio to exactly 1.0 when there is no valid
+        # history, so neither select branch produces a NaN primal or AD
+        # tangent (the sentinel is -1.0, and (-1)^(pi_beta/2) would NaN both).
+        has_hist = delta_prev > 0.0
+        ratio = jnp.where(has_hist, delta_prev, delta_eff) / delta_eff
+        h_pi = (
+            safety * (rtol / delta_eff) ** (pi_alpha / 2.0) * ratio ** (pi_beta / 2.0)
+        )
+        h_factor = jnp.where(has_hist, h_pi, h_i)
     h_factor = jnp.clip(h_factor, dt_var_min, dt_var_max)
     return jnp.clip(dt * h_factor, dt_min, dt_max)
 
@@ -626,6 +654,12 @@ class _Statics(NamedTuple):
     step_size_safety: float
     step_size_zero_delta_frac: float
 
+    # Gustafsson PI step-size controller (`outer_loop._step_size`). Off by
+    # default; when off the runner traces the exact pre-PI I-control graph.
+    use_pi_controller: bool
+    pi_controller_alpha: float
+    pi_controller_beta: float
+
     # Ion / fix-all-bot. Bools branch at trace time; when off, the
     # corresponding arrays are zero placeholders the body never reads.
     use_ion: bool
@@ -745,6 +779,9 @@ def _make_runner(
     hycean_pin_time = float(statics.hycean_pin_time)
     step_size_safety = float(statics.step_size_safety)
     step_size_zero_delta_frac = float(statics.step_size_zero_delta_frac)
+    use_pi_controller_static = bool(statics.use_pi_controller)
+    pi_controller_alpha = float(statics.pi_controller_alpha)
+    pi_controller_beta = float(statics.pi_controller_beta)
     use_ion_static = statics.use_ion
     e_idx_static = statics.e_idx
     charge_arr_static = statics.charge_arr
@@ -1340,17 +1377,36 @@ def _make_runner(
 
         # Step-size control runs *after* adaptive rtol so the post-update
         # tolerance applies to the next step.
-        dt_after_normal = _step_size(
-            s.dt,
-            delta,
-            rtol_next,
-            dt_var_min,
-            dt_var_max,
-            dt_min,
-            dt_max,
-            step_size_safety,
-            step_size_zero_delta_frac,
-        )
+        if use_pi_controller_static:
+            # PI control applies to the normal accepted path only: master's
+            # step_reject invalidates the error history *before* the dt_min
+            # force-accept clamp, so the force path is always pure I-control.
+            dt_after_normal = _step_size(
+                s.dt,
+                delta,
+                rtol_next,
+                dt_var_min,
+                dt_var_max,
+                dt_min,
+                dt_max,
+                step_size_safety,
+                step_size_zero_delta_frac,
+                delta_prev=s.delta_prev,
+                pi_alpha=pi_controller_alpha,
+                pi_beta=pi_controller_beta,
+            )
+        else:
+            dt_after_normal = _step_size(
+                s.dt,
+                delta,
+                rtol_next,
+                dt_var_min,
+                dt_var_max,
+                dt_min,
+                dt_max,
+                step_size_safety,
+                step_size_zero_delta_frac,
+            )
         dt_after_force = _step_size(
             jnp.float64(dt_min),
             delta,
@@ -1367,6 +1423,21 @@ def _make_runner(
             dt_after_force,
             jnp.where(accept, dt_after_normal, next_dt_if_reject),
         )
+
+        # PI-controller error history: any kept step (accept or force-accept —
+        # master runs step_size after both) stores the effective
+        # zero-substituted delta; a plain reject stores the -1.0 no-history
+        # sentinel (master's step_reject), so the next accepted step falls
+        # back to I-control. Inert pass-through when the controller is off.
+        if use_pi_controller_static:
+            delta_eff_hist = jnp.where(
+                delta < _UNDERFLOW_DENOM,
+                step_size_zero_delta_frac * rtol_next,
+                delta,
+            )
+            delta_prev_next = jnp.where(do_accept, delta_eff_hist, jnp.float64(-1.0))
+        else:
+            delta_prev_next = s.delta_prev
 
         # Photo-frequency ini→final switch when longdy / longdydt drop
         # below their respective vulcan_cfg.photo_switch_* thresholds.
@@ -1388,6 +1459,7 @@ def _make_runner(
             dt=dt_next,
             t=t_next,
             delta=delta,
+            delta_prev=delta_prev_next,
             accept_count=accept_count_next,
             retry_count=retry_count_next,
             atom_loss=atom_loss_next,
@@ -1842,6 +1914,9 @@ class OuterLoop:
             step_size_zero_delta_frac=float(
                 getattr(self._cfg, "step_size_zero_delta_frac", 0.01)
             ),
+            use_pi_controller=bool(getattr(self._cfg, "use_pi_controller", False)),
+            pi_controller_alpha=float(getattr(self._cfg, "pi_controller_alpha", 0.7)),
+            pi_controller_beta=float(getattr(self._cfg, "pi_controller_beta", 0.4)),
             use_ion=use_ion,
             e_idx=int(e_idx),
             charge_arr=jnp.asarray(charge_np),
@@ -2452,6 +2527,9 @@ class OuterLoop:
             dt=jnp.asarray(float(rs.step.dt), dtype=jnp.float64),
             t=jnp.asarray(float(rs.step.t), dtype=jnp.float64),
             delta=jnp.asarray(float(rs.params.delta), dtype=jnp.float64),
+            # PI-controller history sentinel: no valid previous-step error at
+            # entry (mirrors neoVULCAN seeding delta_prev = -1.0 in __init__).
+            delta_prev=jnp.float64(-1.0),
             accept_count=jnp.int32(int(rs.params.count)),
             retry_count=jnp.int32(0),
             atom_loss=jnp.asarray(rs.atoms.atom_loss, dtype=jnp.float64),
@@ -3121,9 +3199,7 @@ class OuterLoop:
         # wall-clock bail (count<count_max, t<runtime) and would otherwise
         # mislabel a truncated run as converged (end_case=1).
         if rs_out.params is not None:
-            rs_out = rs_out._replace(
-                params=rs_out.params._replace(end_case=end_case)
-            )
+            rs_out = rs_out._replace(params=rs_out.params._replace(end_case=end_case))
         if end_case == 3:
             print(
                 "Integration not completed...\nMaximal allowed steps "

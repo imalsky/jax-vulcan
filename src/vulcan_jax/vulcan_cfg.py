@@ -225,6 +225,17 @@ batch_max_retries = 64
 step_size_safety = 0.9
 step_size_zero_delta_frac = 0.01
 
+# Gustafsson (1991) PI step-size controller (Hairer & Wanner II, section IV.2;
+# ported from neoVULCAN's ode_solver.step_size). Off by default — pure
+# I-control, the master-faithful behavior. When on, accepted steps refine
+# h_factor with the previous accepted step's truncation error:
+#   h_factor = safety * (rtol/delta)^(alpha/p) * (delta_prev/delta)^(beta/p)
+# with p = 2 (the Ros2 error order), falling back to I-control on the first
+# step and after any rejection.
+use_pi_controller = False
+pi_controller_alpha = 0.7
+pi_controller_beta = 0.4
+
 # Photo-frequency switch thresholds. `update_photo_frq` ramps from
 # ini_update_photo_frq to final_update_photo_frq when both gates trip.
 photo_switch_longdy_thresh = yconv_min * 10.0

@@ -841,3 +841,40 @@ differentiated photolysis recompute when given `runner_photo_static` +
 is `renorm + dJ/dy`. If those runner-context fields are missing, the default
 raises instead of silently returning the frozen-photolysis leading-order result;
 pass `photo_recompute_k=None` only to reproduce that legacy behavior.
+
+### 2026-07-13: Gustafsson PI timestep controller ported from neoVULCAN (default OFF)
+
+Ported the PI step-size controller (neoVULCAN `ode_solver.step_size`,
+Hairer & Wanner II sec. IV.2) behind `use_pi_controller = False`, with
+`pi_controller_alpha = 0.7` / `pi_controller_beta = 0.4` (exponents divided by
+the Ros2 error order p=2). Declared in `vulcan_cfg.py` + all four
+`cfg_examples/`, bound-checked in `runtime_validation.py`. Mechanics: one new
+carry scalar `delta_prev` (the previous kept step's zero-substituted delta;
+-1.0 = no-history sentinel, seeded at entry and reset on every plain reject),
+consumed by `_step_size(..., delta_prev=, pi_alpha=, pi_beta=)`. Master-faithful
+semantics: step_size runs after accepted AND force-accepted steps; the
+force-accept path stays pure I-control because master's step_reject invalidates
+the history before the dt_min clamp. With the flag off the runner traces the
+exact pre-PI graph (the history slot is an inert pass-through); chunked,
+vmapped-batch, and freeze-on-done paths inherit the field generically.
+
+**AD safety.** The sharp edge is the sentinel: a naive
+`(delta_prev/delta)**(beta/2)` puts a NaN in the untaken select branch. The
+history ratio is sanitized to exactly 1.0 when `delta_prev <= 0`, so neither
+primal nor tangent can NaN. Verified: jvp of `_step_size` finite + FD-matched on
+all three branches, and an end-to-end `d/d ln Kzz` jvp through the real 40-step
+HD189 runner (photo on) has finite tangents with PI on, same scale as off.
+
+**Tests:** `tests/test_pi_controller.py` — bitwise off-path identity, a
+300-event accept/reject/zero-delta sequence vs a NumPy neoVULCAN mirror
+(1e-14), forward-AD checks, and a 50-step HD189 runner off/on comparison.
+Full suite 194 green.
+
+**Benchmark (full convergence, this laptop, fresh process each):**
+HD189 off 1296 steps / 37 delta-rejects / 48.6 s -> on 1475 / 31 / 53.9 s;
+W39b off 1202 / 141 / 63.7 s -> on 1444 / 123 / 74.3 s. Both converge
+(end_case=1, same physical t). Verdict: PI cuts rejections 13-16% as theory
+predicts, but the history damping slows dt growth enough to cost 14-20% more
+accepted steps, net ~11-17% slower — on these columns the reject fraction
+(3-10%) is too small for smoothing to pay. Default OFF is correct; revisit only
+in regimes with heavy accept/reject churn (e.g. much tighter rtol).
