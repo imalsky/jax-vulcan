@@ -1,4 +1,4 @@
-"""Pure-JAX condensation kernels.
+"""Pure-JAX condensation kernels and the on-graph condensation-profile builder.
 
 `update_conden_rates` recomputes the condensation/evaporation rate for
 each conden reaction:
@@ -8,6 +8,20 @@ each conden reaction:
 `apply_h2o_relax_jax` / `apply_nh3_relax_jax` run an implicit-Euler
 cold-trap relaxation toward saturation. NH3 additionally clamps the
 condensation region to layers at or below the `conden_top` index.
+
+`make_conden_spec` (host, once per config) + `build_conden_profile`
+(pure JAX, per T-P realization) split the condensation state into the
+temperature-INdependent metadata (`CondenSpec`: species identity,
+particle mass/radius/density coefficients, relax/fix flags) and the
+temperature/structure-DEPENDENT arrays (`CondenProfile`: saturation
+number densities, growth/diffusion terms, the NH3 cold-trap index, and
+the fix-species saturation mixing ratios). `build_conden_profile` is
+jit/vmap/jvp-compatible, so a caller that evaluates a live T(P) on the
+JAX graph (the retrieval's per-proposal rebuild) can regenerate every
+frozen `ProfileVars c_*` quantity from the same live temperature and
+splice it into the runner carry. `OuterLoop._build_conden_static`
+delegates here too, so the host setup path and the on-graph path share
+one implementation.
 """
 
 from __future__ import annotations
@@ -15,6 +29,8 @@ from __future__ import annotations
 from typing import NamedTuple, Tuple
 
 import jax.numpy as jnp
+
+from .phy_const import Navo, kb
 
 # Numerical floor for `/max(|x|, .)`-style denominators (mirrors the same
 # named constant in outer_loop.py). Not a tuning knob — just below-which-is-zero.
@@ -36,6 +52,253 @@ SUPPORTED_CONDEN_KINETICS: tuple[str, ...] = (
     "S8",
     "C",
 )
+
+# Per-formula physical constants, baked literally from op.conden
+# (op.py:1128-1291). Mass values are kept verbatim including the known
+# oddities (S2 uses 45.019 g/mol per op.py:1244; S8 uses 360.152 per
+# op.py:1290).
+GAS_MASS_G_PER_MOL: dict[str, float] = {
+    "H2O": 18.0,
+    "NH3": 17.0,
+    "H2SO4": 98.022,
+    "S2": 45.019,
+    "S4": 32.06 * 4,
+    "S8": 360.152,
+    "C": 12.011,
+}
+GAS_TO_CONDENSATE: dict[str, str] = {
+    "H2O": "H2O_l_s",
+    "NH3": "NH3_l_s",
+    "H2SO4": "H2SO4_l",
+    "S2": "S2_l_s",
+    "S4": "S4_l_s",
+    "S8": "S8_l_s",
+    "C": "C_s",
+}
+
+
+class CondenSpec(NamedTuple):
+    """Static condensation metadata — everything temperature-INdependent.
+
+    Species identity, k_arr row indices, and the per-reaction coefficient
+    `m / (rho_p * r_p**2)` (relax-shorted H2O/NH3 rows get 0.0, matching
+    the `var.k[re] = 0` short-circuits at op.py:1124-1126 / 1156-1158).
+    Built once per config on the host by `make_conden_spec`; consumed by
+    `build_conden_profile` for every T-P realization.
+    """
+
+    gas_names: Tuple[str, ...]  # active conden reactions' gas species
+    conden_re_idx: Tuple[int, ...]  # k_arr row of each forward reaction
+    conden_sp_idx: Tuple[int, ...]  # species column of each gas species
+    coeff_per_re: Tuple[float, ...]  # m/(rho_p r_p^2); 0.0 for relax rows
+    humidity: float  # relative humidity (H2O saturation only)
+
+    h2o_active: bool  # H2O relax kernel enabled (H2O in use_relax)
+    h2o_idx: int
+    h2o_l_s_idx: int
+    h2o_m_over_rho_r2: float
+
+    nh3_active: bool  # NH3 relax kernel enabled (NH3 in use_relax)
+    nh3_idx: int
+    nh3_l_s_idx: int
+    nh3_m_over_rho_r2: float
+
+    # cfg.fix_species names, in config order; species with saturation data
+    # (members of `sat_names`) get a live sat-mix row, others a zero row —
+    # mirroring `_Statics.fix_species_sat_mix`'s `sp in atm.sat_mix` gate.
+    fix_names: Tuple[str, ...]
+    sat_names: Tuple[str, ...]  # cfg.condense_sp (species with sat data)
+
+
+class CondenProfile(NamedTuple):
+    """Dynamic condensation arrays for one T-P/structure realization.
+
+    All fields are JAX arrays computed on-graph by `build_conden_profile`;
+    they are exactly the temperature/structure-dependent quantities the
+    runner reads from the `ProfileVars` carry (`c_*` fields plus
+    `fix_species_sat_mix`).
+    """
+
+    Dg_per_re: jnp.ndarray  # (n_conden_re, nz)
+    sat_n_per_re: jnp.ndarray  # (n_conden_re, nz)
+    h2o_Dg: jnp.ndarray  # (nz,)
+    h2o_sat: jnp.ndarray  # (nz,)
+    nh3_Dg: jnp.ndarray  # (nz,)
+    nh3_sat: jnp.ndarray  # (nz,)
+    nh3_conden_top: jnp.ndarray  # () int32 — argmin(sat_mix['NH3'])
+    fix_species_sat_mix: jnp.ndarray  # (n_fix, nz)
+
+
+def make_conden_spec(cfg, var, atm, species_idx) -> CondenSpec:
+    """Extract the static condensation metadata from a completed setup.
+
+    Walks `var.conden_re_list` exactly like the legacy packer: a reaction
+    contributes a row only when its gas species is in `cfg.condense_sp`;
+    an active-but-unported formula raises. H2O/NH3 relax blocks are
+    populated when the species is in `cfg.use_relax` (their kinetics rows
+    then get coeff 0.0). Host-side, cheap, no JAX arrays.
+    """
+    relax_set = set(getattr(cfg, "use_relax", []) or [])
+    gas_names: list[str] = []
+    re_idx: list[int] = []
+    sp_idx: list[int] = []
+    coeffs: list[float] = []
+    for re in var.conden_re_list:
+        rf = var.Rf[re]  # 'H2O -> H2O_l_s', etc.
+        gas_sp = rf.split(" -> ")[0].strip()
+        if gas_sp not in cfg.condense_sp:
+            # Reaction is in the network but not active in this run.
+            # Match op.conden's behavior: leaves k untouched (=0).
+            continue
+        if gas_sp not in GAS_MASS_G_PER_MOL:
+            raise NotImplementedError(f"conden formula {rf!r} not yet ported to JAX")
+        condensate = GAS_TO_CONDENSATE[gas_sp]
+        m = GAS_MASS_G_PER_MOL[gas_sp] / Navo
+        coeff = m / (float(atm.rho_p[condensate]) * float(atm.r_p[condensate]) ** 2)
+        # use_relax short-circuit exists only on upstream H2O/NH3
+        # branches (op.py:1124-1126, 1156-1158). Other condensates,
+        # including H2SO4, still use their condensation-rate rows.
+        if gas_sp in {"H2O", "NH3"} and gas_sp in relax_set:
+            coeff = 0.0
+        gas_names.append(gas_sp)
+        re_idx.append(int(re))
+        sp_idx.append(int(species_idx[gas_sp]))
+        coeffs.append(coeff)
+
+    h2o_active = "H2O" in relax_set and "H2O" in species_idx
+    if h2o_active:
+        h2o_idx = int(species_idx["H2O"])
+        h2o_l_s_idx = int(species_idx["H2O_l_s"])
+        h2o_m_over_rho_r2 = (18.0 / Navo) / (
+            float(atm.rho_p["H2O_l_s"]) * float(atm.r_p["H2O_l_s"]) ** 2
+        )
+    else:
+        h2o_idx = h2o_l_s_idx = 0
+        h2o_m_over_rho_r2 = 0.0
+
+    nh3_active = "NH3" in relax_set and "NH3" in species_idx
+    if nh3_active:
+        nh3_idx = int(species_idx["NH3"])
+        nh3_l_s_idx = int(species_idx["NH3_l_s"])
+        nh3_m_over_rho_r2 = (17.0 / Navo) / (
+            float(atm.rho_p["NH3_l_s"]) * float(atm.r_p["NH3_l_s"]) ** 2
+        )
+    else:
+        nh3_idx = nh3_l_s_idx = 0
+        nh3_m_over_rho_r2 = 0.0
+
+    fix_names = tuple(getattr(cfg, "fix_species", []) or [])
+    return CondenSpec(
+        gas_names=tuple(gas_names),
+        conden_re_idx=tuple(re_idx),
+        conden_sp_idx=tuple(sp_idx),
+        coeff_per_re=tuple(coeffs),
+        humidity=float(getattr(cfg, "humidity", 1.0)),
+        h2o_active=h2o_active,
+        h2o_idx=h2o_idx,
+        h2o_l_s_idx=h2o_l_s_idx,
+        h2o_m_over_rho_r2=h2o_m_over_rho_r2,
+        nh3_active=nh3_active,
+        nh3_idx=nh3_idx,
+        nh3_l_s_idx=nh3_l_s_idx,
+        nh3_m_over_rho_r2=nh3_m_over_rho_r2,
+        fix_names=fix_names,
+        sat_names=tuple(cfg.condense_sp),
+    )
+
+
+def build_conden_profile(
+    spec: CondenSpec,
+    Tco: jnp.ndarray,
+    pco: jnp.ndarray,
+    n_0: jnp.ndarray,
+    Dzz: jnp.ndarray,
+) -> CondenProfile:
+    """Rebuild every T/structure-dependent condensation array on-graph.
+
+    Parameters: `Tco`/`pco`/`n_0` are (nz,) layer temperature, pressure
+    (dyne/cm^2), and total number density; `Dzz` is the (nz-1, ni)
+    molecular-diffusion coefficient (interface-centered). All may be
+    traced — the function is jit/vmap/jvp-compatible: species identity
+    comes from the static `spec` (Python-level, unrolled at trace time),
+    and the only discrete output is the NH3 cold-trap `argmin` index
+    (integer-valued, carries no tangent).
+
+    Formulas match op.conden / `_apply_condense` exactly:
+      sat_n   = sat_p(T)/kB/T          (× humidity for H2O)
+      Dg      = Dzz[:, sp] with the bottom interface value repeated
+      sat_mix = min(1, sat_p(T)/p)     (× humidity for H2O, after the clip)
+      NH3 cold trap = argmin(sat_n_NH3 / n_0)
+    """
+    # Import here (not module top) to avoid a cycle: atm_setup imports
+    # vulcan_cfg at module load, which must stay independent of conden.
+    from .atm_setup import sat_p_jax
+
+    Tco = jnp.asarray(Tco, dtype=jnp.float64)
+    pco = jnp.asarray(pco, dtype=jnp.float64)
+    n_0 = jnp.asarray(n_0, dtype=jnp.float64)
+    Dzz = jnp.asarray(Dzz, dtype=jnp.float64)
+    nz = Tco.shape[0]
+    if Dzz.ndim != 2 or Dzz.shape[0] != nz - 1:
+        raise ValueError(
+            f"Dzz shape {Dzz.shape} inconsistent with nz={nz}: expected (nz-1, ni)"
+        )
+
+    def _Dg_col(sp_col: int) -> jnp.ndarray:
+        # Dg = atm.Dzz[:, sp] with [0] reused at the bottom (op.py:1138).
+        col = Dzz[:, sp_col]
+        return jnp.concatenate([col[:1], col])
+
+    def _sat_n(name: str) -> jnp.ndarray:
+        sat_n = sat_p_jax(name, Tco) / kb / Tco
+        if name == "H2O":
+            sat_n = sat_n * spec.humidity
+        return sat_n
+
+    if spec.gas_names:
+        Dg_per_re = jnp.stack([_Dg_col(c) for c in spec.conden_sp_idx])
+        sat_n_per_re = jnp.stack([_sat_n(name) for name in spec.gas_names])
+    else:
+        Dg_per_re = jnp.zeros((0, nz), dtype=jnp.float64)
+        sat_n_per_re = jnp.zeros((0, nz), dtype=jnp.float64)
+
+    zz = jnp.zeros((nz,), dtype=jnp.float64)
+    h2o_Dg = _Dg_col(spec.h2o_idx) if spec.h2o_active else zz
+    h2o_sat = _sat_n("H2O") if spec.h2o_active else zz
+    nh3_Dg = _Dg_col(spec.nh3_idx) if spec.nh3_active else zz
+    nh3_sat = _sat_n("NH3") if spec.nh3_active else zz
+    if spec.nh3_active:
+        # conden_top = argmin(sat_mix['NH3']) = argmin(sat_n / n_0);
+        # discrete by nature — moves layer-by-layer as T changes.
+        nh3_conden_top = jnp.argmin(nh3_sat / n_0).astype(jnp.int32)
+    else:
+        nh3_conden_top = jnp.int32(0)
+
+    if spec.fix_names:
+        rows = []
+        for name in spec.fix_names:
+            if name in spec.sat_names:
+                # `_apply_condense` order: clip to 1 first, THEN humidity.
+                sm = jnp.minimum(1.0, sat_p_jax(name, Tco) / pco)
+                if name == "H2O":
+                    sm = sm * spec.humidity
+                rows.append(sm)
+            else:
+                rows.append(zz)
+        fix_species_sat_mix = jnp.stack(rows)
+    else:
+        fix_species_sat_mix = jnp.zeros((0, nz), dtype=jnp.float64)
+
+    return CondenProfile(
+        Dg_per_re=Dg_per_re,
+        sat_n_per_re=sat_n_per_re,
+        h2o_Dg=h2o_Dg,
+        h2o_sat=h2o_sat,
+        nh3_Dg=nh3_Dg,
+        nh3_sat=nh3_sat,
+        nh3_conden_top=nh3_conden_top,
+        fix_species_sat_mix=fix_species_sat_mix,
+    )
 
 
 class CondenStatic(NamedTuple):

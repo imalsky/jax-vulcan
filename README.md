@@ -377,10 +377,27 @@ recomputes the interface pressures from the rewritten grid where production keep
 a stale `pico`, and `use_moldiff=off` computes `Ti`/`Hpi` as interface averages
 where production leaves them at legacy defaults; the latter is runtime-inert.)
 
-`atm_setup.sat_p_jax` differentiates the saturation-pressure formula w.r.t. `T`
-(Murray/Antoine, phase-boundary kinks aside), but it is a **standalone helper** —
-the runtime condensation static still reads a host-frozen `sat_p`, so this `∂/∂T`
-does **not** yet flow through the runner.
+**Condensation follows a live `T(P)` too.** `conden.make_conden_spec` (host, once
+per config) extracts the temperature-independent metadata — species identity,
+particle `m/(ρ_p r_p²)` coefficients, relax/fix flags — and
+`conden.build_conden_profile(spec, Tco, pco, n_0, Dzz)` rebuilds every
+temperature/structure-dependent condensation array on-graph: per-reaction
+saturation number densities (`sat_p_jax(T)/k_B T`, humidity-weighted for H2O),
+growth/diffusion `Dg` terms from the live `Dzz`, the H2O/NH3 relax inputs, the
+NH3 cold-trap `argmin` index, and the fix-species saturation mixing ratios
+(`min(1, sat_p/p)`). The function is jit/vmap/jvp-compatible; the runner already
+reads these arrays from the `ProfileVars` carry every step (`s.pv.c_*`,
+`s.pv.fix_species_sat_mix`), so splicing the rebuilt `CondenProfile` into `pv`
+makes the whole condensation path consistent with — and differentiable w.r.t. —
+the proposed temperature. `OuterLoop._build_conden_static` delegates to the same
+builder (verified bit-exact against the pre-refactor host packer on isothermal
+and non-isothermal columns), so host setup and on-graph rebuild share one
+implementation; `tests/test_conden_profile_builder.py` pins the formulas against
+an independent NumPy oracle plus the jit/vmap/jvp contracts. The one discrete
+output is the cold-trap `argmin` (integer, no tangent) — a `T` tangent moves the
+saturation *curves* smoothly but the active-layer set and cold-trap index change
+layer-by-layer, so forward-mode derivatives are only valid away from those
+switches (same caveat as any phase boundary).
 
 ### What you CANNOT differentiate yet
 

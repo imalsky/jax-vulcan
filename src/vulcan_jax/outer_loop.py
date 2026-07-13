@@ -2147,161 +2147,45 @@ class OuterLoop:
         if not self._cfg.use_condense:
             return None
 
-        species_idx = _NETWORK.species_idx
-        nz = atm.Tco.shape[0]
-        kb = float(_phy_const.kb)
-        Navo = float(_phy_const.Navo)
-
-        # Per-formula physical constants, baked literally from op.conden
-        # (op.py:1128-1291). Mass values are kept verbatim including the
-        # known oddities (S2 uses 45.019 g/mol per op.py:1244; S8 uses
-        # 360.152 per op.py:1290).
-        gas_mass_g_per_mol = {
-            "H2O": 18.0,
-            "NH3": 17.0,
-            "H2SO4": 98.022,
-            "S2": 45.019,
-            "S4": 32.06 * 4,
-            "S8": 360.152,
-            "C": 12.011,
-        }
-        gas_to_condensate = {
-            "H2O": "H2O_l_s",
-            "NH3": "NH3_l_s",
-            "H2SO4": "H2SO4_l",
-            "S2": "S2_l_s",
-            "S4": "S4_l_s",
-            "S8": "S8_l_s",
-            "C": "C_s",
-        }
-
-        # Walk var.conden_re_list and pack one row per reaction.
-        relax_set = set(getattr(self._cfg, "use_relax", []) or [])
-        conden_re_idx_list, conden_sp_idx_list = [], []
-        Dg_rows, sat_n_rows, coeff_list = [], [], []
-        for re in var.conden_re_list:
-            rf = var.Rf[re]  # 'H2O -> H2O_l_s', etc.
-            gas_sp = rf.split(" -> ")[0].strip()
-            if gas_sp not in self._cfg.condense_sp:
-                # Reaction is in the network but not active in this run.
-                # Match op.conden's behavior: leaves k untouched (=0).
-                continue
-            if gas_sp not in gas_mass_g_per_mol:
-                raise NotImplementedError(
-                    f"conden formula {rf!r} not yet ported to JAX"
-                )
-            condensate = gas_to_condensate[gas_sp]
-            sp_idx = species_idx[gas_sp]
-            m = gas_mass_g_per_mol[gas_sp] / Navo
-            r_p = float(atm.r_p[condensate])
-            rho_p = float(atm.rho_p[condensate])
-            coeff = m / (rho_p * r_p**2)
-            # use_relax short-circuit exists only on upstream H2O/NH3
-            # branches (op.py:1124-1126, 1156-1158). Other condensates,
-            # including H2SO4, still use their condensation-rate rows.
-            if gas_sp in {"H2O", "NH3"} and gas_sp in relax_set:
-                coeff = 0.0
-            # Dg = atm.Dzz[:, sp_idx] with [0] reused at the bottom (op.py:1138).
-            Dzz_col = np.asarray(atm.Dzz[:, sp_idx], dtype=np.float64)
-            Dg = np.insert(Dzz_col, 0, Dzz_col[0])
-            # sat_n = sat_p[gas]/kb/Tco; H2O multiplies by humidity (op.py:1132).
-            sat_n = (
-                np.asarray(atm.sat_p[gas_sp], dtype=np.float64)
-                / kb
-                / np.asarray(atm.Tco, dtype=np.float64)
-            )
-            if gas_sp == "H2O":
-                sat_n = sat_n * float(self._cfg.humidity)
-            conden_re_idx_list.append(int(re))
-            conden_sp_idx_list.append(int(sp_idx))
-            Dg_rows.append(Dg)
-            sat_n_rows.append(sat_n)
-            coeff_list.append(coeff)
-
-        if not conden_re_idx_list:
-            # Active condensation enabled but no live reactions — runner
-            # still wants a non-None static so the branch is built; pack
-            # zero-length arrays.
-            conden_re_idx = np.zeros(0, dtype=np.int32)
-            conden_sp_idx = np.zeros(0, dtype=np.int32)
-            Dg_per_re = np.zeros((0, nz), dtype=np.float64)
-            sat_n_per_re = np.zeros((0, nz), dtype=np.float64)
-            coeff_per_re = np.zeros(0, dtype=np.float64)
-        else:
-            conden_re_idx = np.asarray(conden_re_idx_list, dtype=np.int32)
-            conden_sp_idx = np.asarray(conden_sp_idx_list, dtype=np.int32)
-            Dg_per_re = np.stack(Dg_rows, axis=0)
-            sat_n_per_re = np.stack(sat_n_rows, axis=0)
-            coeff_per_re = np.asarray(coeff_list, dtype=np.float64)
-
-        # H2O relax block (op.py:1334-1370).
-        h2o_active = "H2O" in relax_set and "H2O" in species_idx
-        if h2o_active:
-            sp_h2o = species_idx["H2O"]
-            sp_h2o_l_s = species_idx["H2O_l_s"]
-            r_p = float(atm.r_p["H2O_l_s"])
-            rho_p = float(atm.rho_p["H2O_l_s"])
-            h2o_m_over_rho_r2 = (18.0 / Navo) / (rho_p * r_p**2)
-            Dzz_col = np.asarray(atm.Dzz[:, sp_h2o], dtype=np.float64)
-            h2o_Dg = np.insert(Dzz_col, 0, Dzz_col[0])
-            h2o_sat = (
-                np.asarray(atm.sat_p["H2O"], dtype=np.float64)
-                / kb
-                / np.asarray(atm.Tco, dtype=np.float64)
-                * float(self._cfg.humidity)
-            )
-        else:
-            sp_h2o = sp_h2o_l_s = 0
-            h2o_m_over_rho_r2 = 0.0
-            h2o_Dg = np.zeros(nz, dtype=np.float64)
-            h2o_sat = np.zeros(nz, dtype=np.float64)
-
-        # NH3 relax block (op.py:1372-1424).
-        nh3_active = "NH3" in relax_set and "NH3" in species_idx
-        if nh3_active:
-            sp_nh3 = species_idx["NH3"]
-            sp_nh3_l_s = species_idx["NH3_l_s"]
-            r_p = float(atm.r_p["NH3_l_s"])
-            rho_p = float(atm.rho_p["NH3_l_s"])
-            nh3_m_over_rho_r2 = (17.0 / Navo) / (rho_p * r_p**2)
-            Dzz_col = np.asarray(atm.Dzz[:, sp_nh3], dtype=np.float64)
-            nh3_Dg = np.insert(Dzz_col, 0, Dzz_col[0])
-            nh3_sat = (
-                np.asarray(atm.sat_p["NH3"], dtype=np.float64)
-                / kb
-                / np.asarray(atm.Tco, dtype=np.float64)
-            )
-            # conden_top = argmin(sat_mix['NH3']) = argmin(sat_n / n_0).
-            # Static; depends only on the T-p profile.
-            n_0_np = np.asarray(atm.n_0, dtype=np.float64)
-            sat_mix_np = nh3_sat / n_0_np
-            nh3_conden_top = int(np.argmin(sat_mix_np))
-        else:
-            sp_nh3 = sp_nh3_l_s = 0
-            nh3_m_over_rho_r2 = 0.0
-            nh3_Dg = np.zeros(nz, dtype=np.float64)
-            nh3_sat = np.zeros(nz, dtype=np.float64)
-            nh3_conden_top = 0
-
+        # Single-source construction: the static metadata (species identity,
+        # particle coefficients, relax flags) comes from make_conden_spec, and
+        # every T/structure-dependent array from the same pure-JAX
+        # build_conden_profile the on-graph per-proposal rebuild uses.
+        spec = _conden_mod.make_conden_spec(
+            self._cfg, var, atm, _NETWORK.species_idx
+        )
+        prof = _conden_mod.build_conden_profile(
+            spec,
+            jnp.asarray(atm.Tco, dtype=jnp.float64),
+            jnp.asarray(atm.pco, dtype=jnp.float64),
+            jnp.asarray(atm.n_0, dtype=jnp.float64),
+            jnp.asarray(atm.Dzz, dtype=jnp.float64),
+        )
         return _conden_mod.CondenStatic(
-            conden_re_idx=jnp.asarray(conden_re_idx),
-            conden_sp_idx=jnp.asarray(conden_sp_idx),
-            Dg_per_re=jnp.asarray(Dg_per_re),
-            sat_n_per_re=jnp.asarray(sat_n_per_re),
-            coeff_per_re=jnp.asarray(coeff_per_re),
-            h2o_active=h2o_active,
-            h2o_idx=int(sp_h2o),
-            h2o_l_s_idx=int(sp_h2o_l_s),
-            h2o_Dg=jnp.asarray(h2o_Dg),
-            h2o_sat=jnp.asarray(h2o_sat),
-            h2o_m_over_rho_r2=float(h2o_m_over_rho_r2),
-            nh3_active=nh3_active,
-            nh3_idx=int(sp_nh3),
-            nh3_l_s_idx=int(sp_nh3_l_s),
-            nh3_Dg=jnp.asarray(nh3_Dg),
-            nh3_sat=jnp.asarray(nh3_sat),
-            nh3_m_over_rho_r2=float(nh3_m_over_rho_r2),
-            nh3_conden_top=int(nh3_conden_top),
+            conden_re_idx=jnp.asarray(
+                np.asarray(spec.conden_re_idx, dtype=np.int32)
+            ),
+            conden_sp_idx=jnp.asarray(
+                np.asarray(spec.conden_sp_idx, dtype=np.int32)
+            ),
+            Dg_per_re=prof.Dg_per_re,
+            sat_n_per_re=prof.sat_n_per_re,
+            coeff_per_re=jnp.asarray(
+                np.asarray(spec.coeff_per_re, dtype=np.float64)
+            ),
+            h2o_active=spec.h2o_active,
+            h2o_idx=spec.h2o_idx,
+            h2o_l_s_idx=spec.h2o_l_s_idx,
+            h2o_Dg=prof.h2o_Dg,
+            h2o_sat=prof.h2o_sat,
+            h2o_m_over_rho_r2=spec.h2o_m_over_rho_r2,
+            nh3_active=spec.nh3_active,
+            nh3_idx=spec.nh3_idx,
+            nh3_l_s_idx=spec.nh3_l_s_idx,
+            nh3_Dg=prof.nh3_Dg,
+            nh3_sat=prof.nh3_sat,
+            nh3_m_over_rho_r2=spec.nh3_m_over_rho_r2,
+            nh3_conden_top=int(prof.nh3_conden_top),
             n_0=jnp.asarray(atm.n_0, dtype=jnp.float64),
             gas_indx_mask=gas_mask_jnp,
         )
