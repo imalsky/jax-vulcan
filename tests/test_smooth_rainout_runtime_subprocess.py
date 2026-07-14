@@ -182,6 +182,47 @@ assert float(rep.max_R) > 0.0
 print(f"RESIDUAL_OK max_R={float(rep.max_R):.3e} at z={int(rep.argmax_z)} "
       f"i={SL[int(rep.argmax_i)]}")
 
+# ---- Check 2b: adjoint body map carries the sink -----------------------------
+# make_body_terms on a smooth state must pack the carry's RainoutTerm and the
+# carry pin values, and the sink must actually act inside the body map: a map
+# built WITHOUT the term must differ on the supersaturated S8 cells. This is
+# exactly the silent-drop bug class the old NotImplementedError guarded.
+from vulcan_jax.steady_state_grad import make_body_terms, _make_body_map
+from vulcan_jax import chem_funs as _cf
+
+atm_step, terms = make_body_terms(integ, state, atm_static)
+assert terms.rainout is not None, "smooth state produced no RainoutTerm"
+np.testing.assert_allclose(
+    np.asarray(terms.rainout.n_sat),
+    np.asarray(state.pv.c_sat_n_per_re[int(integ._statics.rainout_re_row)]),
+    rtol=0)
+np.testing.assert_allclose(
+    np.asarray(terms.bot_val),
+    np.asarray(state.pv.bot_pin_mix) * float(np.asarray(state.pv.n_0)[0]),
+    rtol=1e-15)
+_, body_map, _, _ = _make_body_map(
+    state.y, state.k_arr, atm_step, _cf._NET_JAX, 1e3, "renorm", None, terms)
+_, body_map_nosink, _, _ = _make_body_map(
+    state.y, state.k_arr, atm_step, _cf._NET_JAX, 1e3, "renorm", None,
+    terms._replace(rainout=None))
+g_with = np.asarray(body_map(state.y))
+g_without = np.asarray(body_map_nosink(state.y))
+assert np.all(np.isfinite(g_with))
+n_s8_now = np.asarray(state.y[:, i_s8])
+n_sat_now = np.asarray(terms.rainout.n_sat)
+super_cells = n_s8_now > n_sat_now
+assert super_cells.any(), "no supersaturated S8 cell at the probe state"
+ds8 = np.abs(g_with[:, i_s8] - g_without[:, i_s8])
+assert ds8[super_cells].max() > 0.0, (
+    "rainout term does not act in the body map (S8 rows identical)")
+# NOTE: no zero-delta assertion on subsaturated cells -- the implicit step
+# couples layers (transport) and the renorm redistributes, so the sink's
+# effect legitimately propagates column-wide within one map application;
+# the hinge's exact one-sidedness is pinned at kernel level
+# (test_smooth_rainout_kernel).
+print(f"BODYMAP_OK sink_delta_max={ds8[super_cells].max():.3e} "
+      f"n_super={int(super_cells.sum())}")
+
 # ---- Check 3: hot subsaturated column — exact zero + conden-off agreement ----
 N_STEPS = 30
 base_cfg(1500.0)

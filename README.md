@@ -423,9 +423,18 @@ loud replacement, and the fix_sp_bot pin VALUES ride `ProfileVars`
 differentiable function of theta. `steady_residual.direct_residual` /
 `residual_from_state` provide the scaled ||F(y*)|| stationarity diagnostic
 (chemistry + transport + rainout, enforced cells excluded). The steady-state
-adjoint refuses this mode (`make_body_terms` raises; the sink is not in its
-body map and the state carries no conden fingerprint) — sensitivities go
-through the implicit fixed-point route or forward-mode. Loud build-time
+adjoint SUPPORTS this mode (Route B G6): `make_body_terms` packs the
+converged-carry `RainoutTerm` into `BodyTerms.rainout` (sink + analytic
+`dL/dn` in the body map via `jax_ros2_step(rainout=)`), layer-0 pin values
+come from the carry, and `steady_state_input_sensitivity` accepts an
+extended `rebuild(p) -> (k, atm, extras)` whose `extras` dict (`rainout`,
+`bot_val`) carries `d(n_sat)/dp`, `d(C)/dp`, and the boundary-pin
+derivative into `dG/dp` (consistency-checked at `p0`; loud warnings when
+smooth terms are active but extras are missing). Deflate with CLOSED
+elements only (zero the open-budget compo columns — S and H under the
+fix_sp_bot reservoir); a smooth state has no conden fingerprint, so
+`make_body_terms` is the only sanctioned `BodyTerms` entry point and
+`audit_adjoint_scope` errors when the terms lack the sink. Loud build-time
 refusals: non-S8 `condense_sp`, `fix_species`, `use_relax`, `use_settling`,
 `use_ion`, `use_fix_all_bot`/`use_fix_H2He`, non-positive `w`/scale.
 Default behavior is untouched: `conden_mode="master_pin"` traces the exact

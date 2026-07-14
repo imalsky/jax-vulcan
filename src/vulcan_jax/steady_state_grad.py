@@ -173,6 +173,7 @@ import jax.numpy as jnp
 from .chem import NetworkArrays
 from .conden import (
     CondenStatic,
+    RainoutTerm,
     apply_h2o_relax_jax,
     apply_nh3_relax_jax,
     update_conden_rates,
@@ -389,7 +390,11 @@ class BodyTerms(NamedTuple):
     the Ros2 step, then overwritten with the pinned values so their body-map
     rows are constants). `bot_idx`/`bot_val` are the layer-0 Dirichlet pins
     (`use_fix_all_bot` / `use_fix_sp_bot` / tripped hycean H2-He), applied
-    after the balance exactly as the runner does.
+    after the balance exactly as the runner does. `rainout` is the
+    smooth-rainout sink (`conden_mode="smooth_rainout"`): the SAME
+    `RainoutTerm` splice the runner and `steady_residual` build from the
+    converged carry, passed into `jax_ros2_step(rainout=)` so the body map
+    carries the sink and its analytic d(sink)/dy exactly as the step does.
     """
 
     conden_static: Optional[CondenStatic] = None
@@ -399,6 +404,7 @@ class BodyTerms(NamedTuple):
     fix_y: Optional[jnp.ndarray] = None  # (nz, ni)
     bot_idx: Optional[jnp.ndarray] = None  # (m,) int32
     bot_val: Optional[jnp.ndarray] = None  # (m,)
+    rainout: Optional[RainoutTerm] = None  # smooth-rainout sink at y*
 
 
 def _make_body_map(
@@ -426,6 +432,7 @@ def _make_body_map(
         or t.gas_mask is not None
         or t.fix_mask is not None
         or t.bot_idx is not None
+        or t.rainout is not None
     )
     if has_terms and solver_map != "renorm":
         raise ValueError(
@@ -438,10 +445,13 @@ def _make_body_map(
     M_col_default = atm.M[:, None]
     dt64 = jnp.float64(body_dt)
 
-    def apply_post_map(sol, M_col=None):
+    def apply_post_map(sol, M_col=None, bot_val=None):
         # "renorm" reproduces the runner's hydrostatic rebalance so that the
         # linearized map has the forward-converged y_star as a tight fixed
         # point; "bare" leaves the raw Ros2 step (see SOLVER_MAP_DEFAULT).
+        # `bot_val` overrides the layer-0 pin VALUES for parameter maps
+        # where the pin depends on the input (the smooth-rainout lookup
+        # boundary: bot_val = pin(theta) * n_0(theta)[0]).
         M_c = M_col_default if M_col is None else M_col
         if solver_map != "renorm":
             return sol
@@ -464,18 +474,24 @@ def _make_body_map(
         if t.hydro_partial and gas is not None:
             balanced = jnp.where(gas[None, :], balanced, y2)
         if t.bot_idx is not None:
-            balanced = balanced.at[0, t.bot_idx].set(t.bot_val)
+            bv = t.bot_val if bot_val is None else bot_val
+            balanced = balanced.at[0, t.bot_idx].set(bv)
         return balanced
 
-    def step_fn(y, k_use, atm_use):
+    def step_fn(y, k_use, atm_use, rainout=None):
         # fix_species regime: pin inside the step (row/col zeroing) then
         # overwrite with the pinned values, mirroring the runner — the
         # overwrite makes pinned rows constants of the map (identity rows of
         # I - dG/dy) instead of pass-throughs (singular rows).
+        # `rainout` defaults to the converged term (the y-operator); a
+        # parameter map passes its own rebuilt term so dG/dp carries
+        # d(n_sat)/dp and d(C)/dp.
+        rain = (t.rainout if t is not None else None) if rainout is None else rainout
         if t is not None and t.fix_mask is not None:
-            sol, _ = jax_ros2_step(y, k_use, dt64, atm_use, net, fix_mask=t.fix_mask)
+            sol, _ = jax_ros2_step(y, k_use, dt64, atm_use, net,
+                                   fix_mask=t.fix_mask, rainout=rain)
             return jnp.where(t.fix_mask, t.fix_y, sol)
-        sol, _ = jax_ros2_step(y, k_use, dt64, atm_use, net)
+        sol, _ = jax_ros2_step(y, k_use, dt64, atm_use, net, rainout=rain)
         return sol
 
     # When `photo_recompute_k` is given, the photolysis rows of k are rebuilt
@@ -1229,8 +1245,14 @@ def steady_state_input_sensitivity(
     p0
         The input value the state was converged at (array or pytree).
     rebuild
-        `rebuild(p) -> (k_arr_p, atm_p)`: a JAX-differentiable rebuild of the
-        FULL rate table and `AtmStatic` at input `p`. It must reproduce the
+        `rebuild(p) -> (k_arr_p, atm_p)` or `(k_arr_p, atm_p, extras)`: a
+        JAX-differentiable rebuild of the FULL rate table and `AtmStatic` at
+        input `p`. The optional `extras` dict extends dG/dp to the
+        smooth-rainout surfaces: `extras["rainout"]` (a `RainoutTerm` rebuilt
+        at p — carries d(n_sat)/dp and d(C)/dp) and `extras["bot_val"]` (the
+        (m,) layer-0 pin VALUES at p, e.g. lookup_pin(p) * n_0(p)[0] —
+        carries the boundary derivative). With smooth-rainout body terms and
+        NO extras the sink arrays and pin are FROZEN in dG/dp (warned). It must reproduce the
         converged inputs at `p0` — checked, warn above
         `_REBUILD_CONSISTENCY_WARN`, refuse above `_REBUILD_CONSISTENCY_ERR` —
         which in particular means non-thermal rows (photolysis J, conden)
@@ -1288,7 +1310,9 @@ def steady_state_input_sensitivity(
     n_solves = max(1, int(n_solves))
 
     # rebuild(p0) must reproduce the map the state converged under.
-    k0, atm0 = rebuild(p0)
+    _out0 = rebuild(p0)
+    k0, atm0 = _out0[0], _out0[1]
+    extras0 = dict(_out0[2]) if len(_out0) > 2 else {}
 
     def _worst_rel(a, b) -> float:
         a_np = np.asarray(a, dtype=np.float64)
@@ -1323,6 +1347,51 @@ def steady_state_input_sensitivity(
             stacklevel=2,
         )
 
+    terms_rainout = body_terms.rainout if body_terms is not None else None
+    if terms_rainout is not None:
+        if "rainout" in extras0:
+            r0 = extras0["rainout"]
+            consistency["rainout.C"] = _worst_rel(r0.C, terms_rainout.C)
+            consistency["rainout.n_sat"] = _worst_rel(
+                r0.n_sat, terms_rainout.n_sat
+            )
+            worst_r = max(consistency["rainout.C"], consistency["rainout.n_sat"])
+            if worst_r > _REBUILD_CONSISTENCY_ERR:
+                raise ValueError(
+                    f"rebuild(p0) extras['rainout'] does not reproduce the "
+                    f"converged RainoutTerm (worst mismatch {worst_r:.2e}); "
+                    "the sink's parameter map would be linearized against a "
+                    "different sink and the gradient silently wrong."
+                )
+        else:
+            warnings.warn(
+                "smooth-rainout body terms are active but rebuild(p) "
+                "supplies no extras['rainout']: d(n_sat)/dp and d(C)/dp are "
+                "FROZEN in dG/dp. Correct only for inputs that move neither "
+                "T nor Dzz.",
+                stacklevel=2,
+            )
+    if (body_terms is not None and body_terms.bot_idx is not None):
+        if "bot_val" in extras0:
+            consistency["bot_val"] = _worst_rel(
+                extras0["bot_val"], body_terms.bot_val
+            )
+            if consistency["bot_val"] > _REBUILD_CONSISTENCY_ERR:
+                raise ValueError(
+                    f"rebuild(p0) extras['bot_val'] does not reproduce the "
+                    f"converged layer-0 pin values (mismatch "
+                    f"{consistency['bot_val']:.2e})."
+                )
+        elif terms_rainout is not None:
+            warnings.warn(
+                "smooth-rainout body terms carry a layer-0 pin but "
+                "rebuild(p) supplies no extras['bot_val']: the boundary's "
+                "p-derivative (d pin/dp, d n_0/dp) is FROZEN in dG/dp. The "
+                "lookup boundary is a first-class theta dependence — supply "
+                "extras['bot_val'] for any input that moves T, lnZ, or c_o.",
+                stacklevel=2,
+            )
+
     conden_static = body_terms.conden_static if body_terms is not None else None
     if conden_static is not None:
         warnings.warn(
@@ -1355,14 +1424,17 @@ def steady_state_input_sensitivity(
     # y_star (their y-part; sat tables frozen) so k(p)'s conden rows need not
     # be rebuilt by the caller; photolysis rows ride k(p) frozen (see above).
     def G_p(p):
-        k_p, atm_p = rebuild(p)
+        out = rebuild(p)
+        k_p, atm_p = out[0], out[1]
+        ex = out[2] if len(out) > 2 else {}
         k_use = (
             update_conden_rates(k_p, y_star, conden_static)
             if conden_static is not None
             else k_p
         )
-        sol = step_fn(y_star, k_use, atm_p)
-        return apply_post(sol, M_col=atm_p.M[:, None])
+        sol = step_fn(y_star, k_use, atm_p, rainout=ex.get("rainout"))
+        return apply_post(sol, M_col=atm_p.M[:, None],
+                          bot_val=ex.get("bot_val"))
 
     _, pullback = jax.vjp(G_p, p0)
     twin_grads = [pullback(lam)[0] for lam in lams]
@@ -1514,18 +1586,24 @@ def make_body_terms(integ, converged_state, atm_static):
             "not supported. Use forward-mode."
         )
 
+    rainout_term = None
     if bool(getattr(st, "use_smooth_rainout", False)):
-        # The smooth-rainout sink lives INSIDE jax_ros2_step (rainout=)
-        # and is not yet packed into BodyTerms; a body map without it would
-        # produce silently wrong sensitivities on sulfur rows. The state
-        # also cannot be fingerprinted downstream (its conden k-rows are
-        # zero), so refuse here, loudly. The D9 route for this mode is the
-        # dedicated implicit fixed-point solve (Route B plan B1-3).
-        raise NotImplementedError(
-            "conden_mode='smooth_rainout': the rainout sink is not in the "
-            "adjoint body map yet — make_body_terms would drop it and the "
-            "fingerprint guard cannot detect it. Use the smooth-rainout "
-            "implicit fixed-point sensitivity route instead."
+        # Smooth-rainout sink (Route B B1-3): the SAME RainoutTerm splice
+        # the runner's body_fn and steady_residual.residual_from_state
+        # build from the converged carry. jax_ros2_step(rainout=) carries
+        # the sink in both stage RHSs plus its analytic dL/dn on the
+        # Jacobian, so the body map's dG/dy is exact through the sink. The
+        # state has no conden fingerprint (conden k-rows are zero in this
+        # mode) — make_body_terms is the ONLY sanctioned BodyTerms entry
+        # point for smooth states; audit_adjoint_scope flags a smooth
+        # state whose terms lack the sink.
+        rainout_term = RainoutTerm(
+            C=float(st.rainout_scale)
+            * float(st.rainout_coeff)
+            * s.pv.c_Dg_per_re[int(st.rainout_re_row)],
+            n_sat=s.pv.c_sat_n_per_re[int(st.rainout_re_row)],
+            w=float(st.rainout_w),
+            sp_mask=st.rainout_sp_mask,
         )
 
     # --- atm splice (the converged refresh geometry + live vm) ---
@@ -1600,8 +1678,12 @@ def make_body_terms(integ, converged_state, atm_static):
         idx_parts.append(jnp.arange(ni, dtype=jnp.int32))
         val_parts.append(s.pv.bottom_n)
     if bool(st.use_fix_sp_bot) and int(np.asarray(st.fix_sp_bot_idx).size) > 0:
+        # pin VALUES ride the carry (pv.bot_pin_mix, seeded from
+        # statics.fix_sp_bot_mix — bit-identical for legacy states);
+        # the carry is authoritative: an on-graph caller (the retrieval's
+        # per-proposal _prep) sets a live pin the statics never see.
         idx_parts.append(st.fix_sp_bot_idx.astype(jnp.int32))
-        val_parts.append(st.fix_sp_bot_mix * n0_bot)
+        val_parts.append(s.pv.bot_pin_mix * n0_bot)
     if bool(st.use_fix_H2He):
         if bool(np.asarray(s.h2he_pinned)):
             idx_parts.append(
@@ -1626,6 +1708,7 @@ def make_body_terms(integ, converged_state, atm_static):
         fix_y=fix_y,
         bot_idx=bot_idx,
         bot_val=bot_val,
+        rainout=rainout_term,
     )
     return atm_step, terms
 
@@ -1673,17 +1756,31 @@ def _adjoint_scope_findings(
     terms_bot = body_terms is not None and body_terms.bot_idx is not None
 
     if str(flag("conden_mode", "master_pin")) == "smooth_rainout":
-        add(
-            "smooth_rainout_sink",
-            "error",
-            "conden_mode='smooth_rainout': the rainout sink acts inside "
-            "jax_ros2_step (rainout=) but is NOT in the adjoint body map or "
-            "BodyTerms, and the state carries no detectable conden "
-            "fingerprint (conden k-rows are zero in this mode). Reaction/"
-            "input sensitivities from this adjoint would silently drop the "
-            "sink. Use the smooth-rainout implicit fixed-point route "
-            "(Route B plan B1-3); make_body_terms refuses this mode.",
-        )
+        terms_rain = body_terms is not None and body_terms.rainout is not None
+        if terms_rain:
+            add(
+                "smooth_rainout_sink",
+                "info",
+                "conden_mode='smooth_rainout' and body_terms carries the "
+                "RainoutTerm: the body map includes the sink and its "
+                "analytic d(sink)/dy via jax_ros2_step(rainout=). Residual "
+                "limitation for INPUT maps: the converged n_sat(T) / "
+                "C(Dzz) arrays and the boundary pin are frozen in dG/dp "
+                "unless rebuild(p) supplies them via the extras dict "
+                "(steady_state_input_sensitivity third return element).",
+            )
+        else:
+            add(
+                "smooth_rainout_sink",
+                "error",
+                "conden_mode='smooth_rainout' but body_terms does NOT carry "
+                "the RainoutTerm: the sink acts inside jax_ros2_step "
+                "(rainout=) and the state has no detectable conden "
+                "fingerprint (conden k-rows are zero in this mode), so "
+                "sensitivities from this body map silently drop the sink. "
+                "Build terms with make_body_terms (the single sanctioned "
+                "entry point for smooth states).",
+            )
 
     if bool(flag("use_condense", False)) and (
         str(flag("conden_mode", "master_pin")) != "smooth_rainout"
