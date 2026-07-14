@@ -131,6 +131,25 @@ remove_list = []  # in pairs e.g. [1,2]
 use_relax = []
 use_condense = False
 use_settling = False
+# conden_mode selects the runtime condensation methodology when
+# use_condense=True (Route B plan + B0A decision record, docs/route_b):
+#   "master_pin"     (DEFAULT) exact VULCAN-master behavior: operator-split
+#                    conden rates + conden window + fix_species pin.
+#   "smooth_rainout" opt-in open-system S8 rainout: one-sided C1 sink
+#                    inside the implicit Ros2 step, no window, no pin,
+#                    flux-based open-budget accounting. GAS-DEPLETION-ONLY
+#                    (predicts gas removal; no particles, no haze opacity).
+conden_mode = "master_pin"
+# Dimensionless supersaturation width w of the smooth_rainout hinge
+# (h_w(s) quadratic for 0 < s < w, linear above). Numerical regularization,
+# not physics: endpoint spectra must be stable across a documented w range
+# (gate G5a). Only read when conden_mode="smooth_rainout".
+conden_smooth_width = 0.1
+# Effective multiplier on the smooth_rainout removal coefficient
+# C = rainout_rate_scale * Dg * m / (rho_p * r_p^2). An effective
+# gas-removal-timescale knob (D8), not a microphysical prediction. Only
+# read when conden_mode="smooth_rainout".
+rainout_rate_scale = 1.0
 start_conden_time = 0
 stop_conden_time = 1e5  # after this time to fix the condensable species
 condense_sp = []

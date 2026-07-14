@@ -399,6 +399,42 @@ saturation *curves* smoothly but the active-layer set and cold-trap index change
 layer-by-layer, so forward-mode derivatives are only valid away from those
 switches (same caveat as any phase boundary).
 
+**Smooth rainout (`conden_mode="smooth_rainout"`, opt-in prototype — Route B
+plan B0B).** An open-system alternative to the master conden window + pin,
+for the S8 channel only (`condense_sp=["S8"]`): the one-sided C1 sink
+`L = C·n·n_sat·h_w(n/n_sat−1)` (`conden.smooth_rainout_loss`, division-free
+density form, exactly zero at/below saturation) rides INSIDE the Ros2 step —
+RHS of both stages plus its analytic `dL/dn` on the block-diagonal Jacobian,
+added strictly AFTER the reservoir projection (routing it through the
+projection would have the H2S reservoir re-inject the removed sulfur) — so
+the step is implicit in the sink and the conden branch, window, and
+fix-species pin are skipped structurally. The model is GAS-DEPLETION-ONLY
+(no condensate reservoir, no particles, no haze opacity; the `S8_l_s`
+kinetics rows stay zero). Knobs: `conden_mode`, `conden_smooth_width` (the
+hinge width `w`), `rainout_rate_scale` (effective removal-timescale
+multiplier on `C = Dg·m/(ρ_p r_p²)`). Open-budget accounting: a per-operator
+per-element ledger rides the carry (`led_step`/`led_renorm`/`led_bc`/
+`led_rain`/`led_dt` — measured deltas that telescope to the inventory change
+at float64 resolution; `led_bc` is the D3b implied bottom source, measured
+at the pinned cells), the accept-gate / adapt-rtol atom-loss checks mask the
+open elements (S, plus the pinned species' elements) with the ledger as the
+loud replacement, and the fix_sp_bot pin VALUES ride `ProfileVars`
+(`pv.bot_pin_mix`) so an on-graph caller can make the deep boundary a
+differentiable function of theta. `steady_residual.direct_residual` /
+`residual_from_state` provide the scaled ||F(y*)|| stationarity diagnostic
+(chemistry + transport + rainout, enforced cells excluded). The steady-state
+adjoint refuses this mode (`make_body_terms` raises; the sink is not in its
+body map and the state carries no conden fingerprint) — sensitivities go
+through the implicit fixed-point route or forward-mode. Loud build-time
+refusals: non-S8 `condense_sp`, `fix_species`, `use_relax`, `use_settling`,
+`use_ion`, `use_fix_all_bot`/`use_fix_H2He`, non-positive `w`/scale.
+Default behavior is untouched: `conden_mode="master_pin"` traces the exact
+pre-change graph. Tests: `tests/test_smooth_rainout_kernel.py` (kernel FD
+through all inputs, w→0 legacy limit, guards) and
+`tests/test_smooth_rainout_runtime_subprocess.py` (SNCHO e2e: validation,
+ledger telescoping + H2S-stoichiometric boundary ledger, inert conden rows,
+gate masks, exact-zero hot limit vs conden-off).
+
 ### What you CANNOT differentiate yet
 
 | Blocked knob | Why it's blocked | Workaround today |

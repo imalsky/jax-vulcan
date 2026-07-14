@@ -113,6 +113,13 @@ remove_list = []  # in pairs e.g. [1,2]
 
 # == Condensation ======
 use_condense = False
+# conden_mode: "master_pin" = exact upstream window+pin methodology;
+# "smooth_rainout" = opt-in Route B open-system S8 sink (gas-depletion-only).
+# conden_smooth_width / rainout_rate_scale are smooth_rainout-only knobs
+# (hinge width w; effective removal-rate multiplier).
+conden_mode = "master_pin"
+conden_smooth_width = 0.1
+rainout_rate_scale = 1.0
 use_settling = False
 start_conden_time = 1e10
 condense_sp = []

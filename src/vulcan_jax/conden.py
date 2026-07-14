@@ -36,6 +36,13 @@ from .phy_const import Navo, kb
 # named constant in outer_loop.py). Not a tuning knob — just below-which-is-zero.
 _UNDERFLOW_DENOM = 1e-300
 
+# Floor on the saturation number density inside the smooth-rainout hinge
+# width eps = w * max(n_sat, N_SAT_FLOOR) [cm^-3]. Pure numerical guard, not
+# a tuning knob: keeps the quadratic hinge branch x^2/(2*eps) finite when
+# n_sat underflows on cold columns (B0A decision record, item 2). Far below
+# any physical number density (deep-space is ~1 cm^-3).
+N_SAT_FLOOR = 1e-280
+
 # Gas-phase condensates with a fully-ported runtime kinetics path — exactly
 # VULCAN-master's op.conden branch set. `atm_setup._SUPPORTED_CONDENSABLES`
 # additionally lists H2S, which has saturation data only (capping/cold-trap),
@@ -354,6 +361,67 @@ def update_conden_rates(
 
     k_arr_new = k_arr.at[st.conden_re_idx].set(k_pos)
     return k_arr_new.at[st.conden_re_idx + 1].set(k_neg)
+
+
+class RainoutTerm(NamedTuple):
+    """Inputs of the smooth-rainout sink for one Ros2 step (conden_mode =
+    "smooth_rainout"; B0A decision record items 1-2).
+
+    `C` is the effective continuum-growth removal coefficient
+    `rainout_rate_scale * Dg * m / (rho_p * r_p**2)` [cm^3 s^-1] per layer,
+    `n_sat` the saturation number density [cm^-3], `w` the dimensionless
+    hinge width, and `sp_mask` a float one-hot over species selecting the
+    rainout gas (S8). All arrays may be traced; the term is spliced from
+    the ProfileVars carry each step so live-T(P) callers stay on-graph.
+    """
+
+    C: jnp.ndarray  # (nz,)
+    n_sat: jnp.ndarray  # (nz,)
+    w: float  # dimensionless hinge width (> 0)
+    sp_mask: jnp.ndarray  # (ni,) float64 one-hot
+
+
+def smooth_rainout_loss(
+    n: jnp.ndarray, C: jnp.ndarray, n_sat: jnp.ndarray, w: float
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """Smooth irreversible rainout sink L and its analytic dL/dn.
+
+    Canonical form (B0A record item 1): L = C * n * n_sat * h_w(s) with
+    s = n/n_sat - 1 and h_w the one-sided C1 hinge. Implemented in the
+    algebraically identical division-free density form (record item 2):
+
+        x   = n - n_sat
+        eps = w * max(n_sat, N_SAT_FLOOR)
+        Phi = 0            for x <= 0
+            = x^2/(2 eps)  for 0 < x < eps
+            = x - eps/2    for x >= eps
+        L   = C * n * Phi          [cm^-3 s^-1]
+        dL/dn = C * (Phi + n * Phi'),  Phi' in {0, x/eps, 1}
+
+    Exactly zero at or below saturation (no sub-saturation leakage, no
+    phantom evaporation), C1 in n, and every branch is finite for ALL
+    inputs so the `jnp.where` selections are AD-safe. The w -> 0 pointwise
+    limit is C * n * max(n - n_sat, 0), the legacy gas-side loss branch
+    (`update_conden_rates` k_pos applied first-order on n).
+    """
+    n = jnp.asarray(n, dtype=jnp.float64)
+    C = jnp.asarray(C, dtype=jnp.float64)
+    n_sat = jnp.asarray(n_sat, dtype=jnp.float64)
+    x = n - n_sat
+    eps = w * jnp.maximum(n_sat, N_SAT_FLOOR)
+    # Clamp the quadratic branch's argument into its own region so the
+    # unselected branch never produces inf/nan that a where would leak
+    # into the tangents.
+    x_quad = jnp.clip(x, 0.0, eps)
+    phi = jnp.where(
+        x <= 0.0,
+        0.0,
+        jnp.where(x < eps, x_quad * x_quad / (2.0 * eps), x - eps / 2.0),
+    )
+    dphi = jnp.where(x <= 0.0, 0.0, jnp.where(x < eps, x_quad / eps, 1.0))
+    L = C * n * phi
+    dL_dn = C * (phi + n * dphi)
+    return L, dL_dn
 
 
 def apply_h2o_relax_jax(

@@ -81,6 +81,13 @@ class ProfileVars(NamedTuple):
     atom_ini: jnp.ndarray  # (n_atoms,)    initial atom abundances (atom_loss)
     bottom_n: jnp.ndarray  # (ni,)         fix-all-bot pin (ymix[0]*n_0[0])
     fix_species_sat_mix: jnp.ndarray  # (n_fix_species, nz)
+    # fix_sp_bot pin VALUES (mixing ratios), seeded from the static config.
+    # Rides the carry (not the closure) so an on-graph caller — the
+    # retrieval's per-proposal _prep — can make the deep boundary a
+    # differentiable function of theta (B0A record item 3 / plan 2g-ii);
+    # a closure-baked value would silently zero d/d(theta) through the
+    # boundary. The pinned SPECIES SET (fix_sp_bot_idx) stays static.
+    bot_pin_mix: jnp.ndarray  # (n_fix_sp_bot,)
     # from AtmRefreshStatic
     r_Tco: jnp.ndarray  # (nz,)            atm-refresh temperature
     r_pico: jnp.ndarray  # (nz+1,)         atm-refresh interface pressure
@@ -195,6 +202,28 @@ class JaxIntegState(NamedTuple):
     # the body branch is a static no-op.
     h2he_pinned: jnp.ndarray  # ()  bool
     h2he_mix: jnp.ndarray  # (2,) float64  [H2_mix, He_mix]
+
+    # Open-system per-operator elemental ledger (conden_mode =
+    # "smooth_rainout" only; zero placeholders the body never writes in
+    # every other mode). Each entry is the LAST ACCEPTED step's measured
+    # column-inventory delta [atoms cm^-2] of one operator; the three
+    # terms telescope to N_E(y_next) - N_E(y_prev) to the inventory's
+    # float64 resolution (B0A record item 5). Instantaneous (no cumulative
+    # mass in the state, per D6): led_step = Ros2 step + clip (chemistry +
+    # transport + rainout) and led_renorm = hydrostatic renorm, both via
+    # difference-array einsums (their deltas are physical-scale);
+    # led_bc = bottom-boundary enforcement (the D3b implied source),
+    # measured at the pinned cells themselves — the operator is a
+    # single-row scatter by construction, and a whole-tensor difference
+    # would bury the ~1e-18-of-inventory pin delta under XLA refusion
+    # noise on the bulk columns. led_rain = instantaneous elemental
+    # rainout rate [atoms cm^-2 s^-1] at the committed state, led_dt =
+    # the step's dt.
+    led_step: jnp.ndarray  # (n_atoms,)
+    led_renorm: jnp.ndarray  # (n_atoms,)
+    led_bc: jnp.ndarray  # (n_atoms,)
+    led_rain: jnp.ndarray  # (n_atoms,)
+    led_dt: jnp.ndarray  # ()
 
     # save_evolution capture buffer. When save_evolution=False the buffers
     # are length-1 placeholders that the body never writes.
@@ -691,6 +720,24 @@ class _Statics(NamedTuple):
     save_evo_frq: int
     save_evo_n_max: int
 
+    # Smooth-rainout mode (conden_mode = "smooth_rainout"; B0A decision
+    # record). When False every field below is a degenerate placeholder and
+    # the body traces the exact pre-change graph. When True: the window /
+    # conden branch / fix-species pin are skipped entirely, the rainout
+    # sink rides inside the Ros2 step (jax_ros2_step rainout=), the
+    # elemental ledger is recorded, and the accept-gate / adapt-rtol
+    # atom-loss checks see only CLOSED elements via gate_atom_mask (the
+    # open-element replacement is the ledger + closure diagnostics —
+    # masking without the active replacement is forbidden, record item 5).
+    use_smooth_rainout: bool
+    rainout_re_row: int  # row into pv.c_Dg_per_re / c_sat_n_per_re
+    rainout_coeff: float  # m/(rho_p r_p^2) of the rainout condensate
+    rainout_scale: float  # cfg.rainout_rate_scale
+    rainout_w: float  # cfg.conden_smooth_width
+    rainout_sp_mask: jnp.ndarray  # (ni,) float64 one-hot on the rainout gas
+    rainout_atoms: jnp.ndarray  # (n_atoms,) atoms/molecule of that gas
+    gate_atom_mask: jnp.ndarray  # (n_atoms,) bool — elements kept in gates
+
 
 def _make_runner(
     net,
@@ -794,12 +841,20 @@ def _make_runner(
     save_evo_n_max_static = int(statics.save_evo_n_max)
     use_fix_sp_bot_static = statics.use_fix_sp_bot
     fix_sp_bot_idx_static = statics.fix_sp_bot_idx
-    fix_sp_bot_mix_static = statics.fix_sp_bot_mix
+    # (the pin VALUES ride s.pv.bot_pin_mix, seeded from statics.fix_sp_bot_mix)
     use_fix_species_static = statics.use_fix_species
     post_conden_rtol = statics.post_conden_rtol
     fix_species_from_coldtrap_lev = statics.fix_species_from_coldtrap_lev
     fix_species_idx = statics.fix_species_idx
     fix_species_wholecol = statics.fix_species_wholecol
+    use_smooth_rainout_static = bool(statics.use_smooth_rainout)
+    rainout_re_row = int(statics.rainout_re_row)
+    rainout_coeff = float(statics.rainout_coeff)
+    rainout_scale = float(statics.rainout_scale)
+    rainout_w = float(statics.rainout_w)
+    rainout_sp_mask = statics.rainout_sp_mask
+    rainout_atoms = statics.rainout_atoms
+    gate_atom_mask = statics.gate_atom_mask
 
     def _activate_fix_species(s_in: JaxIntegState) -> JaxIntegState:
         nz_fix = s_in.pv.n_0.shape[0]
@@ -984,6 +1039,20 @@ def _make_runner(
                 )
             )
 
+        # Smooth-rainout sink (conden_mode="smooth_rainout"): spliced from
+        # the ProfileVars carry each step so a live-T(P) caller's rebuilt
+        # CondenProfile arrays (Dg, sat_n) reach the step on-graph. None in
+        # every other mode — jax_ros2_step then traces its pre-change graph.
+        if use_smooth_rainout_static:
+            rainout_t = _conden_mod.RainoutTerm(
+                C=rainout_scale * rainout_coeff * s.pv.c_Dg_per_re[rainout_re_row],
+                n_sat=s.pv.c_sat_n_per_re[rainout_re_row],
+                w=rainout_w,
+                sp_mask=rainout_sp_mask,
+            )
+        else:
+            rainout_t = None
+
         # Master pins the electron rows inside BOTH Ros2 stages when use_ion
         # (op.py:2949-2952, 2966-2967): df[e]=0 + LHS rows zeroed with
         # diag=1/(r*h), so k1[e]=k2[e]=0, sol[e]=y[e], delta[e]=0 within the
@@ -996,19 +1065,33 @@ def _make_runner(
             e_mask = jnp.zeros_like(s.fix_mask).at[:, e_idx_static].set(True)
             step_mask = (s.fix_mask | e_mask) if use_fix_species_static else e_mask
             sol, delta_arr = jax_ros2_step(
-                s.y, s.k_arr, s.dt, atm_step, net, fix_mask=step_mask
+                s.y,
+                s.k_arr,
+                s.dt,
+                atm_step,
+                net,
+                fix_mask=step_mask,
+                rainout=rainout_t,
             )
             delta_arr = jnp.where(step_mask, 0.0, delta_arr)
             if use_fix_species_static:
                 sol = jnp.where(s.fix_mask, s.fix_y, sol)
         elif use_fix_species_static:
             sol, delta_arr = jax_ros2_step(
-                s.y, s.k_arr, s.dt, atm_step, net, fix_mask=s.fix_mask
+                s.y,
+                s.k_arr,
+                s.dt,
+                atm_step,
+                net,
+                fix_mask=s.fix_mask,
+                rainout=rainout_t,
             )
             sol = jnp.where(s.fix_mask, s.fix_y, sol)
             delta_arr = jnp.where(s.fix_mask, 0.0, delta_arr)
         else:
-            sol, delta_arr = jax_ros2_step(s.y, s.k_arr, s.dt, atm_step, net)
+            sol, delta_arr = jax_ros2_step(
+                s.y, s.k_arr, s.dt, atm_step, net, rainout=rainout_t
+            )
 
         sol_clip, ymix_new, small_y_inc, nega_y_inc = clip_fn(sol, s.ymix)
         atom_loss_new = _compute_atom_loss(sol_clip, compo_arr, s.pv.atom_ini)
@@ -1020,7 +1103,21 @@ def _make_runner(
 
         # Use dynamic s.rtol so adaptive-rtol updates take effect immediately.
         all_nonneg = jnp.all(sol_clip >= 0)
-        loss_diff = jnp.max(jnp.abs(atom_loss_new - s.atom_loss_prev))
+        if use_smooth_rainout_static:
+            # Open-budget elements (rainout + boundary-pinned; S and H here)
+            # change PHYSICALLY every step — gating acceptance on them would
+            # misread real flux as numerical drift. Closed elements keep the
+            # exact master gate; the open ones are watched by the ledger +
+            # closure diagnostics instead (B0A record item 5).
+            loss_diff = jnp.max(
+                jnp.where(
+                    gate_atom_mask,
+                    jnp.abs(atom_loss_new - s.atom_loss_prev),
+                    0.0,
+                )
+            )
+        else:
+            loss_diff = jnp.max(jnp.abs(atom_loss_new - s.atom_loss_prev))
         accept = all_nonneg & (loss_diff < loss_eps) & (delta <= s.rtol)
 
         # Force-accept when shrinking dt would underflow or we've burned the
@@ -1189,13 +1286,22 @@ def _make_runner(
             e_density = -jnp.einsum("zi,i->z", sol_balanced, charge_arr_static)
             sol_balanced = sol_balanced.at[:, e_idx_static].set(e_density)
 
+        # Everything from here to the hycean pin is bottom-BOUNDARY
+        # enforcement; the smooth-rainout ledger measures its elemental
+        # delta as the D3b implied source (led_bc).
+        sol_pre_bc = sol_balanced
+
         # fix-all-bot pin: bottom layer fixed to chem-EQ mixing ratios
         # snapshotted at init, scaled by n_0[0]. Trace-time branch.
         if use_fix_all_bot_static:
             sol_balanced = sol_balanced.at[0].set(s.pv.bottom_n)
         if use_fix_sp_bot_static:
+            # Pin VALUES come from the ProfileVars carry (seeded from the
+            # static config, so single-profile behavior is unchanged) —
+            # see ProfileVars.bot_pin_mix for why they must not be
+            # closure-baked.
             sol_balanced = sol_balanced.at[0, fix_sp_bot_idx_static].set(
-                fix_sp_bot_mix_static * s.pv.n_0[0]
+                s.pv.bot_pin_mix * s.pv.n_0[0]
             )
 
         # Hycean H2/He bottom-pin (op.py:2937-2944): master fires the
@@ -1223,6 +1329,60 @@ def _make_runner(
         else:
             h2he_pinned_next = s.h2he_pinned
             h2he_mix_next = s.h2he_mix
+
+        # Open-system elemental ledger (smooth_rainout only; trace-time
+        # no-op otherwise). Every term is the MEASURED column-inventory
+        # delta of one operator over this step, so
+        #   led_step + led_renorm + led_bc = N_E(committed) - N_E(previous)
+        # holds identically and any operator that silently restores rained
+        # sulfur is localized (B0A record item 5; regression-pinned).
+        if use_smooth_rainout_static:
+
+            def _column_atoms_delta(y_hi, y_lo):
+                # Delta N_E = sum_z sum_i compo[i,E] * (y_hi - y_lo) * dz
+                # [atoms cm^-2]. The einsum runs on the DIFFERENCE array —
+                # differencing two column sums instead would lose any
+                # operator delta below ~1e-16 of the inventory to
+                # catastrophic cancellation. Fine for the step and renorm
+                # operators, whose deltas are physical-scale.
+                return jnp.einsum("zi,ie,z->e", y_hi - y_lo, compo_arr, s.dz)
+
+            n_rain_commit = sol_balanced @ rainout_sp_mask
+            L_commit, _ = _conden_mod.smooth_rainout_loss(
+                n_rain_commit, rainout_t.C, rainout_t.n_sat, rainout_t.w
+            )
+            rain_rate = rainout_atoms * jnp.sum(L_commit * s.dz)
+            # led_bc is measured AT THE PINNED CELLS: the fix_sp_bot
+            # operator is a single-row scatter by construction (smooth
+            # mode rejects the other bottom pins), so its complete
+            # elemental delta is compo[pinned] . (new - old) * dz[0].
+            # Measuring it as a whole-tensor difference instead is
+            # ulp-ambiguous: the pre-pin intermediate never materializes,
+            # and XLA's refusion noise on the bulk columns (~1e-16 of the
+            # H2 cells) buries the ~1e-18-of-inventory pin delta.
+            if use_fix_sp_bot_static:
+                pin_new = s.pv.bot_pin_mix * s.pv.n_0[0]
+                pin_old = sol_pre_bc[0, fix_sp_bot_idx_static]
+                led_bc_val = ((pin_new - pin_old) * s.dz[0]) @ compo_arr[
+                    fix_sp_bot_idx_static
+                ]
+            else:
+                led_bc_val = jnp.zeros_like(s.led_bc)
+            led_step_next = jnp.where(
+                do_accept, _column_atoms_delta(sol_clip, s.y), s.led_step
+            )
+            led_renorm_next = jnp.where(
+                do_accept, _column_atoms_delta(sol_pre_bc, sol_clip), s.led_renorm
+            )
+            led_bc_next = jnp.where(do_accept, led_bc_val, s.led_bc)
+            led_rain_next = jnp.where(do_accept, rain_rate, s.led_rain)
+            led_dt_next = jnp.where(do_accept, dt_used_for_t, s.led_dt)
+        else:
+            led_step_next = s.led_step
+            led_renorm_next = s.led_renorm
+            led_bc_next = s.led_bc
+            led_rain_next = s.led_rain
+            led_dt_next = s.led_dt
 
         # y / ymix / atom_loss for the next iteration.
         y_next = jnp.where(do_accept, sol_balanced, s.y_prev)
@@ -1342,7 +1502,14 @@ def _make_runner(
         # `accept_count % adapt_rtol_dec_period == 0` and triggers when
         # |atom_loss| stays at/above s.loss_criteria; increase cadence is
         # likewise periodic but gated by a lower atom-loss threshold.
-        max_atom_loss = jnp.max(jnp.abs(atom_loss_new))
+        # Smooth-rainout mode masks the open-budget elements here for the
+        # same reason as the accept gate (their atom_loss is physical).
+        if use_smooth_rainout_static:
+            max_atom_loss = jnp.max(
+                jnp.where(gate_atom_mask, jnp.abs(atom_loss_new), 0.0)
+            )
+        else:
+            max_atom_loss = jnp.max(jnp.abs(atom_loss_new))
         do_dec = (
             jnp.bool_(use_adapt_rtol)
             & do_accept
@@ -1464,6 +1631,11 @@ def _make_runner(
             retry_count=retry_count_next,
             atom_loss=atom_loss_next,
             atom_loss_prev=atom_loss_prev_next,
+            led_step=led_step_next,
+            led_renorm=led_renorm_next,
+            led_bc=led_bc_next,
+            led_rain=led_rain_next,
+            led_dt=led_dt_next,
             nega_count=s.nega_count + nega_count_inc,
             loss_count=s.loss_count + loss_count_inc,
             delta_count=s.delta_count + delta_count_inc,
@@ -1825,6 +1997,100 @@ class OuterLoop:
             h2_idx = -1
             he_idx = -1
 
+        # conden_mode: "master_pin" (default, exact upstream window + pin)
+        # or "smooth_rainout" (Route B open-system S8 sink; B0A record).
+        # Validation is loud and runs on every statics build.
+        conden_mode = str(getattr(self._cfg, "conden_mode", "master_pin"))
+        if conden_mode not in ("master_pin", "smooth_rainout"):
+            raise ValueError(
+                f"conden_mode={conden_mode!r}: expected 'master_pin' or "
+                "'smooth_rainout'"
+            )
+        use_smooth_rainout = conden_mode == "smooth_rainout"
+        n_atoms = len(self._atom_order)
+        rainout_re_row = 0
+        rainout_coeff = 0.0
+        rainout_scale = float(getattr(self._cfg, "rainout_rate_scale", 1.0))
+        rainout_w = float(getattr(self._cfg, "conden_smooth_width", 0.1))
+        rainout_sp_mask_np = np.zeros(ni, dtype=np.float64)
+        rainout_atoms_np = np.zeros(n_atoms, dtype=np.float64)
+        gate_atom_mask_np = np.ones(n_atoms, dtype=bool)
+        if use_smooth_rainout:
+            if not self._cfg.use_condense:
+                raise ValueError(
+                    "conden_mode='smooth_rainout' requires use_condense=True "
+                    "(the sink needs the condensation profile arrays)"
+                )
+            if list(self._cfg.condense_sp) != ["S8"]:
+                raise ValueError(
+                    "conden_mode='smooth_rainout' supports exactly "
+                    f"condense_sp=['S8'] (D4); got {self._cfg.condense_sp!r}"
+                )
+            if getattr(self._cfg, "fix_species", []):
+                raise ValueError(
+                    "conden_mode='smooth_rainout' rejects fix_species "
+                    "(the window + pin machinery is master_pin-only); got "
+                    f"{self._cfg.fix_species!r}"
+                )
+            if getattr(self._cfg, "use_relax", []):
+                raise ValueError(
+                    "conden_mode='smooth_rainout' rejects use_relax "
+                    f"(master_pin-only relax kernels); got {self._cfg.use_relax!r}"
+                )
+            if getattr(self._cfg, "use_settling", False):
+                raise ValueError(
+                    "conden_mode='smooth_rainout' rejects use_settling=True "
+                    "(no condensate population to settle; B2 scope)"
+                )
+            if bool(self._cfg.use_ion):
+                raise ValueError(
+                    "conden_mode='smooth_rainout' does not support use_ion=True "
+                    "(open-system ledger and deflation are defined for the "
+                    "neutral SNCHO configuration)"
+                )
+            if bool(getattr(self._cfg, "use_fix_all_bot", False)) or bool(
+                getattr(self._cfg, "use_fix_H2He", False)
+            ):
+                raise ValueError(
+                    "conden_mode='smooth_rainout' supports only the "
+                    "fix_sp_bot bottom boundary (the D3b deep-reservoir "
+                    "pin); use_fix_all_bot / use_fix_H2He would make the "
+                    "boundary ledger incomplete"
+                )
+            if not (rainout_w > 0.0):
+                raise ValueError(f"conden_smooth_width must be > 0; got {rainout_w!r}")
+            if not (rainout_scale > 0.0):
+                raise ValueError(
+                    f"rainout_rate_scale must be > 0; got {rainout_scale!r}"
+                )
+            spec = _conden_mod.make_conden_spec(
+                self._cfg, var, atm, _NETWORK.species_idx
+            )
+            if tuple(spec.gas_names) != ("S8",):
+                raise ValueError(
+                    "smooth_rainout expected exactly one active conden "
+                    f"reaction (S8); got {spec.gas_names!r}"
+                )
+            rainout_re_row = 0
+            rainout_coeff = float(spec.coeff_per_re[0])
+            sp_idx = int(spec.conden_sp_idx[0])
+            rainout_sp_mask_np[sp_idx] = 1.0
+            rainout_atoms_np = self._compo_arr[sp_idx].copy()
+            # Open-budget elements: any element removed by rainout plus any
+            # element of a bottom-pinned species. Excluded from the accept
+            # gate / adapt-rtol (their change is physical flux); watched by
+            # the ledger + closure diagnostics instead.
+            open_mask = rainout_atoms_np > 0.0
+            for sp in (getattr(self._cfg, "use_fix_sp_bot", {}) or {}).keys():
+                open_mask |= self._compo_arr[_NETWORK.species_idx[sp]] > 0.0
+            gate_atom_mask_np = ~open_mask
+            if not gate_atom_mask_np.any():
+                raise ValueError(
+                    "smooth_rainout: every element is open-budget under this "
+                    "boundary configuration; the closed-element accept gate "
+                    "would be empty. Refusing."
+                )
+
         fix_species_cfg = list(getattr(self._cfg, "fix_species", []) or [])
         use_fix_species = bool(self._cfg.use_condense and fix_species_cfg)
         if use_fix_species:
@@ -1951,6 +2217,14 @@ class OuterLoop:
                 if bool(getattr(self._cfg, "save_evolution", False))
                 else 1
             ),
+            use_smooth_rainout=use_smooth_rainout,
+            rainout_re_row=rainout_re_row,
+            rainout_coeff=rainout_coeff,
+            rainout_scale=rainout_scale,
+            rainout_w=rainout_w,
+            rainout_sp_mask=jnp.asarray(rainout_sp_mask_np),
+            rainout_atoms=jnp.asarray(rainout_atoms_np),
+            gate_atom_mask=jnp.asarray(gate_atom_mask_np),
         )
 
     def _ensure_runner(self, var, atm) -> None:
@@ -1969,19 +2243,38 @@ class OuterLoop:
             gas_mask_np[:] = True
         gas_mask_jnp = jnp.asarray(gas_mask_np)
 
+        self._statics = self._build_statics(var, atm)
+
         # condense_zero_mask (nz, ni) — True where delta should be zeroed.
         # Only fires when `use_condense=True` (via condense_sp + non_gas_sp);
-        # default HD189 has both empty so the mask is all False.
+        # default HD189 has both empty so the mask is all False. In
+        # smooth_rainout mode the GAS columns stay under error control —
+        # the sink is inside the implicit step and its truncation error
+        # must gate dt (removing the master_pin dt cap is the point; D5) —
+        # so only the inert non_gas_sp columns are masked.
         cond_mask_np = np.zeros((nz, ni), dtype=bool)
         if self._cfg.use_condense:
-            for sp in self._cfg.condense_sp + self._cfg.non_gas_sp:
+            masked_sp = (
+                self._cfg.non_gas_sp
+                if self._statics.use_smooth_rainout
+                else self._cfg.condense_sp + self._cfg.non_gas_sp
+            )
+            for sp in masked_sp:
                 if sp in _NETWORK.species_idx:
                     cond_mask_np[:, _NETWORK.species_idx[sp]] = True
 
-        self._statics = self._build_statics(var, atm)
         self._photo_static = self._build_photo_static(var, atm)
         self._refresh_static = self._build_refresh_static(var, atm)
         self._conden_static = self._build_conden_static(var, atm, gas_mask_jnp)
+        # smooth_rainout: the conden BRANCH (k_arr overwrite + relax kernels
+        # + window + fix-species pin) is master_pin machinery and is skipped
+        # structurally — the runner gets conden_static=None. The profile
+        # arrays (Dg, sat_n) still reach the step via ProfileVars, and the
+        # S8 <-> S8_l_s kinetics rows keep their setup value of zero, so
+        # the network reactions stay inert in this mode.
+        runner_conden_static = (
+            None if self._statics.use_smooth_rainout else self._conden_static
+        )
         self._runner, self._runner_batch = _make_runner(
             _NET_JAX,
             self._statics,
@@ -1994,7 +2287,7 @@ class OuterLoop:
             float(getattr(self._cfg, "stop_conden_time", 0.0)),
             photo_static=self._photo_static,
             refresh_static=self._refresh_static,
-            conden_static=self._conden_static,
+            conden_static=runner_conden_static,
         )
 
     def _build_photo_static(self, var, atm) -> Optional[_PhotoStatic]:
@@ -2151,9 +2444,7 @@ class OuterLoop:
         # particle coefficients, relax flags) comes from make_conden_spec, and
         # every T/structure-dependent array from the same pure-JAX
         # build_conden_profile the on-graph per-proposal rebuild uses.
-        spec = _conden_mod.make_conden_spec(
-            self._cfg, var, atm, _NETWORK.species_idx
-        )
+        spec = _conden_mod.make_conden_spec(self._cfg, var, atm, _NETWORK.species_idx)
         prof = _conden_mod.build_conden_profile(
             spec,
             jnp.asarray(atm.Tco, dtype=jnp.float64),
@@ -2162,17 +2453,11 @@ class OuterLoop:
             jnp.asarray(atm.Dzz, dtype=jnp.float64),
         )
         return _conden_mod.CondenStatic(
-            conden_re_idx=jnp.asarray(
-                np.asarray(spec.conden_re_idx, dtype=np.int32)
-            ),
-            conden_sp_idx=jnp.asarray(
-                np.asarray(spec.conden_sp_idx, dtype=np.int32)
-            ),
+            conden_re_idx=jnp.asarray(np.asarray(spec.conden_re_idx, dtype=np.int32)),
+            conden_sp_idx=jnp.asarray(np.asarray(spec.conden_sp_idx, dtype=np.int32)),
             Dg_per_re=prof.Dg_per_re,
             sat_n_per_re=prof.sat_n_per_re,
-            coeff_per_re=jnp.asarray(
-                np.asarray(spec.coeff_per_re, dtype=np.float64)
-            ),
+            coeff_per_re=jnp.asarray(np.asarray(spec.coeff_per_re, dtype=np.float64)),
             h2o_active=spec.h2o_active,
             h2o_idx=spec.h2o_idx,
             h2o_l_s_idx=spec.h2o_l_s_idx,
@@ -2352,6 +2637,7 @@ class OuterLoop:
             fix_species_sat_mix=jnp.asarray(
                 statics.fix_species_sat_mix, dtype=jnp.float64
             ),
+            bot_pin_mix=jnp.asarray(statics.fix_sp_bot_mix, dtype=jnp.float64),
             r_Tco=jnp.asarray(refresh.Tco, dtype=jnp.float64),
             r_pico=jnp.asarray(refresh.pico, dtype=jnp.float64),
             r_Dzz_top=jnp.asarray(refresh.Dzz_top, dtype=jnp.float64),
@@ -2434,6 +2720,13 @@ class OuterLoop:
             # live ymix when (use_fix_H2He=True) & (~pinned) & (t > 1e6).
             h2he_pinned=jnp.bool_(False),
             h2he_mix=jnp.zeros((2,), dtype=jnp.float64),
+            # Open-system ledger (smooth_rainout only; zeros otherwise and
+            # the body never writes them).
+            led_step=jnp.zeros((len(self._atom_order),), dtype=jnp.float64),
+            led_renorm=jnp.zeros((len(self._atom_order),), dtype=jnp.float64),
+            led_bc=jnp.zeros((len(self._atom_order),), dtype=jnp.float64),
+            led_rain=jnp.zeros((len(self._atom_order),), dtype=jnp.float64),
+            led_dt=jnp.float64(0.0),
             # save_evolution buffers. Allocated to the cfg's
             # `save_evo_n_max` when on; length-1 placeholder when off.
             y_evo=jnp.zeros(

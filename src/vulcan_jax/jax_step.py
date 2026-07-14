@@ -16,6 +16,7 @@ import numpy as np
 from .chem import chem_jac_analytical, NetworkArrays
 from .chem_funs import chem_rhs_codegen as _chem_rhs, spec_list as _SPEC_LIST
 from . import composition as _composition
+from . import conden as _conden_mod
 from .phy_const import kb, Navo
 from .solver import (
     factor_block_thomas_diag_offdiag,
@@ -507,12 +508,20 @@ _ROS2_GAMMA = 1.0 + 2.0**-0.5
 
 
 @jax.jit
-def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=None):
+def jax_ros2_step(
+    y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=None, rainout=None
+):
     """One 2nd-order Rosenbrock step.
 
     Returns (sol, delta_arr), both (nz, ni). `fix_mask` (nz, ni) optionally
     pins selected (layer, species) entries by zeroing the corresponding
-    rows/cols of the LHS and RHS.
+    rows/cols of the LHS and RHS. `rainout` (a `conden.RainoutTerm`, or
+    None) adds the smooth irreversible rainout sink to the RHS of BOTH
+    Rosenbrock stages and its analytic dL/dn to the block-diagonal Jacobian
+    — strictly AFTER the reservoir projection: the projection repairs
+    chemistry-only atom drift, and routing the sink through it would have
+    the S reservoir (H2S) silently re-inject the removed sulfur (B0A
+    record item 5 / plan landmine 2g-i).
     """
     r = _ROS2_GAMMA
     c0 = 1.0 / (r * dt)
@@ -533,6 +542,17 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
     # Analytical Jacobian: ≤1e-13 vs the AD path and ~3-5× faster because it
     # skips materialising the structurally-zero entries.
     chem_J = _project_chem_jac(chem_jac_analytical(y, M, k_arr, net))
+
+    if rainout is not None:
+        n_rain = y @ rainout.sp_mask  # (nz,) — one-hot picks the rainout gas
+        L_rain, dL_dn = _conden_mod.smooth_rainout_loss(
+            n_rain, rainout.C, rainout.n_sat, rainout.w
+        )
+        rhs_y = rhs_y - rainout.sp_mask[None, :] * L_rain[:, None]
+        di_r = jnp.arange(ni)
+        chem_J = chem_J.at[:, di_r, di_r].add(
+            -(rainout.sp_mask[None, :] * dL_dn[:, None])
+        )
 
     # Diffusion blocks are diagonal-in-species → pass off-diagonals as (nz-1, ni)
     # vectors to skip the O(ni^3) C @ invA_B matmul in forward elim.
@@ -572,6 +592,12 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
         yk2, A_eddy2, B_eddy2, C_eddy2, A_mol2, B_mol2, C_mol2, atm
     )
     rhs_yk2 = _projected_chem_rhs(yk2, M, k_arr) + diff_at_yk2
+    if rainout is not None:
+        n_rain2 = yk2 @ rainout.sp_mask
+        L_rain2, _ = _conden_mod.smooth_rainout_loss(
+            n_rain2, rainout.C, rainout.n_sat, rainout.w
+        )
+        rhs_yk2 = rhs_yk2 - rainout.sp_mask[None, :] * L_rain2[:, None]
     if fix_mask is not None:
         rhs_yk2 = jnp.where(fix_mask, 0.0, rhs_yk2)
 

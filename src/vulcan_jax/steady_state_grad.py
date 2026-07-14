@@ -210,9 +210,7 @@ SOLVER_MAP_DEFAULT = "renorm"
 SOLVER_MAP_CHOICES = ("bare", "renorm")
 
 PHOTO_RECOMPUTE_AUTO = "auto"
-PhotoRecomputeArg = (
-    Callable[[jnp.ndarray], jnp.ndarray] | Literal["auto"] | None
-)
+PhotoRecomputeArg = Callable[[jnp.ndarray], jnp.ndarray] | Literal["auto"] | None
 
 BODY_MAP_DT = 1e7
 # Time step (s) for the bare Ros2 body map G(y) = ros2_step(y, k, dt). This is
@@ -1516,6 +1514,20 @@ def make_body_terms(integ, converged_state, atm_static):
             "not supported. Use forward-mode."
         )
 
+    if bool(getattr(st, "use_smooth_rainout", False)):
+        # The smooth-rainout sink lives INSIDE jax_ros2_step (rainout=)
+        # and is not yet packed into BodyTerms; a body map without it would
+        # produce silently wrong sensitivities on sulfur rows. The state
+        # also cannot be fingerprinted downstream (its conden k-rows are
+        # zero), so refuse here, loudly. The D9 route for this mode is the
+        # dedicated implicit fixed-point solve (Route B plan B1-3).
+        raise NotImplementedError(
+            "conden_mode='smooth_rainout': the rainout sink is not in the "
+            "adjoint body map yet — make_body_terms would drop it and the "
+            "fingerprint guard cannot detect it. Use the smooth-rainout "
+            "implicit fixed-point sensitivity route instead."
+        )
+
     # --- atm splice (the converged refresh geometry + live vm) ---
     atm_step = atm_static._replace(
         g=s.g, dzi=s.dzi, Hpi=s.Hpi, top_flux=s.top_flux, vs=s.vs
@@ -1660,7 +1672,22 @@ def _adjoint_scope_findings(
     terms_fix = body_terms is not None and body_terms.fix_mask is not None
     terms_bot = body_terms is not None and body_terms.bot_idx is not None
 
-    if bool(flag("use_condense", False)):
+    if str(flag("conden_mode", "master_pin")) == "smooth_rainout":
+        add(
+            "smooth_rainout_sink",
+            "error",
+            "conden_mode='smooth_rainout': the rainout sink acts inside "
+            "jax_ros2_step (rainout=) but is NOT in the adjoint body map or "
+            "BodyTerms, and the state carries no detectable conden "
+            "fingerprint (conden k-rows are zero in this mode). Reaction/"
+            "input sensitivities from this adjoint would silently drop the "
+            "sink. Use the smooth-rainout implicit fixed-point route "
+            "(Route B plan B1-3); make_body_terms refuses this mode.",
+        )
+
+    if bool(flag("use_condense", False)) and (
+        str(flag("conden_mode", "master_pin")) != "smooth_rainout"
+    ):
         started = state_bool("fix_species_started")
         if terms_conden or (started and terms_fix):
             add(

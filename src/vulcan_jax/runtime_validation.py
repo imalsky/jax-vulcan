@@ -246,6 +246,21 @@ def _validate_numerical_bounds(cfg) -> list[str]:
             f"(otherwise rtol increases never gate on loss)."
         )
 
+    # Condensation mode + smooth-rainout knobs (Route B; the full
+    # cross-field refusals — S8-only, no fix_species/relax/settling/ion —
+    # live in OuterLoop._build_statics where the parsed network is known).
+    conden_mode = str(getattr(cfg, "conden_mode", "master_pin"))
+    if conden_mode not in ("master_pin", "smooth_rainout"):
+        errors.append(
+            f"conden_mode={conden_mode!r} must be 'master_pin' or 'smooth_rainout'."
+        )
+    conden_w = float(getattr(cfg, "conden_smooth_width", 0.1))
+    if conden_mode == "smooth_rainout" and not (conden_w > 0.0):
+        errors.append(f"conden_smooth_width={conden_w} must be > 0.")
+    rr_scale = float(getattr(cfg, "rainout_rate_scale", 1.0))
+    if conden_mode == "smooth_rainout" and not (rr_scale > 0.0):
+        errors.append(f"rainout_rate_scale={rr_scale} must be > 0.")
+
     # rtol bounds
     rtol = float(getattr(cfg, "rtol", 0.2))
     rtol_min = float(getattr(cfg, "rtol_min", 0.0))

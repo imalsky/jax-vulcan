@@ -34,6 +34,9 @@ JAX_ONLY_DEFAULTS: dict[str, Any] = {
     "use_fix_all_bot": False,
     "use_fix_H2He": False,
     "use_chunked_runner": False,
+    "conden_mode": "master_pin",
+    "conden_smooth_width": 0.1,
+    "rainout_rate_scale": 1.0,
 }
 
 UI_OUTPUT_KEYS = {
