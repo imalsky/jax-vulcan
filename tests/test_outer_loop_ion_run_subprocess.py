@@ -88,7 +88,8 @@ import numpy as np
 # vulcan_cfg module carries the working HD189 photo defaults (r_star, orbit,
 # zenith angle, scattering, bin widths); we override only what we need. cfg is
 # mutated BEFORE the first jax_step/runner import so the values are seen. ---
-import vulcan_jax.vulcan_cfg as cfg
+from vulcan_jax.config import default_config
+cfg = default_config()
 
 cfg.use_photo = True
 cfg.use_ion = True
@@ -114,12 +115,11 @@ cfg.use_print_prog = False
 cfg.use_live_plot = False; cfg.use_live_flux = False
 cfg.use_save_movie = False; cfg.use_flux_movie = False
 
-# Pin the cfg reference the runner/printer read (mirrors test_outer_loop_smoke).
+# cfg is the process default config (mutated above); the runner/printer read it
+# via OuterLoop's default. The ion network was selected by $VULCAN_JAX_NETWORK
+# before the first import.
 import vulcan_jax.outer_loop as outer_loop
 import vulcan_jax.legacy_io as op
-sys.modules["vulcan_jax.vulcan_cfg"] = op.vulcan_cfg
-outer_loop.vulcan_cfg = op.vulcan_cfg
-cfg = op.vulcan_cfg
 
 import vulcan_jax.op_jax as op_jax
 from vulcan_jax.atm_setup import Atm

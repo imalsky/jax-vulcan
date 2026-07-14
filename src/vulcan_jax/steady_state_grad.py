@@ -1536,6 +1536,15 @@ def make_body_terms(integ, converged_state, atm_static):
                 integ._refresh_static.Navo,
             )
         )
+    # Hybrid molecular diffusion: linearize the SAME operator the runner
+    # converged on. A hybrid run finishes in phase 1 (central-difference), so
+    # the converged state carries hybrid_use_vm==0.0 and the body map must use
+    # central diff, not the static upwind flag. Drive use_vm_mol from the
+    # converged carry exactly as the runner's body_fn does (no-op for
+    # non-hybrid runs: hybrid_use_vm equals the static flag there).
+    atm_step = atm_step._replace(
+        use_vm_mol=jnp.asarray(s.hybrid_use_vm, dtype=jnp.float64)
+    )
 
     if integ._refresh_static is not None:
         n_esc = int(np.asarray(integ._refresh_static.diff_esc_idx).size)
@@ -1796,7 +1805,9 @@ def _adjoint_scope_findings(
             "biased.",
         )
 
-    if bool(flag("use_vm_mol", False)):
+    if bool(flag("use_vm_mol", False)) and not bool(
+        flag("use_hybrid_vm_mol", False)
+    ):
         add(
             "vm_mol_feedback",
             "warning",
@@ -1804,6 +1815,15 @@ def _adjoint_scope_findings(
             "recompute_vm_jax; the adjoint uses the frozen converged vm, "
             "dropping the d(vm)/dy feedback. Matters where molecular "
             "diffusion dominates (low-Kzz upper atmospheres).",
+        )
+    elif bool(flag("use_vm_mol", False)) and bool(flag("use_hybrid_vm_mol", False)):
+        add(
+            "vm_mol_hybrid",
+            "info",
+            "use_hybrid_vm_mol=True: the run converges on the central-"
+            "difference operator (phase 1), so the converged state carries "
+            "hybrid_use_vm=0 and the adjoint linearizes central diff — there "
+            "is no upwind d(vm)/dy feedback to drop.",
         )
 
     add(
@@ -1907,7 +1927,9 @@ def audit_adjoint_scope(
     """
     _check_body_dt(body_dt)
     if cfg is None:
-        from . import vulcan_cfg as cfg  # the runner's own default cfg surface
+        from .config import default_config
+
+        cfg = default_config()  # the runner's own default cfg surface
 
     findings = _adjoint_scope_findings(cfg, final_state, photo_recompute_k, body_terms)
 

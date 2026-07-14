@@ -52,7 +52,8 @@ warnings.filterwarnings("ignore")
 @contextlib.contextmanager
 def cfg_overrides(**kwargs):
     """Snapshot/restore vulcan_cfg attributes around a block."""
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     saved: dict = {}
     sentinel = object()
@@ -82,7 +83,8 @@ def _hd189_atm_minimal():
     """
     from vulcan_jax.atm_setup import Atm
     from vulcan_jax.state import _Variables, _AtmData
-    import vulcan_jax.vulcan_cfg as _cfg
+    from vulcan_jax.config import default_config
+    _cfg = default_config()
 
     data_var = _Variables()
     data_atm = _AtmData()
@@ -107,7 +109,8 @@ def _setup_full_state(count_max: int = 5):
     `RunState.with_pre_loop_setup` and threads `rs.photo_static` onto the
     solver — same pattern the conftest fixture uses.
     """
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     vulcan_cfg.count_max = count_max
     vulcan_cfg.count_min = 1
@@ -143,7 +146,8 @@ def test_lowT_limit_rates_caps_fire_on_HD189():
     """
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates as rates
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
     from vulcan_jax.gibbs import load_nasa9
 
     data_var, data_atm, _ = _hd189_atm_minimal()
@@ -210,7 +214,8 @@ def test_T_cross_sp_path_finite_positive():
     ``test_photo_setup.py::test_photo_setup_matches_T_dep_fixture``.
     """
     import vulcan_jax.photo_setup as photo_setup
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     if not bool(getattr(vulcan_cfg, "use_photo", False)):
         pytest.skip("use_photo=False; nothing to compare.")
@@ -387,7 +392,8 @@ def test_fix_species_runtime_smoke():
         if sp not in species_list:
             pytest.skip(f"{sp} not in network; cannot run fix_species smoke.")
 
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     cfg_kwargs = dict(
         use_condense=True,

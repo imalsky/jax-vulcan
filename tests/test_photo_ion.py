@@ -12,7 +12,8 @@ ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 
 import vulcan_jax.op_jax as op_jax
-import vulcan_jax.vulcan_cfg as vulcan_cfg
+from vulcan_jax.config import default_config
+vulcan_cfg = default_config()
 
 
 def _manual_jion(aflux, cross, split, dbin1, dbin2):

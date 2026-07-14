@@ -30,7 +30,8 @@ def _check_jacobians(state) -> int:
     import vulcan_jax.chem as chem_mod
     import jax.numpy as jnp
     import vulcan_jax.network as net_mod
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     data_var, data_atm = state.var, state.atm
     y = jnp.asarray(data_var.y, dtype=jnp.float64)  # [nz, ni]
@@ -82,7 +83,8 @@ def main() -> int:
     from vulcan_jax.atm_setup import Atm
     import vulcan_jax.legacy_io as op
     import vulcan_jax.op_jax as op_jax
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
     from vulcan_jax.state import RunState, legacy_view
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)

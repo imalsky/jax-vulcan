@@ -10,7 +10,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from . import vulcan_cfg
+from .config import default_config
 from . import network as _network
 from . import chem as _chem
 from . import gibbs as _gibbs
@@ -19,8 +19,10 @@ from ._paths import resolve_data_path
 
 jax.config.update("jax_enable_x64", True)
 
+_CFG = default_config()
 
-_NETWORK = _network.parse_network(str(resolve_data_path(vulcan_cfg.network)))
+
+_NETWORK = _network.parse_network(str(resolve_data_path(_CFG.network)))
 _NET_JAX = _chem.to_jax(_NETWORK)
 
 # Build (or reload from cache) the SymPy-faithful per-reaction RHS.
@@ -29,7 +31,7 @@ _NET_JAX = _chem.to_jax(_NETWORK)
 _CHEM_RHS_CODEGEN = _make_chem_funs.build_chem_rhs(_NETWORK)
 
 # Locate thermo/NASA9 next to the network file, or fall back to repo-root.
-_THERMO_DIR = resolve_data_path(vulcan_cfg.network).parent
+_THERMO_DIR = resolve_data_path(_CFG.network).parent
 if not (_THERMO_DIR / "NASA9").exists():
     _THERMO_DIR = Path(__file__).resolve().parent / "thermo"
 

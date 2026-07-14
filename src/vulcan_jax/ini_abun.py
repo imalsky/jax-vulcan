@@ -28,7 +28,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from . import vulcan_cfg
+from .config import default_config
 from . import chem_funs
 from .composition import (
     compo,
@@ -41,6 +41,8 @@ from .state import IniAbunOutputs
 from ._paths import resolve_data_path
 
 jax.config.update("jax_enable_x64", True)
+
+_CFG = default_config()
 
 
 # Anchor FastChem paths to the source location (not cwd) so concurrent
@@ -101,7 +103,7 @@ _FC_VULCAN_EQ = _FC_OUTPUT / "vulcan_EQ.dat"
 def _fastchem_solar_abundance_path() -> Path:
     """Return the configured FastChem solar-element abundance source file."""
     configured = getattr(
-        vulcan_cfg,
+        _CFG,
         "fastchem_solar_abundance_file",
         "fastchem_vulcan/input/solar_element_abundances.dat",
     )
@@ -133,8 +135,8 @@ def _jax_newton(residual_fn, m0, args, max_iter=50, tol=1e-12):
     Replaces `scipy.optimize.fsolve` for the 5-element `_abun_lowT`
     system. The Jacobian is built with `jax.jacrev`; the linear solve
     is `jnp.linalg.solve` (5x5 dense). Production callers pass
-    `max_iter` / `tol` from `vulcan_cfg.fastchem_newton_max_iter` and
-    `vulcan_cfg.fastchem_newton_tol`; the defaults here are kept for
+    `max_iter` / `tol` from `_CFG.fastchem_newton_max_iter` and
+    `_CFG.fastchem_newton_tol`; the defaults here are kept for
     direct test callers.
     """
     jac_fn = jax.jacrev(residual_fn)
@@ -169,7 +171,7 @@ def compute_atom_ini(y, compo_arr=compo_array):
 def _run_fastchem_locked(data_atm) -> None:
     """Inner FastChem driver. Caller must already hold the flock."""
     solar_ele = _fastchem_solar_abundance_path()
-    if vulcan_cfg.use_ion is True:
+    if _CFG.use_ion is True:
         copyfile(
             _FC_INPUT / "parameters_ion.dat",
             _FC_INPUT / "parameters.dat",
@@ -182,7 +184,7 @@ def _run_fastchem_locked(data_atm) -> None:
 
     with open(solar_ele, "r") as f:
         new_str = ""
-        ele_list = list(vulcan_cfg.atom_list)
+        ele_list = list(_CFG.atom_list)
         ele_list.remove("H")
 
         fc_list = [
@@ -203,7 +205,7 @@ def _run_fastchem_locked(data_atm) -> None:
             "Fe",
         ]
 
-        if vulcan_cfg.use_solar is True:
+        if _CFG.use_solar is True:
             new_str = f.read()
             print("Initializing with the default solar abundance.")
         else:
@@ -213,18 +215,18 @@ def _run_fastchem_locked(data_atm) -> None:
                 li = line.split()
                 sp = li[0].strip()
                 if sp in ele_list:
-                    sp_abun = getattr(vulcan_cfg, sp + "_H")
+                    sp_abun = getattr(_CFG, sp + "_H")
                     fc_abun = 12.0 + np.log10(sp_abun)
                     line = sp + "\t" + "{0:.4f}".format(fc_abun) + "\n"
                     print("{:4}".format(sp) + "{0:.4E}".format(sp_abun))
                 elif sp in fc_list:
                     sol_ratio = li[1].strip()
-                    if hasattr(vulcan_cfg, "fastchem_met_scale"):
-                        met_scale = vulcan_cfg.fastchem_met_scale
+                    if hasattr(_CFG, "fastchem_met_scale"):
+                        met_scale = _CFG.fastchem_met_scale
                     else:
                         met_scale = 1.0
                         print(
-                            "fastchem_met_scale not specified in vulcan_cfg. "
+                            "fastchem_met_scale not specified in the config. "
                             "Using solar metallicity for other elements not included in vulcan."
                         )
                     new_ratio = float(sol_ratio) + np.log10(met_scale)
@@ -308,7 +310,7 @@ def _load_eq_y(data_atm) -> tuple[np.ndarray, list[str]]:
             y[:, sp_idx] = fc[sp] * gas_tot
         else:
             print(sp + " not included in fastchem.")
-        if vulcan_cfg.use_ion is True:
+        if _CFG.use_ion is True:
             if compo[compo_row.index(sp)]["e"] != 0:
                 charge_list.append(sp)
     return y, charge_list
@@ -316,8 +318,8 @@ def _load_eq_y(data_atm) -> tuple[np.ndarray, list[str]]:
 
 def _load_vulcan_ini_y(data_atm) -> tuple[np.ndarray, list[str]]:
     """Load `y` from a previous `.vul` file via pickle."""
-    print("Initializing with compositions from the prvious run " + vulcan_cfg.vul_ini)
-    with open(resolve_data_path(vulcan_cfg.vul_ini), "rb") as handle:
+    print("Initializing with compositions from the prvious run " + _CFG.vul_ini)
+    with open(resolve_data_path(_CFG.vul_ini), "rb") as handle:
         vul_data = pickle.load(handle)
     nz_ = len(data_atm.pco)
     y = np.zeros((nz_, chem_funs.ni), dtype=np.float64)
@@ -329,7 +331,7 @@ def _load_vulcan_ini_y(data_atm) -> tuple[np.ndarray, list[str]]:
         else:
             print(sp + " not included in the prvious run.")
     charge_list: list[str] = []
-    if vulcan_cfg.use_ion is True:
+    if _CFG.use_ion is True:
         _build_charge_list_if_ion(charge_list)
     return y, charge_list
 
@@ -337,7 +339,7 @@ def _load_vulcan_ini_y(data_atm) -> tuple[np.ndarray, list[str]]:
 def _load_table_y(data_atm) -> tuple[np.ndarray, list[str]]:
     """Load `y` from a per-layer mixing-ratio text table."""
     table = np.genfromtxt(
-        resolve_data_path(vulcan_cfg.vul_ini), names=True, dtype=None, skip_header=1
+        resolve_data_path(_CFG.vul_ini), names=True, dtype=None, skip_header=1
     )
     if not len(data_atm.pco) == len(table["Pressure"]):
         print(
@@ -353,28 +355,28 @@ def _load_table_y(data_atm) -> tuple[np.ndarray, list[str]]:
 
 
 def _load_const_mix_y(data_atm) -> tuple[np.ndarray, list[str]]:
-    """Load `y` from `vulcan_cfg.const_mix` (a per-species mixing dict)."""
-    print("Initializing with constant (well-mixed): " + str(vulcan_cfg.const_mix))
+    """Load `y` from `_CFG.const_mix` (a per-species mixing dict)."""
+    print("Initializing with constant (well-mixed): " + str(_CFG.const_mix))
     nz_ = len(data_atm.pco)
     y = np.zeros((nz_, chem_funs.ni), dtype=np.float64)
     gas_tot = np.asarray(data_atm.M)
-    for sp in vulcan_cfg.const_mix.keys():
-        y[:, species.index(sp)] = gas_tot * vulcan_cfg.const_mix[sp]
+    for sp in _CFG.const_mix.keys():
+        y[:, species.index(sp)] = gas_tot * _CFG.const_mix[sp]
     charge_list: list[str] = []
-    if vulcan_cfg.use_ion is True:
+    if _CFG.use_ion is True:
         _build_charge_list_if_ion(charge_list)
     return y, charge_list
 
 
 def _load_const_lowT_y(data_atm) -> tuple[np.ndarray, list[str]]:
     """Solve the 5-mol H2/H2O/CH4/He/NH3 system via JAX Newton."""
-    O_H = float(vulcan_cfg.O_H)
-    C_H = float(vulcan_cfg.C_H)
-    He_H = float(vulcan_cfg.He_H)
-    N_H = float(vulcan_cfg.N_H)
+    O_H = float(_CFG.O_H)
+    C_H = float(_CFG.C_H)
+    He_H = float(_CFG.He_H)
+    N_H = float(_CFG.N_H)
     m0 = jnp.array([0.9, 0.1, 0.0, 0.0, 0.0], dtype=jnp.float64)
-    max_iter = int(getattr(vulcan_cfg, "fastchem_newton_max_iter", 50))
-    tol = float(getattr(vulcan_cfg, "fastchem_newton_tol", 1e-12))
+    max_iter = int(getattr(_CFG, "fastchem_newton_max_iter", 50))
+    tol = float(getattr(_CFG, "fastchem_newton_tol", 1e-12))
     ini_mol = np.asarray(
         _jax_newton(
             _abun_lowT_residual,
@@ -385,7 +387,7 @@ def _load_const_lowT_y(data_atm) -> tuple[np.ndarray, list[str]]:
         )
     )
 
-    nz_ = vulcan_cfg.nz
+    nz_ = _CFG.nz
     y = np.zeros((nz_, chem_funs.ni), dtype=np.float64)
     gas_tot = np.asarray(data_atm.M)
     h2_idx = species.index("H2")
@@ -415,32 +417,32 @@ def _apply_condense(y: np.ndarray, data_atm) -> np.ndarray:
     """Apply the `use_condense` initial-cold-trap clip.
 
     Mutates `data_atm.sat_mix` / `data_atm.conden_min_lev` and (for
-    H2O + `use_sat_surfaceH2O`) `vulcan_cfg.use_fix_sp_bot`. Returns
+    H2O + `use_sat_surfaceH2O`) `_CFG.use_fix_sp_bot`. Returns
     the clipped `y` so the caller can recompute ymix.
     """
-    if vulcan_cfg.use_condense is not True:
+    if _CFG.use_condense is not True:
         return y
 
-    for sp in vulcan_cfg.condense_sp:
+    for sp in _CFG.condense_sp:
         sp_idx = species.index(sp)
         data_atm.sat_mix[sp] = data_atm.sat_p[sp] / data_atm.pco
         data_atm.sat_mix[sp] = np.minimum(1.0, data_atm.sat_mix[sp])
 
         if sp == "H2O":
-            data_atm.sat_mix[sp] *= vulcan_cfg.humidity
-            if vulcan_cfg.use_sat_surfaceH2O is True:
-                vulcan_cfg.use_fix_sp_bot[sp] = data_atm.sat_mix[sp][0]
+            data_atm.sat_mix[sp] *= _CFG.humidity
+            if _CFG.use_sat_surfaceH2O is True:
+                _CFG.use_fix_sp_bot[sp] = data_atm.sat_mix[sp][0]
                 print(
                     "\nThe fixed surface water is now reset by condensation and humidity to "
-                    + str(vulcan_cfg.use_fix_sp_bot[sp])
+                    + str(_CFG.use_fix_sp_bot[sp])
                 )
                 # The ymix write is overwritten by the final renormalisation;
                 # only the y replacement survives, so just update y here.
                 y[:, sp_idx] = data_atm.sat_mix[sp][0] * data_atm.n_0
 
-        if vulcan_cfg.use_ini_cold_trap is True:
-            if vulcan_cfg.ini_mix != "table":
-                if vulcan_cfg.use_sat_surfaceH2O is True:
+        if _CFG.use_ini_cold_trap is True:
+            if _CFG.ini_mix != "table":
+                if _CFG.use_sat_surfaceH2O is True:
                     conden_bot = 0
                 else:
                     conden_bot = np.argmax(
@@ -474,9 +476,9 @@ def _apply_condense(y: np.ndarray, data_atm) -> np.ndarray:
 def _compute_ymix(y: np.ndarray) -> np.ndarray:
     """Per-layer normalisation. Excludes condensed-out species when
     `use_condense=True` (matches master's `non_gas_sp` carve-out)."""
-    if vulcan_cfg.use_condense is True:
+    if _CFG.use_condense is True:
         exc_conden = [
-            i for i in range(chem_funs.ni) if species[i] not in vulcan_cfg.non_gas_sp
+            i for i in range(chem_funs.ni) if species[i] not in _CFG.non_gas_sp
         ]
         ysum = np.sum(y[:, exc_conden], axis=1).reshape((-1, 1))
     else:
@@ -491,22 +493,22 @@ def compute_initial_abundance(data_atm) -> IniAbunOutputs:
     is mutated (saturation profiles, cold-trap min level, optional surface
     H2O override). The pytree carries the gas-phase composition only.
     """
-    mix = vulcan_cfg.ini_mix
+    mix = _CFG.ini_mix
     if mix not in _MODE_DISPATCH:
         raise IOError(
-            "\nInitial mixing ratios unknown. Check the setting in vulcan_cfg.py."
+            "\nInitial mixing ratios unknown. Check the setting in the config."
         )
     y, charge_list = _MODE_DISPATCH[mix](data_atm)
     y = _apply_condense(y, data_atm)
     ymix = _compute_ymix(y)
 
-    if vulcan_cfg.use_ion is True:
+    if _CFG.use_ion is True:
         if not charge_list:
             print(
-                "vulcan_cfg.use_ion = True but the network with ions is not supplied.\n"
+                "use_ion = True but the network with ions is not supplied.\n"
             )
             raise IOError(
-                "vulcan_cfg.use_ion = True but the network with ions is not supplied.\n"
+                "use_ion = True but the network with ions is not supplied.\n"
             )
         if "e" in charge_list:
             charge_list = [c for c in charge_list if c != "e"]
@@ -531,7 +533,7 @@ class InitialAbun:
         """Capture `cfg.atom_list` (cfg's possibly reordered/subset atom set)
         for use in `ele_sum`.
         """
-        self.atom_list = vulcan_cfg.atom_list
+        self.atom_list = _CFG.atom_list
 
     def ini_y(self, data_var, data_atm):
         """Compute the initial abundance and mutate `data_var.y` / `ymix` /
@@ -541,7 +543,7 @@ class InitialAbun:
         data_var.y = np.asarray(outputs.y)
         data_var.ymix = np.asarray(outputs.ymix)
         data_var.y_ini = np.asarray(outputs.y_ini)
-        if vulcan_cfg.use_ion is True:
+        if _CFG.use_ion is True:
             data_var.charge_list = list(outputs.charge_list)
         return data_var
 
@@ -553,7 +555,7 @@ class InitialAbun:
         """
         atoms_jax = compute_atom_ini(jnp.asarray(data_var.y))
         atoms_np = np.asarray(atoms_jax)
-        loss_ex = list(getattr(vulcan_cfg, "loss_ex", []))
+        loss_ex = list(getattr(_CFG, "loss_ex", []))
         # cfg.atom_list may reorder/subset composition.atom_list; look up the
         # column for each cfg atom by name in compo_array.
         for atom in self.atom_list:

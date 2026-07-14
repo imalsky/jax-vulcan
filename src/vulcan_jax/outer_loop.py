@@ -19,7 +19,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from . import vulcan_cfg
+from .config import default_config
 from . import phy_const as _phy_const
 
 from . import network as _net_mod
@@ -53,8 +53,9 @@ _UNDERFLOW_DENOM = 1e-300
 # Parsed once at module import — no code-generation step is needed when the
 # network changes.  Scripts (python vulcan_jax.py) always get a fresh parse.
 # Interactive / REPL use: restart Python (or reload this module) after editing
-# vulcan_cfg.network so the new network is picked up here.
-_NETWORK = _net_mod.parse_network(str(resolve_data_path(vulcan_cfg.network)))
+# the config `network` so the new network is picked up here.
+_CFG = default_config()
+_NETWORK = _net_mod.parse_network(str(resolve_data_path(_CFG.network)))
 _NET_JAX = _chem_mod.to_jax(_NETWORK)
 
 
@@ -217,6 +218,27 @@ class JaxIntegState(NamedTuple):
     # 3 step-count exceeded, 4 stalled-convergence, 5 non-finite state.
     is_done: jnp.ndarray  # ()  bool
     termination_reason: jnp.ndarray  # ()  int32
+
+    # Hybrid molecular-diffusion phase (use_hybrid_vm_mol). Blend factor for
+    # the vm/central-difference diffusion in jax_ros2_step: 1.0 = upwind
+    # (phase 0), 0.0 = central-difference (phase 1). Seeded to 1.0 when
+    # use_vm_mol is on, else 0.0. When hybrid is enabled the body flips it
+    # 1.0 -> 0.0 the first time phase 0 converges, so the run finishes on a
+    # central-difference fixed point. Non-hybrid runs never flip it (constant
+    # 1.0 for pure-vm, 0.0 for central), so their trace is bit-identical.
+    hybrid_use_vm: jnp.ndarray  # ()  float64
+
+    # Live termination budget. Seeded to the static count_min/count_max/runtime
+    # and used by the termination test in place of the closure constants. Only
+    # the hybrid phase flip mutates them: when phase 0 ends (converged /
+    # runtime / step-count) the run switches to central-difference (phase 1)
+    # and RESETS the budget the way vm_branch op.py stop() does — count_min =
+    # count+100, count_max = count+2000 (convergence) or count+1000 (budget),
+    # runtime *= 1.1 (runtime). Non-hybrid runs never touch them, so their
+    # termination is bit-identical to the static path.
+    count_min_dyn: jnp.ndarray  # ()  int32
+    count_max_dyn: jnp.ndarray  # ()  int32
+    runtime_dyn: jnp.ndarray  # ()  float64
 
     # Per-profile constants (see ProfileVars). Constant during a run; rides
     # in the carry so jax.vmap batches them per lane. The single-profile path
@@ -633,6 +655,7 @@ class _Statics(NamedTuple):
     use_photo: bool
     use_atm_refresh: bool
     use_vm_mol: bool  # upwind molecular diffusion → refresh vm in-loop with mu
+    hybrid_vm_mol: bool  # two-stage: converge upwind, then finish central-diff
     use_conden: bool
     final_update_photo_frq: int
     update_frq: int
@@ -746,10 +769,11 @@ def _make_runner(
     batch_max_retries = statics.batch_max_retries
     compo_arr = statics.compo_arr
     conv_step = statics.conv_step
-    count_min = statics.count_min
-    count_max = statics.count_max
+    # count_min / count_max / runtime seed the carry's live budget in
+    # _pack_state_from_runstate; the termination test reads the carry
+    # (s.count_min_dyn / s.count_max_dyn / s.runtime_dyn) so the hybrid phase
+    # flip can extend it. They are intentionally not bound as closure locals.
     conv_stall_window = statics.conv_stall_window
-    runtime = statics.runtime
     trun_min = statics.trun_min
     st_factor = statics.st_factor
     yconv_cri = statics.yconv_cri
@@ -762,6 +786,7 @@ def _make_runner(
     use_photo_static = statics.use_photo
     use_atm_refresh_static = statics.use_atm_refresh
     use_vm_mol_static = statics.use_vm_mol
+    hybrid_vm_static = statics.hybrid_vm_mol
     use_conden_static = statics.use_conden
     final_update_photo_frq = statics.final_update_photo_frq
     update_frq = statics.update_frq
@@ -873,23 +898,13 @@ def _make_runner(
         longdydt_new = longdy_new / dt_lookback
         return longdy_new, longdydt_new, ratio
 
-    def _real_terminate(s: JaxIntegState):
-        """Real (non-chunk) termination predicate + reason code.
+    def _convergence_ok(s: JaxIntegState):
+        """Convergence predicate shared by `_real_terminate` and the hybrid
+        phase-flip. Returns (is_converged, conv_normal, is_stalled).
 
-        Mirrors `cond_fn`'s terminate logic minus the chunk-cap yield, and
-        also returns a reason code so the batched runner can report why each
-        lane stopped. Reason priority matches VULCAN-master's `stop()`
-        (op.py:1072-1118) and the single-profile `end_case` ladder in
-        `_call_runstate`: converged over runtime over step-count, so a step
-        that is simultaneously converged and at count_max reports success.
-        0 running, 1 converged, 2 runtime exceeded, 3 step-count exceeded,
-        4 stalled-convergence.
+        `slope_min` is recomputed from the live Hp because atm refresh can
+        change it mid-run.
         """
-        too_long = s.t > jnp.float64(runtime)
-        too_many = s.accept_count > jnp.int32(count_max)
-
-        # `slope_min` is recomputed from the live Hp because atm refresh
-        # can change it mid-run.
         slope_min = jnp.minimum(
             jnp.min(s.pv.Kzz / (0.1 * s.Hp[:-1]) ** 2),
             jnp.float64(1e-8),
@@ -914,11 +929,37 @@ def _make_runner(
             & (s.longdy < jnp.float64(yconv_min))
             & (s.aflux_change < jnp.float64(flux_cri))
         )
-        is_converged = conv_normal | is_stalled
+        return (conv_normal | is_stalled), conv_normal, is_stalled
 
-        ready = (s.t > jnp.float64(trun_min)) & (s.accept_count > jnp.int32(count_min))
+    def _real_terminate(s: JaxIntegState):
+        """Real (non-chunk) termination predicate + reason code.
+
+        Mirrors `cond_fn`'s terminate logic minus the chunk-cap yield, and
+        also returns a reason code so the batched runner can report why each
+        lane stopped. Reason priority matches VULCAN-master's `stop()`
+        (op.py:1072-1118) and the single-profile `end_case` ladder in
+        `_call_runstate`: converged over runtime over step-count, so a step
+        that is simultaneously converged and at count_max reports success.
+        0 running, 1 converged, 2 runtime exceeded, 3 step-count exceeded,
+        4 stalled-convergence.
+        """
+        # Live budget (equals the static count_max/runtime for non-hybrid runs;
+        # the hybrid phase flip resets it for phase 1).
+        too_long = s.t > s.runtime_dyn
+        too_many = s.accept_count > s.count_max_dyn
+
+        is_converged, conv_normal, is_stalled = _convergence_ok(s)
+
+        ready = (s.t > jnp.float64(trun_min)) & (s.accept_count > s.count_min_dyn)
         conv_term = ready & is_converged
         real_term = too_long | too_many | conv_term
+        if hybrid_vm_static:
+            # Phase 0 (upwind, hybrid_use_vm≈1) NEVER terminates here — the body
+            # flips to central-difference (phase 1) and extends the budget
+            # instead, mirroring vm_branch op.py stop(). Only phase 1
+            # (hybrid_use_vm≈0) terminates, so the returned state is always a
+            # central-difference fixed point.
+            real_term = real_term & (s.hybrid_use_vm < jnp.float64(0.5))
         # Convergence wins over runtime wins over step-count, matching master's
         # stop() (op.py:1072-1118): a step that is both converged and at
         # count_max/runtime reports success (1/4), not exceeded (2/3).
@@ -963,6 +1004,13 @@ def _make_runner(
         atm_step = atm_static_._replace(
             g=s.g, dzi=s.dzi, Hpi=s.Hpi, top_flux=s.top_flux, vs=s.vs
         )
+        # Hybrid molecular diffusion: drive the vm/central blend from the
+        # carry phase (1.0 upwind → 0.0 central) instead of the static flag.
+        # jax_ros2_step reads atm.use_vm_mol as a float multiplier, so a
+        # traced 0/1 selects the scheme per step. Non-hybrid runs seed
+        # hybrid_use_vm to the static value and never flip it, so the value
+        # passed here is identical to atm_static_.use_vm_mol (bit-for-bit).
+        atm_step = atm_step._replace(use_vm_mol=s.hybrid_use_vm)
         # Upwind molecular diffusion: vm depends on the mean molecular weight
         # (through Hpi) and on g, so it must be refreshed with the rest of the
         # geometry — VULCAN's op.update_mu_dz recomputes it every update_frq
@@ -1338,6 +1386,73 @@ def _make_runner(
             ),
         )
 
+        # Hybrid molecular-diffusion phase flip (use_hybrid_vm_mol). When phase
+        # 0 (upwind) ends — by convergence, runtime, or step-count — switch the
+        # diffusion blend to central-difference (hybrid_use_vm 1.0 -> 0.0),
+        # reset the convergence trackers (longdy back to +inf, stall counter to
+        # 0), and RESET the termination budget the way vm_branch op.py stop()
+        # does so phase 1 gets its own step/time allowance:
+        #   convergence -> count_min=count+100, count_max=count+2000
+        #   runtime     -> count_min=count+100, count_max=count+1000, runtime*=1.1
+        #   step-count  -> count_min=count+100, count_max=count+1000
+        # This mirrors "Upwind diffusion integration successful ... Now starts
+        # central diff molecular diffusion...". A no-op for non-hybrid runs
+        # (the whole branch is dropped at trace time).
+        hybrid_use_vm_next = s.hybrid_use_vm
+        count_min_dyn_next = s.count_min_dyn
+        count_max_dyn_next = s.count_max_dyn
+        runtime_dyn_next = s.runtime_dyn
+        if hybrid_vm_static:
+            s_after = s._replace(
+                longdy=longdy_next,
+                longdydt=longdydt_next,
+                t=t_next,
+                accept_count=accept_count_next,
+                Hp=Hp_next,
+            )
+            is_conv_after, _, _ = _convergence_ok(s_after)
+            in_phase0 = s.hybrid_use_vm > jnp.float64(0.5)
+            ready_after = (t_next > jnp.float64(trun_min)) & (
+                accept_count_next > s.count_min_dyn
+            )
+            # Priority matches vm_branch stop(): convergence > runtime > count.
+            conv_flip = in_phase0 & do_accept & ready_after & is_conv_after
+            runtime_flip = in_phase0 & (t_next > s.runtime_dyn) & ~conv_flip
+            count_flip = (
+                in_phase0
+                & (accept_count_next > s.count_max_dyn)
+                & ~conv_flip
+                & ~runtime_flip
+            )
+            do_flip = conv_flip | runtime_flip | count_flip
+
+            new_count_min = accept_count_next + jnp.int32(100)
+            count_max_conv = accept_count_next + jnp.int32(2000)
+            count_max_budget = accept_count_next + jnp.int32(1000)
+
+            hybrid_use_vm_next = jnp.where(
+                do_flip, jnp.float64(0.0), s.hybrid_use_vm
+            )
+            count_min_dyn_next = jnp.where(do_flip, new_count_min, s.count_min_dyn)
+            count_max_dyn_next = jnp.where(
+                conv_flip,
+                count_max_conv,
+                jnp.where(
+                    runtime_flip | count_flip, count_max_budget, s.count_max_dyn
+                ),
+            )
+            runtime_dyn_next = jnp.where(
+                runtime_flip, s.runtime_dyn * jnp.float64(1.1), s.runtime_dyn
+            )
+            longdy_next = jnp.where(do_flip, jnp.float64(jnp.inf), longdy_next)
+            longdydt_next = jnp.where(do_flip, jnp.float64(jnp.inf), longdydt_next)
+            longdy_seen_min_next = jnp.where(
+                do_flip, jnp.float64(jnp.inf), longdy_seen_min_next
+            )
+            count_since_new_min_next = jnp.where(
+                do_flip, jnp.int32(0), count_since_new_min_next
+            )
+
         # Adaptive rtol fires only on accepted steps. Decrease cadence is
         # `accept_count % adapt_rtol_dec_period == 0` and triggers when
         # |atom_loss| stays at/above s.loss_criteria; increase cadence is
@@ -1477,6 +1592,10 @@ def _make_runner(
             where_varies_most=where_varies_most_next,
             longdy_seen_min=longdy_seen_min_next,
             count_since_new_min=count_since_new_min_next,
+            hybrid_use_vm=hybrid_use_vm_next,
+            count_min_dyn=count_min_dyn_next,
+            count_max_dyn=count_max_dyn_next,
+            runtime_dyn=runtime_dyn_next,
             rtol=rtol_next,
             loss_criteria=loss_criteria_after_dec,
             update_photo_frq=update_photo_frq_next,
@@ -1669,16 +1788,16 @@ class OuterLoop:
     runs every accepted step with internal retries, photo / atm-refresh /
     conden updates, ring-buffered convergence, and adaptive rtol."""
 
-    def __init__(self, odesolver, output, cfg=vulcan_cfg):
-        # cfg defaults to the global vulcan_cfg module so the CLI and legacy
-        # callers (which pass nothing) are unchanged. make_config() users pass
+    def __init__(self, odesolver, output, cfg=None):
+        # cfg defaults to the process default config so the CLI and legacy
+        # callers (which pass nothing) are unchanged. load_config() users pass
         # their own namespace, so every runtime knob read below comes from the
         # same cfg the RunState was built with. The setup-side counterpart is
-        # state._cfg_overlay; together they make make_config() honored
+        # state._cfg_overlay; together they make load_config() honored
         # end-to-end. The import-locked network (module-level _NETWORK) is the
         # one knob cfg cannot change here — state._build_pre_loop_runstate
         # fails fast on a network mismatch.
-        self._cfg = cfg
+        self._cfg = cfg if cfg is not None else default_config()
         self.mtol = float(self._cfg.mtol)
         self.atol = float(self._cfg.atol)
         self.output = output
@@ -1881,6 +2000,11 @@ class OuterLoop:
             use_atm_refresh=True,
             use_vm_mol=bool(
                 getattr(self._cfg, "use_vm_mol", False)
+                and getattr(self._cfg, "use_moldiff", True)
+            ),
+            hybrid_vm_mol=bool(
+                getattr(self._cfg, "use_vm_mol", False)
+                and getattr(self._cfg, "use_hybrid_vm_mol", False)
                 and getattr(self._cfg, "use_moldiff", True)
             ),
             use_conden=bool(self._cfg.use_condense),
@@ -2455,6 +2579,17 @@ class OuterLoop:
             # and records `termination_reason` per lane.
             is_done=jnp.bool_(False),
             termination_reason=jnp.int32(0),
+            # Hybrid molecular-diffusion phase: start in upwind (1.0) whenever
+            # use_vm_mol is on, else pure central-difference (0.0). The body
+            # flips it to 0.0 at phase-0 convergence only when hybrid is on.
+            hybrid_use_vm=jnp.float64(
+                1.0 if bool(self._statics.use_vm_mol) else 0.0
+            ),
+            # Live termination budget, seeded to the static caps. Only the
+            # hybrid phase flip mutates these (extends phase 1's allowance).
+            count_min_dyn=jnp.int32(int(self._statics.count_min)),
+            count_max_dyn=jnp.int32(int(self._statics.count_max)),
+            runtime_dyn=jnp.float64(float(self._statics.runtime)),
             # Per-profile constants threaded through the carry so jax.vmap
             # batches them per lane (closure-baked constants would be shared).
             # No-op for the single-profile path (matches the closure values).
@@ -3067,14 +3202,21 @@ class OuterLoop:
         # because the JIT'd loop has not actually terminated.
         count = int(rs_out.params.count)
         t_now = float(rs_out.step.t)
+        # Compare against the run's LIVE budget, not the static cfg caps: a
+        # hybrid run extends count_max/runtime for phase 1, so a phase-1
+        # convergence past the static count_max must still read as end_case=1,
+        # not "step-count exceeded". Identical to the static caps for
+        # non-hybrid runs (the carry seeds them from cfg).
+        eff_count_max = int(final_state.count_max_dyn)
+        eff_runtime = float(final_state.runtime_dyn)
         if wall_clock_hit:
             end_case = 4
         else:
             end_case = (
                 3
-                if count > self._cfg.count_max
+                if count > eff_count_max
                 else 2
-                if t_now > self._cfg.runtime
+                if t_now > eff_runtime
                 else 1
             )
         # Persist the authoritative end_case into the returned RunState (and

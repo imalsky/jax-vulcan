@@ -48,17 +48,22 @@ sl = list(composition.species)
 for need in ("NH3", "NH3_l_s", "H2O", "H2O_l_s"):
     assert need in sl, f"lowT Jupiter network missing {need!r}"
 
-import vulcan_jax.vulcan_cfg as cfg
+from vulcan_jax.config import default_config
+cfg = default_config()
 
 # Cold Jupiter-like gas giant (master cfg_examples/vulcan_cfg_Jupiter.py values
 # where applicable); analytical T-P so the two profiles need no atm files.
 cfg.atm_type = "analytical"
 cfg.atm_base = "H2"
+# Deterministic fixed diffusion scheme for the batched regime (the new hybrid
+# default would flip schemes mid-run per lane).
+cfg.use_vm_mol = False
+cfg.use_hybrid_vm_mol = False
 cfg.nz = 60
 cfg.P_b = 5e9
 cfg.P_t = 1e-2
-cfg.gs = 2479.0
 cfg.Rp = 7.1492e9
+cfg.Mp = 2479.0 * 7.1492e9**2 / 6.67430e-8  # -> g=G*Mp/Rp^2 = 2479
 cfg.use_Kzz = True
 cfg.Kzz_prof = "const"
 cfg.const_Kzz = 1e8

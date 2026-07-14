@@ -42,7 +42,8 @@ PHOTO_RTOL = 1e-13
 
 
 def main() -> int:
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     if not vulcan_cfg.use_photo:
         print("SKIP: vulcan_cfg.use_photo=False; nothing to validate.")

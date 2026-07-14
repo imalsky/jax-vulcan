@@ -1,10 +1,11 @@
-"""Smoke-check the standalone example configs vendored into VULCAN-JAX.
+"""Smoke-check the shipped example configs (`vulcan_jax/configs/*.yaml`).
 
-Each subprocess loads a cfg from `cfg_examples/` as `vulcan_cfg`,
-validates it with `runtime_validation`, and runs the full pre-loop
-setup through photo / ion-rate initialization. This catches missing
-vendored assets and stale config paths without mutating the repo's
-default `vulcan_cfg.py`.
+Each subprocess loads a named config with `load_config`, validates it with
+`runtime_validation`, and runs the full pre-loop setup through photo / ion-rate
+initialization. This catches missing vendored assets and stale config paths
+without mutating the process default config. A non-default network/atom set
+(e.g. W39b's SNCHO) is import-frozen, so the child sets `$VULCAN_JAX_*` from the
+config's own frozen keys BEFORE importing vulcan_jax.
 """
 
 from __future__ import annotations
@@ -21,25 +22,33 @@ ROOT = Path(__file__).resolve().parent.parent
 _SETUP_SCRIPT = r"""
 from __future__ import annotations
 
-import importlib.util
 import os
 import sys
 import warnings
 from pathlib import Path
 
+import yaml
+
 warnings.filterwarnings("ignore")
 
-root = Path(sys.argv[1])
-cfg_path = Path(sys.argv[2])
-os.chdir(root)
-sys.path.insert(0, str(root))
+pkg_root = Path(sys.argv[1])   # .../src/vulcan_jax
+cfg_name = sys.argv[2]
+os.chdir(pkg_root)
 
-spec = importlib.util.spec_from_file_location("vulcan_cfg", cfg_path)
-cfg = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(cfg)
-sys.modules["vulcan_jax.vulcan_cfg"] = cfg
+# Read the import-frozen knobs from the config YAML BEFORE importing vulcan_jax
+# so a non-default network/atom_list/com_file freezes correctly.
+raw = yaml.safe_load((pkg_root / "configs" / (cfg_name + ".yaml")).read_text())
+if raw.get("network"):
+    os.environ["VULCAN_JAX_NETWORK"] = raw["network"]
+if raw.get("atom_list"):
+    os.environ["VULCAN_JAX_ATOM_LIST"] = ",".join(raw["atom_list"])
+if raw.get("com_file"):
+    os.environ["VULCAN_JAX_COM_FILE"] = raw["com_file"]
 
+import vulcan_jax  # noqa: F401  (freezes network/atom_list/com_file here)
+from vulcan_jax.config import load_config
+
+cfg = load_config(cfg_name)
 cfg.use_print_prog = False
 cfg.use_live_plot = False
 cfg.use_live_flux = False
@@ -54,13 +63,10 @@ cfg.runtime = 1.0e22
 
 from vulcan_jax.runtime_validation import validate_runtime_config
 
-validate_runtime_config(cfg, root=root)
+validate_runtime_config(cfg, root=pkg_root)
 
 # Full pre-loop pipeline (atm + rates + initial abundance + photo
-# cross-sections + sflux + remove pass) is encapsulated in
-# `RunState.with_pre_loop_setup(cfg)` — a single call covering the
-# `make_atm` / `ReadRate` / `setup_var_k` / `InitialAbun` /
-# `populate_photo_arrays` / `apply_photo_remove` chain.
+# cross-sections + sflux + remove pass) in one call.
 from vulcan_jax.state import RunState
 
 rs = RunState.with_pre_loop_setup(cfg)
@@ -71,18 +77,12 @@ print("PASS")
 """
 
 
-@pytest.mark.parametrize(
-    "cfg_name",
-    [
-        "vulcan_cfg_HD209.py",
-    ],
-)
+@pytest.mark.parametrize("cfg_name", ["HD209"])
 def test_cfg_example_setup(cfg_name: str) -> None:
     from vulcan_jax._paths import PACKAGE_ROOT
 
-    cfg_path = PACKAGE_ROOT / "cfg_examples" / cfg_name
     result = subprocess.run(
-        [sys.executable, "-c", _SETUP_SCRIPT, str(PACKAGE_ROOT), str(cfg_path)],
+        [sys.executable, "-c", _SETUP_SCRIPT, str(PACKAGE_ROOT), cfg_name],
         capture_output=True,
         text=True,
         cwd=ROOT,

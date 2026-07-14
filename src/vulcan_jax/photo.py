@@ -451,7 +451,7 @@ def _pack_branch_to_k_index_map(branch_keys, rate_index, remove_list):
     return jnp.asarray(re_idx), jnp.asarray(active)
 
 
-def pack_J_to_k_index_map(photo_J, var, vulcan_cfg):
+def pack_J_to_k_index_map(photo_J, var, cfg):
     """Build static index arrays mapping each branch to its `var.k` reaction index.
 
     Returns four (n_br,) arrays plus their T-branch counterparts:
@@ -466,22 +466,22 @@ def pack_J_to_k_index_map(photo_J, var, vulcan_cfg):
     re_idx, active = _pack_branch_to_k_index_map(
         photo_J.branch_keys,
         var.pho_rate_index,
-        vulcan_cfg.remove_list,
+        cfg.remove_list,
     )
     re_T_idx, active_T = _pack_branch_to_k_index_map(
         photo_J.branch_T_keys,
         var.pho_rate_index,
-        vulcan_cfg.remove_list,
+        cfg.remove_list,
     )
     return re_idx, active, re_T_idx, active_T
 
 
-def pack_Jion_to_k_index_map(photo_ion, var, vulcan_cfg):
+def pack_Jion_to_k_index_map(photo_ion, var, cfg):
     """Build branch -> k_arr row index tables for photoionization updates."""
     return _pack_branch_to_k_index_map(
         photo_ion.branch_keys,
         var.ion_rate_index,
-        vulcan_cfg.remove_list,
+        cfg.remove_list,
     )
 
 

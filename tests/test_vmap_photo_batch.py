@@ -44,12 +44,9 @@ def _pin_cfg():
     """Pin vulcan_cfg for a small photo-ON batched run: isothermal T-P,
     const_mix init, lowered photo cadence so the branch fires within
     COUNT_MAX. Mirrors test_vmap_while_loop._pin_cfg."""
-    import vulcan_jax.outer_loop as outer_loop
     import vulcan_jax.legacy_io as op
 
-    vulcan_cfg = op.vulcan_cfg
-    sys.modules["vulcan_jax.vulcan_cfg"] = vulcan_cfg
-    outer_loop.vulcan_cfg = vulcan_cfg
+    vulcan_cfg = op.default_config()
 
     vulcan_cfg.count_max = COUNT_MAX
     vulcan_cfg.count_min = 1
@@ -61,6 +58,10 @@ def _pin_cfg():
     vulcan_cfg.ini_mix = "const_mix"  # no FastChem; default const_mix dict
     vulcan_cfg.atm_type = "isothermal"
     vulcan_cfg.Kzz_prof = "Pfunc"
+    # Deterministic fixed diffusion scheme for the batched/emulator regime
+    # (the new hybrid default would flip schemes mid-run per lane).
+    vulcan_cfg.use_vm_mol = False
+    vulcan_cfg.use_hybrid_vm_mol = False
     vulcan_cfg.nz = 40
     # Photo fires every 5 accepted steps -> several firings inside COUNT_MAX.
     vulcan_cfg.ini_update_photo_frq = 5

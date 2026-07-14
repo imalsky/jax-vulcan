@@ -21,10 +21,11 @@ from .solver import (
     factor_block_thomas_diag_offdiag,
     solve_block_thomas_diag_offdiag,
 )
-from . import vulcan_cfg
+from .config import default_config
 
 jax.config.update("jax_enable_x64", True)
 
+_CFG = default_config()
 _UNDERFLOW_DENOM = 1e-300
 
 # Ordered (atom, reservoir-species) pairs for the chemistry atom-conservation
@@ -61,7 +62,7 @@ def _build_chem_projection_tables() -> tuple[
     invertible H/O block.
     """
     compo_names = _composition.compo.dtype.names
-    cfg_atoms = getattr(vulcan_cfg, "atom_list", ())
+    cfg_atoms = getattr(_CFG, "atom_list", ())
     pairs = tuple(
         (atom, reservoir)
         for atom, reservoir in _ATOM_RESERVOIRS
@@ -112,7 +113,7 @@ def _build_chem_projection_tables() -> tuple[
 # state._assert_atom_list_matches_import fails fast if a later make_config
 # passes a different atom_list rather than silently mixing import-time
 # projection with cfg-time atom accounting.
-IMPORT_ATOM_LIST = tuple(getattr(vulcan_cfg, "atom_list", ()))
+IMPORT_ATOM_LIST = tuple(getattr(_CFG, "atom_list", ()))
 
 
 def _project_chem_rhs(rhs: jnp.ndarray) -> jnp.ndarray:
@@ -583,13 +584,15 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
     return sol, delta_arr
 
 
-def make_atm_static(atm, ni: int, nz: int, cfg=vulcan_cfg) -> AtmStatic:
+def make_atm_static(atm, ni: int, nz: int, cfg=None) -> AtmStatic:
     """Build an AtmStatic from a legacy AtmData container.
 
-    `cfg` defaults to the global vulcan_cfg module; OuterLoop passes its own
-    `self._cfg` so the transport toggles below honor a make_config() cfg (this
-    runs at integration time, after state._cfg_overlay has restored the global).
+    `cfg` defaults to the process default config; OuterLoop passes its own
+    `self._cfg` so the transport toggles below honor a load_config() cfg (this
+    runs at integration time, after state._cfg_overlay has restored the default).
     """
+    if cfg is None:
+        cfg = default_config()
     use_vm = bool(
         getattr(cfg, "use_vm_mol", False) and getattr(cfg, "use_moldiff", True)
     )

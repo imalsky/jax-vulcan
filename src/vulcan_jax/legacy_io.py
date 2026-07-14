@@ -19,11 +19,12 @@ import os
 import pickle
 import time
 
-from . import vulcan_cfg
+from .config import default_config
 from . import chem_funs
 from .chem_funs import ni, nr
 from ._paths import resolve_data_path
 
+_CFG = default_config()
 species = chem_funs.spec_list
 
 
@@ -141,8 +142,8 @@ class ReadRate(object):
         cache_key = None
         if _rate_cache_enabled():
             cache_key = (
-                str(resolve_data_path(vulcan_cfg.network)),
-                bool(vulcan_cfg.use_ion),
+                str(resolve_data_path(_CFG.network)),
+                bool(_CFG.use_ion),
             )
             snap = _RATE_PARSE_CACHE.get(cache_key)
             if snap is not None:
@@ -180,7 +181,7 @@ class ReadRate(object):
         photo_sp = []
         ion_sp = []
 
-        with open(resolve_data_path(vulcan_cfg.network)) as f:
+        with open(resolve_data_path(_CFG.network)) as f:
             all_lines = f.readlines()
             for line_indx, line in enumerate(all_lines):
                 # switch to 3-body and dissociation reations
@@ -303,14 +304,14 @@ class ReadRate(object):
                     Rf[i] = line.partition("[")[-1].rpartition("]")[0].strip()
 
                     var.conden_re_list.append(i)
-                    k[i] = np.zeros(vulcan_cfg.nz)
-                    k[i + 1] = np.zeros(vulcan_cfg.nz)
+                    k[i] = np.zeros(_CFG.nz)
+                    k[i + 1] = np.zeros(_CFG.nz)
 
                     i += 2
 
                 # setting photo dissociation reactions to zeros
                 elif photo_re and line.strip() and not line.startswith("#"):
-                    k[i] = np.zeros(vulcan_cfg.nz)
+                    k[i] = np.zeros(_CFG.nz)
                     Rf[i] = line.partition("[")[-1].rpartition("]")[0].strip()
 
                     # adding the photo species
@@ -329,7 +330,7 @@ class ReadRate(object):
 
                 # setting photo ionization reactions to zeros
                 elif ion_re and line.strip() and not line.startswith("#"):
-                    k[i] = np.zeros(vulcan_cfg.nz)
+                    k[i] = np.zeros(_CFG.nz)
                     Rf[i] = line.partition("[")[-1].rpartition("]")[0].strip()
 
                     ion_sp.append(Rf[i].split()[0])
@@ -352,7 +353,7 @@ class ReadRate(object):
         # var.conden_re_list, var.special_re, var.stop_rev_indx).
 
         var.photo_sp = set(photo_sp)
-        if vulcan_cfg.use_ion:
+        if _CFG.use_ion:
             var.ion_sp = set(ion_sp)
 
         if cache_key is not None:
@@ -741,16 +742,16 @@ class Output(object):
     (useful in CI).
     """
 
-    def __init__(self, cfg=vulcan_cfg):
+    def __init__(self, cfg=None):
         """Set up the `.vul` writer for one run: create the output/plot dirs
         and warn if the target file already exists.
         """
-        # cfg defaults to the global vulcan_cfg module so the CLI and legacy
-        # callers (which pass nothing) are unchanged. make_config() users pass
+        # cfg defaults to the process default config so the CLI and legacy
+        # callers (which pass nothing) are unchanged. load_config() users pass
         # their namespace so output paths, the .vul writer, and progress prints
         # honor the same cfg as setup and the runner. Pair with
         # OuterLoop(cfg=cfg); save_out(..., cfg=...) overrides per call.
-        self._cfg = cfg
+        self._cfg = cfg if cfg is not None else default_config()
 
         output_dir, out_name, plot_dir = (
             self._cfg.output_dir,
@@ -917,10 +918,9 @@ class Output(object):
         os.makedirs(target_dir, exist_ok=True)
 
         # Serialize the ACTIVE config (self._cfg) so the snapshot reflects the
-        # real run — including make_config() overrides — rather than copying the
-        # packaged vulcan_cfg.py source (which would lose every override and is
-        # meaningless for a make_config namespace). Works for both the global
-        # module and a SimpleNamespace; values are repr'd so the file re-reads.
+        # real run — including load_config() overrides. Values are repr'd so the
+        # file re-reads as Python; the machine-reproducible artifact is the
+        # resolved YAML the CLI writes via config.dump_config.
         lines = []
         for key in sorted(vars(self._cfg)):
             if key.startswith("_"):

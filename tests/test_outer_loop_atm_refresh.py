@@ -67,7 +67,8 @@ REFRESH_RTOL = 2e-2
 def main() -> int:
     os.chdir(VULCAN_MASTER)
     sys.path.append(str(VULCAN_MASTER))
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
     import op
 
     os.chdir(ROOT)

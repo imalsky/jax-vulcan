@@ -39,7 +39,8 @@ warnings.filterwarnings("ignore")
 def main() -> int:
     os.chdir(VULCAN_MASTER)
     sys.path.append(str(VULCAN_MASTER))
-    import vulcan_jax.vulcan_cfg as vulcan_cfg  # noqa: E402
+    from vulcan_jax.config import default_config  # noqa: E402
+    vulcan_cfg = default_config()
     from vulcan_jax.atm_setup import Atm  # noqa: E402
     import op  # noqa: E402
 

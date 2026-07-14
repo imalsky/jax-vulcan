@@ -41,7 +41,8 @@ warnings.filterwarnings("ignore")
 @contextlib.contextmanager
 def _cfg_overrides(**kwargs):
     """Snapshot/restore vulcan_cfg attributes around a block."""
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     saved = {}
     sentinel = object()
@@ -72,7 +73,8 @@ def _build_hd189_atm():
     """
     from vulcan_jax.atm_setup import Atm
     from vulcan_jax.state import _Variables, _AtmData
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     data_var = _Variables()
     data_atm = _AtmData()
@@ -272,7 +274,8 @@ def test_charge_list_no_ions():
     spurious entries.
     """
     from vulcan_jax.ini_abun import InitialAbun
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     data_var, data_atm, _ = _build_hd189_atm()
     assert vulcan_cfg.use_ion is False, "test assumes HD189 default cfg"
@@ -296,7 +299,8 @@ def main() -> int:
     from vulcan_jax.atm_setup import Atm
     from vulcan_jax.ini_abun import InitialAbun
     from vulcan_jax.state import _Variables, _AtmData
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
     import vulcan_jax.chem_funs as cf_jax
 
     print(

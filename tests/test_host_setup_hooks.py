@@ -32,12 +32,9 @@ warnings.filterwarnings("ignore")
 
 def _pin_cfg():
     """Pin vulcan_cfg for a fast, photo-off, FastChem-free pre-loop setup."""
-    import vulcan_jax.outer_loop as outer_loop
     import vulcan_jax.legacy_io as op
 
-    vulcan_cfg = op.vulcan_cfg
-    sys.modules["vulcan_jax.vulcan_cfg"] = vulcan_cfg
-    outer_loop.vulcan_cfg = vulcan_cfg
+    vulcan_cfg = op.default_config()
 
     vulcan_cfg.count_max = 40
     vulcan_cfg.count_min = 1

@@ -36,15 +36,22 @@ para)` view if the corresponding cfg flags are set.
 **[Δ master]** Single device-side call replaces master's Python
 `while not stop()` loop.
 
-### `vulcan_cfg.py`
-The config the runtime reads. The canonical committed default is the
-**full HD189 config inline** — every knob (paths, elemental abundance,
-photochemistry, atmosphere, boundary conditions, condensation, steady-state
-check, Ros2 solver, output) is declared directly in this file, mirroring
-VULCAN-master's `vulcan_cfg.py` format. `atom_list` and `network` read
-`$VULCAN_JAX_ATOM_LIST` / `$VULCAN_JAX_NETWORK` at import (import-frozen).
-To switch presets, copy a `cfg_examples/` file (`vulcan_cfg_HD209`,
-`vulcan_cfg_Earth`, `vulcan_cfg_W39b`) over this file outright.
+### `config.py` + `configs/*.yaml`
+The config surface is authored as **YAML** (`configs/`: `default.yaml` = HD189,
+plus `HD189`/`HD209`/`W39b`/`Earth`). `config.load_config(name_or_path, **overrides)`
+reads a YAML (CWD `./configs/<name>.yaml` first, then the packaged copy), folds
+the import-frozen env (`$VULCAN_JAX_NETWORK` / `$VULCAN_JAX_ATOM_LIST` /
+`$VULCAN_JAX_COM_FILE`), applies overrides, resolves the derived values
+(`dt_max`, `photo_switch_longdy_thresh`, `save_movie_rate`, `para_anaTP`), and
+returns a `Config` namespace. `config.default_config()` is the cached process
+default (`configs/default.yaml`), loaded at first import so the import-frozen
+knobs (`network`/`com_file`/`atom_list`) freeze; `state._cfg_overlay` mutates it
+in place during setup. `make_config(**o)` == `load_config("default", **o)`.
+Gravity is derived `gs = G*Mp/Rp²` (set `Mp`+`Rp`, no `gs` knob). To switch
+presets, run `vulcan-jax --config W39b` or edit a `./configs/*.yaml`. The strict
+loader parses `1e22`-style scientific notation as float and rejects duplicate
+keys. (The old inline `vulcan_cfg.py` module + `cfg_examples/*.py` were removed
+2026-07-14.)
 
 ### `phy_const.py`
 Physical constants in CGS, sourced from astropy. Module-level only — no
@@ -123,6 +130,8 @@ without holding the legacy object graph.
 
 Pure functions:
 - `compute_pico(pco)` — stagger pressure to interfaces.
+- `surface_gravity(cfg)` — resolve surface gravity: `G·Mp/Rp²` (vm_branch); raises if `Mp`/`Rp` are missing/≤0. There is no `gs` knob (the override was removed 2026-07-14); all setup-time `gs` reads route through this.
+- `high_temp_cut_regrid(pco, Tco, *, T_max, P_min, P_t, nz)` — pure selection for `high_temp_cut`: raise `P_b` to the shallowest deep level (`P ≥ P_min`) with `T ≤ T_max` (floored at `P_min`) and return an `nz`-level re-grid, or `None` when no cut is needed. Host-side only.
 - `analytical_TP_H14(pco, params, *, gs, Pb)` — Heng et al. 2014 analytical T(P) profile.
 - `_interp_descending_or_ascending(x_query, xp_raw, fp_raw, fill_left, fill_right)` — direction-agnostic linear interpolation.
 - `_read_atm_table(atm_file)` — tab-delimited atmosphere-table reader.
@@ -145,7 +154,7 @@ the single source of truth — the NumPy publics wrap them with `np.asarray` —
 are reused on-graph by `atm_jax.build_atm_static`.
 
 Facade:
-- `Atm` — thin facade that mutates `data_atm` / `data_var` for legacy callers. Methods (`f_pico`, `load_TPK`, `TP_H14`, `mol_mass`, `mean_mass`, `f_mu_dz`, `mol_diff`, `BC_flux`, `sp_sat`, `read_sflux`) wrap the pure functions above.
+- `Atm` — thin facade that mutates `data_atm` / `data_var` for legacy callers. Methods (`f_pico`, `load_TPK`, `apply_high_temp_cut`, `TP_H14`, `mol_mass`, `mean_mass`, `f_mu_dz`, `mol_diff`, `BC_flux`, `sp_sat`, `read_sflux`) wrap the pure functions above. `apply_high_temp_cut` (gated on `cfg.high_temp_cut`, run after `load_TPK`) delegates to `high_temp_cut_regrid` and reloads T/Kzz on the re-gridded column.
 
 ### `atm_refresh.py`
 JAX kernels for the in-loop atmosphere refresh — recomputes mu/g/Hp/dz when
@@ -355,7 +364,7 @@ Module-level helpers:
 - `_make_runner(net, statics, …)` — assemble the full `lax.while_loop` body (cond + body, accept/reject retries, photo/conden/atm-refresh gating). Returns the JIT-able `runner(state, atm_static)` callable. The integration's hot path lives here.
 - `ProfileVars` — per-profile constants threaded through the carry so `jax.vmap` batches them per lane (n_0, Kzz, atom_ini, atm-refresh fields, conden diffusion/saturation arrays, the NH3 cold-trap index `c_nh3_conden_top`, and the two T-P-dependent photo statics `p_absp_T_cross` / `p_cross_J_T`).
 - `stack_integ_states(states)` / `stack_atm_statics(atms)` / `unstack_integ_states(batched, n)` — build/split the leading batch axis for `run_batch`.
-- `JaxIntegState` — runner carry pytree (~80 slots: y, t, dt, counts, longdy ring buffer, photo carry, atm carry, conden carry, atom-loss history, `pv: ProfileVars`, …).
+- `JaxIntegState` — runner carry pytree (~80 slots: y, t, dt, counts, longdy ring buffer, photo carry, atm carry, conden carry, atom-loss history, `pv: ProfileVars`, …). Hybrid molecular diffusion rides here too: `hybrid_use_vm` (upwind/central blend factor, flips at phase-0 convergence) and the live termination budget `count_min_dyn` / `count_max_dyn` / `runtime_dyn` (the flip extends them the vm_branch way).
 - `_PhotoStatic` — photo sub-graph's frozen NamedTuple (cross sections, branch maps, sflux, scattering tables).
 - `_Statics` — umbrella container for the three sub-graph statics (`photo`, `atm_refresh`, `conden`) plus the global atm-static.
 

@@ -319,6 +319,25 @@ def _validate_numerical_bounds(cfg) -> list[str]:
             f"loss_ex={loss_ex} contains entries not in atom_list={atom_list}: {extras}."
         )
 
+    # Gravity is derived from Mp + Rp (g = G*Mp/Rp^2); both must be positive.
+    Mp = getattr(cfg, "Mp", None)
+    Rp = float(getattr(cfg, "Rp", 0.0))
+    if Mp is None or float(Mp) <= 0.0:
+        errors.append(
+            f"Mp={Mp} must be set and > 0 (planet mass, g) to derive gs = G*Mp/Rp^2."
+        )
+    if Rp <= 0.0:
+        errors.append(f"Rp={Rp} must be > 0 (planet radius, cm) to derive gs.")
+
+    # High-temperature bottom cut
+    if bool(getattr(cfg, "high_temp_cut", False)):
+        htc_K = float(getattr(cfg, "high_temp_cut_K", 3500.0))
+        htc_P = float(getattr(cfg, "high_temp_cut_P", 1e6))
+        if htc_K <= 0.0:
+            errors.append(f"high_temp_cut_K={htc_K} must be > 0 (K).")
+        if htc_P <= 0.0:
+            errors.append(f"high_temp_cut_P={htc_P} must be > 0 (dyne/cm^2).")
+
     return errors
 
 

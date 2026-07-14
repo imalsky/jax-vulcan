@@ -84,7 +84,8 @@ def main() -> int:
 
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import diffusion_numpy_ref as diff_mod
-    import vulcan_jax.vulcan_cfg as cfg_jax
+    from vulcan_jax.config import default_config
+    cfg_jax = default_config()
 
     coeffs = diff_mod.build_diffusion_coeffs(y, data_atm, cfg_jax)
     diff_jax = diff_mod.apply_diffusion(y, coeffs)

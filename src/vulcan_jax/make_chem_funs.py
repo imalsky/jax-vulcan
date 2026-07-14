@@ -187,11 +187,11 @@ def build_chem_rhs(net: Network) -> Callable:
 if __name__ == "__main__":
     import sys
 
-    from . import vulcan_cfg
+    from .config import default_config
     from .network import parse_network
     from ._paths import resolve_data_path
 
-    net = parse_network(str(resolve_data_path(vulcan_cfg.network)))
+    net = parse_network(str(resolve_data_path(default_config().network)))
     path = cache_path_for(net)
     if path.exists():
         print(f"chem_rhs codegen cache hit: {path}")

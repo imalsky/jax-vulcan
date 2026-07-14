@@ -36,7 +36,8 @@ def main() -> int:
     import vulcan_jax.legacy_io as op
     import vulcan_jax.op_jax as op_jax
     import vulcan_jax.outer_loop as outer_loop
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
     from vulcan_jax.state import RunState, legacy_view
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)

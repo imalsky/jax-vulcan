@@ -49,7 +49,8 @@ _RESERVOIRS = ("H2", "H2O", "CO", "N2")
 def _atom_count_matrix(net, atoms):
     """Species-by-atom stoichiometry, shape (ni, n_atoms). Reads with an
     explicit encoding so species names come back as str (not numpy.bytes_)."""
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     compo = np.genfromtxt(
         resolve_data_path(vulcan_cfg.com_file),
@@ -66,7 +67,8 @@ def _atom_count_matrix(net, atoms):
 
 def _capture_hd189_state():
     """Return (y, M, k_arr, net) from a fresh HD189 pre-loop pipeline run."""
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
     import vulcan_jax.network as net_mod
     from vulcan_jax.state import RunState
 

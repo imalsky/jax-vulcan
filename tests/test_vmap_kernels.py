@@ -28,7 +28,8 @@ warnings.filterwarnings("ignore")
 
 def _build_state():
     """Build the canonical HD189 state once for kernel testing."""
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
     from vulcan_jax.state import RunState, legacy_view
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
@@ -77,7 +78,8 @@ def test_chem_rhs_segment_sum_reference_vmap_consistency() -> None:
     """The preserved segment_sum reference RHS remains vmap-consistent."""
     import jax
     import jax.numpy as jnp
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
     import vulcan_jax.network as net_mod
     import vulcan_jax.chem as chem_mod
 
@@ -113,7 +115,8 @@ def test_chem_jac_analytical_vmap_consistency() -> None:
     """`vmap(chem_jac_analytical)` agrees with single calls."""
     import jax
     import jax.numpy as jnp
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
     import vulcan_jax.network as net_mod
     import vulcan_jax.chem as chem_mod
 
@@ -200,7 +203,8 @@ def test_compute_tau_jax_vmap_consistency() -> None:
     """
     import jax
     import jax.numpy as jnp
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     if not vulcan_cfg.use_photo:
         return  # Nothing to validate when photo is off.

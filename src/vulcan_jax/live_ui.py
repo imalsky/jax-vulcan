@@ -7,7 +7,7 @@ from pathlib import Path
 
 import numpy as np
 
-from . import vulcan_cfg
+from .config import default_config
 
 _TEX_LABELS = {
     "H": "H",
@@ -65,8 +65,10 @@ _TABLEAU20 = [
 _TABLEAU20 = [(r / 255.0, g / 255.0, b / 255.0) for (r, g, b) in _TABLEAU20]
 
 
-def any_live_flag_on(cfg=vulcan_cfg) -> bool:
+def any_live_flag_on(cfg=None) -> bool:
     """True if any of the four live-UI flags is enabled in `cfg`."""
+    if cfg is None:
+        cfg = default_config()
     return any(
         bool(getattr(cfg, name, False))
         for name in (
@@ -81,11 +83,11 @@ def any_live_flag_on(cfg=vulcan_cfg) -> bool:
 class LiveUI:
     """Host-side dispatcher for live mixing-ratio + actinic-flux plots."""
 
-    def __init__(self, cfg=vulcan_cfg) -> None:
-        # Read the run's cfg (make_config() users pass their own namespace),
-        # not the bare vulcan_cfg module — otherwise make_config overrides of
-        # the live-UI flags / plot_spec / movie_dir are silently ignored.
-        self._cfg = cfg
+    def __init__(self, cfg=None) -> None:
+        # Read the run's cfg (load_config() users pass their own namespace),
+        # not the process default — otherwise cfg overrides of the live-UI
+        # flags / plot_spec / movie_dir are silently ignored.
+        self._cfg = cfg if cfg is not None else default_config()
         self.pic_count = 0
         self._species_index: dict[str, int] | None = None
         self._plt = None

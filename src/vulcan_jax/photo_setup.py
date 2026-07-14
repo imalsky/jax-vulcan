@@ -16,18 +16,19 @@ import os
 import jax.numpy as jnp
 import numpy as np
 
-from . import vulcan_cfg
+from .config import default_config
 from .state import PhotoStaticInputs
 from ._paths import resolve_data_path
 
+_CFG = default_config()
 
 # log10 stand-in for log10(0) = -inf in T-axis log-space interpolation.
 _LOWT_SENTINEL = -100.0
 
 
 def _cross_folder() -> str:
-    """Return `vulcan_cfg.cross_folder` as a string (path to per-species CSVs)."""
-    p = str(resolve_data_path(vulcan_cfg.cross_folder))
+    """Return `_CFG.cross_folder` as a string (path to per-species CSVs)."""
+    p = str(resolve_data_path(_CFG.cross_folder))
     return p if p.endswith("/") else p + "/"
 
 
@@ -409,9 +410,9 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
     # Sorted union (alphabetical) so the dense pytree row order is invariant
     # of network reading order.
     absp_sp_list = sorted(set(photo_sp) | set(ion_sp))
-    use_ion = bool(getattr(vulcan_cfg, "use_ion", False))
-    T_cross_sp = list(vulcan_cfg.T_cross_sp or [])
-    scat_sp_list = list(vulcan_cfg.scat_sp or [])
+    use_ion = bool(getattr(_CFG, "use_ion", False))
+    T_cross_sp = list(_CFG.T_cross_sp or [])
+    scat_sp_list = list(_CFG.scat_sp or [])
     nz = int(atm.Tco.shape[0])
 
     from . import chem_funs
@@ -475,9 +476,9 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
         "Using wavelength bins from " + "{:.1f}".format(bin_min) + " to " + str(bin_max)
     )
 
-    dbin1 = float(vulcan_cfg.dbin1)
-    dbin2 = float(vulcan_cfg.dbin2)
-    bins = _make_bins(bin_min, bin_max, dbin1, dbin2, vulcan_cfg.dbin_12trans)
+    dbin1 = float(_CFG.dbin1)
+    dbin2 = float(_CFG.dbin2)
+    bins = _make_bins(bin_min, bin_max, dbin1, dbin2, _CFG.dbin_12trans)
     nbin = int(bins.shape[0])
 
     cross_per_sp: dict[str, np.ndarray] = {

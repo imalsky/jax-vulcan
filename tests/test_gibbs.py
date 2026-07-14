@@ -35,7 +35,7 @@ warnings.filterwarnings("ignore")
 def main() -> int:
     os.chdir(VULCAN_MASTER)
     sys.path.insert(0, str(VULCAN_MASTER))
-    import vulcan_jax.vulcan_cfg as vulcan_cfg  # noqa
+    from vulcan_jax.config import default_config; vulcan_cfg = default_config()  # noqa
     import store, op  # noqa
     from vulcan_jax.atm_setup import Atm
     import vulcan_jax.chem_funs as chem_funs  # noqa

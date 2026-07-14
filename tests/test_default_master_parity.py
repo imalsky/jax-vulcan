@@ -145,7 +145,8 @@ def run() -> None:
         import vulcan_jax.chem_funs as chem_funs
         import op
         import store
-        import vulcan_jax.vulcan_cfg as vulcan_cfg
+        from vulcan_jax.config import default_config
+        vulcan_cfg = default_config()
 
         data_var = store.Variables()
         data_atm = store.AtmData()
@@ -238,7 +239,8 @@ count_max = int(sys.argv[3])
 os.chdir(jax_root)
 sys.path.insert(0, str(jax_root))
 
-import vulcan_jax.vulcan_cfg as vulcan_cfg
+from vulcan_jax.config import default_config
+vulcan_cfg = default_config()
 
 vulcan_cfg.count_max = count_max
 vulcan_cfg.count_min = count_max + 1

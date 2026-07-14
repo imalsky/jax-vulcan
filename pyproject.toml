@@ -16,6 +16,7 @@ dependencies = [
     "jax>=0.4.31",
     "numpy>=1.24",
     "scipy>=1.12",  # lgmres(rtol=...) for the reverse-mode steady-state adjoint
+    "PyYAML>=6",  # the config surface is YAML (vulcan_jax/configs/*.yaml)
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -62,7 +63,7 @@ vulcan_jax = [
     "atm/**/*",
     "thermo/**/*",
     "fastchem_vulcan/**/*",
-    "cfg_examples/**/*.py",
+    "configs/*.yaml",
 ]
 
 [tool.setuptools.exclude-package-data]
@@ -87,6 +88,7 @@ version = { attr = "vulcan_jax._version.__version__" }
 # relative paths resolve, or to stage VULCAN-master) before importing, so the
 # module-level imports legitimately come after executable statements (E402).
 [tool.ruff.lint.per-file-ignores]
+"src/vulcan_jax/__init__.py" = ["E402"]
 "examples/grad_reverse_example.py" = ["E402"]
 "examples/grad_jvp_example.py" = ["E402"]
 "examples/grad_physical_example.py" = ["E402"]
@@ -97,7 +99,6 @@ version = { attr = "vulcan_jax._version.__version__" }
 "tests/test_block_thomas_diag.py" = ["E402"]
 "tests/test_chem_rhs_codegen.py" = ["E402"]
 "tests/test_default_master_parity.py" = ["E402"]
-"tests/test_oracle.py" = ["E402"]
 "tests/test_photo_ion.py" = ["E402"]
 "tests/test_steady_state_reaction_sensitivity.py" = ["E402"]
 "tests/test_w39b_fastchem_invariant.py" = ["E402"]

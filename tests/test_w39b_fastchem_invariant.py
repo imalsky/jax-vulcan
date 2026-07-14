@@ -17,7 +17,6 @@ ROOT = Path(__file__).resolve().parent.parent
 VULCAN_MASTER = ROOT.parent / "VULCAN-master"
 from vulcan_jax._paths import PACKAGE_ROOT
 
-JAX_CFG = PACKAGE_ROOT / "cfg_examples" / "vulcan_cfg_W39b.py"
 MASTER_CFG = VULCAN_MASTER / "cfg_examples" / "vulcan_cfg_W39b.py"
 
 EXPECTED_FREE_O = 5.37e-3 - 2.95e-3
@@ -27,33 +26,33 @@ REL_TOL = 1e-10
 _JAX_SCRIPT = r"""
 from __future__ import annotations
 
-import importlib.util
 import os
 import sys
 from pathlib import Path
 
 import numpy as np
+import yaml
 
-root = Path(sys.argv[1])
+root = Path(sys.argv[1])   # PACKAGE_ROOT (.../src/vulcan_jax)
 out_npz = Path(sys.argv[2])
-cfg_src = Path(sys.argv[3])
 
 os.chdir(root)
-sys.path.insert(0, str(root))
 
-spec = importlib.util.spec_from_file_location("vulcan_cfg", cfg_src)
-cfg = importlib.util.module_from_spec(spec)
-assert spec.loader is not None
-spec.loader.exec_module(cfg)
-sys.modules["vulcan_jax.vulcan_cfg"] = cfg
-sys.modules["vulcan_cfg"] = cfg
+# W39b uses the import-frozen SNCHO network: set $VULCAN_JAX_* from the config's
+# own frozen keys BEFORE importing vulcan_jax so the parse picks up SNCHO.
+_raw = yaml.safe_load((root / "configs" / "W39b.yaml").read_text())
+os.environ["VULCAN_JAX_NETWORK"] = _raw["network"]
+os.environ["VULCAN_JAX_ATOM_LIST"] = ",".join(_raw["atom_list"])
+if _raw.get("com_file"):
+    os.environ["VULCAN_JAX_COM_FILE"] = _raw["com_file"]
 
-# Clear any cached vulcan_jax submodules so chem_funs re-parses the W39b network
-for mod_name in list(sys.modules):
-    if mod_name.startswith("vulcan_jax.") and mod_name != "vulcan_jax.vulcan_cfg":
-        del sys.modules[mod_name]
-if "vulcan_jax" in sys.modules:
-    del sys.modules["vulcan_jax"]
+# The low-level facades below (Atm / InitialAbun) read the process default
+# config; make it the full W39b config by copying W39b's attrs onto it.
+from vulcan_jax.config import default_config, load_config
+
+cfg = default_config()
+for _k, _v in vars(load_config("W39b")).items():
+    setattr(cfg, _k, _v)
 
 from vulcan_jax.runtime_validation import validate_runtime_config
 
@@ -234,7 +233,7 @@ def test_w39b_fastchem_initial_state_matches_master():
         master_npz = tmp_path / "master_w39b_init.npz"
         master_backup = tmp_path / "master_backup"
 
-        _run_probe(_JAX_SCRIPT, PACKAGE_ROOT, jax_npz, JAX_CFG)
+        _run_probe(_JAX_SCRIPT, PACKAGE_ROOT, jax_npz)
         _run_probe(
             _MASTER_SCRIPT,
             VULCAN_MASTER,

@@ -7,4 +7,6 @@ hc = 1.98644582e-9  # Planck constant * c (erg·nm)
 au = 1.49597871e13  # Astronomical unit (cm)
 r_sun = 6.957e10  # solar radius (cm)
 r_jup = 7.1492e9  # Jupiter equatorial radius (cm)
+m_jup = 1.8981e30  # Jupiter mass (g), IAU 2015
+G_grav = 6.67430e-8  # gravitational constant (cm^3 g^-1 s^-2), astropy G.cgs
 ag0 = 0  # asymmetry factor in RT (0 = isotropic scattering)

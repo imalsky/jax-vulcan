@@ -6,8 +6,6 @@ arithmetic spanning ~50 orders of magnitude).
 
 from __future__ import annotations
 
-import copy as _copy
-import types as _types
 from typing import Any
 
 from ._version import __version__
@@ -18,34 +16,25 @@ from jax import config as _config
 
 _config.update("jax_enable_x64", True)
 
+from .config import Config, default_config, load_config
 from .state import RunState
-from . import vulcan_cfg
 
 __all__ = [
     "__version__",
     "RunState",
-    "vulcan_cfg",
+    "Config",
+    "load_config",
+    "default_config",
     "make_config",
 ]
 
 
-def make_config(**overrides: Any) -> _types.SimpleNamespace:
-    """Create a config namespace from shipped defaults with user overrides.
+def make_config(**overrides: Any) -> Config:
+    """Load the default config with user overrides (alias for ``load_config``).
 
     Example::
 
         cfg = vulcan_jax.make_config(nz=100, use_photo=False)
         rs = vulcan_jax.RunState.with_pre_loop_setup(cfg)
     """
-    cfg = _types.SimpleNamespace(
-        **{
-            k: _copy.deepcopy(v)
-            for k, v in vars(vulcan_cfg).items()
-            if not k.startswith("_")
-            and not callable(v)
-            and not hasattr(v, "__loader__")
-        }
-    )
-    for k, v in overrides.items():
-        setattr(cfg, k, v)
-    return cfg
+    return load_config("default", **overrides)

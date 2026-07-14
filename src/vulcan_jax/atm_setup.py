@@ -14,12 +14,14 @@ import jax.numpy as jnp
 import jax.scipy.special as jsp_special
 import numpy as np
 
-from . import vulcan_cfg
-from .phy_const import Navo, au, kb, r_sun
+from .config import default_config
+from .phy_const import G_grav, Navo, au, kb, r_sun
 from ._paths import resolve_data_path
 
 # x64 is required for the rate-constant dynamic range.
 jax.config.update("jax_enable_x64", True)
+
+_CFG = default_config()
 
 
 def compute_pico(pco: jnp.ndarray) -> jnp.ndarray:
@@ -40,6 +42,53 @@ def compute_pico(pco: jnp.ndarray) -> jnp.ndarray:
             jnp.array([top]),
         ]
     )
+
+
+def surface_gravity(cfg) -> float:
+    """Surface gravity at the reference level (cm/s^2).
+
+    Derived from planet mass and radius (upstream vm_branch): ``g = G*Mp/Rp**2``.
+    This is the single source of gravity; callers that used to pass ``gs``
+    directly now supply ``Mp`` (planet mass, g) and ``Rp`` (planet radius, cm).
+    """
+    Mp = getattr(cfg, "Mp", None)
+    Rp = getattr(cfg, "Rp", None)
+    if Mp is None or Rp is None or float(Mp) <= 0.0 or float(Rp) <= 0.0:
+        raise RuntimeError(
+            "Surface gravity is undetermined: set `Mp` (planet mass, g) and "
+            f"`Rp` (planet radius, cm), both > 0. Got Mp={Mp!r}, Rp={Rp!r}."
+        )
+    return G_grav * float(Mp) / float(Rp) ** 2
+
+
+def high_temp_cut_regrid(
+    pco, Tco, *, T_max: float, P_min: float, P_t: float, nz: int
+) -> np.ndarray | None:
+    """Re-gridded pressure column for the high-temperature bottom cut.
+
+    ``pco[0]`` is the deepest (highest-pressure) level. If any layer at
+    ``P >= P_min`` is hotter than ``T_max``, the bottom pressure is raised to
+    the first deep level that is cool enough (or floored at ``P_min`` when the
+    entire deep column is too hot), and the column is re-gridded onto ``nz``
+    logspaced levels between the new bottom and ``P_t``. Returns ``None`` when
+    no cut is needed (deep column already below ``T_max``, no layers at/below
+    ``P_min``, or the new bottom would not actually raise ``P_b``).
+
+    Pure NumPy port of the selection in vm_branch ``build_atm.apply_high_temp_cut``.
+    """
+    pco = np.asarray(pco, dtype=np.float64)
+    Tco = np.asarray(Tco, dtype=np.float64)
+    deep = pco >= P_min
+    if not np.any(deep) or np.all(Tco[deep] <= T_max):
+        return None
+    ok_deep = np.where(deep & (Tco <= T_max))[0]
+    if ok_deep.size == 0:
+        new_P_b = float(P_min)
+    else:
+        new_P_b = max(float(pco[ok_deep[0]]), float(P_min))
+    if new_P_b >= pco[0]:
+        return None
+    return np.logspace(np.log10(new_P_b), np.log10(P_t), int(nz))
 
 
 def analytical_TP_H14(pco: jnp.ndarray, params, *, gs: float, Pb: float) -> jnp.ndarray:
@@ -113,7 +162,7 @@ def kzz_profile_jax(
         return jnp.maximum(K_max, K_max * (K_p_lev * 1e6 / pico_int) ** 0.4)
     raise IOError(
         f'\n"Kzz_prof"={kzz_prof!r} cannot be recongized.\n'
-        f'Assign it as "file", "const", "JM16" or "Pfunc" in vulcan_cfg.'
+        f'Assign it as "file", "const", "JM16" or "Pfunc" in the config.'
     )
 
 
@@ -189,8 +238,11 @@ def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray
             analytical_TP_H14(
                 jnp.asarray(pco),
                 cfg.para_anaTP,
-                gs=float(cfg.gs),
-                Pb=float(cfg.P_b),
+                gs=surface_gravity(cfg),
+                # pco[0] is the deepest level (= P_b for the standard logspace
+                # grid); using it keeps the profile self-consistent after a
+                # `high_temp_cut` re-grid raises the effective bottom pressure.
+                Pb=float(np.asarray(pco)[0]),
             )
         )
     elif atm_type == "file":
@@ -240,14 +292,14 @@ def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray
     else:
         raise IOError(
             f'\n"atm_type"={atm_type!r} cannot be recongized.\n'
-            f"Please reassign it in vulcan_cfg."
+            f"Please reassign it in the config."
         )
     out["Tco"] = Tco
 
     # Read each profile's own parameter DIRECTLY (not getattr-with-default):
     # a config selecting a branch without that branch's knob must fail loud,
     # exactly as the previous code and VULCAN-master do (master reads
-    # `vulcan_cfg.K_deep` for JM16). kzz_profile_jax defaults the unused knobs.
+    # `_CFG.K_deep` for JM16). kzz_profile_jax defaults the unused knobs.
     if Kzz_prof == "const":
         out["Kzz"] = np.asarray(
             kzz_profile_jax("const", pico[1:-1], const_Kzz=cfg.const_Kzz),
@@ -269,7 +321,7 @@ def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray
     else:
         raise IOError(
             f'\n"Kzz_prof"={Kzz_prof!r} cannot be recongized.\n'
-            f'Assign it as "file", "const", "JM16" or "Pfunc" in vulcan_cfg.'
+            f'Assign it as "file", "const", "JM16" or "Pfunc" in the config.'
         )
 
     if vz_prof == "const":
@@ -289,7 +341,7 @@ def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray
     else:
         raise IOError(
             f'\n"vz_prof"={vz_prof!r} cannot be recongized.\n'
-            f'Assign it as "file" or "const" in vulcan_cfg.'
+            f'Assign it as "file" or "const" in the config.'
         )
 
     # Force-zero when the corresponding `use_*` switch is off, regardless of cfg.
@@ -398,7 +450,7 @@ def compute_mu_dz_g(
         jnp.asarray(ymix, dtype=jnp.float64), jnp.asarray(ms_arr, dtype=jnp.float64)
     )
 
-    gs = float(cfg.gs)
+    gs = surface_gravity(cfg)
     Rp = float(cfg.Rp)
     rocky = bool(cfg.rocky)
     Pb = float(cfg.P_b)
@@ -914,18 +966,18 @@ class Atm:
     """
 
     def __init__(self):
-        self.gs = vulcan_cfg.gs
-        self.P_b = vulcan_cfg.P_b
-        self.P_t = vulcan_cfg.P_t
-        self.type = vulcan_cfg.atm_type
-        self.use_Kzz = vulcan_cfg.use_Kzz
-        self.Kzz_prof = vulcan_cfg.Kzz_prof
-        self.const_Kzz = vulcan_cfg.const_Kzz
-        self.use_vz = vulcan_cfg.use_vz
-        self.vz_prof = vulcan_cfg.vz_prof
-        self.const_vz = vulcan_cfg.const_vz
-        self.use_settling = vulcan_cfg.use_settling
-        self.non_gas_sp = vulcan_cfg.non_gas_sp
+        self.gs = surface_gravity(_CFG)
+        self.P_b = _CFG.P_b
+        self.P_t = _CFG.P_t
+        self.type = _CFG.atm_type
+        self.use_Kzz = _CFG.use_Kzz
+        self.Kzz_prof = _CFG.Kzz_prof
+        self.const_Kzz = _CFG.const_Kzz
+        self.use_vz = _CFG.use_vz
+        self.vz_prof = _CFG.vz_prof
+        self.const_vz = _CFG.const_vz
+        self.use_settling = _CFG.use_settling
+        self.non_gas_sp = _CFG.non_gas_sp
 
     def f_pico(self, data_atm):
         """Stagger pressure to interfaces and write to `data_atm.pico`."""
@@ -936,7 +988,7 @@ class Atm:
         """Populate `Tco / Kzz / vz / M / n_0` per `atm_type` (isothermal,
         analytical, file, vulcan_ini, or table)."""
         out = load_TPK(
-            vulcan_cfg, np.asarray(data_atm.pco), pico=np.asarray(data_atm.pico)
+            _CFG, np.asarray(data_atm.pco), pico=np.asarray(data_atm.pico)
         )
         # `atm_type='table'` rewrites pco from a saved file.
         if "pco" in out:
@@ -945,14 +997,56 @@ class Atm:
             setattr(data_atm, k, out[k])
         return data_atm
 
+    def apply_high_temp_cut(self, data_atm):
+        """Raise the bottom pressure so the deepest temperature does not exceed
+        ``high_temp_cut_K``, dropping ultra-hot deep layers for numerical
+        stability (upstream vm_branch ``build_atm.apply_high_temp_cut``).
+
+        Delegates the grid selection to :func:`high_temp_cut_regrid`, then
+        reloads T/Kzz on the re-gridded column. No-op when the deep column is
+        already below ``T_max``.
+        """
+        T_max = float(getattr(_CFG, "high_temp_cut_K", 3500.0))
+        P_min = float(getattr(_CFG, "high_temp_cut_P", 1e6))
+        nz = int(_CFG.nz)
+
+        new_pco = high_temp_cut_regrid(
+            data_atm.pco, data_atm.Tco, T_max=T_max, P_min=P_min, P_t=self.P_t, nz=nz
+        )
+        if new_pco is None:
+            return data_atm
+
+        old_P_b = self.P_b
+        self.P_b = float(new_pco[0])
+        print(
+            "high_temp_cut: capping deep T at {:.0f} K (P >= {:.2e} bar) for "
+            "numerical stability.".format(T_max, P_min / 1e6)
+        )
+        print(
+            "  effective P_b {:.2e} -> {:.2e} bar (nz = {})".format(
+                old_P_b / 1e6, self.P_b / 1e6, nz
+            )
+        )
+
+        data_atm.pco = new_pco
+        data_atm = self.f_pico(data_atm)
+        data_atm = self.load_TPK(data_atm)
+
+        if np.any(np.asarray(data_atm.Tco) > T_max):
+            print(
+                "Warning (after high_temp_cut): max Tco = {:.1f} K still > "
+                "{:.0f} K.".format(float(np.max(np.asarray(data_atm.Tco))), T_max)
+            )
+        return data_atm
+
     def TP_H14(self, pco, *args_analytical):
         """Heng et al. 2014 analytical T(P) profile evaluated at `pco`."""
         return np.asarray(
             analytical_TP_H14(
                 jnp.asarray(pco),
                 args_analytical,
-                gs=float(vulcan_cfg.gs),
-                Pb=float(vulcan_cfg.P_b),
+                gs=surface_gravity(_CFG),
+                Pb=float(_CFG.P_b),
             )
         )
 
@@ -988,7 +1082,7 @@ class Atm:
             dtype=np.float64,
         )
         out = compute_mu_dz_g(
-            vulcan_cfg,
+            _CFG,
             np.asarray(data_var.ymix),
             ms_arr,
             np.asarray(data_atm.pico),
@@ -1006,16 +1100,16 @@ class Atm:
         if "Ti" in out:
             data_atm.Ti = out["Ti"]
             data_atm.Hpi = out["Hpi"]
-        if vulcan_cfg.use_settling:
+        if _CFG.use_settling:
             data_atm.vs = compute_settling_velocity(
-                vulcan_cfg,
+                _CFG,
                 data_atm.Tco,
                 data_atm.g,
                 list(species),
                 rho_p=getattr(data_atm, "rho_p", {}),
                 r_p=getattr(data_atm, "r_p", {}),
             )
-        if vulcan_cfg.plot_TP:
+        if _CFG.plot_TP:
             output.plot_TP(data_atm)
         if np.any(np.logical_or(data_atm.Tco < 200, data_atm.Tco > 6000)):
             print("Temperatures exceed the valid range of Gibbs free energy.\n")
@@ -1032,13 +1126,13 @@ class Atm:
         )
         atm.ms = ms_arr
         alpha_arr = _alpha_array_for_base(
-            vulcan_cfg.atm_base,
+            _CFG.atm_base,
             list(species),
             self.mol_mass,
         )
         atm.alpha = alpha_arr
         out = compute_mol_diff(
-            vulcan_cfg,
+            _CFG,
             np.asarray(atm.Tco),
             np.asarray(atm.n_0),
             np.asarray(atm.g),
@@ -1056,7 +1150,7 @@ class Atm:
         """Read top/bottom boundary-condition fluxes from the configured files."""
         from .composition import species
 
-        out = read_bc_flux(vulcan_cfg, list(species))
+        out = read_bc_flux(_CFG, list(species))
         atm.top_flux = out["top_flux"]
         atm.bot_flux = out["bot_flux"]
         atm.bot_vdep = out["bot_vdep"]
@@ -1064,13 +1158,13 @@ class Atm:
 
     def sp_sat(self, atm):
         """Populate `atm.sat_p[sp]` for each condensable species."""
-        out = compute_sat_p(list(vulcan_cfg.condense_sp), np.asarray(atm.Tco))
+        out = compute_sat_p(list(_CFG.condense_sp), np.asarray(atm.Tco))
         for sp, sp_arr in out.items():
             atm.sat_p[sp] = sp_arr
 
     def read_sflux(self, var, atm):
         """Read the stellar flux file, rebin onto `var.bins`, and write to var/atm."""
-        out = read_sflux_binned(vulcan_cfg, np.asarray(var.bins))
+        out = read_sflux_binned(_CFG, np.asarray(var.bins))
         atm.sflux_raw = out["sflux_raw"]
         var.sflux_top = out["sflux_top"]
         var.sflux_din12_indx = out["sflux_din12_indx"]

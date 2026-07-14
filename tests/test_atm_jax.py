@@ -61,7 +61,8 @@ def _rel(a, b):
 
 def test_build_atm_static_matches_make_atm_static(hd189_state):
     """Integrated: every AtmStatic field equals the frozen production build."""
-    import vulcan_jax.vulcan_cfg as cfg
+    from vulcan_jax.config import default_config
+    cfg = default_config()
 
     var, atm = hd189_state.var, hd189_state.atm
     nz, ni = np.asarray(var.y).shape
@@ -335,7 +336,8 @@ def test_settling_velocity_jax_matches_host():
 
 def test_jvp_dz_wrt_gs_matches_fd(hd189_state):
     """dz responds to surface gravity; jvp matches a central difference."""
-    import vulcan_jax.vulcan_cfg as cfg
+    from vulcan_jax.config import default_config
+    cfg = default_config()
 
     var, atm = hd189_state.var, hd189_state.atm
     phys, spec = make_physical_inputs(cfg, var, atm, list(_SPECIES))
@@ -357,7 +359,8 @@ def test_jvp_M_Dzz_wrt_Tco_matches_fd(hd189_state):
     the jvp matches a central difference. This is the headline T-sensitivity
     (warming the column); a specific T(P) parameterisation just composes in
     front of the Tco leaf (see `analytical_TP_H14`)."""
-    import vulcan_jax.vulcan_cfg as cfg
+    from vulcan_jax.config import default_config
+    cfg = default_config()
 
     var, atm = hd189_state.var, hd189_state.atm
     phys, spec = make_physical_inputs(cfg, var, atm, list(_SPECIES))

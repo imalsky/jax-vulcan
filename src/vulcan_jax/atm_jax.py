@@ -58,6 +58,7 @@ from .atm_setup import (
     compute_pico,
     settling_coeff_array,
     settling_velocity_jax,
+    surface_gravity,
 )
 from .jax_step import AtmStatic
 from .phy_const import Navo, kb
@@ -291,7 +292,7 @@ def make_physical_inputs(
         ymix=jnp.asarray(var.ymix, dtype=jnp.float64),
         Kzz=jnp.asarray(atm.Kzz, dtype=jnp.float64),
         vz=jnp.asarray(atm.vz, dtype=jnp.float64),
-        gs=jnp.asarray(float(cfg.gs), dtype=jnp.float64),
+        gs=jnp.asarray(surface_gravity(cfg), dtype=jnp.float64),
         Rp=jnp.asarray(float(cfg.Rp), dtype=jnp.float64),
     )
 

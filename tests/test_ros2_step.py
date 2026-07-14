@@ -34,7 +34,8 @@ def main() -> int:
     os.chdir(VULCAN_MASTER)
     sys.path.insert(0, str(VULCAN_MASTER))
 
-    import vulcan_jax.vulcan_cfg as cfg_v
+    from vulcan_jax.config import default_config
+    cfg_v = default_config()
     import store as st_v
     import build_atm as ba_v
     import op as op_v
@@ -80,7 +81,8 @@ def main() -> int:
         sys.path.remove(str(VULCAN_MASTER))
     os.chdir(ROOT)
 
-    import vulcan_jax.vulcan_cfg as cfg_jax
+    from vulcan_jax.config import default_config
+    cfg_jax = default_config()
 
     # Pin JAX modules to the exact network and transport flags used by the
     # master-side state captured above. `jax_step` imports

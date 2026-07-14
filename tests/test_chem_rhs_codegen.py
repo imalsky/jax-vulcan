@@ -38,7 +38,8 @@ PROJECT_ROOT = ROOT.parent
 
 def _atom_count_matrix(net: object, atoms: tuple[str, ...]) -> np.ndarray:
     """Return species-by-atom stoichiometry for `atoms`. shape: (ni, n_atoms)."""
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     compo = np.genfromtxt(
         resolve_data_path(vulcan_cfg.com_file),
@@ -172,7 +173,8 @@ def test_codegen_cache_key_changes_with_consumed_network_fields(tmp_path):
 
 def _capture_state():
     """Return (y, M, k_arr, net) from a fresh pre-loop pipeline run."""
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
     import vulcan_jax.network as net_mod
     from vulcan_jax.state import RunState
 
@@ -188,7 +190,8 @@ def _hd209_repeated_final_layer_fixture() -> tuple[
     np.ndarray, np.ndarray, np.ndarray, object, tuple[str, ...], np.ndarray
 ]:
     """Return one HD209 final-state layer repeated to the production column shape."""
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
     import vulcan_jax.network as net_mod
 
     saved = PROJECT_ROOT / "jax_paper" / "data" / "jax_HD209.vul"
@@ -467,8 +470,9 @@ out_codegen = np.asarray(fn(jnp.asarray(y), jnp.asarray(M), jnp.asarray(k_full))
 # and XLA fusion of the multiply chains into FMA produces a residue
 # that differs from master's NumPy `*` chain. Both are valid float64
 # arithmetic; the difference is per-multiply ULP that compounds in
-# the cancellation. The integration oracle (tests/test_oracle.py)
-# validates the CONVERGED state, which is what matters end-to-end.
+# the cancellation. The master-parity integration tests
+# (test_default_master_parity / test_w39b_fastchem_invariant) validate
+# the physically meaningful state, which is what matters end-to-end.
 bulk_species = ("H2O", "CO2", "SO", "SO2", "H2", "CO", "S", "H2S")
 bulk_ok = True
 worst_bulk = 0.0

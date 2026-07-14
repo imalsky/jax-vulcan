@@ -230,7 +230,7 @@ def test_guard_warns_on_frozen_photolysis():
 
 
 def test_auto_photo_recompute_requires_context_on_default_map():
-    nz, ni, nr = 2, 3, 4
+    nz, nr = 2, 4
     k = np.zeros((nr + 1, nz))
     k[1] = 1.0
     net = SimpleNamespace(nr=nr)

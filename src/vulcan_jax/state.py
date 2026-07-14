@@ -16,6 +16,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from . import chem_funs
+from .config import default_config
 from ._paths import resolve_data_path
 
 
@@ -455,7 +456,7 @@ def runstate_from_store(var, atm, para) -> RunState:
     photo_runtime/fix_species). Anything the runner needs at entry comes
     from here.
     """
-    from . import vulcan_cfg as _cfg
+    _cfg = default_config()
 
     base = pytree_from_store(var, atm)
 
@@ -567,7 +568,7 @@ def runstate_from_store(var, atm, para) -> RunState:
 
 def runstate_to_store(state: RunState, var, atm, para) -> None:
     """Reverse adapter: write all RunState slots back to (var, atm, para)."""
-    from . import vulcan_cfg as _cfg
+    _cfg = default_config()
 
     apply_pytree_to_store(state, var, atm)
 
@@ -840,21 +841,21 @@ def _assert_atom_list_matches_import(cfg) -> None:
 
 @contextlib.contextmanager
 def _cfg_overlay(cfg):
-    """Overlay cfg's public attributes onto the global ``vulcan_cfg`` for setup.
+    """Overlay cfg's public attributes onto the process default config for setup.
 
     The pre-loop pipeline's scratch containers (``_Variables`` / ``_AtmData`` /
     ``_Parameters``), the ``atm_setup`` / ``ini_abun`` facades, and
-    ``legacy_io.ReadRate`` read knobs off the module-global ``vulcan_cfg``
-    rather than a threaded argument. When ``cfg`` IS that module (the CLI path)
-    this is a no-op. When ``cfg`` is a separate namespace (``make_config()``)
-    we overlay its public attributes for the duration of setup and restore the
-    originals on exit, so overrides take effect with zero global leakage.
-    Mirrors the snapshot/restore in ``tests/conftest.py``; the runner-side
-    counterpart is ``OuterLoop(cfg=...)``.
+    ``legacy_io.ReadRate`` read knobs off the process default config
+    (``config.default_config()``) rather than a threaded argument. When ``cfg``
+    IS that default (the CLI path) this is a no-op. When ``cfg`` is a separate
+    namespace (``load_config()``) we overlay its public attributes onto the
+    default for the duration of setup and restore the originals on exit, so
+    overrides take effect with zero leakage. Mirrors the snapshot/restore in
+    ``tests/conftest.py``; the runner-side counterpart is ``OuterLoop(cfg=...)``.
     """
-    from . import vulcan_cfg  # deferred so a sys.modules rebind (tests) is honored
+    base = default_config()
 
-    if cfg is vulcan_cfg:
+    if cfg is base:
         yield
         return
 
@@ -863,22 +864,22 @@ def _cfg_overlay(cfg):
     for name, val in vars(cfg).items():
         if name.startswith("_") or callable(val) or hasattr(val, "__loader__"):
             continue
-        if hasattr(vulcan_cfg, name):
+        if hasattr(base, name):
             try:
-                before[name] = copy.deepcopy(getattr(vulcan_cfg, name))
+                before[name] = copy.deepcopy(getattr(base, name))
             except Exception:
-                before[name] = getattr(vulcan_cfg, name)
+                before[name] = getattr(base, name)
         else:
             added.append(name)
-        setattr(vulcan_cfg, name, val)
+        setattr(base, name, val)
     try:
         yield
     finally:
         for name, val in before.items():
-            setattr(vulcan_cfg, name, val)
+            setattr(base, name, val)
         for name in added:
             try:
-                delattr(vulcan_cfg, name)
+                delattr(base, name)
             except Exception:
                 pass
 
@@ -920,6 +921,8 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
 
     atm = make_atm.f_pico(atm)
     atm = make_atm.load_TPK(atm)
+    if bool(getattr(cfg, "high_temp_cut", False)):
+        atm = make_atm.apply_high_temp_cut(atm)
     if bool(getattr(cfg, "use_condense", False)):
         make_atm.sp_sat(atm)
 
@@ -1017,7 +1020,7 @@ def _fresh_atom_inputs(rs: RunState) -> AtomInputs:
     if rs.atoms is not None:
         atom_order = rs.atoms.atom_order
     else:
-        from . import vulcan_cfg as _cfg
+        _cfg = default_config()
 
         atom_order = _atom_order_for(_cfg)
     n = len(atom_order)
@@ -1079,7 +1082,7 @@ def legacy_view(rs: RunState):
     var.k = {}
     var.def_bin_min = float(rs.photo.def_bin_min)
     var.def_bin_max = float(rs.photo.def_bin_max)
-    from . import vulcan_cfg as _cfg
+    _cfg = default_config()
 
     var.var_save = [
         "k",
@@ -1222,8 +1225,8 @@ class _Variables(object):
 
     def __init__(self, stellar_flux=None):
         from .chem_funs import ni as _ni, spec_list as _spec_list  # noqa: F401
-        from .vulcan_cfg import nz as _nz
-        from . import vulcan_cfg as _vcfg
+        _nz = default_config().nz
+        _vcfg = default_config()
 
         self.k = {}
         self.k_arr = None
@@ -1342,8 +1345,9 @@ class _AtmData(object):
 
     def __init__(self):
         from .chem_funs import ni as _ni, spec_list as _spec_list
-        from .vulcan_cfg import nz as _nz
-        from . import vulcan_cfg as _vcfg
+        _nz = default_config().nz
+        _vcfg = default_config()
+        from .atm_setup import surface_gravity as _surface_gravity
 
         self.pco = np.logspace(np.log10(_vcfg.P_b), np.log10(_vcfg.P_t), _nz)
         self.pico = np.empty(_nz + 1)
@@ -1364,7 +1368,7 @@ class _AtmData(object):
         self.vm = np.zeros((_nz - 1, _ni))
         self.vs = np.zeros((_nz - 1, _ni))
         self.alpha = np.zeros(_ni)
-        self.gs = _vcfg.gs
+        self.gs = _surface_gravity(_vcfg)
         self.g = np.zeros(_nz)
 
         self.top_flux = np.zeros(_ni)
@@ -1408,7 +1412,7 @@ class _Parameters(object):
     """Private mutable scratch container for numerical-method counters and flags."""
 
     def __init__(self):
-        from .vulcan_cfg import nz as _nz
+        _nz = default_config().nz
         from .chem_funs import ni as _ni
 
         self.nega_y = 0

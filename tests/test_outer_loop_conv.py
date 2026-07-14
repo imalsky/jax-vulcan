@@ -53,9 +53,7 @@ def main() -> int:
     import vulcan_jax.outer_loop as outer_loop
     import vulcan_jax.legacy_io as op
 
-    vulcan_cfg = op.vulcan_cfg
-    sys.modules["vulcan_jax.vulcan_cfg"] = vulcan_cfg
-    outer_loop.vulcan_cfg = vulcan_cfg
+    vulcan_cfg = op.default_config()
 
     vulcan_cfg.count_max = 50
     vulcan_cfg.count_min = 1

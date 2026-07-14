@@ -94,22 +94,6 @@ def vulcan_master_op():
 # vulcan_cfg snapshot/restore fixtures.
 # ---------------------------------------------------------------------------
 
-# Modules that captured `vulcan_cfg` at import time. When the module
-# identity drifts, these need re-binding.
-_VCFG_REBIND_TARGETS = (
-    "vulcan_jax.legacy_io",
-    "vulcan_jax.outer_loop",
-    "vulcan_jax.state",
-    "vulcan_jax.atm_setup",
-    "vulcan_jax.ini_abun",
-    "vulcan_jax.photo_setup",
-    "vulcan_jax.jax_step",
-    "vulcan_jax.op_jax",
-    "vulcan_jax.rates",
-    "vulcan_jax.composition",
-    "vulcan_jax.chem_funs",
-)
-
 _MASTER_ONLY_MODULE_NAMES = (
     "op",
     "build_atm",
@@ -187,15 +171,17 @@ def _snapshot_cfg_attrs(cfg_module) -> dict:
 
 @pytest.fixture(scope="session", autouse=True)
 def _cfg_snapshot_session():
-    """Capture the canonical `vulcan_cfg` module + a deep-copy of every
-    public attribute, plus canonical VULCAN-JAX module objects."""
-    _restore_import_state()
-    import vulcan_jax.legacy_io as _io
+    """Capture the process default config (`config.default_config()`) + a
+    deep-copy of every public attribute, plus canonical VULCAN-JAX modules.
 
-    canonical = _io.vulcan_cfg
-    sys.modules["vulcan_jax.vulcan_cfg"] = canonical
-    # Also set bare key for any remaining legacy references.
-    sys.modules["vulcan_cfg"] = canonical
+    The default config is a single process-wide `Config` object that
+    `state._cfg_overlay` mutates in place during setup; snapshotting its
+    attributes lets `_cfg_guard` restore it after any test that overlays or
+    mutates it directly."""
+    _restore_import_state()
+    from vulcan_jax.config import default_config
+
+    canonical = default_config()
     canonical_modules: dict[str, Any] = {}
     for name in _VULCAN_JAX_MODULE_NAMES:
         try:
@@ -203,8 +189,7 @@ def _cfg_snapshot_session():
         except Exception:
             pass
     snap = {
-        "module": canonical,
-        "id": id(canonical),
+        "cfg": canonical,
         "attrs": _snapshot_cfg_attrs(canonical),
         "modules": canonical_modules,
     }
@@ -213,19 +198,10 @@ def _cfg_snapshot_session():
 
 
 def _restore_cfg(snap: dict) -> None:
-    """Re-bind `sys.modules["vulcan_jax.vulcan_cfg"]` + downstream modules
-    to the canonical object and restore every snapshotted attribute."""
-    canonical = snap["module"]
-    canonical_id = snap["id"]
+    """Restore every snapshotted attribute on the process default config and
+    drop any attribute a test added."""
+    canonical = snap["cfg"]
     _restore_import_state(snap)
-    current = sys.modules.get("vulcan_jax.vulcan_cfg")
-    if current is None or id(current) != canonical_id:
-        sys.modules["vulcan_jax.vulcan_cfg"] = canonical
-        sys.modules["vulcan_cfg"] = canonical
-        for name in _VCFG_REBIND_TARGETS:
-            mod = sys.modules.get(name)
-            if mod is not None and getattr(mod, "vulcan_cfg", None) is not canonical:
-                mod.vulcan_cfg = canonical
     snap_attrs = snap["attrs"]
     for name, val in snap_attrs.items():
         try:
@@ -235,9 +211,6 @@ def _restore_cfg(snap: dict) -> None:
     for name in list(vars(canonical).keys()):
         if name.startswith("_") or name in snap_attrs:
             continue
-        val = getattr(canonical, name)
-        if isinstance(val, type) or hasattr(val, "__loader__"):
-            continue
         try:
             delattr(canonical, name)
         except Exception:
@@ -246,7 +219,7 @@ def _restore_cfg(snap: dict) -> None:
 
 @pytest.fixture(autouse=True)
 def _cfg_guard(request, _cfg_snapshot_session):
-    """Restore canonical `vulcan_cfg` state after every test."""
+    """Restore the process default config after every test."""
     strict = request.node.get_closest_marker("strict_isolation") is not None
     if strict:
         _restore_cfg(_cfg_snapshot_session)
@@ -310,24 +283,22 @@ class HD189State:
 def _hd189_pristine() -> HD189State:
     """One-time HD189 pre-loop build."""
     import vulcan_jax.legacy_io as op
-    import vulcan_jax.outer_loop as outer_loop
 
-    vulcan_cfg = op.vulcan_cfg
-    sys.modules["vulcan_jax.vulcan_cfg"] = vulcan_cfg
-    sys.modules["vulcan_cfg"] = vulcan_cfg
-    outer_loop.vulcan_cfg = vulcan_cfg
+    from vulcan_jax.config import default_config
+
+    cfg = default_config()
 
     from vulcan_jax.atm_setup import Atm
     import vulcan_jax.op_jax as op_jax
     from vulcan_jax.state import RunState, legacy_view
 
-    rs = RunState.with_pre_loop_setup(vulcan_cfg)
+    rs = RunState.with_pre_loop_setup(cfg)
     data_var, data_atm, data_para = legacy_view(rs)
     make_atm = Atm()
     output = op.Output()
 
     solver = op_jax.Ros2JAX()
-    if vulcan_cfg.use_photo and rs.photo_static is not None:
+    if cfg.use_photo and rs.photo_static is not None:
         solver._photo_static = rs.photo_static
 
     return HD189State(

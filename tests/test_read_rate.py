@@ -54,7 +54,8 @@ def _load_nasa9_local(net):
     `gibbs.load_nasa9` avoids the question.
     """
     import vulcan_jax.gibbs as gibbs
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
     from pathlib import Path
 
     thermo_dir = Path(vulcan_cfg.network).parent
@@ -74,7 +75,8 @@ def test_lowT_caps_fire_all_three():
     formulas. Above the thresholds, k stays untouched."""
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates as rates
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     net = net_mod.parse_network(vulcan_cfg.network)
 
@@ -132,7 +134,8 @@ def test_lowT_caps_no_op_when_T_above_thresholds():
     """If T > 300 K everywhere, no cap fires and k is unchanged."""
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates as rates
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     net = net_mod.parse_network(vulcan_cfg.network)
     nz = 5
@@ -154,7 +157,8 @@ def test_remove_list_zeros_only_listed_indices():
     nothing else (does not auto-zero the paired forward/reverse partner)."""
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates as rates
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     net = net_mod.parse_network(vulcan_cfg.network)
     nz = 4
@@ -178,7 +182,8 @@ def test_remove_list_zeros_only_listed_indices():
 def test_remove_list_none_or_empty_is_noop():
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates as rates
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     net = net_mod.parse_network(vulcan_cfg.network)
     k_in = np.ones((net.nr + 1, 3), dtype=np.float64)
@@ -203,7 +208,8 @@ def test_build_rate_array_matches_legacy_hd189(hd189_state):
     """
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates as rates
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     net = net_mod.parse_network(vulcan_cfg.network)
     nasa9_coeffs = _load_nasa9_local(net)
@@ -256,7 +262,8 @@ def test_build_rate_array_with_lowT_caps(hd189_state):
     (T<=300) for the cooler upper layers."""
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates as rates
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     net = net_mod.parse_network(vulcan_cfg.network)
     nasa9_coeffs = _load_nasa9_local(net)

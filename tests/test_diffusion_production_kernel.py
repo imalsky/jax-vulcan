@@ -41,7 +41,8 @@ def main() -> int:
 
     import diffusion_numpy_ref as diff_ref
     import vulcan_jax.jax_step as jax_step
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
     from vulcan_jax.state import RunState, legacy_view
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
@@ -153,7 +154,8 @@ def test_vm_mode_kernel_matches_reference():
 
     import diffusion_numpy_ref as diff_ref
     import vulcan_jax.jax_step as jax_step
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
     from vulcan_jax.state import RunState, legacy_view
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)

@@ -23,7 +23,8 @@ warnings.filterwarnings("ignore")
 
 @pytest.mark.strict_isolation
 def test_cli_main_produces_vul():
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
     import vulcan_jax.vulcan_jax_cli as cli
 
     overrides = {

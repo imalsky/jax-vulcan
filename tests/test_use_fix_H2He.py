@@ -38,7 +38,8 @@ warnings.filterwarnings("ignore")
 
 
 def _setup_state():
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     vulcan_cfg.count_max = 5
     vulcan_cfg.count_min = 1
@@ -63,7 +64,8 @@ def _setup_state():
 
 
 def main() -> int:
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
     import vulcan_jax.chem_funs as chem_funs
 
     species = list(chem_funs.spec_list)

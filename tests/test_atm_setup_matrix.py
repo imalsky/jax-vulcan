@@ -106,7 +106,8 @@ def test_load_TPK_atm_types(atm_type, P_b, P_t, nz, gs):
         K_p_lev=0.1,
         Tiso=1234.0,
         P_b=P_b,
-        gs=gs,
+        Rp=1.138 * 7.1492e9,
+        Mp=gs * (1.138 * 7.1492e9) ** 2 / 6.67430e-8,  # -> g=G*Mp/Rp^2 = gs
         para_anaTP=[120.0, 1500.0, 0.1, 0.02, 1.0, 1.0],
         atm_file=_hd189_atm_file_path(),
         vul_ini="output/",
@@ -117,7 +118,7 @@ def test_load_TPK_atm_types(atm_type, P_b, P_t, nz, gs):
     if atm_type == "isothermal":
         Tco_ref = np.full(nz, cfg.Tiso, dtype=np.float64)
     elif atm_type == "analytical":
-        Tco_ref = _ref_TP_H14(pco, cfg.para_anaTP, gs=cfg.gs, Pb=cfg.P_b)
+        Tco_ref = _ref_TP_H14(pco, cfg.para_anaTP, gs=gs, Pb=cfg.P_b)
     else:  # file
         atm_table = np.genfromtxt(cfg.atm_file, names=True, dtype=None, skip_header=1)
         p_file = atm_table["Pressure"].astype(np.float64)
@@ -437,7 +438,7 @@ def test_compute_pico_matches_master_formula():
 
 def test_compute_mu_dz_g_rocky_anchor_at_surface():
     """rocky=True forces pref_indx=0; only the upward scan runs."""
-    from vulcan_jax.atm_setup import compute_pico, compute_mu_dz_g
+    from vulcan_jax.atm_setup import compute_pico, compute_mu_dz_g, surface_gravity
 
     nz = 40
     pco = _make_pco(1e6, 5e-2, nz)
@@ -449,8 +450,8 @@ def test_compute_mu_dz_g_rocky_anchor_at_surface():
     ymix[:, 2] = 0.01  # Ar
     ms_arr = np.array([28.014, 32.0, 39.948])
     cfg = SimpleNamespace(
-        gs=980.0,
         Rp=6.378e8,
+        Mp=980.0 * 6.378e8**2 / 6.67430e-8,  # -> g=G*Mp/Rp^2 = 980
         rocky=True,
         P_b=1e6,
         use_moldiff=False,
@@ -458,7 +459,7 @@ def test_compute_mu_dz_g_rocky_anchor_at_surface():
     )
     out = compute_mu_dz_g(cfg, ymix, ms_arr, pico, Tco)
     assert out["pref_indx"] == 0
-    assert out["g"][0] == cfg.gs
+    assert out["g"][0] == surface_gravity(cfg)
     assert out["zco"][0] == 0.0
     # zco strictly increases (pco strictly decreases).
     z = np.asarray(out["zco"])
@@ -467,7 +468,7 @@ def test_compute_mu_dz_g_rocky_anchor_at_surface():
 
 def test_compute_mu_dz_g_gas_giant_anchor_at_1bar():
     """rocky=False & P_b≥1bar → pref_indx is the layer closest to 1 bar."""
-    from vulcan_jax.atm_setup import compute_pico, compute_mu_dz_g
+    from vulcan_jax.atm_setup import compute_pico, compute_mu_dz_g, surface_gravity
 
     nz = 60
     pco = _make_pco(1e9, 1e-2, nz)
@@ -478,8 +479,8 @@ def test_compute_mu_dz_g_gas_giant_anchor_at_1bar():
     ymix[:, 0] = 1.0
     ms_arr = np.array([2.016])
     cfg = SimpleNamespace(
-        gs=2140.0,
         Rp=1.138 * 7.1492e9,
+        Mp=2140.0 * (1.138 * 7.1492e9) ** 2 / 6.67430e-8,  # -> g=G*Mp/Rp^2 = 2140
         rocky=False,
         P_b=1e9,
         use_moldiff=False,
@@ -488,7 +489,7 @@ def test_compute_mu_dz_g_gas_giant_anchor_at_1bar():
     out = compute_mu_dz_g(cfg, ymix, ms_arr, pico, Tco)
     pref = out["pref_indx"]
     assert pref > 0  # 1 bar lives somewhere in the column, not at index 0
-    assert out["g"][pref] == cfg.gs
+    assert out["g"][pref] == surface_gravity(cfg)
     assert out["zco"][pref] == 0.0
     # zco strictly increases.
     z = np.asarray(out["zco"])

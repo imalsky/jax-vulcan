@@ -55,7 +55,8 @@ import jax.numpy as jnp
 
 # Set atom_list BEFORE the first jax_step import so the static reservoir tables
 # pick up sulfur (state.py imports jax_step lazily, so this ordering holds).
-import vulcan_jax.vulcan_cfg as cfg
+from vulcan_jax.config import default_config
+cfg = default_config()
 cfg.atom_list = ["H", "O", "C", "N", "S"]
 
 import vulcan_jax.jax_step as js

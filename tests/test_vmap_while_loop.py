@@ -47,12 +47,9 @@ def _pin_cfg():
     """Pin vulcan_cfg for a fast, photo-off batched run (the emulator regime;
     photo-on batching is covered by test_vmap_photo_batch). Mirrors
     test_outer_loop_smoke."""
-    import vulcan_jax.outer_loop as outer_loop
     import vulcan_jax.legacy_io as op
 
-    vulcan_cfg = op.vulcan_cfg
-    sys.modules["vulcan_jax.vulcan_cfg"] = vulcan_cfg
-    outer_loop.vulcan_cfg = vulcan_cfg
+    vulcan_cfg = op.default_config()
 
     vulcan_cfg.count_max = COUNT_MAX
     vulcan_cfg.count_min = 1
@@ -68,6 +65,12 @@ def _pin_cfg():
     # mode does not load one).
     vulcan_cfg.atm_type = "isothermal"
     vulcan_cfg.Kzz_prof = "Pfunc"
+    # Batched/emulator generation wants a deterministic, fixed diffusion scheme:
+    # the hybrid phase flip turns count-exhaustion into a mid-run scheme switch
+    # with a per-lane extended budget, which breaks the freeze-on-done
+    # equivalence premise. Pin the (new) hybrid default off here.
+    vulcan_cfg.use_vm_mol = False
+    vulcan_cfg.use_hybrid_vm_mol = False
     return vulcan_cfg
 
 
@@ -78,10 +81,14 @@ def _build_rs(vulcan_cfg, *, Tiso=None, gs=None, Rp=None):
 
     if Tiso is not None:
         vulcan_cfg.Tiso = float(Tiso)
-    if gs is not None:
-        vulcan_cfg.gs = float(gs)
     if Rp is not None:
         vulcan_cfg.Rp = float(Rp)
+    if gs is not None:
+        # Gravity is derived from Mp/Rp; back out the Mp that yields this gs
+        # (using the possibly-just-overridden Rp).
+        from vulcan_jax.phy_const import G_grav
+
+        vulcan_cfg.Mp = float(gs) * float(vulcan_cfg.Rp) ** 2 / G_grav
     return RunState.with_pre_loop_setup(vulcan_cfg)
 
 
@@ -107,7 +114,9 @@ def main() -> int:
     import vulcan_jax.outer_loop as outer_loop
 
     vulcan_cfg = _pin_cfg()
-    gs0 = float(vulcan_cfg.gs)
+    from vulcan_jax.atm_setup import surface_gravity
+
+    gs0 = float(surface_gravity(vulcan_cfg))
     Rp0 = float(vulcan_cfg.Rp)
     rs = _build_rs(vulcan_cfg, Tiso=900.0, gs=gs0, Rp=Rp0)
     integ = _build_integ()

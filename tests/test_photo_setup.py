@@ -159,7 +159,8 @@ def _check_static_against_fixture(
 def test_photo_setup_matches_baseline_fixture():
     """HD189 default — T_cross_sp=[], use_ion=False."""
     import vulcan_jax.photo_setup as photo_setup
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     if not bool(getattr(vulcan_cfg, "use_photo", False)):
         import pytest
@@ -179,7 +180,8 @@ def test_photo_setup_matches_baseline_fixture():
 def test_photo_setup_matches_T_dep_fixture(monkeypatch):
     """HD189 with T_cross_sp=['CO2','H2O','NH3'] patched on."""
     import vulcan_jax.photo_setup as photo_setup
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     monkeypatch.setattr(vulcan_cfg, "T_cross_sp", ["CO2", "H2O", "NH3"])
     var, atm = _build_state_through_read_rate()

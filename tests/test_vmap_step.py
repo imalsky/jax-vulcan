@@ -24,7 +24,8 @@ def main() -> int:
     import jax
     import jax.numpy as jnp
 
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     # Build the canonical HD189 pre-loop state via the typed constructor
     # and derive a `(var, atm, _)` shim for legacy attribute access. The

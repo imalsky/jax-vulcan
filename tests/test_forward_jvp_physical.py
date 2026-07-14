@@ -55,7 +55,10 @@ def _synthetic_atm(net, nz):
 
 def test_per_step_kzz_forward_mode():
     """Kzz is correctly differentiable through one Ros2 step (jvp==vjp; FD sanity)."""
-    from vulcan_jax import vulcan_cfg, network as net_mod, chem as chem_mod
+    from vulcan_jax import network as net_mod, chem as chem_mod
+    from vulcan_jax.config import default_config
+
+    vulcan_cfg = default_config()
     from vulcan_jax.jax_step import jax_ros2_step
 
     net = chem_mod.to_jax(net_mod.parse_network(vulcan_cfg.network))

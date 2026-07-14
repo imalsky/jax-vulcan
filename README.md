@@ -116,9 +116,9 @@ Output lands at `output/<out_name>.vul` -- same pickle schema as VULCAN-master.
 ```
 VULCAN-JAX/
 ├── src/vulcan_jax/          Python package (pip-installable)
-│   ├── __init__.py          Public API: RunState, make_config, vulcan_cfg
+│   ├── __init__.py          Public API: RunState, load_config, make_config, Config
 │   ├── vulcan_jax_cli.py    CLI entry point (vulcan-jax command)
-│   ├── vulcan_cfg.py        Default config (HD189); same format as VULCAN-master
+│   ├── config.py            YAML config loader (load_config / default_config)
 │   ├── state.py             Typed JAX pytrees (RunState, AtmInputs, etc.)
 │   ├── outer_loop.py        Single-JIT lax.while_loop integration runner
 │   ├── jax_step.py          Vmap-able Ros2 single-step kernel
@@ -150,7 +150,7 @@ VULCAN-JAX/
 │   ├── atm/                 TP/Kzz tables, stellar flux, BC files
 │   ├── thermo/              Network files, NASA-9 data, photo cross sections
 │   ├── fastchem_vulcan/     FastChem C++ source + I/O for ini_mix='EQ' (binary auto-built on first use)
-│   └── cfg_examples/        Example configs (HD189, HD209, Earth, W39b)
+│   ├── configs/             Config surface (YAML): default/HD189/HD209/W39b/Earth
 │
 ├── tests/                   Validation suite (see "Running tests")
 ├── examples/                Usage examples (see below)
@@ -195,7 +195,7 @@ python -m vulcan_jax.vulcan_jax_cli
 JAX_PLATFORM_NAME=gpu vulcan-jax
 ```
 
-Command-line flags like `-n` are ignored -- the CLI reads its configuration from `vulcan_cfg.py` -- so upstream `vulcan.py -n` habits still run.
+Command-line flags like `-n` are ignored -- the CLI reads its configuration from a YAML config (`configs/default.yaml` by default; select another with `--config <name|path>`) -- so upstream `vulcan.py -n` habits still run.
 
 ### As a library
 
@@ -226,7 +226,7 @@ print("Steps:", int(rs_out.params.count))
 `make_config(...)` overrides are honored end-to-end: `with_pre_loop_setup(cfg)`
 applies them to the pre-loop setup, `OuterLoop(solver, output, cfg=cfg)` to the
 integration, and `legacy_io.Output(cfg=cfg)` to the output paths and progress
-prints. `cfg` defaults to the global `vulcan_cfg` module, so the bare
+prints. `cfg` defaults to `config.default_config()`, so the bare
 `OuterLoop(solver, output)` / `Output()` (the CLI form) is unchanged.
 
 **Import-frozen knobs `make_config` cannot change.** A few structural inputs are
@@ -280,12 +280,16 @@ The FastChem binary is **not** vendored as a pre-built executable; the C++ sourc
 
 ## Configuration
 
-VULCAN-JAX reads the same `vulcan_cfg.py` format as upstream VULCAN. Drop in your existing config; it should work as-is. Example configs ship in `src/vulcan_jax/cfg_examples/`.
+VULCAN-JAX is configured with YAML (`configs/*.yaml`, same knob names as upstream VULCAN's `vulcan_cfg.py`). Shipped configs: `default` (HD189), `HD189`, `HD209`, `W39b`, `Earth`. Run `vulcan-jax --config W39b`, or drop a `./configs/W39b.yaml` in your working directory to override the packaged one. Each run also writes its fully-resolved config as `<out_name>.config.yaml` for exact reruns.
 
 JAX-only config additions (all have sensible defaults):
 
 | Key | Default | Purpose |
 |---|---|---|
+| `Mp` | `1.118·M_jup` | Planet mass (g). Surface gravity is derived as `gs = G·Mp/Rp²`. An explicit `gs` (non-`None`) overrides the derivation, so configs that set gravity directly still work; the base config uses `gs=None` + `Mp`+`Rp` |
+| `use_hybrid_vm_mol` | `True` | Two-stage molecular diffusion: converge on the upwind scheme (`use_vm_mol`), then finish on central difference. Implemented as an in-loop phase flip so forward-mode AD passes through it; the converged state is a central-difference fixed point |
+| `high_temp_cut` | `False` | Raise `P_b` to drop the deepest layers hotter than `high_temp_cut_K` (at `P ≥ high_temp_cut_P`) and re-grid onto `nz` levels, for numerical stability on ultra-hot interiors. Host-side setup only |
+| `high_temp_cut_K` / `high_temp_cut_P` | `3500.` K / `1e6` dyn cm⁻² | Temperature ceiling and minimum pressure for `high_temp_cut` |
 | `batch_max_retries` | `64` | Cap on inner retries per accepted step |
 | `conv_stall_window` | `200` | Stall-detector window for convergence |
 | `conver_ignore` | `[heavy hydrocarbons]` | Species excluded from convergence test |
@@ -297,7 +301,7 @@ JAX-only config additions (all have sensible defaults):
 | `fastchem_newton_tol` | `1e-12` | Newton solver tolerance for `ini_mix='EQ'` |
 | `wall_clock_max` | `None` | Wall-clock budget (s); a positive value forces the chunked runner and bails between chunks (`end_case=4`) |
 
-See the example configs and `vulcan_cfg.py` for the full list of supported knobs.
+See the shipped `configs/*.yaml` for the full list of supported knobs.
 
 ---
 
@@ -357,7 +361,7 @@ graph — which, after `build_atm_static`, now covers the atmosphere cascade.
 |---|---|
 | Reaction rates `k` (forward **and** reverse) | supply `k_arr`; reverse-mode reaction ranking via `steady_state_reaction_sensitivity` (all reactions, one solve) |
 | Temperature `T` (per-layer array) | `atm_jax.build_atm_static` rebuilds `M`/`dz`/`Hp`/`Dzz`/`vm`/`vs` on-graph from `Tco`; also rebuild `k(T)` with `rates_jax.build_rate_array` for the rate path (`use_lowT_caps=True` on cool networks) |
-| **Surface gravity `gs`, planet radius `Rp`** | `build_atm_static` — `gs`/`Rp` drive the hydrostatic height integration (`g`, `Hp`, `dz`, `dzi`) on-graph |
+| **Surface gravity `gs` (from `Mp`, `Rp`), planet radius `Rp`** | `build_atm_static` — `gs`/`Rp` drive the hydrostatic height integration (`g`, `Hp`, `dz`, `dzi`) on-graph. `gs` is resolved by `atm_setup.surface_gravity` (`G·Mp/Rp²` unless an explicit `gs` is set) and enters the graph as the resolved leaf |
 | **Pressure grid (`P_b`, `P_t`)** | `atm_jax.pco_from_endpoints(P_b, P_t, nz)` -> `pco` leaf of `PhysicalInputs`; reaches `M`, `Dzz`, `dz` |
 | **Molecular/thermal diffusion `Dzz`, `vm`, `vs` (T-/g-driven)** | `build_atm_static` ports the `T -> Dzz` (Moses fit), `vm`, and Cloutman settling formulae on-graph — a `T`- or `g`-driven change now flows through |
 | Rate coefficients — Arrhenius `a`/`n`/`E`, NASA-9 thermo | `rates_jax.build_rate_array(..., rate_coeffs={"a": ...})`; NASA-9 via `nasa9_coeffs` (one hardcoded Troe row excepted) |
@@ -690,7 +694,7 @@ Master-comparison tests (those comparing against `../VULCAN-master/`) require th
 
 The slowest test is `tests/test_nh3_conden_batch_subprocess.py` (~10 min cold): a fresh subprocess parses and compiles the 1141-reaction lowT-Jupiter network to prove batched NH3 condensation matches solo runs end-to-end. JAX's persistent compile cache makes identical reruns much cheaper.
 
-The Earth example config (`cfg_examples/vulcan_cfg_Earth.py`) ships but cannot run — **in VULCAN-master either**. It lists Ar in `atom_list` / `const_mix`, but Ar appears in no reaction of the SNCHO network, so it is not a network species; master's `build_atm.ini_y` calls `species.index(sp)` unconditionally and crashes with the identical `ValueError: 'Ar' is not in list` (`build_atm.py:200`, reproduced end-to-end on the shipped Earth example). Inert background gases without network reactions were never live master physics, so VULCAN-JAX does not invent them; `runtime_validation` rejects such a `const_mix` upfront with an explanation instead of failing mid-setup (`tests/test_validation_const_mix_conden.py`). The Earth config is kept verbatim as upstream ships it — running it means removing Ar from `const_mix`/`atom_list` (master would additionally NaN-poison its atom-conservation diagnostics for any `atom_list` atom carried by no species, via 0/0 in `atom_loss`).
+The Earth example config (`configs/Earth.yaml`) ships but cannot run — **in VULCAN-master either**. It lists Ar in `atom_list` / `const_mix`, but Ar appears in no reaction of the SNCHO network, so it is not a network species; master's `build_atm.ini_y` calls `species.index(sp)` unconditionally and crashes with the identical `ValueError: 'Ar' is not in list` (`build_atm.py:200`, reproduced end-to-end on the shipped Earth example). Inert background gases without network reactions were never live master physics, so VULCAN-JAX does not invent them; `runtime_validation` rejects such a `const_mix` upfront with an explanation instead of failing mid-setup (`tests/test_validation_const_mix_conden.py`). The Earth config is kept verbatim as upstream ships it — running it means removing Ar from `const_mix`/`atom_list` (master would additionally NaN-poison its atom-conservation diagnostics for any `atom_list` atom carried by no species, via 0/0 in `atom_loss`).
 
 ---
 
@@ -721,7 +725,7 @@ backing test; re-run those for the current numbers on your host.
 
 | Surface | Compatible? |
 |---|---|
-| `vulcan_cfg.py` format | Yes -- same keys, same format |
+| config format | YAML (`configs/*.yaml`); same knob names as VULCAN-master |
 | Network / atmosphere / cross-section files | Yes -- same parsers, vendored data |
 | `.vul` output schema | Yes -- same public keys, shapes, dtypes |
 | `plot_py/` scripts | Yes -- unchanged |
@@ -735,6 +739,7 @@ backing test; re-run those for the current numbers on your host.
 - Upfront config validation is stricter than master: non-network `const_mix` keys and unsupported `condense_sp` entries fail at validate time with an explanation (master crashes deep in setup for the former and silently zero-rates the latter)
 - `use_print_delta` (master's largest-truncation-error print inside the solver) is declared for config-surface compatibility but not consumed — a per-step host print is impractical inside the JIT'd runner
 - Upwind molecular diffusion (`use_vm_mol`) uses the interface-centered drift velocity from the shami `vm_branch` `op.update_mu_dz` (shape `(nz-1, ni)`, harmonic-mean interface scale height). The drift `vm` is **recomputed in-loop** (every `update_frq` steps) from the live mean molecular weight, mirroring upstream `op.update_mu_dz`'s "# Also update vm" — it is *not* frozen at setup like `Dzz`/`Ti`, because `vm ∝ (… − 1/Hpi …)` and `Hpi` tracks `mu`. Freezing it (an earlier bug) biased a molecular-diffusion-dominated upper atmosphere (low Kzz) by up to ~1.7 dex; the refresh collapses the new-vs-upstream gap to ≤0.16 dex (the stiff-regime convergence floor) and matches upstream's step count. VULCAN-JAX keeps `vm` consistent at the bottom boundary (`j=0`) in every mode; upstream `op.diffdf_settling_vm` drops `vm` at `j=0` (a self-inconsistency vs its own `op.diffdf_vm`), so the doubly-non-default `use_vm_mol + use_settling` combination differs from upstream only at that one cell. We also port the *correct* `axis=0` layer-averaging form (`op.update_mu_dz`); the `build_atm.py` copy of that formula omits `axis=0`, a latent species-mixing bug — see CLAUDE.md.
+- **Hybrid molecular diffusion (`use_hybrid_vm_mol`, default on with `use_vm_mol`).** Ports the vm_branch two-stage strategy: converge on the robust upwind scheme, then switch to central difference and finish. Because our runner is one JIT-compiled `lax.while_loop`, this is done as an **in-loop phase flip** (not a host-side two-stage driver): a carry blend factor `hybrid_use_vm` starts at 1.0 (upwind) and flips to 0.0 (central) the first time phase 0 reaches the convergence criteria, resetting the convergence trackers and extending the step/runtime budget the way vm_branch `op.py stop()` does (count+2000 on convergence, count+1000 on budget, `count_min`+100, runtime×1.1). The returned state is a central-difference fixed point, so forward-mode `jvp` through the runner and the steady-state adjoint both apply to it unchanged. `use_vm_mol` + `use_hybrid_vm_mol` are **on by default** (matching vm_branch); set `use_vm_mol=False` for a fixed central-difference scheme (e.g. batched emulator generation, where a deterministic scheme is wanted).
 
 ---
 

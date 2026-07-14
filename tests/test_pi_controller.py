@@ -185,9 +185,7 @@ def _run_hd189(hd189_state, n_steps, use_pi):
     # Pin every vulcan_cfg reference to the object the fixture's pre-loop
     # setup used (same dance as test_outer_loop_smoke) so the runner statics
     # read the knobs set here.
-    vulcan_cfg = op.vulcan_cfg
-    sys.modules["vulcan_jax.vulcan_cfg"] = vulcan_cfg
-    outer_loop.vulcan_cfg = vulcan_cfg
+    vulcan_cfg = op.default_config()
     vulcan_cfg.count_max = n_steps
     vulcan_cfg.count_min = 1
     vulcan_cfg.use_pi_controller = use_pi

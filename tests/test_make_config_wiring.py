@@ -42,10 +42,11 @@ def test_grid_and_runner_overrides_reach_setup_and_runner_without_leakage():
     from vulcan_jax import outer_loop
     from vulcan_jax.state import RunState, legacy_view
 
-    # Pin the canonical module reference (mirrors test_outer_loop_smoke) so the
-    # `cfg is vulcan_cfg` identity check in state._cfg_overlay is meaningful.
-    vulcan_cfg = op.vulcan_cfg
-    sys.modules["vulcan_jax.vulcan_cfg"] = vulcan_cfg
+    # The process default config is what state._cfg_overlay identity-compares
+    # against for its no-op fast path.
+    from vulcan_jax.config import default_config
+
+    vulcan_cfg = default_config()
 
     global_nz_before = vulcan_cfg.nz
     global_pb_before = vulcan_cfg.P_b
@@ -136,9 +137,9 @@ def test_output_reads_cfg_not_global():
     """legacy_io.Output(cfg=cfg) honors the cfg (paths + progress-print caps),
     instead of always reading the global vulcan_cfg module."""
     import vulcan_jax
-    import vulcan_jax.vulcan_cfg as g
     from vulcan_jax import legacy_io
 
+    g = vulcan_jax.default_config()
     cfg = vulcan_jax.make_config(count_max=7)
     assert int(legacy_io.Output(cfg=cfg)._cfg.count_max) == 7
     assert int(legacy_io.Output()._cfg.count_max) == int(g.count_max)

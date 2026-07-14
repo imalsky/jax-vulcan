@@ -61,7 +61,8 @@ sl = list(composition.species)
 for need in ("H2O", "S8", "H2O_l_s", "S8_l_s"):
     assert need in sl, f"condensate network missing required species {need!r}"
 
-import vulcan_jax.vulcan_cfg as cfg
+from vulcan_jax.config import default_config
+cfg = default_config()
 # Synthetic isothermal atmosphere, const_mix init, no photo -> no data files.
 cfg.atm_type = "isothermal"; cfg.Tiso = 250.0           # cold enough for H2O to supersaturate
 cfg.atm_base = "N2"; cfg.use_moldiff = True             # settling requires use_moldiff

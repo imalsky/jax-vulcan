@@ -6,8 +6,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from . import vulcan_cfg
-
+from .config import default_config
 from . import network as _net_mod
 from . import photo as _photo_mod
 from . import phy_const as _phy_const
@@ -15,8 +14,8 @@ from ._paths import resolve_data_path
 
 jax.config.update("jax_enable_x64", True)
 
-
-_NETWORK = _net_mod.parse_network(str(resolve_data_path(vulcan_cfg.network)))
+_CFG = default_config()
+_NETWORK = _net_mod.parse_network(str(resolve_data_path(_CFG.network)))
 
 
 class Ros2JAX:
@@ -65,8 +64,8 @@ class Ros2JAX:
             jnp.asarray(var.ymix),
             self._photo_data,
             jnp.asarray(static.bins, dtype=jnp.float64),
-            float(np.cos(vulcan_cfg.sl_angle)),
-            float(vulcan_cfg.edd),
+            float(np.cos(_CFG.sl_angle)),
+            float(_CFG.edd),
             ag0,
             float(_phy_const.hc),
             jnp.asarray(var.dflux_u),
@@ -77,7 +76,7 @@ class Ros2JAX:
         var.sflux = np.asarray(sflux_j, dtype=np.float64)
         var.dflux_d = np.asarray(dfd_j, dtype=np.float64)
         var.dflux_u = np.asarray(dfu_j, dtype=np.float64)
-        mask = var.aflux > vulcan_cfg.flux_atol
+        mask = var.aflux > _CFG.flux_atol
         if np.any(mask):
             with np.errstate(invalid="ignore"):
                 var.aflux_change = float(
@@ -105,8 +104,8 @@ class Ros2JAX:
             var.J_sp[(sp, nbr)] = np.asarray(Jrow, dtype=np.float64)
             var.J_sp[(sp, 0)] = var.J_sp[(sp, 0)] + var.J_sp[(sp, nbr)]
             ridx = var.pho_rate_index.get((sp, nbr))
-            if ridx is not None and ridx not in vulcan_cfg.remove_list:
-                var.k_arr[ridx, :] = var.J_sp[(sp, nbr)] * vulcan_cfg.f_diurnal
+            if ridx is not None and ridx not in _CFG.remove_list:
+                var.k_arr[ridx, :] = var.J_sp[(sp, nbr)] * _CFG.f_diurnal
 
     def compute_Jion(self, var, atm):
         """Photo-ionisation rates per (species, branch). Writes to var.Jion_sp + var.k_arr."""
@@ -127,15 +126,15 @@ class Ros2JAX:
             var.Jion_sp[(sp, nbr)] = np.asarray(Jrow, dtype=np.float64)
             var.Jion_sp[(sp, 0)] = var.Jion_sp[(sp, 0)] + var.Jion_sp[(sp, nbr)]
             ridx = var.ion_rate_index.get((sp, nbr))
-            if ridx is not None and ridx not in vulcan_cfg.remove_list:
-                var.k_arr[ridx, :] = var.Jion_sp[(sp, nbr)] * vulcan_cfg.f_diurnal
+            if ridx is not None and ridx not in _CFG.remove_list:
+                var.k_arr[ridx, :] = var.Jion_sp[(sp, nbr)] * _CFG.f_diurnal
 
     def naming_solver(self, para):
         """Print transport / BC summary lines and stamp `para.solver_str`."""
-        if vulcan_cfg.use_moldiff:
+        if _CFG.use_moldiff:
             print("Include molecular diffusion.")
         else:
             print("No molecular diffusion.")
-        if getattr(vulcan_cfg, "use_fix_all_bot", False):
+        if getattr(_CFG, "use_fix_all_bot", False):
             print("Use fixed bottom BC.")
         para.solver_str = "solver"

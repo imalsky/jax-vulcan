@@ -36,7 +36,8 @@ warnings.filterwarnings("ignore")
 
 
 def _setup_state():
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
+    vulcan_cfg = default_config()
 
     vulcan_cfg.count_max = 50
     vulcan_cfg.count_min = 1
@@ -72,9 +73,7 @@ def main() -> int:
     import vulcan_jax.outer_loop as outer_loop
     import vulcan_jax.legacy_io as legacy_io
 
-    vulcan_cfg = legacy_io.vulcan_cfg
-    sys.modules["vulcan_jax.vulcan_cfg"] = vulcan_cfg
-    outer_loop.vulcan_cfg = vulcan_cfg
+    vulcan_cfg = legacy_io.default_config()
     save_evo_frq = 10
     count_max = 50
     # Master runs `count_max + 1` save_steps (op.py:1083 uses `>`, not `>=`),
