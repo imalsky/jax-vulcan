@@ -341,6 +341,70 @@ def _validate_numerical_bounds(cfg) -> list[str]:
     return errors
 
 
+def _validate_condensation(cfg) -> list[str]:
+    """Return errors for an unsupported or silently-inert condensation config.
+
+    Forward-run validation only. These checks were previously only in the
+    vulcan-retrieval forward wrapper; lifting them here means a bare VULCAN-JAX
+    run (or any consumer) is guarded identically instead of silently producing a
+    zero-rate or mid-window-captured state.
+
+    NOTE: the completed *pinned* condensation state is not differentiable-through
+    (transient snapshot, discrete phase switches). That contract is enforced at
+    the autodiff entry points in `steady_state_grad.py`, not here, and is
+    documented in `../../docs/condensation_differentiation.md`.
+    """
+    if not bool(getattr(cfg, "use_condense", False)):
+        return []
+
+    from .atm_setup import _SUPPORTED_CONDENSABLES
+    from .conden import SUPPORTED_CONDEN_KINETICS
+
+    errors: list[str] = []
+    condense_sp = list(getattr(cfg, "condense_sp", []) or [])
+
+    if not condense_sp:
+        errors.append(
+            "use_condense=True with an empty condense_sp: nothing would "
+            "condense. List the condensable gas species, or set "
+            "use_condense=False."
+        )
+
+    # The condensation growth coefficient Dg IS the species' molecular-diffusion
+    # coefficient (Dzz), which atm setup zeros when use_moldiff=False
+    # (atm_setup.compute_mol_diff / atm_jax.build_atm_static), so every
+    # condensation rate would silently be zero. Refuse rather than run inert.
+    if not bool(getattr(cfg, "use_moldiff", True)):
+        errors.append(
+            "use_condense=True requires use_moldiff=True: the condensation "
+            "growth coefficient Dg is the molecular-diffusion coefficient Dzz, "
+            "which is zeroed when use_moldiff=False, so every condensation rate "
+            "would silently be zero."
+        )
+
+    start_ct = float(getattr(cfg, "start_conden_time", 0.0))
+    stop_ct = float(getattr(cfg, "stop_conden_time", 0.0))
+    if stop_ct < start_ct:
+        errors.append(
+            f"stop_conden_time={stop_ct} < start_conden_time={start_ct}: the "
+            "condensation window would never open."
+        )
+
+    # Support tier: kinetics-ported condensates vs saturation-only (H2S).
+    sat_only = sorted(set(_SUPPORTED_CONDENSABLES) - set(SUPPORTED_CONDEN_KINETICS))
+    for sp in condense_sp:
+        if sp not in _SUPPORTED_CONDENSABLES:
+            errors.append(
+                f"condense_sp entry {sp!r} is not a supported condensate. "
+                f"Condensation kinetics are ported for "
+                f"{sorted(SUPPORTED_CONDEN_KINETICS)}; {sat_only} have "
+                "saturation data only (capping/cold-trap, no conden reactions "
+                "— as in VULCAN-master). New condensates must be added "
+                "explicitly with physical constants and tests."
+            )
+    return errors
+
+
 def validate_runtime_config(cfg, root: Path | None = None) -> None:
     """Raise RuntimeError if cfg is unsupported or required files are missing.
 
@@ -400,23 +464,7 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
                     "a network that contains the species."
                 )
 
-    if bool(getattr(cfg, "use_condense", False)):
-        # _SUPPORTED_CONDENSABLES is the saturation-formula tier (superset);
-        # SUPPORTED_CONDEN_KINETICS is the conden-reaction tier.
-        from .atm_setup import _SUPPORTED_CONDENSABLES
-        from .conden import SUPPORTED_CONDEN_KINETICS
-
-        sat_only = sorted(set(_SUPPORTED_CONDENSABLES) - set(SUPPORTED_CONDEN_KINETICS))
-        for sp in getattr(cfg, "condense_sp", []):
-            if sp not in _SUPPORTED_CONDENSABLES:
-                errors.append(
-                    f"condense_sp entry {sp!r} is not a supported condensate. "
-                    f"Condensation kinetics are ported for "
-                    f"{sorted(SUPPORTED_CONDEN_KINETICS)}; {sat_only} have "
-                    "saturation data only (capping/cold-trap, no conden "
-                    "reactions — as in VULCAN-master). New condensates must "
-                    "be added explicitly with physical constants and tests."
-                )
+    errors.extend(_validate_condensation(cfg))
 
     required_paths = [
         ("network", getattr(cfg, "network", None)),

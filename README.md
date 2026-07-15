@@ -362,6 +362,20 @@ integration (FD-validated <0.1%). A scalar *parameter* that a **host-side setup
 formula** expands into those arrays is differentiable once that formula is on the
 graph — which, after `build_atm_static`, now covers the atmosphere cascade.
 
+> **Condensation is not differentiable-through.** With `use_condense=True` the
+> converged state is produced by a finite condensation window plus a
+> `fix_species` pin that snapshots the condensate reservoir at a transient
+> moment. That snapshot is not a smooth steady state (the pinned-species
+> forward-mode tangent disagrees with re-converged finite differences at order
+> unity, ~0.91 relative), and the active-condensation layer set and the NH3
+> cold-trap level switch discretely with temperature. The low-level kernels
+> (`conden.sat_p_jax`, `conden.build_conden_profile`) stay differentiable, but
+> the completed pinned model is not: `steady_state_input_sensitivity` refuses on
+> a condensation state, `steady_state_reaction_sensitivity` returns only a
+> conditional-on-frozen-reservoir ranking, and there is no supported
+> Fisher / retrieval-inference path through condensation. Full scope and
+> rationale: [`../docs/condensation_differentiation.md`](../docs/condensation_differentiation.md).
+
 ### What you CAN differentiate now (forward-mode, end-to-end)
 
 | Physical input | How |

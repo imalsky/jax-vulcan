@@ -1096,6 +1096,31 @@ def steady_state_reaction_sensitivity(
     _guard_unmodeled_processes(y_star, k_arr, net, body_terms, photo_recompute_k)
     n_solves = max(1, int(n_solves))
 
+    # Condensation active: the reaction gradient is CONDITIONAL. In the post-pin
+    # regime the body map holds the captured reservoir fixed (fix_mask), so this
+    # is dL/d ln k AT the frozen reservoir; it does not include how the rate
+    # changed the earlier drainage that set the reservoir. Reaction rates do not
+    # move the saturation curve directly, so the conditional ranking is the most
+    # defensible condensation-AD case: label it, do not forbid it. See
+    # docs/condensation_differentiation.md (F2).
+    _conden_pinned = body_terms is not None and body_terms.fix_mask is not None
+    _conden_in_window = body_terms is not None and body_terms.conden_static is not None
+    if _conden_pinned or _conden_in_window:
+        warnings.warn(
+            "steady_state_reaction_sensitivity: condensation is active at this "
+            "converged state, so the returned dL/d ln k is CONDITIONAL on the "
+            + (
+                "frozen (pinned) condensate reservoir"
+                if _conden_pinned
+                else "frozen saturation tables"
+            )
+            + "; it does not include how the rate changes what condenses. It is "
+            "a valid conditional ranking, not the total rate sensitivity "
+            "(info['conditional_on_fixed_reservoir']). See "
+            "docs/condensation_differentiation.md.",
+            stacklevel=2,
+        )
+
     # One-step body map and its y-VJP (the transposed solver-map operator).
     # dJ/dy feedback rides through `photo_recompute_k` when given — the fix for
     # photo-coupled rows on photochemistry-on columns (WASP-39b OH+H2 -> H2O+H
@@ -1181,6 +1206,9 @@ def steady_state_reaction_sensitivity(
         "solver_map": solver_map,
         "photo_feedback": photo_recompute_k is not None,
         "body_terms": body_terms is not None,
+        "condensation_active": bool(_conden_pinned or _conden_in_window),
+        "conditional_on_fixed_reservoir": bool(_conden_pinned),
+        "includes_condensation_history": not bool(_conden_pinned or _conden_in_window),
     }
     return dL_dlnk, info
 
@@ -1210,6 +1238,7 @@ def steady_state_input_sensitivity(
     rtol: float = LGMRES_RTOL,
     n_solves: int = N_SOLVES_DEFAULT,
     return_info: bool = False,
+    allow_frozen_condensation_input_grad: bool = False,
 ):
     """Reverse-mode `dL/dp` at a converged steady state, for an arbitrary
     physical input pytree `p` (a (nz,) temperature profile, ln Kzz, ...).
@@ -1263,12 +1292,16 @@ def steady_state_input_sensitivity(
       chi-square of an ExoJax spectrum, where T also enters the RT opacities
       at fixed composition) needs that direct term added separately:
       `jax.grad` of the loss w.r.t. p at fixed `y_star`.
-    * **Frozen-by-design pieces** (their p-derivative is omitted): the
-      photolysis T-cross-section interpolation, the conden saturation tables
-      and `n_0` inside the relax kernels (warned when conden terms are
-      active), and the atm-refresh geometry cascade (dz/Hp/g — second-order;
-      rebuild what you need on-graph in `atm_p` instead, e.g. `Dzz(T)` via
-      `atm_jax`).
+    * **Condensation is refused.** Input (T/Kzz/...) gradients through a
+      condensation-active state raise by default: the saturation tables are
+      frozen in dG/dp and, post-pin, the captured reservoir is held fixed, so
+      the result is O(1)-unreliable vs FD (0.91 relative; the JWST/Fisher case).
+      Opt in with `allow_frozen_condensation_input_grad=True` only for the known
+      leading-order number. See docs/condensation_differentiation.md.
+    * **Other frozen-by-design pieces** (their p-derivative is omitted): the
+      photolysis T-cross-section interpolation and the atm-refresh geometry
+      cascade (dz/Hp/g — second-order; rebuild what you need on-graph in
+      `atm_p` instead, e.g. `Dzz(T)` via `atm_jax`).
     * **Accuracy class** is the same as the reaction sensitivities
       (percent-level with the renorm default). The conserved-mass deflation
       was PROVEN exact only for atom-conserving rate knobs; a general input
@@ -1276,6 +1309,44 @@ def steady_state_input_sensitivity(
       forward-mode `jvp` in one or two directions before production use
       (`d/dT` validated on HD189, see `jax_paper/scripts/`).
     """
+    # Condensation is NOT differentiable-through for input (T/Kzz/...) gradients.
+    # In-window freezes the saturation tables (d(sat)/dT dropped); post-pin (the
+    # regime real converged conden runs end in) additionally holds the captured
+    # reservoir fixed, so a parameter's effect on WHAT condensed is entirely
+    # absent. The pinned-species forward-mode tangent disagrees with re-converged
+    # finite differences at O(1) (0.91 relative, measured). Refuse by default;
+    # this is the same contract Fisher / retrieval-inference through condensation
+    # follows project-wide. See docs/condensation_differentiation.md (F1).
+    _conden_in_window = body_terms is not None and body_terms.conden_static is not None
+    _conden_pinned = body_terms is not None and body_terms.fix_mask is not None
+    if _conden_in_window or _conden_pinned:
+        _regime = "post-pin fix_species" if _conden_pinned else "in-window"
+        if not allow_frozen_condensation_input_grad:
+            raise ValueError(
+                "steady_state_input_sensitivity: condensation is active at this "
+                f"converged state ({_regime} regime); an input (T/Kzz/...) "
+                "gradient through condensation is NOT reliably differentiable. "
+                "The saturation tables are frozen in dG/dp (d(sat)/dT dropped) "
+                "and, once fix_species has pinned, the captured condensate "
+                "reservoir is held fixed, so the parameter's effect on what "
+                "condensed is entirely absent. The pinned-species tangent "
+                "disagrees with re-converged finite differences at O(1) (0.91 "
+                "relative; tests/test_condensation_live_tp.py) -- the same reason "
+                "Fisher / retrieval-inference through condensation is refused "
+                "project-wide (docs/condensation_differentiation.md). Use "
+                "forward-mode jvp on a single switch-free direction and validate "
+                "it against FD, or disable condensation. Set "
+                "allow_frozen_condensation_input_grad=True ONLY to obtain the "
+                "known leading-order-only number knowingly."
+            )
+        warnings.warn(
+            "steady_state_input_sensitivity: condensation is active "
+            f"({_regime}); allow_frozen_condensation_input_grad=True, so "
+            "returning the LEADING-ORDER-ONLY gradient (frozen saturation "
+            "tables and, post-pin, a frozen reservoir; O(1)-unreliable vs FD). "
+            "Forward-mode on a switch-free direction is the trusted route.",
+            stacklevel=2,
+        )
     _check_body_dt(body_dt)
     photo_recompute_k = _resolve_photo_recompute_k(
         photo_recompute_k,
@@ -1325,15 +1396,11 @@ def steady_state_input_sensitivity(
             stacklevel=2,
         )
 
+    # conden_static is needed below for G_p's conden-row recompute. The refusal
+    # (or leading-order warning under allow_frozen_condensation_input_grad) for
+    # condensation-active input gradients fires at the top of this function and
+    # covers both the in-window and post-pin regimes.
     conden_static = body_terms.conden_static if body_terms is not None else None
-    if conden_static is not None:
-        warnings.warn(
-            "conden body terms carry T-baked saturation tables and n_0; "
-            "their input-dependence (e.g. d(sat)/dT) is FROZEN in dG/dp, so "
-            "input gradients on condensation-active columns are "
-            "leading-order only. Forward-mode is the trusted route there.",
-            stacklevel=2,
-        )
 
     apply_post, body_map_raw, _, step_fn = _make_body_map(
         y_star, k_arr, atm, net, body_dt, solver_map, photo_recompute_k, body_terms
