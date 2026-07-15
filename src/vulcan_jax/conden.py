@@ -53,17 +53,20 @@ SUPPORTED_CONDEN_KINETICS: tuple[str, ...] = (
     "C",
 )
 
-# Per-formula physical constants, baked literally from op.conden
-# (op.py:1128-1291). Mass values are kept verbatim including the known
-# oddities (S2 uses 45.019 g/mol per op.py:1244; S8 uses 360.152 per
-# op.py:1290).
+# Per-formula physical constants, baked from op.conden (op.py:1128-1291).
+# CORRECTION (vs upstream): op.py hardcodes S2=45.019 and S8=360.152 g/mol, which
+# are a propagated copy-paste error (45.019 is ~the HCS mass and 360.152 = 8 x
+# 45.019). Disulfur/octasulfur masses are 64.12 and 256.48 (2x/8x the atomic S
+# mass 32.06 in thermo/all_compose.txt); the condensation rate is proportional to
+# this mass, so the upstream literals biased the S2 rate by 0.702x and S8 by
+# 1.404x. We use the composition-table values. See docs/corrections_to_original_code.md.
 GAS_MASS_G_PER_MOL: dict[str, float] = {
     "H2O": 18.0,
     "NH3": 17.0,
     "H2SO4": 98.022,
-    "S2": 45.019,
+    "S2": 64.12,
     "S4": 32.06 * 4,
-    "S8": 360.152,
+    "S8": 256.48,
     "C": 12.011,
 }
 GAS_TO_CONDENSATE: dict[str, str] = {

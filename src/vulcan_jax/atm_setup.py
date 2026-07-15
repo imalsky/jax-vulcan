@@ -901,10 +901,15 @@ def sat_p_jax(sp: str, T: jnp.ndarray) -> jnp.ndarray:
         T_C = T - 273.0
         c0, c1, c2, c3 = 6111.5, 23.036, -333.7, 279.82  # ice constants
         w0, w1, w2, w3 = 6112.1, 18.729, -227.3, 257.87  # liquid constants
-        # Murray formulae: ice for T<0°C, liquid water for T>0°C.
+        # Murray formulae: ice for T<0°C, liquid water for T>=0°C.
+        # CORRECTION (vs upstream): op.sp_sat writes `(T<0)*ice + (T>0)*water`,
+        # which evaluates to exactly 0 at T=273.0 K (both masks vanish) -- an
+        # artificial cold trap / discontinuity. A single `where` keeps the
+        # ice/liquid split but is continuous through 0 C. See
+        # docs/corrections_to_original_code.md.
         ice = c0 * jnp.exp((c1 * T_C + T_C**2 / c2) / (T_C + c3))
         liquid = w0 * jnp.exp((w1 * T_C + T_C**2 / w2) / (T_C + w3))
-        return jnp.where(T_C < 0, ice, 0.0) + jnp.where(T_C > 0, liquid, 0.0)
+        return jnp.where(T_C < 0, ice, liquid)
     if sp == "NH3":
         c0, c1, c2 = 10.53, -2161.0, -86596.0
         return jnp.exp(c0 + c1 / T + c2 / T**2) * 1e6

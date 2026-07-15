@@ -548,7 +548,7 @@ Classes:
   - `read_rate(var, atm)` — populate `var.Rf`, `var.pho_rate_index`, `var.n_branch`, `var.photo_sp`, `var.ion_sp`, `var.ion_rate_index`, `var.ion_br_ratio`, `var.charge_list`. Rate **values** flow through `rates.build_rate_array` (this method is metadata only — never on any AD path).
 - `Output` — `.vul` writer + plotters.
   - `__init__()` — set plotting + counters.
-  - `save_cfg(dname)` — copy the active `vulcan_cfg.py` into `output/` for provenance.
+  - `save_cfg(dname)` — write a repr snapshot of the active cfg (including `make_config` overrides) to `cfg_<out_name>.txt` under `output/` for provenance. The CLI additionally writes the fully-resolved `<out_name>.config.yaml`.
   - `print_prog(var, para)` — periodic progress print called from the chunked-runner host loop.
   - `print_end_msg(var, para)` — end-of-run summary for the converged case (`end_case=1`).
   - `print_unconverged_msg(var, para, case)` — end-of-run summary for unconverged exits (`end_case in (2, 3, 4)`).
@@ -580,16 +580,17 @@ on the host and never enter a JIT'd region.
 
 ## Subdirectories
 
-### `cfg_examples/`
-Reference configs. Copy one over `src/vulcan_jax/vulcan_cfg.py` and run
-`vulcan-jax`. (The shipped `vulcan_cfg.py` is the full HD189 config inline,
-not a wrapper around these — see its entry above.)
+### `configs/`
+YAML config surface (loaded by `config.load_config`; `default` is the cached
+process default; `load_config` rejects unknown/removed keys). A
+`./configs/<name>.yaml` in the working directory overrides the packaged copy.
+Run `vulcan-jax --config <name>`.
 
-- `vulcan_cfg_HD189.py` — HD 189733b reference. Matches `VULCAN-master/cfg_examples/vulcan_cfg_HD189.py` for cross-version smoke tests. **Canonical parity target.**
-- `vulcan_cfg_HD209.py` — HD 209458b (no S species, weaker gravity).
-- `vulcan_cfg_Earth.py` — Earth troposphere/stratosphere with condensation.
-- `vulcan_cfg_W39b.py` — WASP-39b paper-match config (Wogan et al.).
-- `README.txt` — short description + which cfg is the matched one.
+- `default.yaml` — HD189-derived base config (the CLI default). Nearly identical to `HD189.yaml`; the adopted gravity differs slightly (`Mp` gives 2139.77 vs HD189's 2140 cm/s^2) and `default` additionally declares the `high_temp_cut` knobs. The vm_branch molecular-diffusion and adaptive-rtol values match across all configs (adaptive rtol is disabled everywhere, so those knobs are inert).
+- `HD189.yaml` — HD 189733b. Its shared physics + Mp/Rp gravity match `VULCAN-master/cfg_examples/vulcan_cfg_HD189.py`. **Canonical parity target** (`tools/audit_master_parity.py`).
+- `HD209.yaml` — HD 209458b (no S species, weaker gravity).
+- `W39b.yaml` — WASP-39b (SNCHO network, paper-match).
+- `Earth.yaml` — Earth troposphere/stratosphere reference (see the README note on the Ar `const_mix` limitation).
 
 ### `tests/`
 Curated suite focused on hot-path kernels, oracle agreement, and JAX
@@ -597,7 +598,6 @@ transform consistency. Run with
 `python -m pytest tests -q --tb=short -ra` from the repo root.
 
 - `conftest.py` — session-scoped HD189 pre-loop fixture, cfg snapshot/restore autofixtures, sibling-master path cleanup.
-- `data/oracle_baselines/{earth,hd209}_20step.npz` — oracle reference snapshots.
 - `data/photo_setup_hd189_{baseline,T_dep}.npz` — photo-setup test fixtures.
 - `diffusion_numpy_ref.py` — NumPy oracle for diffusion kernels (used by `test_diffusion*.py`).
 - `test_chem.py`, `test_chem_jac_sparse.py`, `test_chem_rhs_codegen.py` — chemistry RHS / Jacobian agreement.
@@ -611,8 +611,7 @@ transform consistency. Run with
 - `test_atm_setup_matrix.py` — atm-variant branches HD189 doesn't exercise.
 - `test_state_roundtrip.py` — `RunState` ↔ pytree ↔ legacy `(var, atm, para)`.
 - `test_save_evolution.py` — `save_evolution=True` cadence + ring-buffer round-trip.
-- `test_oracle.py` — Earth + HD209 20-step oracle vs VULCAN-master (skips cleanly if absent).
-- `test_default_master_parity.py` — canonical HD189 root-default audit, bit-exact pre-loop state, and 20-step oracle vs staged VULCAN-master.
+- `test_default_master_parity.py` — HD189 parity audit (JAX config loaded from YAML via `tools/audit_master_parity.py`), bit-exact pre-loop state, and 20-step oracle vs staged VULCAN-master.
 - `test_outer_loop_smoke.py` — HD189 50-step smoke (the headline regression test).
 - `test_outer_loop_atm_refresh.py`, `test_outer_loop_conden_gate.py`, `test_outer_loop_conv.py`, `test_outer_loop_ion.py`, `test_outer_loop_photo.py` — outer-loop sub-graph tests.
 - `test_w39b_fastchem_invariant.py` — frozen FastChem snapshot for W39b.
@@ -637,7 +636,7 @@ transform consistency. Run with
 - `test_rates_jax.py` — differentiable `rates_jax` parity vs NumPy (incl. low-T caps) + finite `jvp` w.r.t. `T` and Arrhenius coefficients.
 - `test_forward_jvp_physical.py` — forward-mode AD through a physical transport knob (`Kzz`) over one Ros2 step: `jvp == vjp` + coarse FD sanity.
 - `test_atm_jax.py` — on-graph atmosphere builder: `build_atm_static` field-for-field equal to `make_atm_static` for the default config (HD189 + synthetic vm/settling branches; `table`/`moldiff-off` intentionally differ), FD-matched `jvp` for `dz/dgs`, `M·Dzz/dTco`, `M/dP_b`, the `sat_p`/`settling`/`Kzz` jnp-core parity, plus the Kzz-defaults / load_TPK fail-loud guards.
-- `test_cfg_examples.py` — each kept config loads + runs pre-loop setup.
+- `test_cfg_examples.py` — each shipped `configs/*.yaml` loads via `load_config` + runs pre-loop setup.
 - `test_config_matrix.py` — config-flag combination coverage.
 - `test_atom_conservation_s_subprocess.py` — S-network atom conservation (subprocess via `$VULCAN_JAX_NETWORK`).
 - `test_outer_loop_ion_run_subprocess.py` — end-to-end ion-chemistry run (subprocess).

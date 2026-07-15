@@ -98,6 +98,34 @@ def test_missing_config_raises():
         load_config("no_such_config_name_xyz")
 
 
+def test_removed_gs_key_raises_migration_error():
+    """The removed `gs` knob must fail loudly with a migration message, not be
+    silently stored as an inert attribute (standing fail-fast rule)."""
+    with pytest.raises(ValueError, match=r"removed config key.*gs.*Mp"):
+        load_config("W39b", gs=9999.0)
+
+
+def test_unknown_override_key_raises():
+    """A misspelled/undeclared override must be rejected, not silently ignored."""
+    with pytest.raises(ValueError, match=r"unknown config key.*gss"):
+        load_config("W39b", gss=8888.0)
+
+
+def test_unknown_key_in_yaml_file_raises(tmp_path, monkeypatch):
+    """An undeclared key authored directly in a YAML file is rejected too."""
+    cfgdir = tmp_path / "configs"
+    cfgdir.mkdir()
+    (cfgdir / "typo.yaml").write_text(
+        "runtime: 1e22\nyconv_min: 0.1\nlive_plot_frq: 10\npara_warm: [1.0]\n"
+        "count_max: 30000\nnetwork: thermo/NCHO_photo_network.txt\n"
+        "atom_list: [H, O, C, N]\ncom_file: thermo/all_compose.txt\n"
+        "nz_typo: 100\n"  # not a declared knob
+    )
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(ValueError, match=r"unknown config key.*nz_typo"):
+        load_config("typo")
+
+
 def test_strict_loader_parses_scientific_notation(tmp_path, monkeypatch):
     """Unsigned-exponent scientific notation must parse as float, not string."""
     cfgdir = tmp_path / "configs"

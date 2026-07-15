@@ -286,7 +286,7 @@ JAX-only config additions (all have sensible defaults):
 
 | Key | Default | Purpose |
 |---|---|---|
-| `Mp` | `1.118·M_jup` | Planet mass (g). Surface gravity is derived as `gs = G·Mp/Rp²`. An explicit `gs` (non-`None`) overrides the derivation, so configs that set gravity directly still work; the base config uses `gs=None` + `Mp`+`Rp` |
+| `Mp` | `1.118·M_jup` | Planet mass (g). Surface gravity is derived as `gs = G·Mp/Rp²` by `atm_setup.surface_gravity`. Set `Mp`+`Rp` (both required, > 0). There is **no** `gs` knob — it was removed in the 2026-07 YAML migration, and a missing or non-positive `Mp`/`Rp` raises rather than falling back |
 | `use_hybrid_vm_mol` | `True` | Two-stage molecular diffusion: converge on the upwind scheme (`use_vm_mol`), then finish on central difference. Implemented as an in-loop phase flip so forward-mode AD passes through it; the converged state is a central-difference fixed point |
 | `high_temp_cut` | `False` | Raise `P_b` to drop the deepest layers hotter than `high_temp_cut_K` (at `P ≥ high_temp_cut_P`) and re-grid onto `nz` levels, for numerical stability on ultra-hot interiors. Host-side setup only |
 | `high_temp_cut_K` / `high_temp_cut_P` | `3500.` K / `1e6` dyn cm⁻² | Temperature ceiling and minimum pressure for `high_temp_cut` |
@@ -361,7 +361,7 @@ graph — which, after `build_atm_static`, now covers the atmosphere cascade.
 |---|---|
 | Reaction rates `k` (forward **and** reverse) | supply `k_arr`; reverse-mode reaction ranking via `steady_state_reaction_sensitivity` (all reactions, one solve) |
 | Temperature `T` (per-layer array) | `atm_jax.build_atm_static` rebuilds `M`/`dz`/`Hp`/`Dzz`/`vm`/`vs` on-graph from `Tco`; also rebuild `k(T)` with `rates_jax.build_rate_array` for the rate path (`use_lowT_caps=True` on cool networks) |
-| **Surface gravity `gs` (from `Mp`, `Rp`), planet radius `Rp`** | `build_atm_static` — `gs`/`Rp` drive the hydrostatic height integration (`g`, `Hp`, `dz`, `dzi`) on-graph. `gs` is resolved by `atm_setup.surface_gravity` (`G·Mp/Rp²` unless an explicit `gs` is set) and enters the graph as the resolved leaf |
+| **Surface gravity `gs` (from `Mp`, `Rp`), planet radius `Rp`** | `build_atm_static` — `gs`/`Rp` drive the hydrostatic height integration (`g`, `Hp`, `dz`, `dzi`) on-graph. `gs` is resolved by `atm_setup.surface_gravity` as `G·Mp/Rp²` (there is no `gs` knob) and enters the graph as the resolved leaf |
 | **Pressure grid (`P_b`, `P_t`)** | `atm_jax.pco_from_endpoints(P_b, P_t, nz)` -> `pco` leaf of `PhysicalInputs`; reaches `M`, `Dzz`, `dz` |
 | **Molecular/thermal diffusion `Dzz`, `vm`, `vs` (T-/g-driven)** | `build_atm_static` ports the `T -> Dzz` (Moses fit), `vm`, and Cloutman settling formulae on-graph — a `T`- or `g`-driven change now flows through |
 | Rate coefficients — Arrhenius `a`/`n`/`E`, NASA-9 thermo | `rates_jax.build_rate_array(..., rate_coeffs={"a": ...})`; NASA-9 via `nasa9_coeffs` (one hardcoded Troe row excepted) |

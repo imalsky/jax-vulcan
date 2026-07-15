@@ -133,9 +133,9 @@ rtol_min: 0.0
 rtol_max: 1.0
 loss_criteria: 0.0005
 adapt_rtol_dec_period: 10
-adapt_rtol_inc_period: 1000
-adapt_rtol_dec: 0.75
-adapt_rtol_inc: 1.25
+adapt_rtol_inc_period: 500
+adapt_rtol_dec: 0.5
+adapt_rtol_inc: 1.5
 adapt_rtol_loss_mul: 2.0
 adapt_rtol_inc_loss_thresh: 0.0002
 batch_max_retries: 64

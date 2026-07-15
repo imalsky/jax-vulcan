@@ -5,14 +5,17 @@ yet the rest of the suite builds the pipeline by hand in fixtures and never
 exercises `cli_main`. This runs it end-to-end on the default HD189 config with
 a tiny step cap and asserts it produces a schema-correct `.vul` file.
 
-`conftest._cfg_guard` restores every mutated `vulcan_cfg` attribute after the
-test; the run happens in a temporary cwd so no `output/` artifacts leak.
+The CLI loads its config by name/path (`load_config`), so the tiny-cap overrides
+are delivered through a real resolved YAML written to the temp dir, and
+`cli_main` is driven with an explicit argv (never the ambient pytest `sys.argv`).
+The run happens in a temporary cwd so no `output/` artifacts leak.
 """
 
 from __future__ import annotations
 
 import os
 import pickle
+import tempfile
 import warnings
 from pathlib import Path
 
@@ -23,8 +26,7 @@ warnings.filterwarnings("ignore")
 
 @pytest.mark.strict_isolation
 def test_cli_main_produces_vul():
-    from vulcan_jax.config import default_config
-    vulcan_cfg = default_config()
+    from vulcan_jax.config import dump_config, load_config
     import vulcan_jax.vulcan_jax_cli as cli
 
     overrides = {
@@ -43,21 +45,22 @@ def test_cli_main_produces_vul():
         "save_evolution": False,
         "output_dir": "output/",
     }
-    saved = {k: getattr(vulcan_cfg, k) for k in overrides}
-    cwd0 = os.getcwd()
-    import tempfile
+    cfg = load_config("default")
+    for k, v in overrides.items():
+        setattr(cfg, k, v)
 
+    cwd0 = os.getcwd()
     with tempfile.TemporaryDirectory(prefix="vj_cli_smoke_") as tmp:
         try:
-            for k, v in overrides.items():
-                setattr(vulcan_cfg, k, v)
             os.chdir(tmp)
             (Path(tmp) / "output").mkdir(exist_ok=True)
             (Path(tmp) / "plot").mkdir(exist_ok=True)
+            cfg_path = Path(tmp) / "cli_smoke.yaml"
+            dump_config(cfg, cfg_path)
 
-            cli.cli_main()
+            cli.cli_main(["--config", str(cfg_path)])
 
-            out = Path(tmp) / vulcan_cfg.output_dir / vulcan_cfg.out_name
+            out = Path(tmp) / cfg.output_dir / cfg.out_name
             assert out.is_file(), f"CLI did not write {out}"
             with out.open("rb") as handle:
                 data = pickle.load(handle)
@@ -69,8 +72,6 @@ def test_cli_main_produces_vul():
             assert "count" in data["parameter"]
         finally:
             os.chdir(cwd0)
-            for k, v in saved.items():
-                setattr(vulcan_cfg, k, v)
 
 
 if __name__ == "__main__":

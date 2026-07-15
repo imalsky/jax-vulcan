@@ -86,6 +86,49 @@ _DERIVED = (
     ("para_anaTP", lambda d: copy.deepcopy(d["para_warm"])),
 )
 
+# Config knobs removed in past migrations. A stored or overridden value that
+# silently does nothing is exactly the failure the standing "fail fast and loud"
+# rule forbids, so these are intercepted with a targeted migration message
+# instead of being merged as an inert attribute.
+_REMOVED_KEYS: dict[str, str] = {
+    "gs": (
+        "surface gravity is now derived as G*Mp/Rp**2 by atm_setup.surface_gravity; "
+        "set `Mp` (planet mass, g) and `Rp` (planet radius, cm) instead"
+    ),
+}
+
+_KNOWN_KEYS: frozenset[str] | None = None
+
+
+def _known_config_keys() -> frozenset[str]:
+    """Canonical set of accepted config keys (read once, cached).
+
+    Sourced from the *packaged* ``default.yaml`` — the maintained superset, since
+    every shipped config is a subset of its keys — plus the derived keys that
+    authored YAML omits but a resolved/dumped config carries. Read raw (not via
+    ``load_config``) so building the schema cannot recurse through validation.
+    """
+    global _KNOWN_KEYS
+    if _KNOWN_KEYS is None:
+        pkg = resources.files("vulcan_jax").joinpath("configs", "default.yaml")
+        raw = yaml.load(pkg.read_text(), Loader=_StrictLoader)
+        _KNOWN_KEYS = frozenset(raw) | {name for name, _ in _DERIVED}
+    return _KNOWN_KEYS
+
+
+def _validate_keys(d: dict[str, Any], source: str) -> None:
+    """Reject removed or unknown config keys before they silently do nothing."""
+    removed = sorted(k for k in d if k in _REMOVED_KEYS)
+    if removed:
+        detail = "; ".join(f"`{k}` -- {_REMOVED_KEYS[k]}" for k in removed)
+        raise ValueError(f"{source}: uses removed config key(s): {detail}.")
+    unknown = sorted(set(d) - _known_config_keys())
+    if unknown:
+        raise ValueError(
+            f"{source}: unknown config key(s) {unknown}. Every knob is declared in "
+            "vulcan_jax/configs/default.yaml -- check for a typo or a renamed knob."
+        )
+
 
 class Config(types.SimpleNamespace):
     """Free-attribute config namespace (drop-in for the old ``vulcan_cfg`` module).
@@ -166,6 +209,7 @@ def load_config(name_or_path: str | os.PathLike = "default", /, **overrides: Any
     d: dict[str, Any] = dict(raw)
     _apply_frozen_env(d)
     d.update(overrides)
+    _validate_keys(d, f"config {name_or_path!r}")
     _resolve_derived(d)
     return Config(**d)
 
