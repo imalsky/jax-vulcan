@@ -158,7 +158,6 @@ VULCAN-JAX/
 ├── tools/                   Data-prep and parity-audit utilities
 ├── output/                  Forward-model outputs (.vul files, not tracked)
 ├── plot/                    Generated figures (not tracked)
-├── docs/                    Project docs (file_organization.md, notes.md)
 │
 ├── pyproject.toml           Build metadata and dependencies
 ├── setup.py                 Compatibility shim
@@ -174,9 +173,17 @@ VULCAN-JAX/
 | `benchmarks/` | `bench_step.py` -- per-step kernel timing vs NumPy | Yes |
 | `tests/` | Curated pytest suite: JAX-master parity, vmap, AD, integration smoke tests | Yes |
 | `tools/` | `audit_master_parity.py` (parity audit vs upstream), `make_mix_table.py`, `make_spectra_in_nm.py`, `print_actinic_flux.py` | Yes |
-| `docs/` | `file_organization.md` (per-module function index), `notes.md` (implementation + end-to-end AD notes) | Yes |
 | `output/` | `.vul` pickle files from forward-model runs | No (gitignored) |
 | `plot/` | Generated figures from plot scripts | No (gitignored) |
+
+### Further documentation
+
+This README is the comprehensive reference for VULCAN-JAX. Deeper docs live in the
+umbrella project's `../docs/`:
+
+- `vulcan_jax_file_organization.md` -- per-module function/class index of the source tree
+- `vulcan_jax_notes.md` -- implementation + end-to-end AD development log
+- `corrections_to_original_code.md` -- VULCAN-JAX's corrections to upstream VULCAN
 
 ---
 
@@ -627,7 +634,7 @@ to the operator's scale (~3e-5 on the healthy closed HD189 column — the atom-c
 vectors are only *approximately* null because the diffusion discretization is not
 exactly conservative under the dz weights; O(1) means broken conservation, e.g.
 open boundary fluxes). See `examples/grad_reverse_example.py`,
-`tests/test_steady_state_reaction_sensitivity.py`, and the full log in `docs/notes.md`.
+`tests/test_steady_state_reaction_sensitivity.py`, and the full log in `../docs/vulcan_jax_notes.md`.
 
 **What's NOT differentiable** (by design): host-side file readers (`photo_setup.py`, `composition.py`, `atm_setup.py` CSV loaders), FastChem subprocess. To differentiate through these, build the corresponding pytree directly with JAX arrays.
 
