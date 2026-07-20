@@ -618,7 +618,6 @@ def _synthesize_save_dicts(runstate, cfg, photo_static=None):
         var_save["cross_scat"] = photo_dicts["cross_scat"]
         var_save["cross_J"] = photo_dicts["cross_J"]
         if T_cross_sp:
-            var_save["cross_J"] = photo_dicts["cross_J"]
             var_save["cross_T"] = photo_dicts["cross_T"]
         if use_ion:
             var_save["cross_Jion"] = photo_dicts["cross_Jion"]

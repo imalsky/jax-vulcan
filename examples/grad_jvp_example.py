@@ -28,15 +28,15 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-import vulcan_jax.vulcan_cfg as vulcan_cfg
 import vulcan_jax.network as _net_mod
 import vulcan_jax.chem as _chem_mod
+from vulcan_jax.config import default_config
 from vulcan_jax.jax_step import jax_ros2_step, AtmStatic
 
 
 def main() -> int:
     # ---- Build a small synthetic atmosphere just big enough to step. ----
-    net = _chem_mod.to_jax(_net_mod.parse_network(vulcan_cfg.network))
+    net = _chem_mod.to_jax(_net_mod.parse_network(default_config().network))
     nz, ni = 12, net.ni
     y = jnp.full((nz, ni), 1e10)
     k_arr = jnp.full((net.nr + 1, nz), 1e-12)

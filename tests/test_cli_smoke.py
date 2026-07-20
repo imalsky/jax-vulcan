@@ -35,7 +35,6 @@ def test_cli_main_produces_vul():
         "trun_min": 1e22,
         "runtime": 1e22,
         "use_print_prog": False,
-        "use_print_delta": False,
         "use_live_plot": False,
         "use_live_flux": False,
         "use_plot_end": False,

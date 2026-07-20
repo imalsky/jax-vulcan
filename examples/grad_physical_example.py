@@ -35,9 +35,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-import vulcan_jax.vulcan_cfg as vulcan_cfg
 import vulcan_jax.network as _net_mod
 import vulcan_jax.chem as _chem_mod
+from vulcan_jax.config import default_config
 from vulcan_jax.atm_jax import (
     AtmSpec,
     PhysicalInputs,
@@ -52,7 +52,7 @@ def _central_fd(f, x, eps):
 
 
 def main() -> int:
-    net = _chem_mod.to_jax(_net_mod.parse_network(vulcan_cfg.network))
+    net = _chem_mod.to_jax(_net_mod.parse_network(default_config().network))
     nz, ni = 24, net.ni
     sp_list = list(species)
     ms = jnp.asarray(

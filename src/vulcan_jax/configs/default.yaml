@@ -104,7 +104,6 @@ r_p:
 rho_p:
   H2O_l_s: 1
 fix_species: []
-fix_species_time: 0
 fix_species_from_coldtrap_lev: true
 humidity: 1.0
 use_ini_cold_trap: false
@@ -114,7 +113,6 @@ conv_step: 500
 conv_stall_window: 200
 ode_solver: Ros2
 use_print_prog: true
-use_print_delta: false
 print_prog_num: 500
 dttry: 1.0e-10
 trun_min: 100.0

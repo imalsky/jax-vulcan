@@ -95,6 +95,14 @@ _REMOVED_KEYS: dict[str, str] = {
         "surface gravity is now derived as G*Mp/Rp**2 by atm_setup.surface_gravity; "
         "set `Mp` (planet mass, g) and `Rp` (planet radius, cm) instead"
     ),
+    "fix_species_time": (
+        "the fix_species pin is gated on `stop_conden_time` (the runner pins "
+        "condensing species once t exceeds it); set `stop_conden_time` instead"
+    ),
+    "use_print_delta": (
+        "the per-step delta print was not ported (a VULCAN-master live-UI "
+        "knob); use `use_print_prog` for progress output"
+    ),
 }
 
 _KNOWN_KEYS: frozenset[str] | None = None

@@ -2314,12 +2314,6 @@ class OuterLoop:
             gas_indx_mask=gas_mask_jnp,
         )
 
-    def _atom_dict_to_arr(self, d: dict) -> np.ndarray:
-        return np.asarray(
-            [float(d.get(a, 0.0)) for a in self._atom_order],
-            dtype=np.float64,
-        )
-
     def _initial_photo_carry_from_runstate(self, rs) -> dict:
         """Build the initial photo carry from a RunState slice.
 
@@ -2661,13 +2655,7 @@ class OuterLoop:
             delta=float(state.delta),
             small_y=float(state.small_y),
             nega_y=float(state.nega_y),
-            end_case=(
-                3
-                if int(state.accept_count) > int(self._statics.count_max)
-                else 2
-                if float(state.t) > float(self._statics.runtime)
-                else 1
-            ),
+            end_case=self._classify_end_case(state),
             switch_final_photo_frq=bool(state.is_final_photo_frq),
             pic_count=int(getattr(rs_entry.params, "pic_count", 0)),
             where_varies_most=jnp.asarray(
@@ -2912,6 +2900,26 @@ class OuterLoop:
         var.dydt = dy_val / var.dt if var.dt > 0 else 0.0
         return var
 
+    def _classify_end_case(self, state: JaxIntegState, wall_clock_hit=False):
+        """Classify end-of-run (op.py:1075-1087) from the carry's live budget.
+
+        Reads `count_max_dyn`/`runtime_dyn`, not the static cfg caps: the
+        hybrid vm_mol phase flip extends the budget in-loop, so a phase-1
+        convergence past the static count_max must still read as
+        end_case=1, not "step-count exceeded". Identical to the static
+        caps for non-hybrid runs (the carry seeds them from cfg).
+        Wall-clock-budget exit (end_case=4) is sticky over the carry's
+        count/runtime predicates because the JIT'd loop has not actually
+        terminated — only the host bailed out.
+        """
+        if wall_clock_hit:
+            return 4
+        if int(state.accept_count) > int(state.count_max_dyn):
+            return 3
+        if float(state.t) > float(state.runtime_dyn):
+            return 2
+        return 1
+
     # -----------------------------------------------------------------
     # Chunked driver — interleaves the JIT'd runner with host-side
     # progress, live-plot, live-flux, and movie hooks.
@@ -2943,8 +2951,6 @@ class OuterLoop:
                 self._live_ui = LiveUI(self._cfg)
         else:
             chunk_size = max(int(getattr(self._cfg, "print_prog_num", 100)), 1)
-        count_max_static = int(self._statics.count_max)
-        runtime_static = float(self._statics.runtime)
         use_print_prog = bool(getattr(self._cfg, "use_print_prog", False))
         wall_clock_max = getattr(self._cfg, "wall_clock_max", None)
         wall_clock_max = (
@@ -2960,8 +2966,11 @@ class OuterLoop:
         while True:
             target = int(state.accept_count) + chunk_size
             # Cap the chunk at count_max + 1 so the chunk_done predicate
-            # never fires before count_max would.
-            target = min(target, count_max_static + 1)
+            # never fires before count_max would. Read the live budget off
+            # the carry each chunk: the hybrid phase flip extends
+            # count_max_dyn/runtime_dyn in-loop, so the static caps would
+            # truncate a phase-1 extension mid-run.
+            target = min(target, int(state.count_max_dyn) + 1)
             state = state._replace(chunk_target=jnp.int32(target))
             state = self._runner(state, atm_static)
 
@@ -2969,8 +2978,8 @@ class OuterLoop:
             t_now = float(state.t)
 
             chunk_cap_hit = count_now >= target
-            count_max_hit = count_now > count_max_static
-            runtime_hit = t_now > runtime_static
+            count_max_hit = count_now > int(state.count_max_dyn)
+            runtime_hit = t_now > float(state.runtime_dyn)
             terminated_for_real = count_max_hit or runtime_hit or (not chunk_cap_hit)
 
             if terminated_for_real:
@@ -3081,30 +3090,23 @@ class OuterLoop:
         var = self._f_dy(var, para)
 
         # Determine end_case (op.py:1075-1087) for the final print.
-        # Wall-clock-budget exit (end_case=4) is sticky over the JAX
-        # state's count/runtime predicates because the JIT'd loop has
-        # not actually terminated — only the host bailed out.
-        if wall_clock_hit:
-            para.end_case = 4
-        elif para.count > self._cfg.count_max:
+        para.end_case = self._classify_end_case(final_state, wall_clock_hit)
+        if para.end_case == 3:
             print(
                 "Integration not completed...\nMaximal allowed steps "
                 f"exceeded ({self._cfg.count_max})!"
             )
-            para.end_case = 3
-        elif var.t > self._cfg.runtime:
+        elif para.end_case == 2:
             print(
                 "Integration not completed...\nMaximal allowed runtime "
                 f"exceeded ({self._cfg.runtime} sec)!"
             )
-            para.end_case = 2
-        else:
+        elif para.end_case == 1:
             print(
                 f"Integration successful with {para.count} steps and "
                 f"long dy, long dydt = {var.longdy}, {var.longdydt}\n"
                 f"Actinic flux change: {var.aflux_change:.2E}"
             )
-            para.end_case = 1
 
         if self._cfg.use_print_prog:
             # `print_prog` reads `para.where_varies_most`, which the
@@ -3201,29 +3203,11 @@ class OuterLoop:
         # is sticky over the JAX state's count/runtime predicates
         # because the JIT'd loop has not actually terminated.
         count = int(rs_out.params.count)
-        t_now = float(rs_out.step.t)
-        # Compare against the run's LIVE budget, not the static cfg caps: a
-        # hybrid run extends count_max/runtime for phase 1, so a phase-1
-        # convergence past the static count_max must still read as end_case=1,
-        # not "step-count exceeded". Identical to the static caps for
-        # non-hybrid runs (the carry seeds them from cfg).
-        eff_count_max = int(final_state.count_max_dyn)
-        eff_runtime = float(final_state.runtime_dyn)
-        if wall_clock_hit:
-            end_case = 4
-        else:
-            end_case = (
-                3
-                if count > eff_count_max
-                else 2
-                if t_now > eff_runtime
-                else 1
-            )
+        end_case = self._classify_end_case(final_state, wall_clock_hit)
         # Persist the authoritative end_case into the returned RunState (and
-        # thus the .vul 'parameter' dict). _unpack_state_to_runstate derives
-        # end_case from the carry's count/t alone, so it cannot see a
-        # wall-clock bail (count<count_max, t<runtime) and would otherwise
-        # mislabel a truncated run as converged (end_case=1).
+        # thus the .vul 'parameter' dict). _unpack_state_to_runstate cannot
+        # see a wall-clock bail (count<count_max, t<runtime) and would
+        # otherwise mislabel a truncated run as converged (end_case=1).
         if rs_out.params is not None:
             rs_out = rs_out._replace(params=rs_out.params._replace(end_case=end_case))
         if end_case == 3:

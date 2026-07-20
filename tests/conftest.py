@@ -35,8 +35,6 @@ ROOT = Path(__file__).resolve().parent.parent
 VULCAN_MASTER = ROOT.parent / "VULCAN-master"
 VULCAN_MASTER_STR = str(VULCAN_MASTER)
 
-HAS_VULCAN_MASTER = VULCAN_MASTER.is_dir()
-
 # Many tests assume cwd == ROOT for relative paths in vulcan_cfg.py.
 os.chdir(ROOT)
 
@@ -65,29 +63,6 @@ def _assert_testing_repo_checkout() -> None:
 
 
 _assert_testing_repo_checkout()
-
-
-@pytest.fixture(scope="session")
-def vulcan_master_op():
-    """Import VULCAN-master's `op` for oracle-comparison tests.
-
-    Returns the imported module. Skips the test cleanly if
-    `../VULCAN-master/` isn't present in this workspace.
-    """
-    if not HAS_VULCAN_MASTER:
-        pytest.skip(
-            f"VULCAN-master not present at {VULCAN_MASTER}; "
-            "oracle test skipped (VULCAN-JAX is standalone)."
-        )
-    old_path = list(sys.path)
-    try:
-        sys.path.insert(0, VULCAN_MASTER_STR)
-        sys.modules.pop("op", None)
-        import op
-
-        return op
-    finally:
-        sys.path[:] = old_path
 
 
 # ---------------------------------------------------------------------------

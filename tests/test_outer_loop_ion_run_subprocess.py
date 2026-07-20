@@ -1,9 +1,8 @@
 """End-to-end activation of the ion / photoionization machinery, in a subprocess.
 
-`tests/test_photo_ion.py` and `tests/test_outer_loop_ion.py` already lock the two
-ion *kernels* in isolation (the `compute_Jion` wavelength integral and the
-charge-balance clamp formula) against hand-built NumPy references on synthetic
-`SimpleNamespace` inputs. Neither drives a *real* `use_ion=True` network through
+`tests/test_photo_ion.py` locks the `compute_Jion` wavelength-integral kernel in
+isolation against a hand-built NumPy reference on synthetic `SimpleNamespace`
+inputs. It does not drive a *real* `use_ion=True` network through
 setup and the runner, because none of the shipped networks carries an
 `# ionisation` section and every shipped config has `use_ion=False`. The public
 upstream `VULCAN` is the same: the ion machinery and the atomic photoionisation

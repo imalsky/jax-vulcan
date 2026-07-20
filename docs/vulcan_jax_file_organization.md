@@ -56,7 +56,7 @@ keys. (The old inline `vulcan_cfg.py` module + `cfg_examples/*.py` were removed
 ### `phy_const.py`
 Physical constants in CGS, sourced from astropy. Module-level only — no
 functions. Defines `kb` (Boltzmann), `Navo` (Avogadro), `hc` (Planck * c
-in erg·nm), `au`, `r_sun`, `r_jup`, and `ag0` (RT asymmetry factor; `0` =
+in erg·nm), `au`, `r_sun`, `G_grav`, and `ag0` (RT asymmetry factor; `0` =
 isotropic scattering).
 
 ---
@@ -88,7 +88,6 @@ Public input pytrees:
 - `RunMetadata` — host-side static metadata (`Rf`, `n_branch`, `ion_branch`, `photo_sp`, `ion_sp`, `pho_rate_index`, `ion_rate_index`, `ion_br_ratio`, `charge_list`, `conden_re_list`, `start_time`, `Ti`, `gas_indx`, `pref_indx`, `gs`, `sat_p`, `sat_mix`, `r_p`, `rho_p`, `fix_sp_indx`, `y_ini`).
 - `RunState` — umbrella pytree wrapping everything above.
   - `with_pre_loop_setup(cfg)` (classmethod) — **canonical entry point**: runs the entire pre-loop pipeline (`atm_setup`, `rates`, `ini_abun`, `photo_setup` + photo-remove pass) and returns a fully-populated pytree.
-  - `fresh_from_cfg(cfg)` (classmethod) — same but with zero-valued runtime slots (test use).
 - `StellarFlux` — return type of `load_stellar_flux`.
 
 Builders / round-trip helpers:
@@ -105,7 +104,6 @@ Private helpers (documented for completeness, not for callers):
 - `_atm_metadata_from_atm(atm)` — extract static atm metadata.
 - `_runmetadata_from_legacy(var, atm, para)` — build a `RunMetadata` from the legacy containers.
 - `_build_pre_loop_runstate(cfg)` — backend of `RunState.with_pre_loop_setup`.
-- `_fresh_step_inputs(rs)` / `_fresh_param_inputs(rs)` / `_fresh_atom_inputs(rs)` / `_fresh_photo_runtime(rs)` — zero-fill helpers used by `fresh_from_cfg`.
 - `_Variables`, `_AtmData`, `_Parameters` — private mutable-container classes (used as scratch inside `_build_pre_loop_runstate` and by hybrid oracle tests; **not** on the production runtime path).
 
 ### `composition.py`
@@ -238,7 +236,6 @@ is the more self-consistent one — see its docstring). (`tests/test_atm_jax.py`
 ### `network.py`
 Parse a VULCAN-format reaction-network text file.
 - `Network` — frozen dataclass holding the parsed arrays. Public fields: `species`, `species_idx`, `ni`, `nr`, `reactant_idx`, `product_idx`, `reactant_stoich`, `product_stoich`, Arrhenius params (`a`, `n`, `E`, `a_inf`, `n_inf`, `E_inf`), reaction-type masks (`is_forward`, `is_three_body`, `has_kinf`, `is_special`, `is_conden`, `is_radiative`, `is_photo`, `is_ion`), section delimiters (`stop_rev_indx`, `conden_indx`, `radiative_indx`, `photo_indx`, `ion_indx`), photo metadata (`photo_sp`, `pho_rate_index`, `n_branch`, `ion_sp`, `ion_rate_index`, `ion_branch`), reaction-text dicts (`Rf`, `Rindx`), and `network_path`.
-  - `species_index(sp)` — return 0-based species index.
 - `_parse_term(term)` — parse a stoichiometric term like `"2*H"` into `(stoich, name)`.
 - `_parse_eq(eq)` — split `"A + B -> C + D"` into reactant / product lists.
 - `_detect_section(line, current)` — section-header dispatch.
@@ -438,7 +435,7 @@ grid. **[Δ master]** Master's `op.make_bins_read_cross` mutates `var.cross
 / var.scat_dx / var.dx_J / var.bins` etc. The JAX version returns a
 dense `PhotoStaticInputs` pytree which is the differentiable runtime
 surface; the legacy mutations are still performed by
-`populate_photo_arrays` for the hybrid oracle tests. The CH3SH branch
+`populate_photo` for the hybrid oracle tests. The CH3SH branch
 CSV has a non-monotonic `354.0` typo that would require a sort step
 in any `jnp.interp` port — preserved as-is.
 - `_cross_folder()` — return `cfg.cross_folder` as a string.
@@ -452,9 +449,7 @@ in any `jnp.interp` port — preserved as-is.
 - `_make_bins(...)` — two-resolution wavelength bin grid (`dbin1` < `dbin_12trans` < `dbin2`).
 - `_sort_pairs`, `_interp_zero_extrap`, `_interp_edge_extrap`, `_interp_T_log_pair` — small interpolation helpers used by the rebinning step.
 - `_bin_cross_and_branches(...)`, `_bin_T_dependent(...)` — rebin per-species data onto the photo grid.
-- `populate_photo_arrays(var, atm)` — write photo arrays back into the legacy `var` / `atm` containers (hybrid oracle path).
 - `_build_photo_static_dense(var, atm)` — build a fresh `PhotoStaticInputs` pytree.
-- `build_photo_static(cfg, atm, var)` — public builder used by tests and external callers.
 - `_alloc_runtime_buffers(var, nbin, nz)` — zero-allocate the host-side mutable buffers (`sflux`, `dflux_u/d`, `aflux`, `tau`, `sflux_top`) on `var`.
 - `populate_photo(var, atm)` — top-level builder: build the `PhotoStaticInputs`, write scalar metadata + threshold table to `var`, allocate runtime buffers. Returns the `PhotoStaticInputs`.
 
@@ -472,12 +467,6 @@ through the reaction-rate path.
 - `update_conden_rates(k_arr, y, st)` — recompute condensation/evaporation rate constants and overwrite the conden rows of `k_arr` (`k_pos` to `re`, `k_neg` to `re+1`).
 - `apply_h2o_relax_jax(y, ymix, dt, st) → (y_new, ymix_new)` — implicit-Euler `H2O` cold-trap relaxation. Mass moves into / out of `H2O_l_s`. No-op when `h2o_active=False`.
 - `apply_nh3_relax_jax(y, ymix, dt, st) → (y_new, ymix_new)` — analogous `NH3` relaxation, clamping condensation to layers at or below `nh3_conden_top = argmin(sat_mix['NH3'])` (a Python int when closure-baked, a per-lane 0-d int32 when spliced from `ProfileVars` in the batched runner — the kernel only compares it against `jnp.arange`).
-
-### `integrate.py`
-Fixed-`dt` JAX integration loop used for validation and benchmarks.
-Assumes frozen rate constants (no photo, no condensation, no fix-species).
-For production, use `outer_loop.OuterLoop`.
-- `jax_integrate_fixed_dt(y0, k_arr, dt, n_steps, atm, net)` — take `n_steps` fixed-dt Ros2 steps via `lax.scan`; `n_steps` is a static argument. Returns `(y_final, deltas)`.
 
 ---
 
@@ -613,7 +602,7 @@ transform consistency. Run with
 - `test_save_evolution.py` — `save_evolution=True` cadence + ring-buffer round-trip.
 - `test_default_master_parity.py` — HD189 parity audit (JAX config loaded from YAML via `tools/audit_master_parity.py`), bit-exact pre-loop state, and 20-step oracle vs staged VULCAN-master.
 - `test_outer_loop_smoke.py` — HD189 50-step smoke (the headline regression test).
-- `test_outer_loop_atm_refresh.py`, `test_outer_loop_conden_gate.py`, `test_outer_loop_conv.py`, `test_outer_loop_ion.py`, `test_outer_loop_photo.py` — outer-loop sub-graph tests.
+- `test_outer_loop_atm_refresh.py`, `test_outer_loop_conden_gate.py`, `test_outer_loop_conv.py`, `test_outer_loop_photo.py` — outer-loop sub-graph tests.
 - `test_w39b_fastchem_invariant.py` — frozen FastChem snapshot for W39b.
 - `test_use_fix_H2He.py`, `test_solver_fix_all_bot.py` — boundary-condition variants.
 - `test_vmap_kernels.py`, `test_vmap_step.py` — JAX vmap consistency.
@@ -686,3 +675,60 @@ serialised via `fcntl.flock` inside `ini_abun._load_eq_y` (around
 ### `output/`, `plot/`
 Created at run time by the driver and live-UI. Both are safe to delete
 and will reappear on next run; pre-existing contents are run artefacts.
+
+
+## 2026-07-20 addendum: architecture deep detail moved from CLAUDE.md
+
+Full pre-consolidation text of the CLAUDE.md architecture paragraphs
+(batched runner / make_config wiring / parallel host-setup hooks /
+flow-chart annotations). The operative contracts remain in CLAUDE.md;
+this is the field-level reference.
+
+### Flow annotation: pre-loop setup metadata inventory (verbatim pre-consolidation text)
+
+  Pre-loop setup: state.RunState.with_pre_loop_setup(cfg) — runs the full
+                  pipeline (atm structure, rates+caps+reverse+remove, ini_abun,
+                  photo cross sections + sflux + remove pass) and returns a
+                  fully-populated typed pytree. The private legacy mutable
+                  containers (state._Variables/_AtmData/_Parameters) are
+                  scratch inside the constructor; the static metadata that
+                  doesn't fit the JAX pytree (Rf, n_branch, ion_branch,
+                  photo_sp, ion_sp, pho_rate_index, ion_rate_index,
+                  ion_br_ratio, charge_list, conden_re_list, start_time,
+                  Ti, gas_indx, pref_indx, gs, sat_p, sat_mix, r_p, rho_p,
+                  fix_sp_indx, y_ini) rides on rs.metadata.
+
+### Flow annotation: .vul writer (verbatim pre-consolidation text)
+
+  .vul writer:    legacy_io.Output.save_out is polymorphic — accepts either
+                  a RunState (preferred) or the legacy (var, atm, para)
+                  triple, and synthesizes the variable/atm/parameter dicts
+                  directly from the typed state at pickle time. The
+                  compatibility target is that plot_py/ scripts consume it
+                  unchanged and downstream tools see the same public keys,
+                  shapes, and dtypes. It also synthesizes photo/ion diagnostic
+                  dicts and master public parameter keys; byte-for-byte pickle
+                  identity is not a goal.
+
+### Flow annotation: live UI (verbatim pre-consolidation text)
+
+  Live UI:        live_ui.LiveUI is a host-side dispatcher fired between
+                  JIT'd step batches whenever any of use_live_plot /
+                  use_live_flux / use_save_movie / use_flux_movie is True.
+                  Setting any of these flags forces the chunked-runner
+                  path (chunk size = cfg.live_plot_frq) so the
+                  host can read state at master's cadence. matplotlib /
+                  PIL stay on the host — they never enter a JIT'd
+                  region.
+
+### Batched (vmap-across-profiles) runner (verbatim pre-consolidation text)
+
+**Batched (vmap-across-profiles) runner.** `OuterLoop.run_batch(states_batched, atm_static_batched)` integrates a whole batch of *different* atmospheric profiles in one `jax.vmap`'d device call (for GPU-parallel emulator data generation). Build the inputs with `prepare_runstate(rs)` per profile, then `stack_integ_states` / `stack_atm_statics`; split results with `unstack_integ_states`. Two mechanisms make it correct: (1) **freeze-on-done** — `jax.vmap(lax.while_loop)` runs every lane until the slowest converges, so finished lanes are frozen (`cond_fn_batch` gates only on the carry's `is_done`/`chunk_target`, letting the body record `is_done`/`termination_reason` on the terminal state); each lane's result is bit-identical to running it alone. (2) **`ProfileVars`** — the runner closures used to bake per-profile arrays (`n_0`, `Kzz`, `atom_ini`, atm-refresh `Tco/pico/gs/Rp/zco_pref/Dzz_top`, conden diffusion/saturation); `jax.vmap` does NOT batch closure constants, so they are threaded through the `pv` field of `JaxIntegState` instead. `pref_indx` stays a closure constant (it sizes a `jnp.arange`) and must be batch-constant. Photochemistry and NH3 condensation are batched too: the NH3 cold-trap index rides `ProfileVars` as a per-lane 0-d int32 (`c_nh3_conden_top`; the kernel only compares it against `jnp.arange`), and the two T-P-dependent photo statics (`absp_T_cross`, `cross_J_T` — the T-interpolated cross sections) ride as `p_absp_T_cross`/`p_cross_J_T`, spliced into the closure-baked `PhotoData`/`_PhotoStatic` per lane. Everything else photo is fixed by star + wavelength grid + network + cfg; `prepare_runstate` rejects a profile whose nbin/din12_indx/bins/sflux_top differ from the first profile's (only the T-P profile may vary across a photo batch, and the guard only sees profiles routed through the same `OuterLoop` instance). Validation lives in `tests/test_vmap_while_loop.py` (CPU; vmap is backend-agnostic): homogeneous equivalence, heterogeneous freeze, NaN isolation, and two genuinely-different profiles (~1e7 apart) batched bit-for-bit against their solo runs; `tests/test_vmap_photo_batch.py` (photo on, per-lane T-dep cross sections, same-star guard) and `tests/test_nh3_conden_batch_subprocess.py` (lowT-Jupiter network, two profiles with different cold-trap indices, solo-vs-batch asserted at rtol 1e-9 and observed bit-exact) cover the two newly-batched paths. The single-profile `__call__` path is unchanged.
+
+### make_config end-to-end wiring (verbatim pre-consolidation text)
+
+**`make_config(...)` is wired end-to-end (separate-namespace cfg).** `make_config()` / `load_config()` return a `Config` namespace; the CLI passes `config.default_config()` (the cached process default). A non-default cfg so its overrides reach the runtime via three mechanisms: (1) **setup** — `state._cfg_overlay(cfg)` (a context manager wrapping `_build_pre_loop_runstate`) overlays cfg's public attrs onto the process default (`default_config()`) for the duration of setup and restores them on exit (zero leakage), because the scratch containers (`_Variables`/`_AtmData`/`_Parameters`), the `atm_setup`/`ini_abun` facades, and `legacy_io.ReadRate` read `default_config()`; it is a no-op when `cfg is default_config()`. (2) **runner** — `OuterLoop(odesolver, output, cfg=None)` (defaulting to `default_config()`) stores `self._cfg` and reads every per-instance knob off it; `jax_step.make_atm_static(..., cfg=...)` is threaded the same way because it runs at integration time, *after* the overlay restored. (3) **output** — `legacy_io.Output(cfg=None)` (defaulting to `default_config()`) stores `self._cfg` for output paths, the `.vul` writer, and progress prints (else the printer shows the global `count_max`, not the run's). All three default to `default_config()`, so the bare CLI form is unchanged; all three are required — fixing only one leaves the others on global defaults. **Import-frozen knobs** (read once at first import, cannot be overlaid): `network` (`ni`/`nr`/`spec_list`), `com_file` (composition table), and `atom_list` (reservoir-projection tables, baked into `jax_step.IMPORT_ATOM_LIST`). To select these in-process, set `$VULCAN_JAX_NETWORK` and/or `$VULCAN_JAX_ATOM_LIST` (comma-separated, e.g. `H,O,C,N,S` for a sulfur/SO2 / WASP-39b run) *before* the first `import vulcan_jax` — `config.default_config()` folds the env at import, mirroring the network override; `com_file` has no env override. `state._assert_network_matches_import` / `_assert_com_file_matches_import` fail fast on a mismatch by *content* (species **and** `nr` for the network; file bytes for `com_file`) so a same-content vendored copy at a different path is accepted but a real swap raises clearly. Regression coverage: `tests/test_make_config_wiring.py`. When adding a new runtime knob, read it from `self._cfg` in `outer_loop.py` / `legacy_io.py` (or pass `cfg=` in `jax_step.py`), never `default_config()` directly, so the make_config path keeps working.
+
+### Parallel host-setup hooks (verbatim pre-consolidation text)
+
+**Parallel host-setup hooks (0.1.10).** Three additive hooks let an external driver build many `RunState`s concurrently across processes (the emulator's GPU-batched generation fans `with_pre_loop_setup` out over a spawn `ProcessPool` to feed the GPU). All default to unchanged single-process behavior. (1) **`$VULCAN_JAX_FASTCHEM_DIR`** (`ini_abun.py`) overrides the FastChem working tree (binary + `input/` + `output/`); read at import like `$VULCAN_JAX_NETWORK`, so set it before the first import. Point each worker at a private copy so the cross-process `fcntl.flock` (which serialises the `EQ` subprocess on the shared package tree) becomes per-worker and uncontended. Default stays the package's `fastchem_vulcan/`; the read-only solar-abundance file stays anchored to the package. (2) **Rate-parse cache** (`legacy_io.py::ReadRate.read_rate`) memoises the parsed network metadata per process keyed by `(resolved network path, use_ion)` — the network is dataset-fixed, so it was re-parsed once per profile for nothing; a hit restores deep copies onto the fresh `var`. Disable with `$VULCAN_JAX_RATE_CACHE=0`. (3) **`with_pre_loop_setup(cfg, skip_chem_warmup=True)`** (`state.py`) skips the chem-RHS JIT warmup (a discarded `block_until_ready` that only pre-compiles `chem_rhs`); the returned `RunState` is identical, so a setup-only worker that integrates in a *different* process (or on the GPU) avoids a wasted CPU compile. Validated in `tests/test_host_setup_hooks.py`.

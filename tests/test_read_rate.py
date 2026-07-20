@@ -256,10 +256,11 @@ def test_build_rate_array_matches_legacy_hd189(hd189_state):
 
 
 def test_build_rate_array_with_lowT_caps(hd189_state):
-    """With `use_lowT_limit_rates=True`, the resulting forward array should
-    have the three cap reactions clamped at layers where T is low. HD189's
-    upper atmosphere has Tco ~ 200-700 K, which fires at least the C2H4 cap
-    (T<=300) for the cooler upper layers."""
+    """`use_lowT_limit_rates=True` must be a no-op on HD189: the profile's
+    coolest layer (~860 K) is above every cap threshold, so the C2H4 cap row
+    comes out bit-identical to the uncapped build through the full
+    `build_rate_array` path. Cap-firing coverage (synthetic cold layers)
+    lives in `test_lowT_caps_fire_all_three`."""
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates as rates
     from vulcan_jax.config import default_config
@@ -292,12 +293,8 @@ def test_build_rate_array_with_lowT_caps(hd189_state):
     i_c2h4 = _find_rxn_idx(net, "H + C2H4 + M -> C2H5 + M")
     T = np.asarray(hd189_state.atm.Tco)
 
-    # Where T <= 300, k_on should equal exactly 3.7e-30 (post-Lindemann
-    # cap value); elsewhere unchanged.
-    cap_mask = T <= 300.0
-    if cap_mask.any():
-        np.testing.assert_array_equal(
-            k_on[i_c2h4, cap_mask],
-            np.full(cap_mask.sum(), 3.7e-30),
-        )
-    np.testing.assert_array_equal(k_on[i_c2h4, ~cap_mask], k_off[i_c2h4, ~cap_mask])
+    assert T.min() > 300.0, (
+        f"HD189 fixture unexpectedly has layers at/below the cap threshold "
+        f"(min T = {T.min():.1f} K); this no-op test needs updating."
+    )
+    np.testing.assert_array_equal(k_on[i_c2h4], k_off[i_c2h4])

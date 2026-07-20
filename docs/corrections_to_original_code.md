@@ -166,3 +166,15 @@ Not a JAX bug; recorded so no one "fixes" JAX to match master's weaker behavior.
   suppressed abundance file, which is a legitimate initial-condition difference for
   the truncated NCHO/SNCHO networks. (There is no `use_other_ele` flag in either
   codebase.)
+
+
+## 2026-07-20 — atm_type='table' stale pico (upstream, faithfully ported, NOT fixed)
+
+Moved from VULCAN-JAX/CLAUDE.md during the memory-threshold
+consolidation; this is the authoritative record. Policy fit: real,
+results-affecting upstream bug, divergence documented, master left
+untouched (do-not-refactor oracle).
+
+### atm_type='table' stale pico (full record) (verbatim pre-consolidation text)
+
+**KNOWN ISSUE — `atm_type='table'` stale `pico` (latent UPSTREAM bug, faithfully ported; NOT being fixed this release per Isaac, 2026-06-17).** In `table` mode, setup runs `f_pico` (pico from the original logspace `P_b..P_t` grid) BEFORE `load_TPK` overwrites `pco` from the table file, and never recomputes `pico` — so `f_mu_dz` integrates `dz`/`dzi`/`pref_indx` from a stale `pico` (g/Hp ~1%, dzi ~12% off when the table grid differs from logspace; masked when it matches, which is the common restart case). **VULCAN-master has the identical bug** (`vulcan.py:118`→`120`→`148`; `build_atm.py:406` pco rewrite, `:530/554/562` stale-pico integration), so VULCAN-JAX's production path is a faithful port; `build_atm_static` recomputes `pico` self-consistently (the deviation). DECISION: keep production matching master for parity; do NOT silently fix VULCAN-JAX alone (would diverge from master); the real fix is one line upstream. Revisit only if upstream fixes the `f_pico`/`pco` ordering.

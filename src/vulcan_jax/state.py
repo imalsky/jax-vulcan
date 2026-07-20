@@ -247,28 +247,6 @@ class RunState(NamedTuple):
         """
         return _build_pre_loop_runstate(cfg, skip_chem_warmup=skip_chem_warmup)
 
-    @classmethod
-    def fresh_from_cfg(cls, cfg) -> "RunState":
-        """Build a `RunState` with zero-valued runtime slots.
-
-        Returns a pytree with `step` / `params` / `atoms` /
-        `photo_runtime` / `fix_species` filled with empty / zero
-        arrays of the right shapes for `cfg`'s `nz` / `ni` / network.
-        Used by tests that need the schema but not the full pipeline.
-
-        The pre-loop slots `atm` / `rate` / `photo` come from the
-        actual setup (we still need a real atmosphere structure for
-        shapes); the runtime slots are zeroed via the `_fresh_*_inputs`
-        helpers.
-        """
-        rs = _build_pre_loop_runstate(cfg)
-        return rs._replace(
-            step=_fresh_step_inputs(rs),
-            params=_fresh_param_inputs(rs),
-            atoms=_fresh_atom_inputs(rs),
-            photo_runtime=_fresh_photo_runtime(rs),
-        )
-
 
 class StellarFlux(NamedTuple):
     """Stellar-flux read result. Empty arrays + zero extents when use_photo=False."""
@@ -554,7 +532,6 @@ def runstate_from_store(var, atm, para) -> RunState:
             fix_y=jnp.zeros((0, nz), dtype=jnp.float64),
             conden_min_lev=jnp.zeros((0,), dtype=jnp.int32),
         )
-    del ni
 
     return base._replace(
         step=step,
@@ -939,7 +916,7 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
 
     photo_static_pytree = None
     if bool(getattr(cfg, "use_photo", False)):
-        _photo_setup.populate_photo_arrays(var, atm)
+        _photo_setup.populate_photo(var, atm)
         make_atm.read_sflux(var, atm)
         photo_static_pytree = _photo_setup._build_photo_static_dense(var, atm)
         photo_static_pytree = photo_static_pytree.with_din12_indx(
@@ -981,73 +958,6 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
     # only the photo_static pytree needs attaching here.
     rs = runstate_from_store(var, atm, para)
     return rs._replace(photo_static=photo_static_pytree)
-
-
-def _fresh_step_inputs(rs: RunState) -> StepInputs:
-    nz = int(rs.atm.Tco.shape[0])
-    ni = int(chem_funs.ni)
-    return StepInputs(
-        y=jnp.zeros((nz, ni), dtype=jnp.float64),
-        y_prev=jnp.zeros((nz, ni), dtype=jnp.float64),
-        ymix=jnp.zeros((nz, ni), dtype=jnp.float64),
-        t=0.0,
-        dt=0.0,
-        longdy=1.0,
-        longdydt=1.0,
-    )
-
-
-def _fresh_param_inputs(rs: RunState) -> ParamInputs:
-    nz = int(rs.atm.Tco.shape[0])
-    ni = int(chem_funs.ni)
-    return ParamInputs(
-        count=0,
-        nega_count=0,
-        loss_count=0,
-        delta_count=0,
-        delta=0.0,
-        small_y=0.0,
-        nega_y=0.0,
-        end_case=0,
-        switch_final_photo_frq=False,
-        pic_count=0,
-        where_varies_most=jnp.zeros((nz, ni), dtype=jnp.float64),
-        fix_species_start=False,
-    )
-
-
-def _fresh_atom_inputs(rs: RunState) -> AtomInputs:
-    if rs.atoms is not None:
-        atom_order = rs.atoms.atom_order
-    else:
-        _cfg = default_config()
-
-        atom_order = _atom_order_for(_cfg)
-    n = len(atom_order)
-    z = jnp.zeros((n,), dtype=jnp.float64)
-    return AtomInputs(
-        atom_order=atom_order,
-        atom_ini=z,
-        atom_loss=z,
-        atom_loss_prev=z,
-        atom_sum=z,
-    )
-
-
-def _fresh_photo_runtime(rs: RunState) -> Optional[PhotoRuntimeInputs]:
-    nbin = int(rs.photo.sflux_top.shape[0])
-    if nbin == 0:
-        return None
-    nz = int(rs.atm.Tco.shape[0])
-    return PhotoRuntimeInputs(
-        tau=jnp.zeros((nz + 1, nbin), dtype=jnp.float64),
-        aflux=jnp.zeros((nz, nbin), dtype=jnp.float64),
-        sflux=jnp.zeros((nz + 1, nbin), dtype=jnp.float64),
-        dflux_d=jnp.zeros((nz + 1, nbin), dtype=jnp.float64),
-        dflux_u=jnp.zeros((nz + 1, nbin), dtype=jnp.float64),
-        prev_aflux=jnp.zeros((nz, nbin), dtype=jnp.float64),
-        aflux_change=0.0,
-    )
 
 
 def legacy_view(rs: RunState):

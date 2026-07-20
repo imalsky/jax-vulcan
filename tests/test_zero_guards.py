@@ -3,7 +3,6 @@
 Exercises the guards added to prevent NaN/Inf when:
   1. ysum (gas-species sum) reaches zero in a layer (jax_step diffusion)
   2. mu (mean molecular weight) reaches zero in a layer (atm_refresh)
-  3. chi (two-stream RT denominator) reaches zero (photo)
 """
 
 from __future__ import annotations
@@ -115,31 +114,3 @@ def test_atm_refresh_mu_zero_layer():
     assert jnp.all(jnp.isfinite(Hp)), "Hp contains NaN/Inf"
     assert jnp.all(jnp.isfinite(dz)), "dz contains NaN/Inf"
     assert jnp.all(jnp.isfinite(zco)), "zco contains NaN/Inf"
-
-
-def test_photo_chi_guard_preserves_sign():
-    """chi is provably <= 0; the guard must keep it negative."""
-    from vulcan_jax.photo import _UNDERFLOW_DENOM
-
-    w0_vals = jnp.array([0.0, 0.5, 0.99, 1.0 - 1e-8])
-    for w0_scalar in w0_vals:
-        w0 = jnp.full(4, float(w0_scalar))
-        zeta_p = 0.5 * (1.0 + (1.0 - w0) ** 0.5)
-        zeta_m = 0.5 * (1.0 - (1.0 - w0) ** 0.5)
-        tran = jnp.array([1.0, 0.5, 0.01, 1e-20])
-        chi = zeta_m**2 * tran**2 - zeta_p**2
-        chi_guarded = jnp.minimum(chi, -_UNDERFLOW_DENOM)
-
-        assert jnp.all(chi_guarded < 0), (
-            f"chi must be strictly negative after guard, got {chi_guarded} for w0={w0_scalar}"
-        )
-        assert jnp.all(jnp.isfinite(1.0 / chi_guarded)), (
-            f"1/chi must be finite, got {1.0 / chi_guarded}"
-        )
-
-
-def test_main():
-    """Wrapper for pytest discovery."""
-    test_diffusion_ysum_zero_layer()
-    test_atm_refresh_mu_zero_layer()
-    test_photo_chi_guard_preserves_sign()

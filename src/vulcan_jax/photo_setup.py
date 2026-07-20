@@ -394,11 +394,6 @@ def _bin_T_dependent(
     return cross_T, cross_J_T
 
 
-def populate_photo_arrays(var, atm) -> None:
-    """In-place mutator wrapper for `populate_photo`."""
-    populate_photo(var, atm)
-
-
 def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
     """Pure builder of the dense `PhotoStaticInputs` pytree.
 
@@ -630,16 +625,6 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
         cross_J_T=jnp.asarray(cross_J_T, dtype=jnp.float64),
         cross_Jion=jnp.asarray(cross_Jion, dtype=jnp.float64),
     )
-
-
-def build_photo_static(cfg, atm, var) -> PhotoStaticInputs:
-    """Pure builder: reads CSVs + atm.Tco, returns the dense `PhotoStaticInputs` pytree.
-
-    `din12_indx` is `-1` until `read_sflux` runs; use
-    `static.with_din12_indx(int(var.sflux_din12_indx))` to attach it.
-    """
-    del cfg
-    return _build_photo_static_dense(var, atm)
 
 
 def _alloc_runtime_buffers(var, nbin: int, nz: int) -> None:

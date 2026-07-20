@@ -19,6 +19,7 @@ import warnings
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -207,11 +208,11 @@ def test_compute_tau_jax_vmap_consistency() -> None:
     vulcan_cfg = default_config()
 
     if not vulcan_cfg.use_photo:
-        return  # Nothing to validate when photo is off.
+        pytest.skip("use_photo=False: no tau kernel to validate")
 
     rs, _, data_atm = _build_state()
     if rs.photo_static is None:
-        return
+        pytest.skip("no photo_static on the built state: tau kernel not wired")
 
     import vulcan_jax.photo as photo_mod
     import vulcan_jax.chem_funs as chem_funs

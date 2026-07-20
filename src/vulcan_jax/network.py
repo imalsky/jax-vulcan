@@ -9,8 +9,9 @@ Sections in file order: two-body, 3-body w/ k_inf (Lindemann), 3-body
 w/o k_inf, special (hardcoded), condensation, radiative recombination,
 photo, ionisation.
 
-Species ordering follows first appearance in the network, then any
-cfg-only species (e.g. inert Ar) appended.
+Species ordering follows first appearance in the network file. Species
+that appear only in the config (e.g. an inert `const_mix` gas like Ar)
+are NOT appended — `runtime_validation` rejects such configs upfront.
 """
 
 from __future__ import annotations
@@ -93,10 +94,6 @@ class Network:
 
     # Original file path for debugging
     network_path: str
-
-    def species_index(self, sp: str) -> int:
-        """Return the 0-based column index of species `sp` in `(nz, ni)` arrays."""
-        return self.species_idx[sp]
 
 
 _RE_LINE = re.compile(r"^\s*(\d+)\s*\[\s*([^\]]+)\s*\]\s*(.*)$")

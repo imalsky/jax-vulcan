@@ -127,7 +127,6 @@ fix_species:
 - H2O_l_s
 - H2SO4
 - H2SO4_l
-fix_species_time: 500000000.0
 fix_species_from_coldtrap_lev: true
 use_ini_cold_trap: true
 use_sat_surfaceH2O: false
@@ -135,7 +134,6 @@ st_factor: 0.5
 conv_step: 500
 ode_solver: Ros2
 use_print_prog: true
-use_print_delta: false
 print_prog_num: 500
 dttry: 1.0e-10
 trun_min: 100.0

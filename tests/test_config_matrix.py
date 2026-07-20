@@ -138,11 +138,12 @@ def _setup_full_state(count_max: int = 5):
 # ---------------------------------------------------------------------------
 
 
-def test_lowT_limit_rates_caps_fire_on_HD189():
-    """Cap reactions clamp at the published Moses+2005 values when
-    ``use_lowT_limit_rates=True``. Complements
-    ``test_read_rate.py::test_build_rate_array_with_lowT_caps`` by
-    asserting all three caps' values, not just C2H4.
+def test_lowT_limit_rates_noop_on_HD189():
+    """``use_lowT_limit_rates=True`` is a no-op on HD189: the profile's
+    coolest layer (~860 K) sits above every cap threshold (277.5/300/200 K),
+    so the three cap reactions must be bit-identical to the uncapped build.
+    Cap-firing coverage (synthetic cold layers) lives in
+    ``test_read_rate.py::test_lowT_caps_fire_all_three``.
     """
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates as rates
@@ -163,7 +164,10 @@ def test_lowT_limit_rates_caps_fire_on_HD189():
         k_off = rates.build_rate_array(vulcan_cfg, net, data_atm, nasa9_coeffs)
 
     T = np.asarray(data_atm.Tco, dtype=np.float64)
-    M = np.asarray(data_atm.M, dtype=np.float64)
+    assert T.min() > 300.0, (
+        f"HD189 fixture unexpectedly has layers at/below the cap thresholds "
+        f"(min T = {T.min():.1f} K); this no-op test needs updating."
+    )
 
     def _find(eq):
         for i in range(1, net.nr + 1, 2):
@@ -175,32 +179,10 @@ def test_lowT_limit_rates_caps_fire_on_HD189():
     i_c2h4 = _find("H + C2H4 + M -> C2H5 + M")
     i_c2h5 = _find("H + C2H5 + M -> C2H6 + M")
 
-    # CH3 cap: Lindemann form k0 / (1 + k0 M / kinf), threshold T<=277.5 K.
-    ch3_mask = T <= 277.5
-    if ch3_mask.any():
-        k0 = 6.0e-29
-        kinf = 2.06e-10 * T[ch3_mask] ** -0.4
-        cap_ch3 = k0 / (1.0 + k0 * M[ch3_mask] / kinf)
-        np.testing.assert_array_equal(k_on[i_ch3, ch3_mask], cap_ch3)
-
-    c2h4_mask = T <= 300.0
-    if c2h4_mask.any():
-        np.testing.assert_array_equal(
-            k_on[i_c2h4, c2h4_mask],
-            np.full(c2h4_mask.sum(), 3.7e-30),
-        )
-
-    c2h5_mask = T <= 200.0
-    if c2h5_mask.any():
-        np.testing.assert_array_equal(
-            k_on[i_c2h5, c2h5_mask],
-            np.full(c2h5_mask.sum(), 2.49e-27),
-        )
-
-    # Above-threshold layers must be unchanged across the on/off variants.
-    np.testing.assert_array_equal(k_on[i_ch3, ~ch3_mask], k_off[i_ch3, ~ch3_mask])
-    np.testing.assert_array_equal(k_on[i_c2h4, ~c2h4_mask], k_off[i_c2h4, ~c2h4_mask])
-    np.testing.assert_array_equal(k_on[i_c2h5, ~c2h5_mask], k_off[i_c2h5, ~c2h5_mask])
+    # Every layer is above every threshold: on/off variants must be identical.
+    np.testing.assert_array_equal(k_on[i_ch3], k_off[i_ch3])
+    np.testing.assert_array_equal(k_on[i_c2h4], k_off[i_c2h4])
+    np.testing.assert_array_equal(k_on[i_c2h5], k_off[i_c2h5])
 
 
 # ---------------------------------------------------------------------------
@@ -401,10 +383,9 @@ def test_fix_species_runtime_smoke():
         condense_sp=["H2O", "S8"],
         non_gas_sp=["H2O_l_s", "S8_l_s"],
         fix_species=["H2O", "S8"],
-        fix_species_time=1.0e22,  # never trigger pinning during short smoke
         fix_species_from_coldtrap_lev=False,
         start_conden_time=1.0e22,
-        stop_conden_time=1.0e22,
+        stop_conden_time=1.0e22,  # pin gate pushed past runtime: no pinning
         r_p={"H2O_l_s": 5e-3, "S8_l_s": 1e-4},
         rho_p={"H2O_l_s": 0.9, "S8_l_s": 2.07},
         humidity=1.0,
@@ -417,23 +398,17 @@ def test_fix_species_runtime_smoke():
         use_print_prog=False,
     )
     with cfg_overrides(**cfg_kwargs):
-        try:
-            solver, output, var, atm, para, make_atm = _setup_full_state(count_max=5)
-        except Exception as exc:
-            pytest.skip(f"fix_species setup failed cleanly: {exc!r}")
+        solver, output, var, atm, para, make_atm = _setup_full_state(count_max=5)
 
         import vulcan_jax.outer_loop as outer_loop
 
         integ = outer_loop.OuterLoop(solver, output)
-        try:
-            integ(var, atm, para, None)
-        except Exception as exc:
-            pytest.skip(f"fix_species runtime failed cleanly: {exc!r}")
+        integ(var, atm, para, None)
         del make_atm  # unused after setup; outer_loop captured it.
 
     assert hasattr(para, "fix_species_start")
     assert isinstance(para.fix_species_start, (bool, np.bool_))
-    # fix_species_time was pushed past runtime so the pin should NOT have fired.
+    # stop_conden_time was pushed past runtime so the pin should NOT have fired.
     assert bool(para.fix_species_start) is False
     del vulcan_cfg  # silence unused-import lint
 

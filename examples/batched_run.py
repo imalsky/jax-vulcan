@@ -28,9 +28,9 @@ def main():
     import jax
     import jax.numpy as jnp
 
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
     import vulcan_jax.chem_funs as chem_funs
     import vulcan_jax.jax_step as js_mod
+    from vulcan_jax.config import default_config
 
     # Build the canonical HD189 pre-loop state via the typed constructor
     # and derive a `(var, atm, _)` shim for the legacy attribute access
@@ -39,7 +39,7 @@ def main():
 
     # Set up the canonical state
     print("Setting up base atmosphere...")
-    rs = RunState.with_pre_loop_setup(vulcan_cfg)
+    rs = RunState.with_pre_loop_setup(default_config())
     data_var, data_atm, _ = legacy_view(rs)
     nz, ni = data_var.y.shape
 

@@ -52,12 +52,6 @@ def cli_main(argv=None):
     cfg = load_config(args.config)
     validate_runtime_config(cfg, PACKAGE_ROOT)
 
-    if cfg.ode_solver != "Ros2":
-        raise NotImplementedError(
-            f"VULCAN-JAX targets the Ros2 solver only; got "
-            f"ode_solver={cfg.ode_solver!r}."
-        )
-
     runstate = RunState.with_pre_loop_setup(cfg)
 
     dname = os.path.abspath(os.getcwd())

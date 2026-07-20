@@ -95,7 +95,6 @@ start_conden_time: 10000000000.0
 condense_sp: []
 non_gas_sp: []
 fix_species: []
-fix_species_time: 0
 use_ini_cold_trap: false
 use_sat_surfaceH2O: false
 st_factor: 0.5
@@ -103,7 +102,6 @@ conv_step: 500
 conv_stall_window: 200
 ode_solver: Ros2
 use_print_prog: true
-use_print_delta: false
 print_prog_num: 500
 dttry: 1.0e-10
 trun_min: 100.0

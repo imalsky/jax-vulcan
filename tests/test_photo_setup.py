@@ -1,4 +1,4 @@
-"""Validate `photo_setup.build_photo_static` against locally captured
+"""Validate `photo_setup._build_photo_static_dense` against locally captured
 npz fixtures.
 
 The fixtures (`tests/data/photo_setup_hd189_baseline.npz` and
