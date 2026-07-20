@@ -178,12 +178,16 @@ VULCAN-JAX/
 
 ### Further documentation
 
-This README is the comprehensive reference for VULCAN-JAX. Deeper docs live in the
-umbrella project's `../docs/`:
+This README is the comprehensive reference for VULCAN-JAX. Deeper docs live in
+`docs/`:
 
-- `vulcan_jax_file_organization.md` -- per-module function/class index of the source tree
-- `vulcan_jax_notes.md` -- implementation + end-to-end AD development log
-- `corrections_to_original_code.md` -- VULCAN-JAX's corrections to upstream VULCAN
+- `docs/vulcan_jax_file_organization.md` -- per-module function/class index of the source tree
+- `docs/vulcan_jax_notes.md` -- implementation + end-to-end AD development log
+- `docs/corrections_to_original_code.md` -- VULCAN-JAX's corrections to upstream VULCAN
+- `docs/photo_off_convergence_investigation.md` -- photo-off convergence recipe + certification findings
+
+Cross-repo contracts (e.g. `condensation_differentiation.md`) remain in the
+umbrella project's `../docs/` (present in the local multi-repo checkout only).
 
 ---
 
@@ -648,7 +652,7 @@ to the operator's scale (~3e-5 on the healthy closed HD189 column, the atom-coun
 vectors are only *approximately* null because the diffusion discretization is not
 exactly conservative under the dz weights; O(1) means broken conservation, e.g.
 open boundary fluxes). See `examples/grad_reverse_example.py`,
-`tests/test_steady_state_reaction_sensitivity.py`, and the full log in `../docs/vulcan_jax_notes.md`.
+`tests/test_steady_state_reaction_sensitivity.py`, and the full log in `docs/vulcan_jax_notes.md`.
 
 **What's NOT differentiable** (by design): host-side file readers (`photo_setup.py`, `composition.py`, `atm_setup.py` CSV loaders), FastChem subprocess. To differentiate through these, build the corresponding pytree directly with JAX arrays.
 

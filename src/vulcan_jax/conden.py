@@ -59,7 +59,7 @@ SUPPORTED_CONDEN_KINETICS: tuple[str, ...] = (
 # 45.019). Disulfur/octasulfur masses are 64.12 and 256.48 (2x/8x the atomic S
 # mass 32.06 in thermo/all_compose.txt); the condensation rate is proportional to
 # this mass, so the upstream literals biased the S2 rate by 0.702x and S8 by
-# 1.404x. We use the composition-table values. See ../docs/corrections_to_original_code.md.
+# 1.404x. We use the composition-table values. See docs/corrections_to_original_code.md.
 GAS_MASS_G_PER_MOL: dict[str, float] = {
     "H2O": 18.0,
     "NH3": 17.0,
