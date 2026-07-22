@@ -1143,10 +1143,26 @@ applied) does not help:
       1e+06    0.553      N   L93    refuse
       3e+06    1.222      N   L93    refuse
 
-Non-monotonic, and never below the 0.3 error threshold. A genuine fixed point
-has `G(y) -> y` as `body_dt -> 0`; this does not, so these cells are
-**oscillating, not creeping**, and no probe step exists that certifies them.
-The refusal is correct — do not weaken the gate to get past it.
+Never below the 0.3 error threshold. Two follow-ups pinned down what this is
+and is not:
+
+* **Not the photolysis-cadence mismatch.** The runner refreshes photo every 5
+  accepted steps while the body map (given `photo_recompute_k`) recomputes it
+  every probe step, which would plausibly bite hardest at the top. Measured
+  with the recompute ON vs FROZEN, the defect is bit-identical (1.222 at 3e6,
+  1.693 at 1e8, both ways). Photolysis contributes nothing here.
+* **Not fixable by converging harder.** `yconv_cri` 1e-2 / 1e-3 / 1e-4 give a
+  **bit-identical converged state** — same longdy 0.0997, same defect at every
+  probe step. `longdy` plateaus there and the tolerance knob is simply INERT
+  on this column, so "converge tighter" is not an available remedy.
+
+Note the small-`body_dt` tail (1e5 -> 1.106) is conditioning-limited, not
+physical: `G(y) -> y` as `body_dt -> 0` analytically, so a defect that RISES
+as the probe shrinks is Rosenbrock noise. The physical trend is the monotonic
+1e6 -> 1e8 climb. Whatever label one puts on the mechanism, the operational
+finding is verified three ways (probe step, tolerance, photo cadence): this
+state cannot be certified, and the refusal is correct — do not weaken the gate
+to get past it.
 
 Every offending cell (layers 87-93) sits in the **isothermally clamped top**:
 the shipped table stops at 5.35e-6 bar while the chemistry grid runs to 1e-7
