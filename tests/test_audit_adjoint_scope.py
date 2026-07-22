@@ -302,15 +302,15 @@ def _clip_cfg(**kw):
 def test_clip_dead_mask_matches_the_runner_clip_terms():
     cfg = _clip_cfg()
     ymix = np.full((1, 6), 1e-10)
-    ymix[0, 5] = 1e-30                      # below mtol -> trace-negative cut
+    ymix[0, 5] = 1e-30  # below mtol -> trace-negative cut
     G = np.array([[1e10, -0.5, -5.0, 0.0, 1e-3, -1e12]])
     dead = _clip_dead_mask(G, ymix, cfg)[0]
-    assert not dead[0]      # healthy positive density: clip is identity
-    assert dead[1]          # in [nega_cut, pos_cut) -> runner zeroes it
-    assert not dead[2]      # below nega_cut: the runner LEAVES it (not clipped)
-    assert not dead[3]      # exactly 0 -> clipping is already the identity
-    assert not dead[4]      # small but positive, above pos_cut=0
-    assert dead[5]          # ymix_old < mtol and negative -> trace cut
+    assert not dead[0]  # healthy positive density: clip is identity
+    assert dead[1]  # in [nega_cut, pos_cut) -> runner zeroes it
+    assert not dead[2]  # below nega_cut: the runner LEAVES it (not clipped)
+    assert not dead[3]  # exactly 0 -> clipping is already the identity
+    assert not dead[4]  # small but positive, above pos_cut=0
+    assert dead[5]  # ymix_old < mtol and negative -> trace cut
 
 
 def test_clip_dead_mask_is_absolute_not_a_mixing_ratio():
@@ -324,10 +324,10 @@ def test_clip_dead_mask_is_absolute_not_a_mixing_ratio():
     """
     cfg = _clip_cfg()
     ymix = np.array([[1e-16, 1e-16]])
-    G = np.array([[-7.5e-4, -1e3]])          # same ymix, different densities
+    G = np.array([[-7.5e-4, -1e3]])  # same ymix, different densities
     dead = _clip_dead_mask(G, ymix, cfg)[0]
-    assert dead[0]          # cold top: inside the |nega_cut| = 1 window
-    assert not dead[1]      # deep: far outside it
+    assert dead[0]  # cold top: inside the |nega_cut| = 1 window
+    assert not dead[1]  # deep: far outside it
 
 
 def test_clip_dead_mask_is_inert_without_cfg():
