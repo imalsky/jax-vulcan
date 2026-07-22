@@ -69,6 +69,17 @@ KNOWN_THERMO_DIVERGENCES: dict[str, tuple[str, ...]] = {
     "SNCHO_photo_network.txt": ("CH2CN + H + M -> CH3CN + M",),
 }
 
+# Vendored stellar-flux files where JAX intentionally diverges from master by a
+# uniform flux rescale. Master's builder (atm/make_spectra_in_nm.py) multiplied
+# by R_star where the surface-flux conversion divides, so the shipped eps Eri
+# spectrum is low by exactly R_star^4 = 0.735^4; JAX ships the corrected file
+# (corrections_to_original_code.md, C4). Wavelength columns must stay identical
+# and every flux ratio must sit at the documented factor (2-sig-fig rounding
+# tolerance); any other difference is real drift and fails.
+KNOWN_SFLUX_RESCALES: dict[str, float] = {
+    "sflux-epseri.txt": 0.735**-4,
+}
+
 UI_OUTPUT_KEYS = {
     "output_dir",
     "plot_dir",
@@ -253,10 +264,15 @@ def _compare_cfgs(master_cfg: Path) -> list[str]:
                 )
 
     # Real gaps: master physics keys absent in JAX. `gs` is the intended Mp/Rp
-    # swap; `fastchem_solar_abundance_file` is a JAX-only addition.
+    # swap; `fastchem_solar_abundance_file` is a JAX-only addition; keys in
+    # config._REMOVED_KEYS were deliberately retired with a loud migration
+    # message (e.g. fix_species_time -> stop_conden_time, use_print_delta not
+    # ported), so their absence is the documented design, not drift.
+    from vulcan_jax.config import _REMOVED_KEYS
+
     missing_in_jax = sorted(
         key
-        for key in set(master) - set(jax) - UI_OUTPUT_KEYS
+        for key in set(master) - set(jax) - UI_OUTPUT_KEYS - set(_REMOVED_KEYS)
         if key not in {"fastchem_solar_abundance_file", "gs"}
     )
     if missing_in_jax:
@@ -287,11 +303,44 @@ def _known_divergence_only(
     return errors
 
 
+def _known_sflux_rescale_only(
+    master_path: Path, jax_path: Path, factor: float
+) -> list[str]:
+    """Return errors unless jax differs from master by exactly the flux rescale.
+
+    Wavelength fields must be byte-identical; every flux ratio jax/master must
+    match ``factor`` within the 2-significant-figure rounding of the file format
+    (rtol 1e-2). Anything else is real drift and is reported.
+    """
+    master_lines = master_path.read_text().splitlines()
+    jax_lines = jax_path.read_text().splitlines()
+    if len(master_lines) != len(jax_lines):
+        return [f"line-count drift ({len(master_lines)} master vs {len(jax_lines)} jax)"]
+    errors: list[str] = []
+    for lineno, (m_line, j_line) in enumerate(zip(master_lines, jax_lines), start=1):
+        if m_line.startswith("#") or j_line.startswith("#"):
+            if m_line != j_line:
+                errors.append(f"header drift at line {lineno}")
+            continue
+        m_parts, j_parts = m_line.split(), j_line.split()
+        if len(m_parts) != 2 or len(j_parts) != 2 or m_parts[0] != j_parts[0]:
+            errors.append(f"wavelength/format drift at line {lineno}")
+            continue
+        m_flux, j_flux = float(m_parts[1]), float(j_parts[1])
+        if m_flux <= 0 or abs(j_flux / m_flux - factor) > 1e-2 * factor:
+            errors.append(
+                f"flux drift at line {lineno}: ratio {j_flux / m_flux:.6g} "
+                f"vs documented rescale {factor:.6g}"
+            )
+    return errors
+
+
 def _compare_runtime_data(master_root: Path, jax_root: Path) -> list[str]:
     """Compare non-code atm/ and thermo/ runtime files byte-for-byte.
 
     Files listed in ``KNOWN_THERMO_DIVERGENCES`` are allowed to differ on their
-    documented reaction lines only; any other line difference still fails.
+    documented reaction lines only; files in ``KNOWN_SFLUX_RESCALES`` must differ
+    by exactly their documented flux rescale; any other difference still fails.
     """
     errors: list[str] = []
     for rel_dir in ("atm", "thermo"):
@@ -308,11 +357,19 @@ def _compare_runtime_data(master_root: Path, jax_root: Path) -> list[str]:
             if master_files[rel_path] == jax_files[rel_path]:
                 continue
             known = KNOWN_THERMO_DIVERGENCES.get(rel_path.name)
+            rescale = KNOWN_SFLUX_RESCALES.get(rel_path.name)
             if known is not None:
                 sub = _known_divergence_only(
                     master_root / rel_dir / rel_path,
                     jax_root / rel_dir / rel_path,
                     known,
+                )
+                errors.extend(f"{rel_dir}/{rel_path}: {msg}" for msg in sub)
+            elif rescale is not None:
+                sub = _known_sflux_rescale_only(
+                    master_root / rel_dir / rel_path,
+                    jax_root / rel_dir / rel_path,
+                    rescale,
                 )
                 errors.extend(f"{rel_dir}/{rel_path}: {msg}" for msg in sub)
             else:

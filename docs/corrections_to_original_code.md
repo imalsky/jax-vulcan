@@ -65,6 +65,77 @@ Deliberate divergences that fix a confirmed master bug.
 - **JAX:** `src/vulcan_jax/atm_setup.py::sat_p_jax` uses one
   `jnp.where(T_C < 0, ice, liquid)` -- identical except at the buggy point.
 
+### C4 — sflux-epseri.txt surface-flux normalization (R_star multiplied, not divided)
+- **master:** `atm/make_spectra_in_nm.py:25` converts the observed-at-Earth
+  HST eps Eri UV spectrum (`obs_spectra/h_epseri_uvsum_spc.txt`) to stellar
+  surface flux with `flux = F_earth*10.*(10.475*63241*au/r_sun*0.735)**2` --
+  by operator precedence R_star = 0.735 R_sun MULTIPLIES where the conversion
+  `F_surface = F_earth*(d/R_star)^2` divides. The shipped
+  `atm/stellar_flux/sflux-epseri.txt` is therefore low by exactly
+  `R_star^4 = 0.735^4 = 0.291843` (factor 3.426499 too small). The sibling
+  builder `atm/stellar_flux/read_muscles_spectra_in_nm.py:38` uses the correct
+  `(d/(r_sun*0.2064))**2` form for GJ1214, so this is a one-off
+  parenthesization slip, verbatim in upstream exoclime/VULCAN (found by the
+  2026-07-21 jwst-tool science audit, S2-01).
+- **JAX:** `src/vulcan_jax/atm/stellar_flux/sflux-epseri.txt` rebuilt from the
+  raw HST file with the corrected normalization; construction otherwise
+  IDENTICAL to master's builder (positive-only filter, ERROR/DQ columns
+  ignored, 3-decimal nm wavelengths, 2-sig-fig flux, 115.000-282.999 nm span,
+  20 duplicate wavelengths retained). Every flux value is the master value
+  times 3.4265 (2-sig-fig rounding); wavelength column byte-identical.
+  Verified in `tools/audit_master_parity.py` (`KNOWN_SFLUX_RESCALES` +
+  `_known_sflux_rescale_only`: wavelengths must match, every ratio must sit at
+  the documented factor).
+- **Impact:** only consumers selecting the eps Eri spectrum (jwst-tool's
+  WASP-107 b default; no shipped VULCAN-JAX config uses it). Deliberately NOT
+  fixed here: the 115-283 nm coverage (bands outside the file span are omitted
+  from the photolysis grid by the standard clamp, master-identical) and the
+  positive-only/DQ-blind construction -- measured photolysis-integral
+  sensitivity of those choices is 2-6% for H2O/CH4/H2S/SO2/HCN (HO2 ~2x on
+  the signed variant), small against the 3.43x normalization. jwst-tool side:
+  decision record in `vulcan-jwst-tool/docs/audit_decisions_2026-07-21.md`,
+  cache bust via `forward._VERSION` 22 (the UV file is cache-keyed by name,
+  not content).
+
+### C6 — H2S saturation-pressure unit conversion (mm Hg constant for a cm Hg formula)
+- **upstream:** `build_atm.py:857` `saturate_p * 0.001333 * 1.e6` under upstream's own
+  comment "from Giauque and Blue(1936) in cmHg" — the mm Hg constant for a cm Hg
+  formula, 10x low. Same bug in shami-EEG vm_branch (`build_atm.py:920`).
+- **JAX:** `src/vulcan_jax/atm_setup.py:943` `sat_p * 0.01333 * 1e6`. Anchor: at the
+  H2S boiling point (212.8 K) the formula gives 76.1 cmHg -> 1.015 bar ~ 1 atm with
+  0.01333; 0.1 atm with the upstream constant. **Workspace master is patched too**
+  (the paper's comparison copy carries this fix), unlike C1-C4.
+- Verified against upstream HEAD 2026-07-21. Previously recorded only in README.
+
+### C7 — NH3 ice molecular weight (NH2's mass)
+- **upstream:** `thermo/all_compose.txt:167` `NH3_l_s ... 16.023` — exactly NH2's
+  mass (line 40), a copy-paste of the row above. Correct: 17.031. Same in vm_branch.
+- **JAX:** vendored `all_compose.txt:167` -> 17.031. **Workspace master patched too.**
+- Impact channel is mean molecular weight + molecular-diffusion mass only (both
+  codes hardcode ~17 g/mol in the NH3 condensation RATE), and only when NH3_l_s is
+  nonzero — real but tiny. Verified against upstream HEAD 2026-07-21; previously
+  recorded only in README.
+
+### C5 — Duplicated CH2_1 entry in the FastChem NASA-9 logK data
+- **master:** `fastchem_vulcan/input/nasa9_logK_SNCHOTi.dat`,
+  `nasa9_logK_SNCHOTi_ion.dat`, `nasa9_logK_SNCHOPTi.dat` each list the
+  `CH2_1 : H 2 C 1` (singlet methylene) entry TWICE, with byte-identical
+  coefficient lines. Still present on the workspace oracle.
+- **JAX:** the vendored copies under `src/vulcan_jax/fastchem_vulcan/input/`
+  keep one entry. Because the duplicate coefficients are identical, no
+  measured benchmark impact (W39b V2-vs-V3 parity is 1.1e-9 median with the
+  dedup in place on the JAX side only); recorded as a data-file divergence.
+  Mechanism (verified 2026-07-21): FastChem's `init_add_species.cpp:132` has no
+  duplicate check, so the second entry does enter the element-conservation sums;
+  downstream, `build_atm.py`'s `np.genfromtxt(names=True)` renames the second
+  output column `CH2_1_1` and VULCAN reads the first — trace-level at most.
+  Upstream HEAD confirmed to carry the duplicate (byte-identical to workspace
+  master; entries at lines 19 and 421 of SNCHOTi.dat, identical coefficients).
+- **Note (same diff, separate):** the vendored `nasa9_logK_SNCHOTi.dat` also
+  adds an SiO2 entry absent from master's copy; and
+  `element_abundances_vulcan.dat` differs because it is a per-run scratch
+  file rewritten by the EQ initialization, not a correction.
+
 ## Bugs still present in the JAX port (inherited from master)
 
 Confirmed master bugs the port faithfully carries. None affect the default
@@ -95,8 +166,15 @@ non-default condensation/photochemistry paths.
   (applied AFTER `g_p`/`g_m`, and `ll` is never read again); JAX has no `ll` clip
   (it guards `chi` instead). Neither regularizes the blow-up.
 - **Impact:** only the scattered-flux correction, only for `w0` within a thin band
-  of the pole; unquantified on converged abundances, no evidence it moves the
-  validated gas-only results.
+  of the pole. Quantified over the converged HD189/HD209 runs (150 layers x 2588
+  wavelength bins, `jax_paper/scripts/two_stream_pole_margin.py`): `w0` spans [0,1]
+  and does reach the pole (closest cell `w0 = 0.44161`; `min|1/mu^2-(1-w0)/edd^2|
+  ~ 1e-4`), with ~0.1-0.5% of layer/wavelength cells in a thin band of it, where
+  `|ll| = w0/margin` spikes to ~5200 (HD189) / ~3580 (HD209) vs O(1) elsewhere.
+  Because it touches only the diffuse actinic flux and both codes carry it
+  identically, the gas-only parity comparison is unbiased; the effect on the
+  absolute converged abundances remains unquantified (no evidence it moves the
+  validated results). Not discussed in the paper (small, shared, inherited).
 - **Status:** DEFERRED, and a fix is NOT a drop-in. The correct fix is the analytic
   resonant limit (or a stable boundary-value solve) and needs its own RT
   validation. A naive `|denominator|` floor or `g_p`/`g_m` clip changes the

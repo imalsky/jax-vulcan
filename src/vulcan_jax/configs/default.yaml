@@ -42,7 +42,11 @@ const_mix:
 use_photo: true
 r_star: 0.805
 Rp: 8135789599.999999
-Mp: 2.1220758000000003e+30
+# Mp chosen so G*Mp/Rp^2 reproduces the adopted HD189 gs = 2140 cm/s^2 to
+# sub-ULP (same value as HD189.yaml). The raw literature mass 2.1220758e30
+# gives 2139.77 (-1.07e-4 rel), which measurably shifts photolysis rates
+# (up to ~7% per-layer J) and upper-layer radicals (~2.6e-3 in 20 steps).
+Mp: 2.1223033871582308e+30
 orbit_radius: 0.03142
 sl_angle: 0.8377573333333332
 f_diurnal: 1.0

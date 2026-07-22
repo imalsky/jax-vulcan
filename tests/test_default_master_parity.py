@@ -42,10 +42,13 @@ out_npz = Path(sys.argv[2])
 backup_dir = Path(sys.argv[3])
 stock_fastchem = Path(sys.argv[4])
 count_max = int(sys.argv[5])
+jax_fastchem_bin = Path(sys.argv[6])
 
 TRACKED_FILES = [
     Path("vulcan_cfg.py"),
     Path("chem_funs.py"),
+    Path("fastchem_vulcan/fastchem"),
+    Path("fastchem_vulcan/input/nasa9_logK_SNCHOPTi.dat"),
     Path("fastchem_vulcan/input/solar_element_abundances.dat"),
     Path("fastchem_vulcan/input/element_abundances_vulcan.dat"),
     Path("fastchem_vulcan/input/parameters.dat"),
@@ -105,6 +108,20 @@ def run() -> None:
         shutil.copy2(
             stock_fastchem,
             master_root / "fastchem_vulcan/input/solar_element_abundances.dat",
+        )
+        # Stage the SAME FastChem binary both sides: two builds of the same
+        # source differ in the last printed digit of vulcan_EQ.dat (amplified
+        # ~n_atoms per species, observed up to 9.3e-7 on C6H6), which seeds a
+        # matched-step divergence far above the oracle's 3e-9 bar. The oracle
+        # compares VULCAN implementations, not FastChem compiler builds.
+        shutil.copy2(jax_fastchem_bin, master_root / "fastchem_vulcan/fastchem")
+        # Stage the JAX logK table too: upstream's nasa9_logK_SNCHOPTi.dat
+        # carries a DUPLICATE CH2_1 species block (double-counted singlet
+        # methylene shifts every element's equilibrium by ~1e-10..1e-7); the
+        # JAX copy deduplicates it (corrections_to_original_code.md, C5).
+        shutil.copy2(
+            jax_fastchem_bin.parent / "input/nasa9_logK_SNCHOPTi.dat",
+            master_root / "fastchem_vulcan/input/nasa9_logK_SNCHOPTi.dat",
         )
 
         res = subprocess.run(
@@ -245,6 +262,12 @@ vulcan_cfg = default_config()
 vulcan_cfg.count_max = count_max
 vulcan_cfg.count_min = count_max + 1
 vulcan_cfg.trun_min = 1e22
+# Master comparison is the PRE-FLIP central-difference baseline: upstream
+# VULCAN-master has no upwind vm_mol, and the hybrid phase flip extends the
+# step budget past count_max on phase-0 exhaustion (count+1000), which breaks
+# the matched-count contract. Pin both vm_branch defaults off for this oracle.
+vulcan_cfg.use_vm_mol = False
+vulcan_cfg.use_hybrid_vm_mol = False
 vulcan_cfg.use_print_prog = False
 vulcan_cfg.use_print_delta = False
 vulcan_cfg.use_live_plot = False
@@ -397,10 +420,22 @@ def test_default_hd189_preloop_and_matched_steps_match_master() -> None:
         stock_fastchem = (
             PACKAGE_ROOT / "fastchem_vulcan/input/solar_element_abundances.dat"
         )
+        jax_fastchem_bin = PACKAGE_ROOT / "fastchem_vulcan" / "fastchem"
+        if not jax_fastchem_bin.exists():
+            from vulcan_jax.ini_abun import _ensure_fastchem_binary
+
+            _ensure_fastchem_binary()
 
         master_res = _run_script(
             _MASTER_SCRIPT,
-            [VULCAN_MASTER, master_npz, master_backup, stock_fastchem, COUNT_MAX],
+            [
+                VULCAN_MASTER,
+                master_npz,
+                master_backup,
+                stock_fastchem,
+                COUNT_MAX,
+                jax_fastchem_bin,
+            ],
             python=_master_python(),
             timeout=900.0,
         )
@@ -429,6 +464,9 @@ def test_default_hd189_preloop_and_matched_steps_match_master() -> None:
 
         assert list(jax["species"]) == list(master["species"])
         assert int(jax["nr"]) == int(master["nr"])
+        # Exact equality holds because the master side stages the JAX-compiled
+        # FastChem binary (see _MASTER_SCRIPT): same binary + same staged
+        # inputs -> bit-identical vulcan_EQ.dat on both sides.
         np.testing.assert_array_equal(jax["y_ini"], master["y_ini"])
         np.testing.assert_array_equal(jax["pco"], master["pco"])
         np.testing.assert_array_equal(jax["Tco"], master["Tco"])

@@ -1048,3 +1048,45 @@ python -m pytest tests -n auto -q --tb=short -ra                  # parallel-saf
 ### test-suite lead paragraph (verbatim pre-consolidation text)
 
 `pytest tests/` is the curated suite. Most files use a thin `def test_main(): assert main() == 0` wrapper around their existing script-style `main()`; VULCAN-master oracle comparisons run the script as a subprocess because they deliberately import or path-inject upstream modules. `tests/conftest.py` carries `_cfg_snapshot_session` + `_cfg_guard` autouse fixtures that snapshot/restore the `config.default_config()` attributes, restore canonical VULCAN-JAX modules, and drop sibling-master path/module leakage after every test. Tests marked `strict_isolation` also restore before the test and call `jax.clear_caches()` before and after. `ini_abun._load_eq_y` serialises FastChem invocations via `fcntl.flock` — it holds the lock across the whole invoke + read + cleanup span around `_run_fastchem_locked` — so `pytest -n auto` is safe.
+
+## 2026-07-21: default.yaml gravity slip + master-oracle test rework + sflux-epseri C4
+
+Three related fixes from the jwst-tool audit-response session:
+
+- **default.yaml Mp was the raw literature mass, not the gs-matched value.**
+  The 2026-07-14 YAML migration authored `configs/default.yaml` with
+  `Mp = 2.1220758e30` while `HD189.yaml` got the adopted-gravity-matched
+  `2.1223033871582308e30` -- so every `default_config()` consumer (the CLI,
+  the master-oracle test) ran gs = 2139.7705 instead of 2140 (-1.07e-4 rel).
+  Measured effect: dz/Hp shift 1.2e-4, per-layer photolysis J up to 7%,
+  upper-layer photo radicals (O_1, C, N, O, CH) 2.6e-3 after 20 matched
+  steps. Fixed to the HD189.yaml value (commented); named configs verified
+  sub-ULP (HD189 2140, HD209 936, W39b 422, Earth 980).
+- **test_default_master_parity rework.** The matched-step oracle now (a) pins
+  `use_vm_mol = use_hybrid_vm_mol = False` in the JAX subprocess (master has
+  no upwind vm_mol, and the hybrid phase flip extends the budget past
+  count_max, breaking the matched-count contract), and (b) stages the
+  JAX-compiled FastChem binary AND the deduplicated
+  `nasa9_logK_SNCHOPTi.dat` (corrections guide C5) into master's tree
+  (backup/restored), because two FastChem builds -- and upstream's duplicate
+  CH2_1 logK block -- shift equilibrium y_ini by per-element factors up to
+  9.3e-7 (C6H6), far above the exact-equality/3e-9 contracts. With both
+  staged and gravity fixed, y_ini is bit-identical and the 20-step oracle
+  passes at its original tolerance.
+- **audit_master_parity.py** learned `config._REMOVED_KEYS` (retired knobs
+  like fix_species_time/use_print_delta are documented absences, not drift)
+  and `KNOWN_SFLUX_RESCALES` + `_known_sflux_rescale_only` for the C4
+  sflux-epseri.txt normalization fix (wavelengths byte-identical, every flux
+  ratio pinned at 0.735^-4).
+- **Suite re-baseline for the vm_branch defaults (the pending item from the
+  2026-07-14 flip).** Five more tests had been failing since the flip:
+  test_outer_loop_smoke/conv (count == count_max+1 broken by the hybrid
+  phase-flip +1000 budget extension), test_diffusion +
+  test_diffusion_production_kernel (central-scheme oracles run against the
+  upwind default), test_hybrid_vm_mol (referenced the deleted
+  legacy_io.vulcan_cfg), and test_w39b_fastchem_invariant (the C5 logK/
+  binary FastChem noise, 2.0e-8 vs a 1e-10 bar). All master/central oracles
+  now pin use_vm_mol = use_hybrid_vm_mol = False (upwind coverage stays in
+  test_diffusion_variants.py); the W39b invariant stages the JAX FastChem
+  binary + dedup logK like the HD189 oracle; test_config's "default" gravity
+  pin corrected to 2140. Full suite green after: 228 passed.

@@ -30,9 +30,9 @@ warnings.filterwarnings("ignore")
 
 def _pin_cfg():
     """Fast, FastChem-free (const_mix), photo-off isothermal config."""
-    import vulcan_jax.legacy_io as op
+    from vulcan_jax.config import default_config
 
-    vc = op.vulcan_cfg
+    vc = default_config()
 
     vc.count_min = 1
     vc.trun_min = 1e-30

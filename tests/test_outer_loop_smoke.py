@@ -54,6 +54,11 @@ def main() -> int:
 
     vulcan_cfg.count_max = 50
     vulcan_cfg.count_min = 1
+    # A count-capped run needs the hybrid vm_mol budget extension OFF: phase-0
+    # budget exhaustion flips to phase 1 and extends count_max by +1000, which
+    # breaks this test's exact count == count_max + 1 contract.
+    vulcan_cfg.use_vm_mol = False
+    vulcan_cfg.use_hybrid_vm_mol = False
     vulcan_cfg.use_print_prog = False
     vulcan_cfg.use_live_plot = False
     vulcan_cfg.use_live_flux = False

@@ -43,6 +43,10 @@ def main() -> int:
     import vulcan_jax.jax_step as jax_step
     from vulcan_jax.config import default_config
     vulcan_cfg = default_config()
+    # The NumPy reference implements the CENTRAL scheme; pin the vm_branch
+    # upwind default off (upwind coverage lives in test_diffusion_variants.py).
+    vulcan_cfg.use_vm_mol = False
+    vulcan_cfg.use_hybrid_vm_mol = False
     from vulcan_jax.state import RunState, legacy_view
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
@@ -156,6 +160,10 @@ def test_vm_mode_kernel_matches_reference():
     import vulcan_jax.jax_step as jax_step
     from vulcan_jax.config import default_config
     vulcan_cfg = default_config()
+    # Pin the vm_branch default off so the built state starts from the
+    # all-zero-vm premise the injection below relies on.
+    vulcan_cfg.use_vm_mol = False
+    vulcan_cfg.use_hybrid_vm_mol = False
     from vulcan_jax.state import RunState, legacy_view
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
@@ -163,7 +171,7 @@ def test_vm_mode_kernel_matches_reference():
     y = np.asarray(data_var.y, dtype=np.float64)
     nz, ni = y.shape
 
-    # HD189 default is use_vm_mol=False, so atm.vm is all-zero. Inject a nonzero,
+    # With use_vm_mol pinned False, atm.vm is all-zero. Inject a nonzero,
     # mixed-sign interface drift so both upwind branches ((vm>0)/(vm<0)) fire in
     # both the production kernel and the reference.
     rng = np.random.default_rng(1)

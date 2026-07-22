@@ -105,18 +105,34 @@ root = Path(sys.argv[1])
 out_npz = Path(sys.argv[2])
 cfg_src = Path(sys.argv[3])
 backup_dir = Path(sys.argv[4])
+jax_fc_dir = Path(sys.argv[5])
 
 backup_dir.mkdir(parents=True, exist_ok=True)
 backed_up = []
-for rel in ("vulcan_cfg.py", "chem_funs.py"):
+for rel in (
+    "vulcan_cfg.py",
+    "chem_funs.py",
+    "fastchem_vulcan/fastchem",
+    "fastchem_vulcan/input/nasa9_logK_SNCHOPTi.dat",
+):
     src = root / rel
     if src.exists():
         dst = backup_dir / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(src, dst)
         backed_up.append((src, dst))
 
 try:
     (root / "vulcan_cfg.py").write_text(cfg_src.read_text())
+    # Stage the JAX FastChem binary and the deduplicated logK table
+    # (corrections guide C5): different builds and upstream's duplicate CH2_1
+    # block shift the equilibrium per element (measured 2.0e-8 on W39b),
+    # which is FastChem-input noise, not a VULCAN implementation difference.
+    shutil.copy2(jax_fc_dir / "fastchem", root / "fastchem_vulcan/fastchem")
+    shutil.copy2(
+        jax_fc_dir / "input/nasa9_logK_SNCHOPTi.dat",
+        root / "fastchem_vulcan/input/nasa9_logK_SNCHOPTi.dat",
+    )
     res = subprocess.run(
         [sys.executable, "make_chem_funs.py"],
         cwd=str(root),
@@ -233,6 +249,12 @@ def test_w39b_fastchem_initial_state_matches_master():
         master_npz = tmp_path / "master_w39b_init.npz"
         master_backup = tmp_path / "master_backup"
 
+        jax_fc_dir = PACKAGE_ROOT / "fastchem_vulcan"
+        if not (jax_fc_dir / "fastchem").exists():
+            from vulcan_jax.ini_abun import _ensure_fastchem_binary
+
+            _ensure_fastchem_binary()
+
         _run_probe(_JAX_SCRIPT, PACKAGE_ROOT, jax_npz)
         _run_probe(
             _MASTER_SCRIPT,
@@ -240,6 +262,7 @@ def test_w39b_fastchem_initial_state_matches_master():
             master_npz,
             MASTER_CFG,
             master_backup,
+            jax_fc_dir,
             skip_on_failure=True,
         )
 

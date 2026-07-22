@@ -86,6 +86,11 @@ def main() -> int:
     import diffusion_numpy_ref as diff_mod
     from vulcan_jax.config import default_config
     cfg_jax = default_config()
+    # Master oracle: op.diffdf is the CENTRAL scheme, so pin the vm_branch
+    # upwind default off for this comparison (the upwind kernel has its own
+    # tests in test_diffusion_variants.py).
+    cfg_jax.use_vm_mol = False
+    cfg_jax.use_hybrid_vm_mol = False
 
     coeffs = diff_mod.build_diffusion_coeffs(y, data_atm, cfg_jax)
     diff_jax = diff_mod.apply_diffusion(y, coeffs)
