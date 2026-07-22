@@ -21,6 +21,7 @@ from vulcan_jax.steady_state_grad import (
     PHOTO_RECOMPUTE_AUTO,
     _adjoint_scope_findings,
     _guard_unmodeled_processes,
+    _clip_dead_mask,
     _make_body_map,
     _resolve_photo_recompute_k,
 )
@@ -281,3 +282,65 @@ def test_body_terms_require_renorm_map():
     atm = SimpleNamespace(M=jnp.ones(2))
     with pytest.raises(ValueError, match="renorm"):
         _make_body_map(None, None, atm, None, 1e7, "bare", None, terms)
+
+
+# --- zero-clip dead cells (2026-07-22) --------------------------------------
+# The per-step clip is deliberately outside the body map ("identity-a.e." in
+# _make_body_map). Where it FIRES the runner zeroes the cell while the map
+# keeps the raw step, so the cell has no fixed point at all and its relative
+# defect measures the clip, not a dropped physical process -- and it grows
+# with body_dt, so no probe step can clear it. These pin that the mask mirrors
+# outer_loop._make_clip_fn term for term.
+
+
+def _clip_cfg(**kw):
+    base = dict(pos_cut=0.0, nega_cut=-1.0, mtol=1e-22)
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def test_clip_dead_mask_matches_the_runner_clip_terms():
+    cfg = _clip_cfg()
+    ymix = np.full((1, 6), 1e-10)
+    ymix[0, 5] = 1e-30                      # below mtol -> trace-negative cut
+    G = np.array([[1e10, -0.5, -5.0, 0.0, 1e-3, -1e12]])
+    dead = _clip_dead_mask(G, ymix, cfg)[0]
+    assert not dead[0]      # healthy positive density: clip is identity
+    assert dead[1]          # in [nega_cut, pos_cut) -> runner zeroes it
+    assert not dead[2]      # below nega_cut: the runner LEAVES it (not clipped)
+    assert not dead[3]      # exactly 0 -> clipping is already the identity
+    assert not dead[4]      # small but positive, above pos_cut=0
+    assert dead[5]          # ymix_old < mtol and negative -> trace cut
+
+
+def test_clip_dead_mask_is_absolute_not_a_mixing_ratio():
+    """The reason min_ymix cannot do this job.
+
+    The clip window is absolute (cm^-3); min_ymix is a mixing ratio. The SAME
+    mixing ratio is clip-dead in a thin upper atmosphere and perfectly healthy
+    deep down, so a pressure-relative floor cannot separate them. Numbers are
+    the measured W39b tabulated-profile case: ymix 1e-16 is y ~ 1e-3 cm^-3 at
+    the cold top (M ~ 7.5e12) and ~1e3 cm^-3 in the deep column (M ~ 1e19).
+    """
+    cfg = _clip_cfg()
+    ymix = np.array([[1e-16, 1e-16]])
+    G = np.array([[-7.5e-4, -1e3]])          # same ymix, different densities
+    dead = _clip_dead_mask(G, ymix, cfg)[0]
+    assert dead[0]          # cold top: inside the |nega_cut| = 1 window
+    assert not dead[1]      # deep: far outside it
+
+
+def test_clip_dead_mask_is_inert_without_cfg():
+    # no cfg -> nothing to mirror -> exclude nothing (cells stay in the scan)
+    G = np.array([[-0.5, -0.5]])
+    ymix = np.full((1, 2), 1e-10)
+    assert not _clip_dead_mask(G, ymix, None).any()
+
+
+def test_clip_dead_mask_honours_a_positive_pos_cut():
+    # pos_cut > 0 also zeroes small POSITIVE values; the mask must follow it
+    cfg = _clip_cfg(pos_cut=10.0)
+    G = np.array([[5.0, 50.0]])
+    ymix = np.full((1, 2), 1e-10)
+    dead = _clip_dead_mask(G, ymix, cfg)[0]
+    assert dead[0] and not dead[1]

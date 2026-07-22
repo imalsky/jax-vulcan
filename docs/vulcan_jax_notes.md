@@ -1090,3 +1090,70 @@ Three related fixes from the jwst-tool audit-response session:
   test_diffusion_variants.py); the W39b invariant stages the JAX FastChem
   binary + dedup logK like the HD189 oracle; test_config's "default" gravity
   pin corrected to 2140. Full suite green after: 228 passed.
+
+## 2026-07-22 — adjoint scope audit: zero-clip dead cells, and why the W39b tabulated default still refuses
+
+Two separate findings from running `audit_adjoint_scope` on the jwst-tool's
+new default W39b state (tabulated `atm_W39b_evening_TP_Kzz.txt` T-P **and**
+Kzz, photo on, longdy 0.0997).
+
+### Fixed: clip-dead cells were being graded
+
+`_make_body_map` omits the runner's per-step zero-clip, commented "identity-
+a.e.". That is true almost everywhere and **false exactly where it fires**:
+`outer_loop._make_clip_fn` sets any post-step value in `[nega_cut, pos_cut)`
+to 0, so where the clip acts the runner zeroes the cell while the body map
+keeps the raw (negative) step. Such a cell has no fixed point at all — it is
+re-zeroed on whichever sign the step lands on — so `|G-y|/y` there measures
+the clip, and it GROWS with `body_dt` (no probe step can clear it).
+
+`min_ymix` could not exclude them: **the clip window is absolute (cm^-3) while
+`min_ymix` is a mixing ratio.** On the cold clamped W39b top (M ~ 7.5e12) a
+ymix of 1e-16 is y ~ 1e-3 cm^-3 — three orders INSIDE the |nega_cut| = 1
+window — so the pressure-relative floor waved through exactly the cells the
+clip owns. Measured at `body_dt` 1e8, four of the top five worst cells were
+clip-dead with **negative** G:
+
+    species layer      y            G         G/y     rel    clipdead
+    C3H4     88    1.147e-03   -8.215e-04   -0.716   1.716    True
+    C3H3     88    3.212e-01   -2.298e-01   -0.715   1.715    True
+    C3H2     88    1.425e-01   -9.972e-02   -0.700   1.700    True
+    N        93    2.710e+04   +7.299e+04   +2.693   1.693    False
+
+`_clip_dead_mask(G, ymix_old, cfg)` now mirrors `_make_clip_fn` term for term
+(both the small/negative cut and the `ymix_old < mtol` trace-negative cut) and
+those cells leave the scan; 40 excluded at 1e8. The exclusion is **reported**
+(`n_clip_dead_excluded` / `clip_dead_worst_defect` + an info finding — skipped
+!= passed) and is **lifted inside the loss footprint**, where a clip-dead cell
+becomes a new hard error `loss_reads_clip_dead_cell`: the body map linearizes
+a clip as identity, so a loss reading such a cell is wrong at first order.
+Units: `tests/test_audit_adjoint_scope.py` (4 always-on).
+
+### NOT fixed: the state genuinely cannot be certified
+
+Excluding clip-dead cells drops the max defect only 1.716 -> 1.693, because
+the next cell down is a different problem: **atomic N at layer 93** — 2.7e4
+cm^-3 (~7.5 ppb), positive, relaxing toward 2.7x its value. Not dust, not
+clipped. Scanning `body_dt` BELOW the sanctioned ladder (production mask
+applied) does not help:
+
+    body_dt   max_rel   worst cell   verdict
+      1e+05    1.106      CS  L92    refuse
+      3e+05    0.527      CS  L92    refuse
+      1e+06    0.553      N   L93    refuse
+      3e+06    1.222      N   L93    refuse
+
+Non-monotonic, and never below the 0.3 error threshold. A genuine fixed point
+has `G(y) -> y` as `body_dt -> 0`; this does not, so these cells are
+**oscillating, not creeping**, and no probe step exists that certifies them.
+The refusal is correct — do not weaken the gate to get past it.
+
+Every offending cell (layers 87-93) sits in the **isothermally clamped top**:
+the shipped table stops at 5.35e-6 bar while the chemistry grid runs to 1e-7
+bar, so the top ~1.7 decades are held at the table's topmost T (726 K). That
+clamp is the standard upstream file-mode convention and the forward model logs
+it, but it is an unmeasured region, and it is where the trace nitrogen/sulfur/
+hydrocarbon chemistry oscillates. The forward result is unaffected: the loss
+footprint is clean (0.002) and the W39b SO2 photosphere is layer 68, far below
+the clamp. Net: `steady_state_reaction_sensitivity` is not available on this
+state; the forward/Fisher path is.

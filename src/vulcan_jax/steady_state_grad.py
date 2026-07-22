@@ -403,6 +403,33 @@ class BodyTerms(NamedTuple):
     bot_val: Optional[jnp.ndarray] = None  # (m,)
 
 
+def _clip_dead_mask(G, ymix_old, cfg) -> np.ndarray:
+    """Cells where the runner's per-step zero-clip would NOT be the identity.
+
+    Mirrors `outer_loop._make_clip_fn` term for term on a candidate post-step
+    state `G` (number density, cm^-3) with the pre-step mixing ratio
+    `ymix_old`:
+
+        y < pos_cut and y >= nega_cut          -> 0     (small/negative cut)
+        ymix_old < mtol and y < 0              -> 0     (trace-negative cut)
+
+    The clip is deliberately outside the adjoint's body map, which is exact
+    only where the clip is the identity. Where it fires, the runner zeroes the
+    cell while the map keeps the raw step, so the cell has no fixed point and
+    its relative defect measures the clip. Returns all-False when `cfg` is
+    None (nothing to mirror), which is the conservative direction: those cells
+    stay in the scan.
+    """
+    G = np.asarray(G)
+    if cfg is None:
+        return np.zeros(G.shape, dtype=bool)
+    pos_cut = float(getattr(cfg, "pos_cut", 0.0))
+    nega_cut = float(getattr(cfg, "nega_cut", 0.0))
+    mtol = float(getattr(cfg, "mtol", 0.0))
+    dead = (G < pos_cut) & (G >= nega_cut)
+    return dead | ((np.asarray(ymix_old) < mtol) & (G < 0.0))
+
+
 def _make_body_map(
     y_star, k_arr, atm, net, body_dt, solver_map, photo_recompute_k, body_terms=None
 ):
@@ -1958,6 +1985,11 @@ def audit_adjoint_scope(
        catches what the production `fp_err` (a max-norm relative to the global
        max density) structurally cannot: a pinned bottom row or a conden-
        clamped trace species is invisible next to the deep-column H2 density.
+       Cells the runner's ZERO-CLIP owns are excluded and reported separately
+       (`n_clip_dead_excluded`): the clip is outside the body map by design,
+       and a cell it re-zeroes every step has no fixed point to measure. That
+       exclusion is lifted inside the loss footprint, where such a cell is a
+       hard error rather than noise.
     3. **Stale-geometry check** (when `final_state` is given): verifies the
        caller spliced the converged refresh fields into `atm`
        (`atm_static._replace(g=final.g, dzi=final.dzi, Hpi=final.Hpi,
@@ -2050,9 +2082,42 @@ def audit_adjoint_scope(
         defect.max() / max(float(np.abs(y_np).max()), _UNDERFLOW_DENOM)
     )
     ymix = y_np / np.maximum(y_np.sum(axis=1, keepdims=True), _UNDERFLOW_DENOM)
-    mask = (y_np > 0.0) & (ymix >= min_ymix)
+
+    # Cells the runner's ZERO-CLIP controls carry no meaningful fixed-point
+    # defect. `outer_loop._make_clip_fn` sets any post-step value landing in
+    # [nega_cut, pos_cut) to exactly 0, and that clip is deliberately outside
+    # the body map ("identity-a.e." in _make_body_map). Where it fires, the
+    # runner and the body map disagree by construction: the runner zeroes the
+    # cell, the map keeps the raw (usually slightly negative) step. Such a cell
+    # has NO fixed point at all -- it is re-zeroed on whichever sign the step
+    # lands on -- so |G-y|/y there measures the clip, not a dropped physical
+    # process, and no probe step can make it small (it GROWS with body_dt).
+    #
+    # min_ymix cannot exclude these: the clip window is ABSOLUTE (cm^-3) while
+    # min_ymix is a MIXING RATIO. On a cold upper atmosphere (W39b tabulated
+    # top, M ~ 7.5e12 cm^-3) ymix 1e-16 is y ~ 1e-3 cm^-3 -- three orders
+    # INSIDE the |nega_cut| = 1 window -- so the pressure-relative floor waves
+    # through exactly the cells the clip owns. Detect them mechanistically
+    # from where the clip WOULD fire, rather than by another threshold.
+    _pos_cut = float(getattr(cfg, "pos_cut", 0.0)) if cfg is not None else 0.0
+    _nega_cut = float(getattr(cfg, "nega_cut", 0.0)) if cfg is not None else 0.0
+    clip_dead = _clip_dead_mask(G_np, ymix, cfg)
+
+    mask = (y_np > 0.0) & (ymix >= min_ymix) & ~clip_dead
     rel = np.where(mask, defect / np.maximum(y_np, _UNDERFLOW_DENOM), 0.0)
     max_rel_defect = float(rel.max())
+
+    # skipped != passed: report the exclusion instead of silently shrinking
+    # the scan (fail-fast/announce rule).
+    n_clip_dead = int((clip_dead & (y_np > 0.0) & (ymix >= min_ymix)).sum())
+    clip_dead_worst = 0.0
+    if n_clip_dead:
+        _rel_dead = np.where(
+            clip_dead & (y_np > 0.0) & (ymix >= min_ymix),
+            defect / np.maximum(y_np, _UNDERFLOW_DENOM),
+            0.0,
+        )
+        clip_dead_worst = float(_rel_dead.max())
 
     if species is None:
         try:  # label with the import-locked network when the width matches
@@ -2114,13 +2179,53 @@ def audit_adjoint_scope(
                 }
             )
 
+    if n_clip_dead:
+        findings.append(
+            {
+                "code": "clip_dead_cells_excluded",
+                "severity": "info",
+                "message": f"{n_clip_dead} cell(s) excluded from the per-cell "
+                f"defect scan: the runner's zero-clip ([{_nega_cut:g}, "
+                f"{_pos_cut:g}) cm^-3) fires there, so they have no fixed "
+                f"point and their relative defect (up to "
+                f"{clip_dead_worst:.2e}) measures the clip rather than a "
+                "dropped process. They are solver noise -- densities far "
+                "below one particle per cm^3 -- but their adjoint rows are "
+                "linearized as identity, so a loss that READS one is still "
+                "refused (see loss_footprint_defect).",
+            }
+        )
+
     # Loss footprint: does the loss read any defective cell directly?
     loss_footprint_defect = None
     if loss_fn is not None:
         v = np.asarray(jax.grad(loss_fn)(y_star))
         w = np.abs(v * y_np)  # log-space cotangent magnitude — the adjoint RHS
         foot = w > _AUDIT_LOSS_FOOTPRINT_FRAC * max(float(w.max()), _UNDERFLOW_DENOM)
-        loss_footprint_defect = float(rel[foot].max()) if foot.any() else 0.0
+        # A clip-dead cell is excluded from `rel` (above), so it would read as
+        # a clean 0.0 here. The loss footprint is exactly where that leniency
+        # is NOT allowed: the body map linearizes those rows as identity while
+        # the runner zeroes them, so a loss reading one gets a directly wrong
+        # gradient. Score the footprint on the UNMASKED defect.
+        rel_full = np.where(
+            (y_np > 0.0) & (ymix >= min_ymix),
+            defect / np.maximum(y_np, _UNDERFLOW_DENOM),
+            0.0,
+        )
+        loss_footprint_defect = float(rel_full[foot].max()) if foot.any() else 0.0
+        if foot.any() and (clip_dead & foot).any():
+            findings.append(
+                {
+                    "code": "loss_reads_clip_dead_cell",
+                    "severity": "error",
+                    "message": f"{int((clip_dead & foot).sum())} cell(s) in "
+                    "the loss footprint sit in the runner's zero-clip dead "
+                    "zone: those cells have no fixed point and the adjoint "
+                    "would linearize a clip as identity, so THIS loss's "
+                    "gradient is wrong at first order. Choose a loss on "
+                    "species/layers with real abundance.",
+                }
+            )
         if loss_footprint_defect > _FP_ERR_WARN:
             findings.append(
                 {
@@ -2167,6 +2272,9 @@ def audit_adjoint_scope(
         "fp_err_global": fp_err_global,
         "worst_cells": worst_cells,
         "loss_footprint_defect": loss_footprint_defect,
+        # how much the scan skipped, so a caller can see the leniency it got
+        "n_clip_dead_excluded": n_clip_dead,
+        "clip_dead_worst_defect": clip_dead_worst,
     }
 
 
