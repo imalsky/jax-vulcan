@@ -65,6 +65,9 @@ use_moldiff: true
 use_vm_mol: true
 use_hybrid_vm_mol: true
 use_vz: false
+high_temp_cut: false
+high_temp_cut_K: 3500.0
+high_temp_cut_P: 1000000.0
 atm_type: file
 Kzz_prof: file
 K_max: 100000.0
@@ -89,6 +92,18 @@ diff_esc:
 - H
 max_flux: 10000000000000.0
 remove_list: []
+# Declared for completeness so the strict loader + bound-checker see every
+# knob; all but fastchem_met_scale are inert here (use_condense: false,
+# non_gas_sp: []). Values match default.yaml.
+fastchem_met_scale: 1.0
+fix_species_from_coldtrap_lev: true
+humidity: 1.0
+stop_conden_time: 100000.0
+use_relax: []
+r_p:
+  H2O_l_s: 0.005
+rho_p:
+  H2O_l_s: 1
 use_condense: false
 use_settling: false
 start_conden_time: 10000000000.0

@@ -80,7 +80,7 @@ def cli_main(argv=None):
     ):
         from .state import legacy_view
 
-        _var, _atm, _para = legacy_view(runstate)
+        _var, _atm, _para = legacy_view(runstate, cfg=cfg)
         if getattr(cfg, "use_plot_end", False):
             output.plot_end(_var, _atm, _para)
         if getattr(cfg, "use_plot_evo", False) and getattr(

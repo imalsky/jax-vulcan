@@ -72,6 +72,9 @@ use_moldiff: true
 use_vm_mol: false
 use_hybrid_vm_mol: false
 use_vz: false
+high_temp_cut: false
+high_temp_cut_K: 3500.0
+high_temp_cut_P: 1000000.0
 atm_type: file
 Kzz_prof: file
 K_max: 100000.0
@@ -132,6 +135,13 @@ use_ini_cold_trap: true
 use_sat_surfaceH2O: false
 st_factor: 0.5
 conv_step: 500
+# Declared explicitly: an absent key falls back to the getattr default at the
+# read site, which for `conver_ignore` is an EMPTY list rather than
+# default.yaml's [HC3N] — and HC3N is in this network, so it would gate
+# convergence here contrary to intent.
+conver_ignore:
+- HC3N
+conv_stall_window: 200
 ode_solver: Ros2
 use_print_prog: true
 print_prog_num: 500

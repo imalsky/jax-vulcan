@@ -66,6 +66,9 @@ use_moldiff: true
 use_vm_mol: true
 use_hybrid_vm_mol: true
 use_vz: false
+high_temp_cut: false
+high_temp_cut_K: 3500.0
+high_temp_cut_P: 1000000.0
 atm_type: file
 Kzz_prof: file
 K_max: 100000.0

@@ -960,11 +960,19 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
     return rs._replace(photo_static=photo_static_pytree)
 
 
-def legacy_view(rs: RunState):
+def legacy_view(rs: RunState, cfg=None):
     """Return a `(var, atm, para)` SimpleNamespace shim built from `rs`.
 
     Mutations to the shim do NOT round-trip back to `rs` — for that, use
     `runstate_to_store(rs, var, atm, para)` against real legacy containers.
+
+    `cfg` must be the run's config whenever one is available. This function
+    runs at INTEGRATION time, after `_cfg_overlay` has restored the process
+    default, so falling back to `default_config()` silently reads default
+    `use_photo` / `use_ion` / `T_cross_sp` and builds the wrong `var_save`
+    key list (an Earth run then writes a `.vul` missing `cross_T`, and a
+    photo-off run raises AttributeError in the writer). Callers that hold a
+    cfg — `OuterLoop` and the CLI — pass `self._cfg`.
     """
     import types
 
@@ -992,7 +1000,7 @@ def legacy_view(rs: RunState):
     var.k = {}
     var.def_bin_min = float(rs.photo.def_bin_min)
     var.def_bin_max = float(rs.photo.def_bin_max)
-    _cfg = default_config()
+    _cfg = default_config() if cfg is None else cfg
 
     var.var_save = [
         "k",
@@ -1135,6 +1143,7 @@ class _Variables(object):
 
     def __init__(self, stellar_flux=None):
         from .chem_funs import ni as _ni, spec_list as _spec_list  # noqa: F401
+
         _nz = default_config().nz
         _vcfg = default_config()
 
@@ -1255,6 +1264,7 @@ class _AtmData(object):
 
     def __init__(self):
         from .chem_funs import ni as _ni, spec_list as _spec_list
+
         _nz = default_config().nz
         _vcfg = default_config()
         from .atm_setup import surface_gravity as _surface_gravity
