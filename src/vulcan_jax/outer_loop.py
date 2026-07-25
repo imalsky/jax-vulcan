@@ -374,7 +374,7 @@ def _make_clip_fn(
             # (pre-step, positive) instead never fires the branch, leaves
             # negative number densities in the carried state, and makes the
             # `all_nonneg` accept gate reject steps master accepts.
-            y_clip = jnp.where((ymix_old < mtol) & (y_clip < 0), 0.0, y_clip)
+            y_clip = jnp.where(y_clip < 0, 0.0, y_clip)
             ysum = jnp.sum(
                 jnp.where(gas_mask_2d[None, :], y_clip, 0.0), axis=1, keepdims=True
             )
@@ -399,7 +399,7 @@ def _make_clip_fn(
             # See the non_gas_present variant above: master's rule reads the
             # POST-SOLVE ymix (op.py:2503 after op.py:3031-3034), which for any
             # y<0 cell is < mtol, so it reduces to "zero every negative".
-            y_clip = jnp.where((ymix_old < mtol) & (y_clip < 0), 0.0, y_clip)
+            y_clip = jnp.where(y_clip < 0, 0.0, y_clip)
             # Guard the normalization against an all-zero layer (ysum==0 →
             # 0/0). Mirrors the _UNDERFLOW_DENOM floor at jax_step.py:305-306;
             # master (op.py) divides unguarded. ysum ~ n_0 >> 1e-300 normally,
