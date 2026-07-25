@@ -2,12 +2,16 @@
 
 Solves `[A_j; B_{j-1}, C_j] @ k = rhs` for nz layers of size ni each. The
 forward elimination computes `A'_j = A_j - C_j @ inv(A'_{j-1}) @ B_{j-1}`
-via `lu_factor`/`lu_solve` per block (no explicit inverse). Cost is
-O(nz * ni^3); differentiable, JIT-friendly, GPU-ready.
+via `lu_factor`/`lu_solve` per block. Cost is O(nz * ni^3);
+differentiable, JIT-friendly, GPU-ready.
 
-The hot path uses `block_thomas_diag_offdiag`, which exploits the
-diffusion Jacobian's diagonal-in-species off-blocks for an O(ni^2)
-rank update instead of an O(ni^3) matmul.
+Note on the two routines below: the reference `block_thomas` materializes
+`inv(A'_{j-1})` explicitly (`lu_solve(..., eye_ni)`), because the dense
+off-blocks need the full inverse. The hot-path
+`block_thomas_diag_offdiag` does NOT — it exploits the diffusion
+Jacobian's diagonal-in-species off-blocks so the update reduces to
+`lu_solve(A_prev_lu, B_jm1)` against the (ni,) off-diagonal vectors, an
+O(ni^2) rank update instead of an O(ni^3) matmul.
 """
 
 from __future__ import annotations

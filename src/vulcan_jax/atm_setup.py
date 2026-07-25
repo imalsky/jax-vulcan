@@ -992,9 +992,7 @@ class Atm:
     def load_TPK(self, data_atm):
         """Populate `Tco / Kzz / vz / M / n_0` per `atm_type` (isothermal,
         analytical, file, vulcan_ini, or table)."""
-        out = load_TPK(
-            _CFG, np.asarray(data_atm.pco), pico=np.asarray(data_atm.pico)
-        )
+        out = load_TPK(_CFG, np.asarray(data_atm.pco), pico=np.asarray(data_atm.pico))
         # `atm_type='table'` rewrites pco from a saved file.
         if "pco" in out:
             data_atm.pco = out["pco"]
@@ -1044,17 +1042,6 @@ class Atm:
             )
         return data_atm
 
-    def TP_H14(self, pco, *args_analytical):
-        """Heng et al. 2014 analytical T(P) profile evaluated at `pco`."""
-        return np.asarray(
-            analytical_TP_H14(
-                jnp.asarray(pco),
-                args_analytical,
-                gs=surface_gravity(_CFG),
-                Pb=float(_CFG.P_b),
-            )
-        )
-
     def mol_mass(self, sp):
         """Molecular mass (amu) for species `sp` from the composition table."""
         from .composition import compo, compo_row
@@ -1062,7 +1049,15 @@ class Atm:
         return compo["mass"][compo_row.index(sp)]
 
     def mean_mass(self, var, atm, ni):
-        """Compute per-layer mean molecular mass and write to `atm.mu`."""
+        """Compute per-layer mean molecular mass and write to `atm.mu`.
+
+        Kept for the VULCAN-master oracle tests: master's
+        `op.Integration.update_mu_dz` (op.py:951) calls
+        `make_atm.mean_mass(var, atm, ni)` on a duck-typed `Atm`, so this
+        method has no in-repo call site but IS a live cross-repo contract
+        (`tests/test_outer_loop_atm_refresh.py`). Static analysis cannot see
+        that; do not delete.
+        """
         from .composition import species
 
         ms_arr = np.array(

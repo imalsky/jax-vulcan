@@ -210,9 +210,7 @@ SOLVER_MAP_DEFAULT = "renorm"
 SOLVER_MAP_CHOICES = ("bare", "renorm")
 
 PHOTO_RECOMPUTE_AUTO = "auto"
-PhotoRecomputeArg = (
-    Callable[[jnp.ndarray], jnp.ndarray] | Literal["auto"] | None
-)
+PhotoRecomputeArg = Callable[[jnp.ndarray], jnp.ndarray] | Literal["auto"] | None
 
 BODY_MAP_DT = 1e7
 # Time step (s) for the bare Ros2 body map G(y) = ros2_step(y, k, dt). This is
@@ -824,7 +822,12 @@ def _guard_unmodeled_processes(
     if species is not None:
         y_np = np.asarray(y_star)
         for i, sp in enumerate(species):
-            if sp.endswith("_l_s") and float(y_np[:, i].max()) > 0.0:
+            # Condensed-phase species are suffixed `_l_s` (H2O/NH3/S2/S8),
+            # `_l` (H2SO4) or `_s` (C_s) across the shipped networks — an
+            # `endswith("_l_s")` test alone silently misses H2SO4_l and C_s,
+            # so a state with those populated would pass a refusal that
+            # exists precisely to catch it.
+            if sp.endswith(("_l_s", "_l", "_s")) and float(y_np[:, i].max()) > 0.0:
                 condensate_active = True
                 break
 
@@ -1899,9 +1902,7 @@ def _adjoint_scope_findings(
             "biased.",
         )
 
-    if bool(flag("use_vm_mol", False)) and not bool(
-        flag("use_hybrid_vm_mol", False)
-    ):
+    if bool(flag("use_vm_mol", False)) and not bool(flag("use_hybrid_vm_mol", False)):
         add(
             "vm_mol_feedback",
             "warning",
