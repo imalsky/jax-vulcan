@@ -1217,8 +1217,14 @@ benchmark in this file (`HD189 off 1296 steps / 37 delta-rejects / 48.6 s`), who
 figure is `1202` — and 1202 is exactly what VULCAN-master produces on W39b today, so that row was
 measured at master-equivalent settings. `HD189.yaml` subsequently gained `use_vm_mol: true` and
 `use_hybrid_vm_mol: true` (commit `27d8db5`), and the upwind-molecular-diffusion note above records
-that the vm path has a deliberately different step count. So **1296 ≈ pre-vm-branch defaults;
-2102 = shipped defaults with upwind mol-diff on.** (`photo_off_convergence_investigation.md` also
+that the vm path has a deliberately different step count. **But the vm flip explains only most of
+the gap, not all of it.** Measured (twice, reproducibly) with `use_vm_mol=false` +
+`use_hybrid_vm_mol=false` on an otherwise-shipped HD189.yaml: **1495** steps. So the vm default
+accounts for 2102 -> 1495 = 607 steps, and **199 steps (1495 -> 1296) remain unexplained** — at
+least one further change since that benchmark also moves HD189's convergence. Do not present the vm
+flip as the whole story. Note also that the C9 clip fix changes accepted-step counts by design and
+landed after the 2102 measurement, so the post-fix HD189 count is not yet measured.
+(`photo_off_convergence_investigation.md` also
 logs a 1301-step photo-on control, but that document is scoped to the W39b SNCHO column, not HD189 —
 it is not corroboration here, and 1301 is coincidentally our own W39b free-convergence count.)
 `jax_paper/scripts/bench_runner.py` also sets `use_photo = False` internally, so the published
