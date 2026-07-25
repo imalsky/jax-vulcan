@@ -365,7 +365,26 @@ def _warn_poor_convergence(resid: float, fp_err: float, spread: float = 0.0) -> 
 
 
 def _check_body_dt(body_dt: float) -> None:
-    """Refuse a body_dt in the near-singular danger zone (see _BODY_MAP_DT_MAX)."""
+    """Refuse a body_dt outside the usable window (see _BODY_MAP_DT_MAX).
+
+    Both bounds matter. `body_dt=0` makes the implicit step the identity and the
+    adjoint solve divides by zero (NaN); `body_dt<0` integrates backwards and
+    returns a finite, plausible-looking, wrong sensitivity — the worse failure,
+    because nothing downstream flags it.
+    """
+    if not np.isfinite(body_dt):
+        raise ValueError(
+            f"body_dt={body_dt} is not finite; the adjoint body map needs a "
+            f"positive dt (default {BODY_MAP_DT:.0e})."
+        )
+    if body_dt <= 0.0:
+        raise ValueError(
+            f"body_dt={body_dt:.3e} must be > 0. At 0 the implicit step is the "
+            f"identity and the adjoint solve divides by zero; negative values "
+            f"integrate backwards and return a finite but WRONG sensitivity "
+            f"with no other symptom. Use 0 < body_dt <= {_BODY_MAP_DT_MAX:.0e} "
+            f"(default {BODY_MAP_DT:.0e})."
+        )
     if body_dt > _BODY_MAP_DT_MAX:
         raise ValueError(
             f"body_dt={body_dt:.1e} is in the near-singular danger zone "
@@ -2202,7 +2221,29 @@ def audit_adjoint_scope(
     if loss_fn is not None:
         v = np.asarray(jax.grad(loss_fn)(y_star))
         w = np.abs(v * y_np)  # log-space cotangent magnitude — the adjoint RHS
-        foot = w > _AUDIT_LOSS_FOOTPRINT_FRAC * max(float(w.max()), _UNDERFLOW_DENOM)
+        # A non-finite cotangent must be reported, not swallowed. Every `>`
+        # against NaN is False, so `w.max()` being NaN would leave `foot` empty
+        # and the audit would declare a clean footprint on a loss whose gradient
+        # is already poison. Check before thresholding.
+        n_bad_cot = int((~np.isfinite(v)).sum())
+        if n_bad_cot:
+            findings.append(
+                {
+                    "code": "loss_cotangent_non_finite",
+                    "severity": "error",
+                    "message": f"{n_bad_cot} cell(s) of jax.grad(loss_fn)(y_star) "
+                    "are NaN/Inf, so the adjoint RHS is poison before the scope "
+                    "audit even begins. Every downstream footprint comparison "
+                    "silently reads False against a NaN, which would look like a "
+                    "clean footprint. Fix the loss (a log of a zero-clipped cell "
+                    "is the usual cause) before trusting any sensitivity.",
+                }
+            )
+        w_finite = w[np.isfinite(w)]
+        w_max = float(w_finite.max()) if w_finite.size else 0.0
+        foot = np.isfinite(w) & (
+            w > _AUDIT_LOSS_FOOTPRINT_FRAC * max(w_max, _UNDERFLOW_DENOM)
+        )
         # A clip-dead cell is excluded from `rel` (above), so it would read as
         # a clean 0.0 here. The loss footprint is exactly where that leniency
         # is NOT allowed: the body map linearizes those rows as identity while

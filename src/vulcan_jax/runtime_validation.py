@@ -434,12 +434,26 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
     ):
         errors.append("use_ion=True requires use_photo=True in VULCAN-JAX.")
 
-    if bool(getattr(cfg, "fix_species", [])) and not bool(
-        getattr(cfg, "use_condense", False)
-    ):
+    fix_sp = list(getattr(cfg, "fix_species", []) or [])
+    if fix_sp and not bool(getattr(cfg, "use_condense", False)):
         errors.append(
             "fix_species is set but use_condense=False; this configuration is inconsistent."
         )
+    if fix_sp:
+        # Without this, an entry absent from the import-locked network reaches
+        # state.py's condensation setup and dies on a bare `.index()` ValueError
+        # that names neither the offending species nor the remedy.
+        net_species = list(getattr(chem_funs, "spec_list", []))
+        if net_species:
+            missing = [sp for sp in fix_sp if sp not in net_species]
+            if missing:
+                errors.append(
+                    f"fix_species entries not in the loaded network: {missing}. "
+                    f"The network is import-locked, so this cannot be fixed after "
+                    f"`import vulcan_jax` — either drop these entries or set "
+                    f"$VULCAN_JAX_NETWORK to a network containing them before the "
+                    f"first import."
+                )
 
     if bool(getattr(cfg, "use_fix_H2He", False)):
         species = list(getattr(chem_funs, "spec_list", []))

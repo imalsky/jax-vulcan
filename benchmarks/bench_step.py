@@ -57,8 +57,12 @@ def _backend_label() -> str:
 
 def _setup_runstate():
     """Run the full pre-loop pipeline; return (RunState, setup_seconds)."""
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
     from vulcan_jax.state import RunState
+
+    # The old `import vulcan_jax.vulcan_cfg` module was deleted in the YAML-only
+    # migration; `default_config()` is the process default it used to be.
+    vulcan_cfg = default_config()
 
     t0 = time.time()
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
@@ -174,8 +178,13 @@ def _bench_outer_loop(rs, n_steps: int) -> tuple[float, float, int, int]:
     import vulcan_jax.legacy_io as op
     import vulcan_jax.op_jax as op_jax
     import vulcan_jax.outer_loop as outer_loop
-    import vulcan_jax.vulcan_cfg as vulcan_cfg
+    from vulcan_jax.config import default_config
     from vulcan_jax.state import RunState
+
+    # See _setup_runstate: the vulcan_cfg module is gone; this is its successor.
+    # Mutating it is still correct — default_config() returns the process-wide
+    # Config object the setup facades read, and the saved/restore below undoes it.
+    vulcan_cfg = default_config()
 
     saved = {
         k: getattr(vulcan_cfg, k)

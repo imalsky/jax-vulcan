@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import warnings
 from pathlib import Path
 from typing import NamedTuple, Optional
 
@@ -771,8 +772,18 @@ def _assert_com_file_matches_import(cfg) -> None:
                 return  # same table content at a different vendored path
     except FileNotFoundError:
         pass  # requested table is missing -> definitely a mismatch
-    except Exception:
-        return  # can't determine -> defer to the pipeline
+    except Exception as exc:
+        # CLAUDE.md: "a guard that cannot run its check must announce the skip
+        # (skipped != passed)". Returning silently here read as a pass.
+        warnings.warn(
+            f"com_file import-lock guard could not compare tables "
+            f"({type(exc).__name__}: {exc}); the check was SKIPPED, not passed. "
+            f"cfg.com_file={want_r!r} vs import-time {have_r!r} — if these differ "
+            f"in content, ini_abun is using the import-time table.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return
 
     raise ValueError(
         "VULCAN-JAX composition table (com_file) is import-locked. It is loaded "
@@ -803,6 +814,15 @@ def _assert_atom_list_matches_import(cfg) -> None:
 
     have = getattr(_jax_step, "IMPORT_ATOM_LIST", None)
     if have is None:
+        # CLAUDE.md: a guard that cannot run its check must announce the skip.
+        warnings.warn(
+            "atom_list import-lock guard could not read jax_step.IMPORT_ATOM_LIST; "
+            f"the check was SKIPPED, not passed (cfg.atom_list={list(cfg_atoms)!r}). "
+            "If this run's atom_list differs from the import-time one, the "
+            "reservoir-projection tables and the cfg-time atom accounting disagree.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
         return
     if tuple(cfg_atoms) == tuple(have):
         return
@@ -848,6 +868,18 @@ def _cfg_overlay(cfg):
                 before[name] = getattr(base, name)
         else:
             added.append(name)
+        # Copy mutable containers instead of aliasing them. Setup writes some
+        # knobs in place through `base` (e.g. ini_abun's charge/remove lists);
+        # with a bare `setattr(base, name, val)` those writes land in the
+        # CALLER's cfg object, so a second run with the same cfg would start
+        # from a mutated config. 18 of default.yaml's knobs are list/dict/set.
+        # The restore loop below already deep-copies `before`, so `base` itself
+        # was never the leak — `cfg` was.
+        if isinstance(val, (list, dict, set, bytearray)):
+            try:
+                val = copy.deepcopy(val)
+            except Exception:
+                pass  # uncopyable -> alias as before rather than fail setup
         setattr(base, name, val)
     try:
         yield

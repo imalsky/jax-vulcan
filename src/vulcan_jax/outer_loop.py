@@ -1393,8 +1393,19 @@ def _make_runner(
         # is creeping along the chem_rhs ULP floor — strict less-than would let
         # any sub-percent micro-improvement reset the counter and the stall
         # never fires. Require a 5% relative drop to count as a new minimum.
-        significant_drop = do_accept & (
-            longdy_next < s.longdy_seen_min * jnp.float64(0.95)
+        # master only touches these counters INSIDE its ready gate
+        # (`if var.t > trun_min and para.count > count_min:`, op.py:1072), so the
+        # early transient never accumulates toward the stall window. Ours
+        # counted from step 1, which let a run that spent its first
+        # conv_stall_window accepted steps in the transient arrive at the stall
+        # branch with a pre-charged counter. Gate it the same way.
+        stall_ready = (s.t > jnp.float64(trun_min)) & (
+            accept_count_next > s.count_min_dyn
+        )
+        significant_drop = (
+            do_accept
+            & stall_ready
+            & (longdy_next < s.longdy_seen_min * jnp.float64(0.95))
         )
         longdy_seen_min_next = jnp.where(
             significant_drop, longdy_next, s.longdy_seen_min
@@ -1403,7 +1414,7 @@ def _make_runner(
             significant_drop,
             jnp.int32(0),
             jnp.where(
-                do_accept,
+                do_accept & stall_ready,
                 s.count_since_new_min + jnp.int32(1),
                 s.count_since_new_min,
             ),
