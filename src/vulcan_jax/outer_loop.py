@@ -366,6 +366,14 @@ def _make_clip_fn(
                 jnp.where((y_in > nega_cut) & (y_in <= 0), jnp.abs(y_in), 0.0)
             )
             y_clip = jnp.where((y_in < pos_cut) & (y_in >= nega_cut), 0.0, y_in)
+            # master's second rule (op.py:2503) tests the POST-SOLVE mixing
+            # ratio: `Ros2.solver` writes `var.ymix` from the new solution
+            # (op.py:3031-3034) *before* `one_step` calls `clip` (op.py:3139).
+            # Any cell with y<0 has post-solve ymix<0<mtol, so master's rule
+            # reduces exactly to "zero every negative". Testing `ymix_old`
+            # (pre-step, positive) instead never fires the branch, leaves
+            # negative number densities in the carried state, and makes the
+            # `all_nonneg` accept gate reject steps master accepts.
             y_clip = jnp.where((ymix_old < mtol) & (y_clip < 0), 0.0, y_clip)
             ysum = jnp.sum(
                 jnp.where(gas_mask_2d[None, :], y_clip, 0.0), axis=1, keepdims=True
@@ -388,6 +396,9 @@ def _make_clip_fn(
                 jnp.where((y_in > nega_cut) & (y_in <= 0), jnp.abs(y_in), 0.0)
             )
             y_clip = jnp.where((y_in < pos_cut) & (y_in >= nega_cut), 0.0, y_in)
+            # See the non_gas_present variant above: master's rule reads the
+            # POST-SOLVE ymix (op.py:2503 after op.py:3031-3034), which for any
+            # y<0 cell is < mtol, so it reduces to "zero every negative".
             y_clip = jnp.where((ymix_old < mtol) & (y_clip < 0), 0.0, y_clip)
             # Guard the normalization against an all-zero layer (ysum==0 →
             # 0/0). Mirrors the _UNDERFLOW_DENOM floor at jax_step.py:305-306;
@@ -894,6 +905,18 @@ def _make_runner(
             s.ymix > 0, longdy_arr / jnp.maximum(s.ymix, _UNDERFLOW_DENOM), 0.0
         )
         longdy_new = jnp.max(ratio)
+        # A non-finite cell must never be able to *improve* the convergence
+        # score. Every mask above is a `<`/`>` comparison, and those are all
+        # False for NaN, so without this guard a poisoned cell is silently
+        # dropped from the max: an all-NaN state reads longdy == 0.0, i.e.
+        # perfectly converged, and `end_case` reports success. master cannot
+        # do this — `np.amax(longdy[ymix>0]/ymix[ymix>0])` (op.py:1053)
+        # reduces an empty selection and raises. Forcing +inf reproduces
+        # master's "can never converge" semantics inside a jittable reduction;
+        # the run then exits via the count_max / runtime ladder instead of
+        # claiming convergence.
+        state_is_bad = ~jnp.all(jnp.isfinite(s.y)) | ~jnp.all(jnp.isfinite(s.ymix))
+        longdy_new = jnp.where(state_is_bad, jnp.inf, longdy_new)
         dt_lookback = jnp.maximum(s.t - s.t_time_ring[indx], _UNDERFLOW_DENOM)
         longdydt_new = longdy_new / dt_lookback
         return longdy_new, longdydt_new, ratio
@@ -1430,16 +1453,12 @@ def _make_runner(
             count_max_conv = accept_count_next + jnp.int32(2000)
             count_max_budget = accept_count_next + jnp.int32(1000)
 
-            hybrid_use_vm_next = jnp.where(
-                do_flip, jnp.float64(0.0), s.hybrid_use_vm
-            )
+            hybrid_use_vm_next = jnp.where(do_flip, jnp.float64(0.0), s.hybrid_use_vm)
             count_min_dyn_next = jnp.where(do_flip, new_count_min, s.count_min_dyn)
             count_max_dyn_next = jnp.where(
                 conv_flip,
                 count_max_conv,
-                jnp.where(
-                    runtime_flip | count_flip, count_max_budget, s.count_max_dyn
-                ),
+                jnp.where(runtime_flip | count_flip, count_max_budget, s.count_max_dyn),
             )
             runtime_dyn_next = jnp.where(
                 runtime_flip, s.runtime_dyn * jnp.float64(1.1), s.runtime_dyn
@@ -1720,6 +1739,7 @@ _ATM_STATIC_BATCH_AXES = AtmStatic(
     bot_flux=0,
     bot_vdep=0,
     gas_indx_mask=0,
+    diff_esc_mask=0,
     use_vm_mol=None,
     use_settling=None,
     use_topflux=None,
@@ -1775,6 +1795,7 @@ def stack_atm_statics(atms: "list[AtmStatic]") -> AtmStatic:
         "bot_flux",
         "bot_vdep",
         "gas_indx_mask",
+        "diff_esc_mask",
     )
     stacked = {
         name: jnp.stack([jnp.asarray(getattr(a, name)) for a in atms], axis=0)
@@ -2275,9 +2296,7 @@ class OuterLoop:
         # particle coefficients, relax flags) comes from make_conden_spec, and
         # every T/structure-dependent array from the same pure-JAX
         # build_conden_profile the on-graph per-proposal rebuild uses.
-        spec = _conden_mod.make_conden_spec(
-            self._cfg, var, atm, _NETWORK.species_idx
-        )
+        spec = _conden_mod.make_conden_spec(self._cfg, var, atm, _NETWORK.species_idx)
         prof = _conden_mod.build_conden_profile(
             spec,
             jnp.asarray(atm.Tco, dtype=jnp.float64),
@@ -2286,17 +2305,11 @@ class OuterLoop:
             jnp.asarray(atm.Dzz, dtype=jnp.float64),
         )
         return _conden_mod.CondenStatic(
-            conden_re_idx=jnp.asarray(
-                np.asarray(spec.conden_re_idx, dtype=np.int32)
-            ),
-            conden_sp_idx=jnp.asarray(
-                np.asarray(spec.conden_sp_idx, dtype=np.int32)
-            ),
+            conden_re_idx=jnp.asarray(np.asarray(spec.conden_re_idx, dtype=np.int32)),
+            conden_sp_idx=jnp.asarray(np.asarray(spec.conden_sp_idx, dtype=np.int32)),
             Dg_per_re=prof.Dg_per_re,
             sat_n_per_re=prof.sat_n_per_re,
-            coeff_per_re=jnp.asarray(
-                np.asarray(spec.coeff_per_re, dtype=np.float64)
-            ),
+            coeff_per_re=jnp.asarray(np.asarray(spec.coeff_per_re, dtype=np.float64)),
             h2o_active=spec.h2o_active,
             h2o_idx=spec.h2o_idx,
             h2o_l_s_idx=spec.h2o_l_s_idx,
@@ -2411,7 +2424,7 @@ class OuterLoop:
         to consistently-shaped placeholders when condensation is off (the body
         never reads them in that case).
         """
-        var, atm, _ = _state_mod.legacy_view(rs)
+        var, atm, _ = _state_mod.legacy_view(rs, cfg=self._cfg)
         statics = self._build_statics(var, atm)
         refresh = self._build_refresh_static(var, atm)
         ni = _NETWORK.ni
@@ -2576,9 +2589,7 @@ class OuterLoop:
             # Hybrid molecular-diffusion phase: start in upwind (1.0) whenever
             # use_vm_mol is on, else pure central-difference (0.0). The body
             # flips it to 0.0 at phase-0 convergence only when hybrid is on.
-            hybrid_use_vm=jnp.float64(
-                1.0 if bool(self._statics.use_vm_mol) else 0.0
-            ),
+            hybrid_use_vm=jnp.float64(1.0 if bool(self._statics.use_vm_mol) else 0.0),
             # Live termination budget, seeded to the static caps. Only the
             # hybrid phase flip mutates these (extends phase 1's allowance).
             count_min_dyn=jnp.int32(int(self._statics.count_min)),
@@ -3148,7 +3159,7 @@ class OuterLoop:
         # `make_atm_static` keep working without explicit var/atm/para
         # references.
         if var is None or atm is None:
-            var, atm, _shim_para = _state_mod.legacy_view(rs)
+            var, atm, _shim_para = _state_mod.legacy_view(rs, cfg=self._cfg)
             if para is None:
                 para = _shim_para
 
@@ -3268,7 +3279,7 @@ class OuterLoop:
         """
         validate_runtime_config(self._cfg)
         self.loss_criteria = float(getattr(self._cfg, "loss_criteria", 0.0005))
-        var, atm, _ = _state_mod.legacy_view(rs)
+        var, atm, _ = _state_mod.legacy_view(rs, cfg=self._cfg)
         if (
             rs.photo_static is not None
             and getattr(self.odesolver, "_photo_static", None) is None
