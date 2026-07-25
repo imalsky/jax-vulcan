@@ -55,6 +55,7 @@ def _load_nasa9_local(net):
     """
     import vulcan_jax.gibbs as gibbs
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
     from pathlib import Path
 
@@ -76,6 +77,7 @@ def test_lowT_caps_fire_all_three():
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates as rates
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     net = net_mod.parse_network(vulcan_cfg.network)
@@ -135,6 +137,7 @@ def test_lowT_caps_no_op_when_T_above_thresholds():
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates as rates
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     net = net_mod.parse_network(vulcan_cfg.network)
@@ -158,6 +161,7 @@ def test_remove_list_zeros_only_listed_indices():
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates as rates
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     net = net_mod.parse_network(vulcan_cfg.network)
@@ -183,6 +187,7 @@ def test_remove_list_none_or_empty_is_noop():
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates as rates
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     net = net_mod.parse_network(vulcan_cfg.network)
@@ -209,6 +214,7 @@ def test_build_rate_array_matches_legacy_hd189(hd189_state):
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates as rates
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     net = net_mod.parse_network(vulcan_cfg.network)
@@ -264,6 +270,7 @@ def test_build_rate_array_with_lowT_caps(hd189_state):
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates as rates
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     net = net_mod.parse_network(vulcan_cfg.network)

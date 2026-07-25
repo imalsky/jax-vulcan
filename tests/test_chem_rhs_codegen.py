@@ -39,6 +39,7 @@ PROJECT_ROOT = ROOT.parent
 def _atom_count_matrix(net: object, atoms: tuple[str, ...]) -> np.ndarray:
     """Return species-by-atom stoichiometry for `atoms`. shape: (ni, n_atoms)."""
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     compo = np.genfromtxt(
@@ -174,6 +175,7 @@ def test_codegen_cache_key_changes_with_consumed_network_fields(tmp_path):
 def _capture_state():
     """Return (y, M, k_arr, net) from a fresh pre-loop pipeline run."""
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
     import vulcan_jax.network as net_mod
     from vulcan_jax.state import RunState
@@ -191,6 +193,7 @@ def _hd209_repeated_final_layer_fixture() -> tuple[
 ]:
     """Return one HD209 final-state layer repeated to the production column shape."""
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
     import vulcan_jax.network as net_mod
 

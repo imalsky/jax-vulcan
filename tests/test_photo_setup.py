@@ -33,7 +33,9 @@ warnings.filterwarnings("ignore")
 FIXTURE_DIR = ROOT / "tests" / "data"
 _BASELINE_FIXTURE = FIXTURE_DIR / "photo_setup_hd189_baseline.npz"
 _T_DEP_FIXTURE = FIXTURE_DIR / "photo_setup_hd189_T_dep.npz"
-_REGEN_HINT = "local fixture missing; regenerate with: python tests/_gen_photo_baseline.py"
+_REGEN_HINT = (
+    "local fixture missing; regenerate with: python tests/_gen_photo_baseline.py"
+)
 BIN_ATOL = 2e-14
 CROSS_ATOL = 1e-30
 
@@ -160,6 +162,7 @@ def test_photo_setup_matches_baseline_fixture():
     """HD189 default — T_cross_sp=[], use_ion=False."""
     import vulcan_jax.photo_setup as photo_setup
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     if not bool(getattr(vulcan_cfg, "use_photo", False)):
@@ -181,6 +184,7 @@ def test_photo_setup_matches_T_dep_fixture(monkeypatch):
     """HD189 with T_cross_sp=['CO2','H2O','NH3'] patched on."""
     import vulcan_jax.photo_setup as photo_setup
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     monkeypatch.setattr(vulcan_cfg, "T_cross_sp", ["CO2", "H2O", "NH3"])

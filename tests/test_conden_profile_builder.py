@@ -41,8 +41,11 @@ R_P = {"H2O_l_s": 5e-3, "NH3_l_s": 5e-5, "S8_l_s": 1e-4}
 RHO_P = {"H2O_l_s": 0.9, "NH3_l_s": 0.7, "S8_l_s": 2.07}
 
 
-def _fake_setup(condense_sp=("H2O", "NH3", "S8"), use_relax=("H2O", "NH3"),
-                fix_species=("H2O", "H2O_l_s", "S8")):
+def _fake_setup(
+    condense_sp=("H2O", "NH3", "S8"),
+    use_relax=("H2O", "NH3"),
+    fix_species=("H2O", "H2O_l_s", "S8"),
+):
     """Minimal (cfg, var, atm) fakes for make_conden_spec — no network import."""
     cfg = SimpleNamespace(
         condense_sp=list(condense_sp),
@@ -76,6 +79,7 @@ def _profiles():
 
 
 # --- independent NumPy oracle (upstream formulas, re-typed from master) ----
+
 
 def _sat_p_np(sp, T):
     T = np.asarray(T, dtype=np.float64)
@@ -167,9 +171,7 @@ def test_builder_matches_upstream_formulas(spec):
         ref = _oracle(spec, T, pco, n_0, Dzz)
         for field, want in ref.items():
             got = np.asarray(getattr(prof, field))
-            np.testing.assert_allclose(
-                got, want, rtol=1e-14, atol=0.0, err_msg=field
-            )
+            np.testing.assert_allclose(got, want, rtol=1e-14, atol=0.0, err_msg=field)
 
 
 def test_temperature_moves_saturation_and_boundaries(spec):
@@ -192,8 +194,12 @@ def test_temperature_moves_saturation_and_boundaries(spec):
     assert (sup_cold != sup_warm).any(), "boundary must move with T"
     # Cold-trap index: mid-column T minimum vs a monotonically colder top.
     T_mono = np.linspace(260.0, 160.0, NZ)
-    top_slope = int(conden.build_conden_profile(spec, T_slope, pco, n_0, Dzz).nh3_conden_top)
-    top_mono = int(conden.build_conden_profile(spec, T_mono, pco, n_0, Dzz).nh3_conden_top)
+    top_slope = int(
+        conden.build_conden_profile(spec, T_slope, pco, n_0, Dzz).nh3_conden_top
+    )
+    top_mono = int(
+        conden.build_conden_profile(spec, T_mono, pco, n_0, Dzz).nh3_conden_top
+    )
     assert top_slope != top_mono
 
 
@@ -225,8 +231,10 @@ def test_jit_and_vmap_consistency(spec):
     for lane, T in enumerate((T_iso, T_slope)):
         solo = build(jnp.asarray(T))
         lane_prof = conden.CondenProfile(
-            *[jnp.asarray(np.asarray(getattr(batched, f))[lane])
-              for f in conden.CondenProfile._fields]
+            *[
+                jnp.asarray(np.asarray(getattr(batched, f))[lane])
+                for f in conden.CondenProfile._fields
+            ]
         )
         _assert_profile_close(lane_prof, solo, f"vmap lane {lane}")
 

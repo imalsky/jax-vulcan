@@ -40,6 +40,7 @@ def main() -> int:
     os.chdir(VULCAN_MASTER)
     sys.path.append(str(VULCAN_MASTER))
     from vulcan_jax.config import default_config  # noqa: E402
+
     vulcan_cfg = default_config()
     from vulcan_jax.atm_setup import Atm  # noqa: E402
     import op  # noqa: E402

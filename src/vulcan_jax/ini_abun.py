@@ -504,12 +504,8 @@ def compute_initial_abundance(data_atm) -> IniAbunOutputs:
 
     if _CFG.use_ion is True:
         if not charge_list:
-            print(
-                "use_ion = True but the network with ions is not supplied.\n"
-            )
-            raise IOError(
-                "use_ion = True but the network with ions is not supplied.\n"
-            )
+            print("use_ion = True but the network with ions is not supplied.\n")
+            raise IOError("use_ion = True but the network with ions is not supplied.\n")
         if "e" in charge_list:
             charge_list = [c for c in charge_list if c != "e"]
 

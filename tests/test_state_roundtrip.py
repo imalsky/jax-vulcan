@@ -97,6 +97,7 @@ def test_roundtrip_field_set_complete(hd189_state):
 
     # PhotoInputs — sflux_top is populated when use_photo=True.
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     if bool(getattr(vulcan_cfg, "use_photo", False)):
@@ -110,6 +111,7 @@ def test_runstate_output_parameter_schema(hd189_state):
     """RunState-backed `.vul` output exposes VULCAN-master parameter keys."""
     import vulcan_jax.legacy_io as legacy_io
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
     from vulcan_jax.state import runstate_from_store
 
@@ -163,6 +165,7 @@ def test_load_stellar_flux_hd189():
     and produces sane bin extents."""
     from vulcan_jax.state import load_stellar_flux
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     flux = load_stellar_flux(vulcan_cfg)

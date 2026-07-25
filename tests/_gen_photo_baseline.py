@@ -75,10 +75,13 @@ def _static_to_npz_dict(static) -> dict:
 def main(out_dir: Path = FIXTURE_DIR) -> int:
     import vulcan_jax.photo_setup as photo_setup
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     if not bool(getattr(vulcan_cfg, "use_photo", False)):
-        raise SystemExit("use_photo=False in vulcan_cfg; the fixtures need the photo path on.")
+        raise SystemExit(
+            "use_photo=False in vulcan_cfg; the fixtures need the photo path on."
+        )
 
     out_dir.mkdir(parents=True, exist_ok=True)
 

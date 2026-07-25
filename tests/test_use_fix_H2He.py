@@ -39,6 +39,7 @@ warnings.filterwarnings("ignore")
 
 def _setup_state():
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     vulcan_cfg.count_max = 5
@@ -65,6 +66,7 @@ def _setup_state():
 
 def main() -> int:
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
     import vulcan_jax.chem_funs as chem_funs
 

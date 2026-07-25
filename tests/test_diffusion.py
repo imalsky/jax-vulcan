@@ -85,6 +85,7 @@ def main() -> int:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     import diffusion_numpy_ref as diff_mod
     from vulcan_jax.config import default_config
+
     cfg_jax = default_config()
     # Master oracle: op.diffdf is the CENTRAL scheme, so pin the vm_branch
     # upwind default off for this comparison (the upwind kernel has its own

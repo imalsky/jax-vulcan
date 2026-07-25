@@ -67,7 +67,9 @@ def test_regrid_noop_on_cool_column():
     nz = 80
     pco = _make_pco(1e9, 1e-2, nz)
     Tco = np.full(nz, 1500.0)  # nothing above T_max
-    assert high_temp_cut_regrid(pco, Tco, T_max=3500.0, P_min=1e6, P_t=1e-2, nz=nz) is None
+    assert (
+        high_temp_cut_regrid(pco, Tco, T_max=3500.0, P_min=1e6, P_t=1e-2, nz=nz) is None
+    )
 
 
 def test_regrid_noop_when_no_deep_layers():
@@ -76,7 +78,9 @@ def test_regrid_noop_when_no_deep_layers():
     nz = 80
     pco = _make_pco(1e5, 1e-2, nz)  # P_b below P_min: no eligible deep layers
     Tco = np.full(nz, 4000.0)
-    assert high_temp_cut_regrid(pco, Tco, T_max=3500.0, P_min=1e6, P_t=1e-2, nz=nz) is None
+    assert (
+        high_temp_cut_regrid(pco, Tco, T_max=3500.0, P_min=1e6, P_t=1e-2, nz=nz) is None
+    )
 
 
 # ---------------------------------------------------------------------------

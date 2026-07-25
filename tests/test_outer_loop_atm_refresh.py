@@ -68,6 +68,7 @@ def main() -> int:
     os.chdir(VULCAN_MASTER)
     sys.path.append(str(VULCAN_MASTER))
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
     import op
 

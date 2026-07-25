@@ -50,6 +50,7 @@ def _atom_count_matrix(net, atoms):
     """Species-by-atom stoichiometry, shape (ni, n_atoms). Reads with an
     explicit encoding so species names come back as str (not numpy.bytes_)."""
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     compo = np.genfromtxt(
@@ -68,6 +69,7 @@ def _atom_count_matrix(net, atoms):
 def _capture_hd189_state():
     """Return (y, M, k_arr, net) from a fresh HD189 pre-loop pipeline run."""
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
     import vulcan_jax.network as net_mod
     from vulcan_jax.state import RunState

@@ -35,6 +35,7 @@ def main() -> int:
     sys.path.insert(0, str(VULCAN_MASTER))
 
     from vulcan_jax.config import default_config
+
     cfg_v = default_config()
     import store as st_v
     import build_atm as ba_v
@@ -82,6 +83,7 @@ def main() -> int:
     os.chdir(ROOT)
 
     from vulcan_jax.config import default_config
+
     cfg_jax = default_config()
 
     # Pin JAX modules to the exact network and transport flags used by the

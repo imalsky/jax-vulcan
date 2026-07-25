@@ -34,6 +34,7 @@ def main() -> int:
     sys.path.append(str(VULCAN_MASTER))
     import jax.numpy as jnp
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
     from vulcan_jax.atm_setup import Atm
     from vulcan_jax.ini_abun import InitialAbun

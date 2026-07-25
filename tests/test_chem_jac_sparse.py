@@ -31,6 +31,7 @@ def _check_jacobians(state) -> int:
     import jax.numpy as jnp
     import vulcan_jax.network as net_mod
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     data_var, data_atm = state.var, state.atm
@@ -84,6 +85,7 @@ def main() -> int:
     import vulcan_jax.legacy_io as op
     import vulcan_jax.op_jax as op_jax
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
     from vulcan_jax.state import RunState, legacy_view
 

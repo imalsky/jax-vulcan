@@ -53,6 +53,7 @@ _TOL = 0.12
 def main() -> int:
     from vulcan_jax._paths import resolve_data_path
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     compo = np.genfromtxt(

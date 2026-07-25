@@ -42,6 +42,7 @@ def main() -> int:
     import diffusion_numpy_ref as diff_ref
     import vulcan_jax.jax_step as jax_step
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
     # The NumPy reference implements the CENTRAL scheme; pin the vm_branch
     # upwind default off (upwind coverage lives in test_diffusion_variants.py).
@@ -159,6 +160,7 @@ def test_vm_mode_kernel_matches_reference():
     import diffusion_numpy_ref as diff_ref
     import vulcan_jax.jax_step as jax_step
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
     # Pin the vm_branch default off so the built state starts from the
     # all-zero-vm premise the injection below relies on.

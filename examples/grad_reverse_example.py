@@ -121,17 +121,25 @@ def main() -> int:
             f"(n_solves={info['n_solves']}, body_dt={info['body_dt']:.0e})"
         )
 
-    print(f"\nTop 8 reactions setting log10(CH4 VMR) at layer {L0} (solver_map=renorm):")
+    print(
+        f"\nTop 8 reactions setting log10(CH4 VMR) at layer {L0} (solver_map=renorm):"
+    )
     order = np.argsort(np.abs(grads["renorm"][: net.nr + 1]))[::-1][:8]
     for r in order:
-        print(f"  r{int(r):4d}  dL/dln k = {grads['renorm'][r]:+.3e}   {rf.get(int(r), '?')}")
+        print(
+            f"  r{int(r):4d}  dL/dln k = {grads['renorm'][r]:+.3e}   {rf.get(int(r), '?')}"
+        )
 
-    print("\nFinite-difference anchors (adj_solvermap_gmres.py) — renorm (default) vs bare (legacy):")
+    print(
+        "\nFinite-difference anchors (adj_solvermap_gmres.py) — renorm (default) vs bare (legacy):"
+    )
     for r, fd in FD_ANCHORS.items():
         rel_b = abs(grads["bare"][r] - fd) / abs(fd)
         rel_r = abs(grads["renorm"][r] - fd) / abs(fd)
-        print(f"  r{r:4d}  FD={fd:+.4e}  renorm={grads['renorm'][r]:+.4e} ({rel_r:.1%})"
-              f"  bare={grads['bare'][r]:+.4e} ({rel_b:.1%})")
+        print(
+            f"  r{r:4d}  FD={fd:+.4e}  renorm={grads['renorm'][r]:+.4e} ({rel_r:.1%})"
+            f"  bare={grads['bare'][r]:+.4e} ({rel_b:.1%})"
+        )
     return 0
 
 

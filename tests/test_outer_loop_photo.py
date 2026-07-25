@@ -43,6 +43,7 @@ PHOTO_RTOL = 1e-13
 
 def main() -> int:
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     if not vulcan_cfg.use_photo:

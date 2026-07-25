@@ -13,6 +13,7 @@ os.chdir(ROOT)
 
 import vulcan_jax.op_jax as op_jax
 from vulcan_jax.config import default_config
+
 vulcan_cfg = default_config()
 
 

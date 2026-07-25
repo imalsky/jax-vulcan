@@ -199,7 +199,9 @@ def _resolve_derived(d: dict[str, Any]) -> None:
         d["count_max"] = int(d["count_max"])
 
 
-def load_config(name_or_path: str | os.PathLike = "default", /, **overrides: Any) -> Config:
+def load_config(
+    name_or_path: str | os.PathLike = "default", /, **overrides: Any
+) -> Config:
     """Load a YAML config, apply env + caller overrides, resolve derived values.
 
     Args:
@@ -229,9 +231,7 @@ def dump_config(cfg: Config, path: str | os.PathLike) -> None:
     the file with ``load_config`` reconstructs the same run inputs verbatim.
     """
     d = {
-        k: v
-        for k, v in vars(cfg).items()
-        if not k.startswith("_") and not callable(v)
+        k: v for k, v in vars(cfg).items() if not k.startswith("_") and not callable(v)
     }
     Path(path).write_text(
         yaml.safe_dump(d, sort_keys=False, default_flow_style=False, width=100)

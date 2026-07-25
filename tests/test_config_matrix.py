@@ -53,6 +53,7 @@ warnings.filterwarnings("ignore")
 def cfg_overrides(**kwargs):
     """Snapshot/restore vulcan_cfg attributes around a block."""
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     saved: dict = {}
@@ -84,6 +85,7 @@ def _hd189_atm_minimal():
     from vulcan_jax.atm_setup import Atm
     from vulcan_jax.state import _Variables, _AtmData
     from vulcan_jax.config import default_config
+
     _cfg = default_config()
 
     data_var = _Variables()
@@ -110,6 +112,7 @@ def _setup_full_state(count_max: int = 5):
     solver — same pattern the conftest fixture uses.
     """
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     vulcan_cfg.count_max = count_max
@@ -148,6 +151,7 @@ def test_lowT_limit_rates_noop_on_HD189():
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates as rates
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
     from vulcan_jax.gibbs import load_nasa9
 
@@ -197,6 +201,7 @@ def test_T_cross_sp_path_finite_positive():
     """
     import vulcan_jax.photo_setup as photo_setup
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     if not bool(getattr(vulcan_cfg, "use_photo", False)):
@@ -375,6 +380,7 @@ def test_fix_species_runtime_smoke():
             pytest.skip(f"{sp} not in network; cannot run fix_species smoke.")
 
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     cfg_kwargs = dict(

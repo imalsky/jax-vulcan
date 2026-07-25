@@ -37,6 +37,7 @@ warnings.filterwarnings("ignore")
 
 def _setup_state():
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     vulcan_cfg.count_max = 50

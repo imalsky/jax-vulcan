@@ -292,14 +292,18 @@ def _known_divergence_only(
     master_lines = master_path.read_text().splitlines()
     jax_lines = jax_path.read_text().splitlines()
     if len(master_lines) != len(jax_lines):
-        return [f"line-count drift ({len(master_lines)} master vs {len(jax_lines)} jax)"]
+        return [
+            f"line-count drift ({len(master_lines)} master vs {len(jax_lines)} jax)"
+        ]
     errors: list[str] = []
     for lineno, (m_line, j_line) in enumerate(zip(master_lines, jax_lines), start=1):
         if m_line == j_line:
             continue
         if any(rx in m_line or rx in j_line for rx in reactions):
             continue  # known, documented divergence
-        errors.append(f"unexpected drift at line {lineno}: master={m_line!r}, jax={j_line!r}")
+        errors.append(
+            f"unexpected drift at line {lineno}: master={m_line!r}, jax={j_line!r}"
+        )
     return errors
 
 
@@ -315,7 +319,9 @@ def _known_sflux_rescale_only(
     master_lines = master_path.read_text().splitlines()
     jax_lines = jax_path.read_text().splitlines()
     if len(master_lines) != len(jax_lines):
-        return [f"line-count drift ({len(master_lines)} master vs {len(jax_lines)} jax)"]
+        return [
+            f"line-count drift ({len(master_lines)} master vs {len(jax_lines)} jax)"
+        ]
     errors: list[str] = []
     for lineno, (m_line, j_line) in enumerate(zip(master_lines, jax_lines), start=1):
         if m_line.startswith("#") or j_line.startswith("#"):

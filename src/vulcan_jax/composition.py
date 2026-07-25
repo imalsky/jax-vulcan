@@ -22,9 +22,7 @@ with open(COM_FILE_PATH, "r") as _f:
 _type_list = ["int"] * _num_ele
 _type_list.insert(0, "U20")
 _type_list.append("float")
-compo = np.genfromtxt(
-    resolve_data_path(_CFG.com_file), names=True, dtype=_type_list
-)
+compo = np.genfromtxt(resolve_data_path(_CFG.com_file), names=True, dtype=_type_list)
 compo_row = list(compo["species"])
 
 atom_list: tuple[str, ...] = tuple(

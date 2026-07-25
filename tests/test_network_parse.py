@@ -32,6 +32,7 @@ if not VULCAN_MASTER.is_dir():
 def main() -> int:
     sys.path.insert(0, str(VULCAN_MASTER))
     from vulcan_jax.config import default_config  # noqa: E402  (imports relative to current dir)
+
     vulcan_cfg = default_config()
 
     from vulcan_jax._paths import resolve_data_path

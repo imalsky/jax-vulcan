@@ -25,6 +25,7 @@ def main() -> int:
     import jax.numpy as jnp
 
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
 
     # Build the canonical HD189 pre-loop state via the typed constructor

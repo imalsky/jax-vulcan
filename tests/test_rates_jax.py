@@ -17,6 +17,7 @@ jax.config.update("jax_enable_x64", True)
 
 def main() -> int:
     from vulcan_jax.config import default_config
+
     vulcan_cfg = default_config()
     from vulcan_jax.state import RunState, legacy_view
     from vulcan_jax import network as net_mod, rates as rates_np, rates_jax
