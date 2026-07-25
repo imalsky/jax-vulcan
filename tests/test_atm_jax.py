@@ -62,6 +62,7 @@ def _rel(a, b):
 def test_build_atm_static_matches_make_atm_static(hd189_state):
     """Integrated: every AtmStatic field equals the frozen production build."""
     from vulcan_jax.config import default_config
+
     cfg = default_config()
 
     var, atm = hd189_state.var, hd189_state.atm
@@ -151,6 +152,7 @@ def test_mol_diff_vm_branch_matches_host():
         alpha=jnp.asarray(alpha),
         gas_indx_mask=jnp.asarray(~nongas),
         nongas_mask=jnp.asarray(nongas),
+        diff_esc_mask=jnp.zeros(ni, dtype=jnp.bool_),
         settle_coeff=jnp.zeros(ni),
         top_flux=jnp.zeros(ni),
         bot_flux=jnp.zeros(ni),
@@ -278,6 +280,7 @@ def test_vm_branch_differentiates_wrt_Tco():
         alpha=jnp.asarray(alpha),
         gas_indx_mask=jnp.asarray(~nongas),
         nongas_mask=jnp.asarray(nongas),
+        diff_esc_mask=jnp.zeros(ni, dtype=jnp.bool_),
         settle_coeff=jnp.zeros(ni),
         top_flux=jnp.zeros(ni),
         bot_flux=jnp.zeros(ni),
@@ -337,6 +340,7 @@ def test_settling_velocity_jax_matches_host():
 def test_jvp_dz_wrt_gs_matches_fd(hd189_state):
     """dz responds to surface gravity; jvp matches a central difference."""
     from vulcan_jax.config import default_config
+
     cfg = default_config()
 
     var, atm = hd189_state.var, hd189_state.atm
@@ -360,6 +364,7 @@ def test_jvp_M_Dzz_wrt_Tco_matches_fd(hd189_state):
     (warming the column); a specific T(P) parameterisation just composes in
     front of the Tco leaf (see `analytical_TP_H14`)."""
     from vulcan_jax.config import default_config
+
     cfg = default_config()
 
     var, atm = hd189_state.var, hd189_state.atm

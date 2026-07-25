@@ -46,6 +46,7 @@ def _synthetic_atm(net, nz):
         bot_flux=jnp.zeros(ni),
         bot_vdep=jnp.zeros(ni),
         gas_indx_mask=jnp.ones(ni, dtype=jnp.bool_),
+        diff_esc_mask=jnp.zeros(ni, dtype=jnp.bool_),
         use_vm_mol=jnp.bool_(False),
         use_settling=jnp.bool_(False),
         use_topflux=jnp.bool_(False),

@@ -105,6 +105,7 @@ class AtmSpec(NamedTuple):
     top_flux: jnp.ndarray  # (ni,)
     bot_flux: jnp.ndarray  # (ni,)
     bot_vdep: jnp.ndarray  # (ni,)
+    diff_esc_mask: jnp.ndarray  # (ni,) bool, species in cfg.diff_esc
     use_moldiff: bool
     use_vm_mol: bool
     use_settling: bool
@@ -266,6 +267,7 @@ def build_atm_static(phys: PhysicalInputs, spec: AtmSpec) -> AtmStatic:
         bot_flux=spec.bot_flux,
         bot_vdep=spec.bot_vdep,
         gas_indx_mask=spec.gas_indx_mask,
+        diff_esc_mask=spec.diff_esc_mask,
         use_vm_mol=use_vm,
         use_settling=use_set,
         use_topflux=spec.use_topflux,
@@ -302,6 +304,13 @@ def make_physical_inputs(
     for sp in cfg.non_gas_sp:
         if sp in species_list:
             nongas[species_list.index(sp)] = True
+    # Diffusion-limited-escape species get an extra Jacobian top-diagonal term
+    # (master op.py:2144-2148); mirrors make_atm_static so the two builders
+    # stay field-for-field identical.
+    _diff_esc_mask = np.zeros(ni, dtype=bool)
+    for sp in getattr(cfg, "diff_esc", []) or []:
+        if sp in species_list:
+            _diff_esc_mask[species_list.index(sp)] = True
 
     if bool(getattr(cfg, "use_settling", False)):
         settle_coeff = settling_coeff_array(
@@ -326,6 +335,7 @@ def make_physical_inputs(
         top_flux=jnp.asarray(atm.top_flux, dtype=jnp.float64),
         bot_flux=jnp.asarray(atm.bot_flux, dtype=jnp.float64),
         bot_vdep=jnp.asarray(atm.bot_vdep, dtype=jnp.float64),
+        diff_esc_mask=jnp.asarray(_diff_esc_mask),
         # getattr defaults mirror make_atm_static (jax_step.py) so the two
         # builders agree on a config that omits a toggle.
         use_moldiff=bool(getattr(cfg, "use_moldiff", True)),

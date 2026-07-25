@@ -257,8 +257,13 @@ def test_hd189_reaction_sensitivity_regression():
     k_arr = jnp.asarray(d["k_arr"])
     dz = jnp.asarray(d["dz"])
     compo = jnp.asarray(d["compo"])
+    _atm_fields = {k[5:]: jnp.asarray(d[k]) for k in d.files if k.startswith("atm__")}
+    # The fixture predates `diff_esc_mask` (the Jacobian's diffusion-limited-
+    # escape diagonal term). HD189 ships `diff_esc: []`, so an all-False mask
+    # reproduces the state this fixture was captured in.
+    _atm_fields.setdefault("diff_esc_mask", jnp.zeros(y_star.shape[1], dtype=jnp.bool_))
     atm = AtmStatic(
-        **{k[5:]: jnp.asarray(d[k]) for k in d.files if k.startswith("atm__")},
+        **_atm_fields,
         **{k[9:]: bool(d[k]) for k in d.files if k.startswith("atmbool__")},
     )
     net = chem_funs._NET_JAX
@@ -332,8 +337,16 @@ def test_hd189_reaction_sensitivity_regression():
     # than the renorm default — the mechanism that motivated flipping the default
     # (2026-07-03: bare ~6.6% vs renorm ~0.7% here).
     dLdlnk_b, info_b = steady_state_reaction_sensitivity(
-        loss, y_star, k_arr, atm, net, compo_array=compo, dz=dz,
-        solver_map="bare", lgmres_inner_m=250, lgmres_cycles=8,
+        loss,
+        y_star,
+        k_arr,
+        atm,
+        net,
+        compo_array=compo,
+        dz=dz,
+        solver_map="bare",
+        lgmres_inner_m=250,
+        lgmres_cycles=8,
         return_info=True,
     )
     dLdlnk_b = np.asarray(dLdlnk_b)
@@ -341,10 +354,14 @@ def test_hd189_reaction_sensitivity_regression():
         f"bare fp_err {info_b['fp_err']:.2e} not looser than renorm "
         f"{info['fp_err']:.2e}"
     )
-    rel_bare = max(abs(dLdlnk_b[r] - HD189_FD_ANCHORS[r]) / abs(HD189_FD_ANCHORS[r])
-                   for r in (13, 14))
-    rel_renorm = max(abs(dLdlnk[r] - HD189_FD_ANCHORS[r]) / abs(HD189_FD_ANCHORS[r])
-                     for r in (13, 14))
+    rel_bare = max(
+        abs(dLdlnk_b[r] - HD189_FD_ANCHORS[r]) / abs(HD189_FD_ANCHORS[r])
+        for r in (13, 14)
+    )
+    rel_renorm = max(
+        abs(dLdlnk[r] - HD189_FD_ANCHORS[r]) / abs(HD189_FD_ANCHORS[r])
+        for r in (13, 14)
+    )
     assert rel_bare > rel_renorm, (
         f"bare rel {rel_bare:.3f} should exceed renorm rel {rel_renorm:.3f}"
     )

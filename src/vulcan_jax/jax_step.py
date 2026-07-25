@@ -169,6 +169,7 @@ class AtmStatic(NamedTuple):
     bot_flux: jnp.ndarray  # (ni,)
     bot_vdep: jnp.ndarray  # (ni,)
     gas_indx_mask: jnp.ndarray  # (ni,) bool
+    diff_esc_mask: jnp.ndarray  # (ni,) bool — species in cfg.diff_esc
     use_vm_mol: bool
     use_settling: bool
     use_topflux: bool
@@ -546,6 +547,21 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
         jnp.zeros_like(atm.bot_vdep),
     )
     diag_d = diag_d.at[0].add(bot_vdep_term)
+    # Diffusion-limited escape at TOA. master adds this to the top-layer
+    # diagonal in all three live lhs_jac_* variants (op.py:2144-2148,
+    # 2264-2268, 2468-2472), gated on a non-empty `diff_esc` list — NOT on
+    # `use_topflux`. The escape flux already enters the RHS via
+    # `_apply_diffusion_jax`, so omitting it here left the Jacobian
+    # inconsistent with the residual it linearizes. master guards
+    # `if y[-1,sp] > 0`; the inner `where` reproduces that and keeps the
+    # division safe (and the derivative finite) when y is zero.
+    y_top_pos = y[-1] > 0.0
+    diff_lim = jnp.where(
+        atm.diff_esc_mask & y_top_pos,
+        atm.top_flux / jnp.where(y_top_pos, y[-1], 1.0),
+        0.0,
+    )
+    diag_d = diag_d.at[-1].add(-diff_lim)
 
     eye = jnp.eye(ni)
     di = jnp.arange(ni)
@@ -603,6 +619,14 @@ def make_atm_static(atm, ni: int, nz: int, cfg=None) -> AtmStatic:
     use_botflux = bool(getattr(cfg, "use_botflux", False))
     gas_mask = jnp.zeros((ni,), dtype=jnp.bool_)
     gas_mask = gas_mask.at[jnp.asarray(atm.gas_indx, dtype=jnp.int32)].set(True)
+    # Diffusion-limited escape acts on the Jacobian's top-layer diagonal
+    # (master op.py:2144-2148). master gates it on a non-empty `diff_esc`
+    # list, NOT on `use_topflux`, so the mask is independent of the toggles
+    # above. Species not in the network are a config error caught by
+    # runtime_validation, so index lookup is safe here.
+    diff_esc_np = np.zeros((ni,), dtype=bool)
+    for _sp in getattr(cfg, "diff_esc", []) or []:
+        diff_esc_np[_SPEC_LIST.index(_sp)] = True
     vm = atm.vm if use_vm else jnp.zeros((nz - 1, ni), dtype=jnp.float64)
     vs = atm.vs if use_set else jnp.zeros((nz - 1, ni), dtype=jnp.float64)
     Dzz = (
@@ -628,6 +652,7 @@ def make_atm_static(atm, ni: int, nz: int, cfg=None) -> AtmStatic:
         bot_flux=jnp.asarray(atm.bot_flux),
         bot_vdep=jnp.asarray(atm.bot_vdep),
         gas_indx_mask=gas_mask,
+        diff_esc_mask=jnp.asarray(diff_esc_np),
         use_vm_mol=use_vm,
         use_settling=use_set,
         use_topflux=use_topflux,

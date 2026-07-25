@@ -50,6 +50,7 @@ def test_diffusion_ysum_zero_layer():
         bot_flux=jnp.zeros(ni),
         bot_vdep=jnp.zeros(ni),
         gas_indx_mask=gas_mask,
+        diff_esc_mask=jnp.zeros(ni, dtype=jnp.bool_),
         use_vm_mol=False,
         use_settling=False,
         use_topflux=False,

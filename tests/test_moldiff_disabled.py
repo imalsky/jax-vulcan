@@ -33,6 +33,7 @@ def test_zero_dzz_with_zero_hpi_keeps_molecular_terms_finite() -> None:
         bot_flux=jnp.zeros(ni, dtype=jnp.float64),
         bot_vdep=jnp.zeros(ni, dtype=jnp.float64),
         gas_indx_mask=jnp.ones(ni, dtype=jnp.bool_),
+        diff_esc_mask=jnp.zeros(ni, dtype=jnp.bool_),
         use_vm_mol=False,
         use_settling=False,
         use_topflux=False,

@@ -43,6 +43,9 @@ fields = {k[5:]: jnp.asarray(d[k]) for k in d.files if k.startswith("atm__")}
 # The fixture predates the interface-centered vm; inert (use_vm_mol=False),
 # splice the current-contract shape.
 fields["vm"] = jnp.zeros((nz - 1, ni))
+# The fixture also predates `diff_esc_mask` (Jacobian escape diagonal). W39b
+# ships `diff_esc: []`, so an all-False mask matches the captured state.
+fields.setdefault("diff_esc_mask", jnp.zeros(ni, dtype=jnp.bool_))
 atm = AtmStatic(
     **fields, **{k[9:]: bool(d[k]) for k in d.files if k.startswith("atmbool__")}
 )
