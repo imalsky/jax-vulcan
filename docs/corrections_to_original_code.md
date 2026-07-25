@@ -136,6 +136,53 @@ Deliberate divergences that fix a confirmed master bug.
   `element_abundances_vulcan.dat` differs because it is a per-run scratch
   file rewritten by the EQ initialization, not a correction.
 
+### C8 — Non-finite states scored as converged (solver-guard divergence, 2026-07-24)
+- **master:** `op.py:1053` computes `longdy = np.amax(longdy[ymix>0]/ymix[ymix>0])`. On a poisoned
+  state the boolean selection is empty and NumPy raises
+  `ValueError: zero-size array to reduction operation maximum` — master crashes loudly.
+- **JAX (before):** `outer_loop._conv_jax` masked with `jnp.where(s.ymix > 0, ...)`. `NaN > 0` is
+  False, so every non-finite cell contributed exactly `0.0` to the max — the guard deleted the cells
+  that most needed to be seen. Measured: a state correctly flagged unconverged at `longdy=0.03996`
+  flipped to `longdy=0.0` (perfect score) when the one offending cell was set NaN; an all-NaN state
+  read `0.0 < yconv_cri` and reported `end_case=1` "Integration successful".
+- **JAX (now):** `src/vulcan_jax/outer_loop.py` forces `longdy=+inf` when any `y`/`ymix` cell is
+  non-finite, reproducing master's "can never converge" semantics inside a jittable reduction. Both
+  convergence routes stay shut (the normal branch, and the stall fallback which also requires
+  `longdy < yconv_min`). Pinned by `tests/test_nonfinite_never_converges.py`.
+- **Note:** this is a *guard* divergence, not a physics one — no converging run changes. The
+  single-profile `cond_fn`/`_real_terminate` still carry no `isfinite` test; only the batched
+  `body_fn_batch` sets `termination_reason=5`.
+
+### C9 — Post-step clip fed the pre-step `ymix` (2026-07-24)
+- **master:** `Ros2.solver` writes `var.y = sol` AND recomputes `var.ymix` from the new solution
+  (`op.py:3028`, `op.py:3031-3034`); `one_step` then calls `clip` (`op.py:3139`), whose second rule
+  (`op.py:2503`) `y[ymix<mtol & y<0] = 0` therefore tests the **post-solve** mixing ratio. Any cell
+  with `y<0` has post-solve `ymix<0<mtol`, so master zeroes **every** negative unconditionally.
+- **JAX (before):** `outer_loop` passed the **pre-step** `s.ymix`, which is positive, so that branch
+  never fired. Measured on real HD189 Ros2 output: 267/204/204 negatives survived at
+  `dt=1e4/1e8/1e12` (worst magnitude 6.99e9 cm^-3) where master's clip leaves zero in every case.
+  Two consequences: negative number densities entered the carried state, and the `all_nonneg` accept
+  gate rejected steps master provably accepts.
+- **JAX (now):** both `_make_clip_fn` variants zero every negative, matching master's reduced rule.
+- **Note:** **this changes accepted-step counts.** Any benchmark or Table 1 regeneration must be run
+  after this change, not before.
+
+### C10 — Diffusion-limited-escape term missing from the Jacobian diagonal (2026-07-24)
+- **master:** adds `diff_lim[sp] = atm.top_flux[sp]/y[-1,sp]` to the top-layer diagonal in all three
+  live variants (`op.py:2144-2148`, `2264-2268`, `2468-2472`), gated on a non-empty
+  `vulcan_cfg.diff_esc` list — **not** on `use_topflux`.
+- **JAX (before):** the escape flux reached the RHS (`jax_step._apply_diffusion_jax`, refreshed
+  in-loop by `atm_refresh.update_phi_esc_jax`) but the `diag_d` assembly added only `bot_vdep`;
+  `grep -rn diff_lim src/` returned nothing, so the Jacobian was inconsistent with the residual it
+  linearizes. Live on two shipped configs: `HD209.yaml` (`diff_esc: [H]`) and `Earth.yaml`
+  (`[H2, H]`), both `use_topflux: false`. Measured on the HD209 state, the omitted element is
+  **1.841x** the Rosenbrock diagonal at `dt=1 s` and **1.841e8x** at `dt=1e8 s` — dominant as `dt`
+  grows toward `dt_max`.
+- **JAX (now):** a `diff_esc_mask` (ni,) bool rides `AtmStatic` beside `top_flux`, built identically
+  in `make_atm_static` and `atm_jax.build_atm_static`, and the term is added with master's
+  `if y[-1,sp] > 0` guard. Verified no-op where `diff_esc` is empty (mask all-False for HD189/W39b,
+  flags `H` for HD209), so master-parity numbers on those columns are untouched.
+
 ## Bugs still present in the JAX port (inherited from master)
 
 Confirmed master bugs the port faithfully carries. None affect the default

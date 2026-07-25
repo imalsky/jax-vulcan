@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Table 1 benchmark: VULCAN 2.0 vs VULCAN-JAX 3.0, free convergence, one host.
+#
+# WHY THIS SCRIPT EXISTS
+# A 2026-07 attempt to regenerate Table 1 produced a 16.8x wall-clock speedup that had to be
+# retracted: VULCAN 2.0 consumed only 363 s of CPU across 1238 s of wall (ratio 0.29) because the
+# machine was throttled/oversubscribed — plausibly a closed laptop lid. Its wall time was therefore
+# not a measurement of VULCAN 2.0. Step counts were unaffected and remained valid.
+#
+# So this script GUARDS the measurement instead of trusting it:
+#   - refuses to start if load average is high
+#   - runs under `caffeinate` so the machine cannot sleep or downclock mid-run
+#   - records user+sys alongside real for every run
+#   - REFUSES to report a speedup unless VULCAN 2.0's cpu/wall is close to 1.0
+# A run that fails the guard prints step counts (which are load-independent) and no timing.
+#
+# Usage:  tools/bench_table1.sh [HD189|HD209|W39b] ...     (default: all three)
+
+set -euo pipefail
+
+PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+JAX_REPO="$PROJECT/VULCAN-JAX"
+MASTER="$PROJECT/VULCAN-master"
+PY="${BENCH_PYTHON:-python}"
+OUT="${BENCH_OUT:-/tmp/bench_table1_$(date +%Y%m%d_%H%M%S)}"
+CPU_WALL_MIN="${CPU_WALL_MIN:-0.85}"   # VULCAN 2.0 is single-threaded: cpu/wall must be ~1
+LOAD_MAX="${LOAD_MAX:-2.0}"
+
+mkdir -p "$OUT"
+PLANETS=("${@:-HD189 HD209 W39b}")
+read -r -a PLANETS <<< "${PLANETS[*]}"
+
+# --- network / atom_list per planet (import-locked in VULCAN-JAX, must be set BEFORE import) ---
+net_for() { case "$1" in
+    W39b) echo "thermo/SNCHO_photo_network.txt" ;;
+    *)    echo "thermo/NCHO_photo_network.txt" ;;
+  esac; }
+atoms_for() { case "$1" in
+    W39b) echo "H,O,C,N,S" ;;
+    *)    echo "H,O,C,N" ;;
+  esac; }
+
+# ---------------------------------------------------------------- preflight
+load1=$(sysctl -n vm.loadavg | awk '{print $2}')
+echo "load average (1 min): $load1   (threshold $LOAD_MAX)"
+if awk "BEGIN{exit !($load1 > $LOAD_MAX)}"; then
+  echo "ABORT: machine is busy. Timing measured now would not be reproducible." >&2
+  echo "       Close other work and retry, or raise LOAD_MAX if you accept the noise." >&2
+  exit 1
+fi
+command -v caffeinate >/dev/null && CAF="caffeinate -dims" || CAF=""
+[ -n "$CAF" ] || echo "WARNING: caffeinate absent; the machine may sleep or downclock mid-run."
+
+# time a command, emitting "real user sys" to stdout
+timed() { local log="$1"; shift
+  { /usr/bin/time -p $CAF "$@" >"$log" 2>&1; } 2>"$log.time" || true
+  awk '/^real/{r=$2} /^user/{u=$2} /^sys/{s=$2} END{print r, u, s}' "$log.time"
+}
+
+printf '%-8s %-12s %8s %8s %8s %9s %7s\n' PLANET CODE REAL USER SYS CPU/WALL STEPS | tee "$OUT/summary.txt"
+
+for P in "${PLANETS[@]}"; do
+  # ---------------- VULCAN 2.0, in an isolated copy so the oracle tree is never written to
+  W="$OUT/master_$P"; mkdir -p "$W/output" "$W/plot"
+  for d in atm thermo fastchem_vulcan; do ln -sfn "$MASTER/$d" "$W/$d"; done
+  cp "$MASTER"/*.py "$W/" 2>/dev/null || true
+  "$PY" - "$W/vulcan_cfg.py" "$(net_for "$P")" <<'PYEOF'
+import re, sys, pathlib
+p, net = pathlib.Path(sys.argv[1]), sys.argv[2]
+t = p.read_text()
+t = re.sub(r"^network\s*=.*$", f"network = '{net}'", t, flags=re.M)
+for k in ("use_print_prog", "use_live_plot", "use_live_flux", "use_plot_end", "use_plot_evo"):
+    t = re.sub(rf"^{k}\s*=.*$", f"{k} = False", t, flags=re.M)
+p.write_text(t)
+PYEOF
+  read -r m_real m_user m_sys < <(cd "$W" && timed "$W/run.log" "$PY" vulcan.py)
+  m_steps=$(grep -oE 'successfully run to steady-state with [0-9]+ steps' "$W/run.log" | grep -oE '[0-9]+' | head -1)
+  m_ratio=$(awk "BEGIN{printf \"%.2f\", ($m_user+$m_sys)/$m_real}")
+  printf '%-8s %-12s %8s %8s %8s %9s %7s\n' "$P" "VULCAN2.0" "$m_real" "$m_user" "$m_sys" "$m_ratio" "${m_steps:-?}" | tee -a "$OUT/summary.txt"
+
+  # ---------------- VULCAN-JAX 3.0, fresh subprocess + empty XLA cache (Table 1's protocol)
+  J="$OUT/jax_$P"; mkdir -p "$J"
+  read -r j_real j_user j_sys < <(cd "$J" && \
+    JAX_COMPILATION_CACHE_DIR="$J/xlacache" \
+    VULCAN_JAX_NETWORK="$JAX_REPO/src/vulcan_jax/$(net_for "$P")" \
+    VULCAN_JAX_ATOM_LIST="$(atoms_for "$P")" \
+    timed "$J/run.log" "$PY" -m vulcan_jax.vulcan_jax_cli --config "$P")
+  j_steps=$(grep -oE 'successfully run to steady-state with [0-9]+ steps' "$J/run.log" | grep -oE '[0-9]+' | head -1)
+  j_ratio=$(awk "BEGIN{printf \"%.2f\", ($j_user+$j_sys)/$j_real}")
+  printf '%-8s %-12s %8s %8s %8s %9s %7s\n' "$P" "VULCAN-JAX" "$j_real" "$j_user" "$j_sys" "$j_ratio" "${j_steps:-?}" | tee -a "$OUT/summary.txt"
+
+  # ---------------- the guard: only report a speedup if master actually got its core
+  if awk "BEGIN{exit !($m_ratio < $CPU_WALL_MIN)}"; then
+    {
+      echo "  !! TIMING REJECTED for $P: VULCAN 2.0 cpu/wall = $m_ratio < $CPU_WALL_MIN."
+      echo "     It waited instead of computing (throttling, sleep, or contention), so its"
+      echo "     $m_real s wall is not a measurement. Steps are still valid:"
+      echo "     VULCAN 2.0 ${m_steps:-?} steps vs VULCAN-JAX ${j_steps:-?} steps."
+    } | tee -a "$OUT/summary.txt"
+  else
+    awk "BEGIN{printf \"  speedup (wall): %.2fx   steps: %s vs %s\n\", $m_real/$j_real, \"${m_steps:-?}\", \"${j_steps:-?}\"}" \
+      | tee -a "$OUT/summary.txt"
+  fi
+done
+
+echo
+echo "logs + summary: $OUT"
+echo "Step counts are load-independent and always trustworthy; wall times only when the guard passed."

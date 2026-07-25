@@ -678,7 +678,7 @@ relative shares below are host-robust even though absolute ms are not:
 
 | Operation | Master share | vs VULCAN-JAX | Why |
 |---|---:|---:|---|
-| **Linear solve** | **~50% of the step** | **~5x cheaper** | master calls `solve_banded` **twice** per step (two LU factorizations of the *same* matrix) and the band stores the species-diagonal off-blocks as if dense; block-Thomas factorizes once, reuses it for both Ros2 stages, and skips those zeros |
+| **Linear solve** | **~50% of the step** | **~2.3x cheaper** (2.10x from factorization reuse, 1.10x from skipping the off-block zeros) | master calls `solve_banded` **twice** per step (two LU factorizations of the *same* matrix) and the band stores the species-diagonal off-blocks as if dense; block-Thomas factorizes once, reuses it for both Ros2 stages, and skips those zeros. Measured 2026-07-24; the reuse dominates. Skipping the zeros cuts flops ~14x but at `ni≈69` the sweep is memory/latency-bound, so that does not convert into wall time |
 | Chemistry Jacobian | ~16% | ~6x cheaper | analytical (stoichiometry-driven) vs master's symbolic Jacobian |
 | Transport + chemistry RHS | ~18% | ~30-60x cheaper | per-network codegen, XLA-fused, `y`-independent gravity pre-baked out |
 | Banded repack into SciPy storage | ~7% | eliminated | the block-Thomas path never repacks into band storage |

@@ -1173,3 +1173,85 @@ hydrocarbon chemistry oscillates. The forward result is unaffected: the loss
 footprint is clean (0.002) and the W39b SO2 photosphere is layer 68, far below
 the clamp. Net: `steady_state_reaction_sensitivity` is not available on this
 state; the forward/Fisher path is.
+
+
+## 2026-07-24 — full-repo review: three parity defects, and why Table 1's HD189 step count no longer reproduces
+
+Comprehensive review of the whole repo (134 tracked text files / 29,965 SLOC) plus the manuscript,
+run in the `vulcan` env against the VULCAN-master oracle. 84 findings; the register and executive
+summary are session artifacts. What matters for future work:
+
+### Three undocumented parity defects, now fixed (see `corrections_to_original_code.md`)
+
+1. **A non-finite state was scored as PERFECTLY converged** (`outer_loop._conv_jax`). Every mask in
+   the `longdy` reduction is a `<`/`>` comparison, and those are all False for NaN, so poisoned
+   cells were silently dropped from the max. Measured: a state correctly flagged unconverged at
+   `longdy=0.03996` flipped to `longdy=0.0` when the single offending cell was set NaN; an all-NaN
+   state read 0.0 and reported `end_case=1` "Integration successful". master raises instead
+   (`op.py:1053` reduces an empty selection). Fixed by forcing `longdy=+inf` on any non-finite
+   `y`/`ymix`; pinned by `tests/test_nonfinite_never_converges.py` (5 cases). **The single-profile
+   `cond_fn`/`_real_terminate` still have no `isfinite` test of their own** — only the batched
+   `body_fn_batch` sets `termination_reason=5`. Worth revisiting.
+
+2. **The clip was fed the PRE-step `ymix`.** master's `clip` reads the POST-solve `var.ymix` that
+   `Ros2.solver` just wrote (`op.py:3031-3034` → `op.py:3139` → `op.py:2503`), and any cell with
+   `y<0` has post-solve `ymix<0<mtol`, so master's rule reduces to "zero every negative". We zeroed
+   none: 267/204/204 negatives survived at `dt=1e4/1e8/1e12` (worst 6.99e9 cm^-3), and the
+   `all_nonneg` accept gate then *rejected steps master accepts*. **This shifts accepted-step
+   counts** — sequence any Table 1 regeneration after it.
+
+3. **The diffusion-limited-escape term was missing from the Jacobian diagonal** while present in the
+   RHS. master adds it in all three live `lhs_jac_*` variants gated on a non-empty `diff_esc` list
+   (NOT `use_topflux`); `grep diff_lim src/` returned nothing. Live on HD209 (`diff_esc: [H]`) and
+   Earth (`[H2, H]`). Measured 1.841x the Rosenbrock diagonal at `dt=1 s`, 1.841e8x at `dt=1e8 s`.
+   Fixed by threading a `diff_esc_mask` onto `AtmStatic`. **Adding a field to `AtmStatic` touches
+   five places**: the NamedTuple, `make_atm_static`, `atm_jax.build_atm_static` (+`AtmSpec`),
+   `_ATM_STATIC_BATCH_AXES`, and `stack_atm_statics`'s explicit `array_fields` whitelist — miss the
+   last and the batched runner dies with a vmap size mismatch. The two `tests/data/adj_state_*.npz`
+   fixtures also encode the old field set and need a `setdefault` splice.
+
+### Why HD189 takes 2102 steps where the paper reports 1296
+
+Not a regression — a default change never propagated to the paper. The 1296 traces to the PI-controller
+benchmark in this file (`HD189 off 1296 steps / 37 delta-rejects / 48.6 s`), whose companion W39b
+figure is `1202` — and 1202 is exactly what VULCAN-master produces on W39b today, so that row was
+measured at master-equivalent settings. `HD189.yaml` subsequently gained `use_vm_mol: true` and
+`use_hybrid_vm_mol: true` (commit `27d8db5`), and the upwind-molecular-diffusion note above records
+that the vm path has a deliberately different step count. So **1296 ≈ pre-vm-branch defaults;
+2102 = shipped defaults with upwind mol-diff on.** (`photo_off_convergence_investigation.md` also
+logs a 1301-step photo-on control, but that document is scoped to the W39b SNCHO column, not HD189 —
+it is not corroboration here, and 1301 is coincidentally our own W39b free-convergence count.)
+`jax_paper/scripts/bench_runner.py` also sets `use_photo = False` internally, so the published
+benchmark protocol and the shipped defaults differ in a way the paper never states.
+
+**W39b free-convergence cross-check (2026-07-24):** master 1202 steps, VULCAN-JAX 1301 steps — 8%
+apart on independent implementations, a genuine validation of the port. Table 1's published W39b and
+HD209 cells are *step-matched* to master (both columns read 4548 / 1211; `main.tex:262` says so), so
+they are not free convergences and must not be compared against free-convergence numbers.
+
+### Do not trust a wall-clock number from this laptop without checking cpu/wall
+
+A W39b timing run gave master 1238 s wall on only 363 s CPU (ratio **0.29**) — throttled or
+oversubscribed, plausibly a closed lid. A 16.8x "speedup" derived from it had to be retracted. A
+later HD189 master run was worse (4483 s wall / 380 s CPU, ratio 0.085) and never converged.
+**Single-threaded master must show `user+sys ≈ real`; if it doesn't, the run is not a measurement.**
+`tools/bench_table1.sh` now enforces this and refuses to print a speedup when the guard fails; step
+counts are load-independent and always safe to quote.
+
+### Measured hot-path attribution (replaces the old "~5x cheaper solve")
+
+Factorization reuse across both Ros2 stages: **2.10x**. The diagonal-in-species rank update: only a
+further **1.10x** (flops drop ~14x per XLA cost analysis, but at `ni≈69` the sweep is
+memory/latency-bound). The analytical Jacobian is **16x** (92.1 → 5.66 ms), better than the ~8x
+documented. Cost split of a 40.8 ms step: factorization 20.5 ms, two solves 6.6 ms, chem Jacobian
+6.4 ms, the entire diffusion/vm-refresh assembly 0.19 ms — the transport side is done.
+
+### Test-coverage fragility worth fixing
+
+`.gitignore`'s blanket `*.npz` (line 88) leaves **all four** numerical regression fixtures untracked
+(`git ls-files tests/data` returns nothing), as are `output/HD189.vul` and
+`jax_paper/data/jax_HD209.vul`. On a fresh clone the photo-setup baselines, both adjoint
+regressions, the HD209 codegen test and the `ini_abun` roundtrip all silently *skip* — green bar, no
+oracle. Per this repo's own "skipped != passed" rule those should fail loudly.
+`runtime_validation._validate_numerical_bounds` also covers only 25 of 157 declared knobs; 28/28
+nonsense values were accepted, and `nz=1` plus inverted `P_b`/`P_t` ran to completion.
