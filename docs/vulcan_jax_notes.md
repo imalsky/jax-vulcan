@@ -1237,8 +1237,10 @@ they are not free convergences and must not be compared against free-convergence
 
 ### Do not trust a wall-clock number from this laptop without checking cpu/wall
 
-A W39b timing run gave master 1238 s wall on only 363 s CPU (ratio **0.29**) — throttled or
-oversubscribed, plausibly a closed lid. A 16.8x "speedup" derived from it had to be retracted. A
+A W39b timing run gave master 1238 s wall on only 363 s CPU (ratio **0.29**) — throttled by a
+**closed laptop lid** (confirmed by the maintainer, 2026-07-25; a 15-minute pytest run was likewise
+still unfinished at 96 minutes under the same condition). Keep the lid open or use
+`caffeinate -dims` when timing anything. A 16.8x "speedup" derived from it had to be retracted. A
 later HD189 master run was worse (4483 s wall / 380 s CPU, ratio 0.085) and never converged.
 **Single-threaded master must show `user+sys ≈ real`; if it doesn't, the run is not a measurement.**
 `tools/bench_table1.sh` now enforces this and refuses to print a speedup when the guard fails; step

@@ -24,7 +24,15 @@ MASTER="$PROJECT/VULCAN-master"
 PY="${BENCH_PYTHON:-python}"
 OUT="${BENCH_OUT:-/tmp/bench_table1_$(date +%Y%m%d_%H%M%S)}"
 CPU_WALL_MIN="${CPU_WALL_MIN:-0.85}"   # VULCAN 2.0 is single-threaded: cpu/wall must be ~1
-LOAD_MAX="${LOAD_MAX:-2.0}"
+# Load threshold scaled to the machine: a bare "2.0" is wrong on a 12-core box,
+# where load 6 still leaves half the cores idle. Half the cores is the default
+# ceiling. This is only a pre-flight heuristic — the authoritative check is the
+# cpu/wall ratio measured per run below, which catches throttling that load
+# average cannot see (e.g. a closed laptop lid).
+_NCPU="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null \
+         || nproc 2>/dev/null || echo 4)"
+case "$_NCPU" in ''|*[!0-9]*) _NCPU=4 ;; esac
+LOAD_MAX="${LOAD_MAX:-$(awk "BEGIN{printf \"%.1f\", $_NCPU/2}")}"
 
 mkdir -p "$OUT"
 PLANETS=("${@:-HD189 HD209 W39b}")
@@ -41,12 +49,23 @@ atoms_for() { case "$1" in
   esac; }
 
 # ---------------------------------------------------------------- preflight
-load1=$(sysctl -n vm.loadavg | awk '{print $2}')
-echo "load average (1 min): $load1   (threshold $LOAD_MAX)"
-if awk "BEGIN{exit !($load1 > $LOAD_MAX)}"; then
-  echo "ABORT: machine is busy. Timing measured now would not be reproducible." >&2
-  echo "       Close other work and retry, or raise LOAD_MAX if you accept the noise." >&2
-  exit 1
+# Load average is a pre-flight courtesy check only, and it is not always
+# readable (sysctl is blocked in some sandboxes). Never let its absence abort the
+# run — the authoritative gate is the per-run cpu/wall ratio below.
+load1="$(uptime 2>/dev/null | sed -n 's/.*averages*: *\([0-9.]*\).*/\1/p')"
+if [ -z "${load1:-}" ]; then
+  load1="$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}')"
+fi
+if [ -z "${load1:-}" ]; then
+  echo "load average: unavailable (sysctl/uptime blocked) — skipping the"
+  echo "  pre-flight load check; the per-run cpu/wall guard still applies."
+else
+  echo "load average (1 min): $load1   (threshold $LOAD_MAX on $_NCPU cores)"
+  if awk "BEGIN{exit !($load1 > $LOAD_MAX)}"; then
+    echo "ABORT: machine is busy. Timing measured now would not be reproducible." >&2
+    echo "       Close other work and retry, or raise LOAD_MAX to accept the noise." >&2
+    exit 1
+  fi
 fi
 command -v caffeinate >/dev/null && CAF="caffeinate -dims" || CAF=""
 [ -n "$CAF" ] || echo "WARNING: caffeinate absent; the machine may sleep or downclock mid-run."

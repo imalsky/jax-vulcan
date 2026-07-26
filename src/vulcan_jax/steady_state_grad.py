@@ -807,6 +807,37 @@ def _guard_unmodeled_processes(
             )
             if missing
         ]
+        # A bare warning here was a real hole: `nr` is the identity key, so ANY
+        # custom network skipped every refusal (ion, condensation, photo) and a
+        # run with populated condensates AND active conden rate rows sailed
+        # through with one warning. We cannot fingerprint without the network,
+        # but we CAN ask whether this state could plausibly need a refusal, using
+        # only network-independent evidence: are there body terms for
+        # condensation, and does the abundance array look like it holds
+        # condensates? If the state is not provably benign, refuse — the caller
+        # can always pass `network=`/`species=` explicitly to get the real check.
+        needs_conden_terms = body_terms is None or body_terms.conden_static is None
+        y_np_probe = np.asarray(y_star)
+        # Condensate columns are the ones the runner drives to zero everywhere
+        # except where condensation is active; a fully-positive column set is the
+        # benign signature of a gas-only column.
+        has_zeroed_columns = bool(np.any(np.all(y_np_probe <= 0.0, axis=0)))
+        if needs_conden_terms and has_zeroed_columns:
+            raise ValueError(
+                "adjoint fingerprint guard cannot resolve the host network for "
+                f"this k_arr ({' and '.join(skipped)}), AND this state is not "
+                "provably benign: y_star has at least one all-zero species "
+                "column (the signature of a condensate or pinned species) while "
+                "no condensation body terms were supplied. The ion/condensation "
+                "refusals therefore could not run, and a condensation-coupled "
+                "sensitivity would be silently wrong.\n"
+                "Pass `network=<parsed network>` and `species=<species list>` "
+                "for this run so the fingerprints can be evaluated, or run "
+                "`audit_adjoint_scope(...)` with the run's cfg to check "
+                "explicitly. To proceed on a state you know is gas-only, supply "
+                "the matching `network=`/`species=` rather than relying on the "
+                "import-locked default."
+            )
         warnings.warn(
             "adjoint fingerprint guard could not resolve the import-locked "
             f"host network/species for this k_arr (custom network?): {' and '.join(skipped)} "

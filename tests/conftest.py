@@ -298,3 +298,59 @@ def hd189_state(_hd189_pristine: HD189State) -> HD189State:
         output=p.output,
         solver=p.solver,
     )
+
+
+# --- numerical-oracle fixture guard -----------------------------------------
+# The tests/data/*.npz fixtures ARE the oracles for the photo-setup comparison,
+# the HD189/W39b adjoint regressions, the HD209 codegen check and the ini_abun
+# roundtrip. A blanket `*.npz` gitignore rule once left all of them untracked,
+# so on a fresh clone those tests SKIPPED and the suite still went green — a
+# missing oracle read as a pass, which CLAUDE.md forbids ("skipped != passed").
+#
+# The fixtures stay OUT of git on purpose (~36 MB of binaries, all regenerable
+# from committed scripts). This guard is what makes that safe: if any expected
+# oracle is absent, fail the session with that file's regeneration command
+# instead of quietly skipping. Set VULCAN_JAX_ALLOW_MISSING_FIXTURES=1 to
+# downgrade to a warning (for a deliberately partial checkout).
+_EXPECTED_FIXTURES = {
+    "tests/data/adj_state_hd189.npz": (
+        "regenerate: `python ../jax_paper/scripts/adj_save_state.py` "
+        "(writes jax_paper/outputs/, then copy into tests/data/)"
+    ),
+    "tests/data/adj_state_w39b.npz": (
+        "regenerate: `python ../jax_paper/scripts/adj_save_state_w39b.py` "
+        "(writes jax_paper/outputs/, then copy into tests/data/)"
+    ),
+    "tests/data/photo_setup_hd189_baseline.npz": (
+        "regenerate: `python tests/_gen_photo_baseline.py`"
+    ),
+    "tests/data/photo_setup_hd189_T_dep.npz": (
+        "31 MB; regenerate: `python tests/_gen_photo_baseline.py`"
+    ),
+}
+
+
+def pytest_collection_finish(session):  # noqa: ARG001 - pytest hook signature
+    """Fail loudly when a numerical oracle is missing (skipped != passed)."""
+    del session  # hook arity is fixed by pytest; the guard needs no session state
+    root = Path(__file__).resolve().parents[1]
+    missing = {
+        rel: how
+        for rel, how in _EXPECTED_FIXTURES.items()
+        if not (root / rel).is_file()
+    }
+    if not missing:
+        return
+    lines = [f"  - {rel}\n      {how}" for rel, how in sorted(missing.items())]
+    msg = (
+        f"{len(missing)} numerical-regression oracle(s) are missing, so the tests "
+        f"that compare against them would SKIP and the suite would still report "
+        f"green:\n" + "\n".join(lines) + "\n"
+        "Per CLAUDE.md a guard that cannot run its check must not read as a pass. "
+        "Restore/regenerate the fixtures, or set "
+        "VULCAN_JAX_ALLOW_MISSING_FIXTURES=1 to accept the reduced coverage."
+    )
+    if os.environ.get("VULCAN_JAX_ALLOW_MISSING_FIXTURES") == "1":
+        warnings.warn(msg, RuntimeWarning, stacklevel=1)
+        return
+    raise pytest.UsageError(msg)

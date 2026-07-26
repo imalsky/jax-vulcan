@@ -88,6 +88,13 @@ src/vulcan_jax/fastchem_vulcan/fastchem
 *.npy
 *.npz
 *.parquet
+# tests/data/*.npz stays ignored ON PURPOSE — all four regression oracles are
+# regenerable from committed scripts (see tests/conftest.py's
+# _EXPECTED_FIXTURES for the per-file command), so the ~36 MB of binaries do not
+# belong in history. The coverage risk that comes with that — a fresh clone
+# silently SKIPPING the tests that compare against them — is closed by the
+# collection hook in tests/conftest.py, which FAILS with the regeneration
+# command instead of skipping.
 *.pkl
 *.pickle
 *.feather

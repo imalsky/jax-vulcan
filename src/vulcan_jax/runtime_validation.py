@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 from . import chem_funs
@@ -337,6 +338,108 @@ def _validate_numerical_bounds(cfg) -> list[str]:
             errors.append(f"high_temp_cut_K={htc_K} must be > 0 (K).")
         if htc_P <= 0.0:
             errors.append(f"high_temp_cut_P={htc_P} must be > 0 (dyne/cm^2).")
+
+    # --- numerical core -----------------------------------------------------
+    # These are the knobs a typo makes silently wrong rather than loudly broken.
+    # Before this block they were bound-checked by nothing: `nz=1` and an
+    # inverted P_b/P_t both ran to completion, the latter producing a
+    # negative-thickness atmosphere. Sign/ordering only — no opinion about what
+    # a *good* value is, just what cannot be physical.
+    nz = int(getattr(cfg, "nz", 150))
+    if nz < 3:
+        errors.append(
+            f"nz={nz} must be >= 3. The containers allocate nz-1 interface and "
+            f"nz+1 edge arrays, so nz<=2 is degenerate (nz=1 gives an empty "
+            f"interface grid and the run completes on a meaningless column)."
+        )
+    P_b = float(getattr(cfg, "P_b", 1e9))
+    P_t = float(getattr(cfg, "P_t", 1e-2))
+    if P_b <= 0.0 or P_t <= 0.0:
+        errors.append(f"P_b={P_b:g} and P_t={P_t:g} must both be > 0 (dyne/cm^2).")
+    elif P_b <= P_t:
+        errors.append(
+            f"P_b={P_b:g} must be > P_t={P_t:g}: P_b is the BOTTOM (highest) "
+            f"pressure and P_t the top. Inverting them yields a "
+            f"negative-thickness atmosphere that still runs to completion."
+        )
+
+    # Strictly-positive scalars. Each would produce NaN/garbage rather than an
+    # error if left unchecked.
+    for key, default, unit in (
+        ("atol", 1e-1, "absolute tolerance floor"),
+        ("mtol", 1e-22, "mixing-ratio floor"),
+        ("mtol_conv", 1e-14, "convergence mixing-ratio floor"),
+        ("pos_cut", 0.0, "positive clip threshold"),
+        ("dttry", 1e-8, "initial timestep, s"),
+        ("dt_min", 1e-14, "minimum timestep, s"),
+        ("dt_max", 1e10, "maximum timestep, s"),
+        ("yconv_cri", 1e-2, "convergence criterion"),
+        ("yconv_min", 1e-1, "loose-branch convergence gate"),
+        ("slope_cri", 1e-4, "slope criterion"),
+        ("r_star", 1.0, "stellar radius, Rsun"),
+        ("orbit_radius", 1.0, "orbital distance, AU"),
+    ):
+        if not hasattr(cfg, key):
+            continue
+        v = float(getattr(cfg, key))
+        if not math.isfinite(v):
+            errors.append(f"{key}={v} must be finite ({unit}).")
+        elif v <= 0.0 and key != "pos_cut":
+            errors.append(f"{key}={v:g} must be > 0 ({unit}).")
+        elif v < 0.0:
+            errors.append(f"{key}={v:g} must be >= 0 ({unit}).")
+
+    if hasattr(cfg, "dt_min") and hasattr(cfg, "dt_max"):
+        dt_min = float(getattr(cfg, "dt_min"))
+        dt_max = float(getattr(cfg, "dt_max"))
+        if dt_min > 0 and dt_max > 0 and dt_min >= dt_max:
+            errors.append(f"dt_min={dt_min:g} must be < dt_max={dt_max:g}.")
+
+    for key, lo, hi, unit in (
+        ("humidity", 0.0, 1.0, "relative humidity fraction"),
+        ("nega_cut", -1.0, 0.0, "negative clip threshold (<= 0)"),
+    ):
+        if not hasattr(cfg, key):
+            continue
+        v = float(getattr(cfg, key))
+        if not (lo <= v <= hi):
+            errors.append(f"{key}={v:g} must satisfy {lo} <= {key} <= {hi} ({unit}).")
+
+    if hasattr(cfg, "sl_angle"):
+        sl = float(getattr(cfg, "sl_angle"))
+        if not (0.0 <= sl < math.pi / 2.0):
+            errors.append(
+                f"sl_angle={sl:g} must satisfy 0 <= sl_angle < pi/2 (radians); "
+                f"at or beyond pi/2 the slant path is infinite."
+            )
+
+    # Positive integer counters
+    for key, default in (
+        ("count_min", 120),
+        ("count_max", 10000),
+        ("update_frq", 100),
+        ("conv_step", 500),
+        ("conv_stall_window", 200),
+    ):
+        if not hasattr(cfg, key):
+            continue
+        v = int(getattr(cfg, key))
+        if v < 1:
+            errors.append(f"{key}={v} must be >= 1.")
+    # NO count_min-vs-count_max ordering check. `count_min = count_max + 1` is a
+    # deliberate, documented idiom for "never satisfy the convergence floor, just
+    # run exactly count_max steps" — used by the master-parity harness
+    # (tests/test_default_master_parity.py:94,263) and benchmarks/bench_step.py
+    # ("deliberately set out of reach so the run terminates on count_max"). An
+    # ordering constraint here would reject the repo's own step-matched runs.
+
+    # Wavelength bins for the photolysis grid
+    for key in ("dbin1", "dbin2"):
+        if not hasattr(cfg, key):
+            continue
+        v = float(getattr(cfg, key))
+        if v <= 0.0:
+            errors.append(f"{key}={v:g} must be > 0 (nm).")
 
     return errors
 
