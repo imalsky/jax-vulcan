@@ -183,6 +183,25 @@ Deliberate divergences that fix a confirmed master bug.
   `if y[-1,sp] > 0` guard. Verified no-op where `diff_esc` is empty (mask all-False for HD189/W39b,
   flags `H` for HD209), so master-parity numbers on those columns are untouched.
 
+### C11 — Retry budget force-accepted a step master would still be halving (2026-07-27)
+- **master:** `op.py:2549-2560` rejects a step, calls `reset_y` (which multiplies `dt` by
+  `dt_var_min`), and gives up ONLY when `var.dt < vulcan_cfg.dt_min` — at which point it clamps to
+  `dt_min`, zeroes negatives, prints "Keep producing negative values! Clipping negative solutions and
+  moving on!" and force-accepts. The give-up condition is a dt floor, with no retry count.
+- **JAX (before):** `lax.while_loop` cannot retry unboundedly the way master's Python loop can, so
+  the runner carries `batch_max_retries` as a deadlock backstop and force-accepts on
+  `dt_underflow | retry_exhausted` (`outer_loop.py:1097-1103`). At the shipped `batch_max_retries=64`
+  the COUNT fired first: walking `dt` from `dt_max=1e17` to `dt_min=1e-14` at `dt_var_min=0.5` takes
+  103 rejects, so at reject 64 `dt` was still `5.4e-3` — 5.4e11x larger than `dt_min` — and the step
+  was accepted 39 halvings early. `t` then advanced by `dt_min` while the solution came from a much
+  larger `dt`.
+- **JAX (now):** `batch_max_retries: 110` in all five shipped configs, so `dt_underflow` is the
+  operative trigger and the semantics match master's dt floor. The cap remains only as the JIT
+  deadlock backstop it was intended to be. Each config carries a comment with this arithmetic.
+- **Note:** verified a strict no-op on healthy runs — HD189 still converges in exactly 1296 accepted
+  steps (36.1 s), and the full suite is unchanged at 237 passed. Nothing in normal operation
+  approaches 64 rejects; this only changes behaviour on a step that was already pathological.
+
 ## Bugs still present in the JAX port (inherited from master)
 
 Confirmed master bugs the port faithfully carries. None affect the default
