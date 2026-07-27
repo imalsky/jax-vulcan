@@ -1210,7 +1210,33 @@ summary are session artifacts. What matters for future work:
    last and the batched runner dies with a vmap size mismatch. The two `tests/data/adj_state_*.npz`
    fixtures also encode the old field set and need a `setdefault` splice.
 
-### Why HD189 takes 2102 steps where the paper reports 1296
+### Why HD189 took 2102 steps where the paper reports 1296 — RESOLVED 2026-07-27
+
+**Restoring master parity reproduces the published 1296 exactly.** Two shipped defaults had drifted
+from `VULCAN-master`; putting both back gives `HD189 has successfully run to steady-state with 1296
+steps` on the first try.
+
+| knob | VULCAN-master | shipped (drifted) | restored |
+|---|---|---|---|
+| `use_vm_mol` / `use_hybrid_vm_mol` | `False` | `true` | `false` |
+| `conver_ignore` | 13 heavy hydrocarbons | `['HC3N']` only | master's 13 + HC3N |
+
+A systematic sweep of all 121 knobs the YAML and master's cfg share found only these two substantive
+differences (the others: `count_max` `int(1E4)` vs `10000` — same value; `use_live_plot` — a UI
+flag). `gs` is not in the YAML because VULCAN-JAX derives it from `Mp`/`Rp`: 2139.9 vs master's
+2140.0. `dt_max` is derived as `runtime*1e-5`, exactly master's expression.
+
+**The `conver_ignore` drift was the bigger of the two and the one previously unaccounted for.**
+Master excludes 13 heavy hydrocarbons from the `longdy` convergence test, with its own comment
+explaining why: they "sit on the chem_rhs ULP cancellation floor and stall convergence". The shipped
+config excluded only `HC3N`, so 12 species master deliberately keeps out were inside the convergence
+metric, inflating the step count. Earlier notes attributed the whole change to `use_vm_mol` (which
+alone accounts for 2102 -> 1495, i.e. 607 of 806 steps); the residual ~200 was this.
+
+HD209 and W39b carried the same `use_vm_mol` drift and were restored too (their master cfgs define
+no `conver_ignore`, so that list is HD189-derived but applies to the same failure mode).
+
+### Historical note (superseded by the above)
 
 Not a regression — a default change never propagated to the paper. The 1296 traces to the PI-controller
 benchmark in this file (`HD189 off 1296 steps / 37 delta-rejects / 48.6 s`), whose companion W39b

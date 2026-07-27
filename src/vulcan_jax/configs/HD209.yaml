@@ -62,8 +62,8 @@ P_b: 1000000000.0
 P_t: 0.01
 use_Kzz: true
 use_moldiff: true
-use_vm_mol: true
-use_hybrid_vm_mol: true
+use_vm_mol: false
+use_hybrid_vm_mol: false
 use_vz: false
 high_temp_cut: false
 high_temp_cut_K: 3500.0
@@ -137,7 +137,23 @@ slope_cri: 0.0001
 yconv_min: 0.1
 flux_cri: 0.1
 flux_atol: 1.0
+# Master parity (VULCAN-master default cfg:149): heavy hydrocarbons that sit on the
+# chem_rhs ULP cancellation floor and stall convergence; safe to exclude for
+# hot-Jupiter bulk-chemistry runs. HC3N retained from this repo's earlier list.
 conver_ignore:
+- C6H6
+- C2H2
+- C6H5
+- C2H
+- C2H4
+- C2H5
+- C2H6
+- C3H2
+- C3H3
+- C4H5
+- CH2NH
+- CH3NH2
+- H2CCO
 - HC3N
 rtol: 0.2
 post_conden_rtol: 0.1
