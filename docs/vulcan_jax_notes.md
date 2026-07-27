@@ -1229,8 +1229,8 @@ flag). `gs` is not in the YAML because VULCAN-JAX derives it from `Mp`/`Rp`: 213
 **The `conver_ignore` drift was the bigger of the two and the one previously unaccounted for.**
 Master excludes 13 heavy hydrocarbons from the `longdy` convergence test, with its own comment
 explaining why: they "sit on the chem_rhs ULP cancellation floor and stall convergence". The shipped
-config excluded only `HC3N`, so 12 species master deliberately keeps out were inside the convergence
-metric, inflating the step count. Earlier notes attributed the whole change to `use_vm_mol` (which
+config excluded only `HC3N` — which is NOT in master's list — so ALL 13 of master's species were
+inside the convergence metric, inflating the step count. Earlier notes attributed the whole change to `use_vm_mol` (which
 alone accounts for 2102 -> 1495, i.e. 607 of 806 steps); the residual ~200 was this.
 
 HD209 and W39b carried the same `use_vm_mol` drift and were restored too (their master cfgs define
