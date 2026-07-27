@@ -868,13 +868,10 @@ def _cfg_overlay(cfg):
                 before[name] = getattr(base, name)
         else:
             added.append(name)
-        # Copy mutable containers instead of aliasing them. Setup writes some
-        # knobs in place through `base` (e.g. ini_abun's charge/remove lists);
-        # with a bare `setattr(base, name, val)` those writes land in the
-        # CALLER's cfg object, so a second run with the same cfg would start
-        # from a mutated config. 18 of default.yaml's knobs are list/dict/set.
-        # The restore loop below already deep-copies `before`, so `base` itself
-        # was never the leak — `cfg` was.
+        # Copy mutable containers rather than aliasing: setup writes some knobs
+        # in place through `base`, and a bare setattr would land those writes in
+        # the CALLER's cfg (18 of default.yaml's knobs are list/dict/set), so a
+        # second run with the same cfg would start from a mutated config.
         if isinstance(val, (list, dict, set, bytearray)):
             try:
                 val = copy.deepcopy(val)

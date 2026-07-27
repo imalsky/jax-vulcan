@@ -137,9 +137,8 @@ slope_cri: 0.0001
 yconv_min: 0.1
 flux_cri: 0.1
 flux_atol: 1.0
-# Master parity (VULCAN-master default cfg:149): heavy hydrocarbons that sit on the
-# chem_rhs ULP cancellation floor and stall convergence; safe to exclude for
-# hot-Jupiter bulk-chemistry runs. HC3N retained from this repo's earlier list.
+# Master's list (VULCAN-master cfg:149) + HC3N: heavy hydrocarbons on the chem_rhs
+# ULP floor that stall convergence.
 conver_ignore:
 - C6H6
 - C2H2
@@ -167,13 +166,8 @@ adapt_rtol_dec: 0.5
 adapt_rtol_inc: 1.5
 adapt_rtol_loss_mul: 2.0
 adapt_rtol_inc_loss_thresh: 0.0002
-# 110, not 64: this is the JIT deadlock backstop, NOT the step-rejection policy.
-# lax.while_loop cannot retry unboundedly the way master's Python loop can, so a cap
-# must exist -- but at 64 it FIRED FIRST and force-accepted a step master would still
-# be halving. Walking dt from dt_max=1e17 to dt_min=1e-14 at dt_var_min=0.5 takes 103
-# rejects; at reject 64 dt is still 5.4e-3, i.e. 5.4e11x larger than dt_min. 110 puts
-# the budget above that worst case so `dt < dt_min` is the operative trigger, matching
-# master's give-up rule (op.py:2556). Do not round this back down.
+# 110 (not 64) so `dt < dt_min` ends a reject chain, as master does — see C11 in
+# docs/corrections_to_original_code.md. Do not round down.
 batch_max_retries: 110
 step_size_safety: 0.9
 step_size_zero_delta_frac: 0.01

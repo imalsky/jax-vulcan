@@ -807,15 +807,11 @@ def _guard_unmodeled_processes(
             )
             if missing
         ]
-        # A bare warning here was a real hole: `nr` is the identity key, so ANY
-        # custom network skipped every refusal (ion, condensation, photo) and a
-        # run with populated condensates AND active conden rate rows sailed
-        # through with one warning. We cannot fingerprint without the network,
-        # but we CAN ask whether this state could plausibly need a refusal, using
-        # only network-independent evidence: are there body terms for
-        # condensation, and does the abundance array look like it holds
-        # condensates? If the state is not provably benign, refuse — the caller
-        # can always pass `network=`/`species=` explicitly to get the real check.
+        # `nr` is the identity key, so ANY custom network used to skip every
+        # refusal with only a warning. We cannot fingerprint without the network,
+        # but network-independent evidence (no conden body terms + an all-zero
+        # species column) is enough to refuse a state that is not provably
+        # benign; `network=`/`species=` gets the real check.
         needs_conden_terms = body_terms is None or body_terms.conden_static is None
         y_np_probe = np.asarray(y_star)
         # Condensate columns are the ones the runner drives to zero everywhere
