@@ -258,9 +258,8 @@ def test_hd189_reaction_sensitivity_regression():
     dz = jnp.asarray(d["dz"])
     compo = jnp.asarray(d["compo"])
     _atm_fields = {k[5:]: jnp.asarray(d[k]) for k in d.files if k.startswith("atm__")}
-    # The fixture predates `diff_esc_mask` (the Jacobian's diffusion-limited-
-    # escape diagonal term). HD189 ships `diff_esc: []`, so an all-False mask
-    # reproduces the state this fixture was captured in.
+    # The fixture predates `diff_esc_mask`; HD189 ships `diff_esc: []`, so an
+    # all-False mask reproduces the state it was captured in.
     _atm_fields.setdefault("diff_esc_mask", jnp.zeros(y_star.shape[1], dtype=jnp.bool_))
     atm = AtmStatic(
         **_atm_fields,

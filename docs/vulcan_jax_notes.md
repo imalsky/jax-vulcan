@@ -1175,7 +1175,7 @@ the clamp. Net: `steady_state_reaction_sensitivity` is not available on this
 state; the forward/Fisher path is.
 
 
-## 2026-07-24 — full-repo review: three parity defects, and why Table 1's HD189 step count no longer reproduces
+## 2026-07-24 — full-repo review: three parity defects, and the config drift that broke Table 1's HD189 step count
 
 Comprehensive review of the whole repo (134 tracked text files / 29,965 SLOC) plus the manuscript,
 run in the `vulcan` env against the VULCAN-master oracle. 84 findings; the register and executive
@@ -1226,40 +1226,16 @@ differences (the others: `count_max` `int(1E4)` vs `10000` — same value; `use_
 flag). `gs` is not in the YAML because VULCAN-JAX derives it from `Mp`/`Rp`: 2139.9 vs master's
 2140.0. `dt_max` is derived as `runtime*1e-5`, exactly master's expression.
 
-**The `conver_ignore` drift was the bigger of the two and the one previously unaccounted for.**
-Master excludes 13 heavy hydrocarbons from the `longdy` convergence test, with its own comment
-explaining why: they "sit on the chem_rhs ULP cancellation floor and stall convergence". The shipped
-config excluded only `HC3N` — which is NOT in master's list — so ALL 13 of master's species were
-inside the convergence metric, inflating the step count. Earlier notes attributed the whole change to `use_vm_mol` (which
-alone accounts for 2102 -> 1495, i.e. 607 of 806 steps); the residual ~200 was this.
+**The `conver_ignore` drift was the bigger of the two.** Master excludes 13 heavy hydrocarbons from
+the `longdy` convergence test — they "sit on the chem_rhs ULP cancellation floor and stall
+convergence". The shipped config excluded only `HC3N`, which is NOT in master's list, so all 13 of
+master's species were inside the convergence metric, inflating the step count. Measured split:
+`use_vm_mol=false` alone gives 1495 (2102 -> 1495); restoring `conver_ignore` closes 1495 -> 1296.
 
 HD209 and W39b carried the same `use_vm_mol` drift and were restored too (their master cfgs define
 no `conver_ignore`, so that list is HD189-derived but applies to the same failure mode).
 
-### Historical note (superseded by the above)
-
-Not a regression — a default change never propagated to the paper. The 1296 traces to the PI-controller
-benchmark in this file (`HD189 off 1296 steps / 37 delta-rejects / 48.6 s`), whose companion W39b
-figure is `1202` — and 1202 is exactly what VULCAN-master produces on W39b today, so that row was
-measured at master-equivalent settings. `HD189.yaml` subsequently gained `use_vm_mol: true` and
-`use_hybrid_vm_mol: true` (commit `27d8db5`), and the upwind-molecular-diffusion note above records
-that the vm path has a deliberately different step count. **Confirmed at the source (2026-07-27):**
-`git show 27d8db5^:src/vulcan_jax/cfg_examples/vulcan_cfg_HD189.py` — the config `run_benchmarks.py`
-actually used for Table 1 — carries `use_photo = True`, `use_vm_mol = False` and is otherwise
-knob-for-knob identical to today's `configs/HD189.yaml` (same nz=150, P_b=1e9, P_t=1e-2,
-count_min=120, count_max=1e4, yconv_cri=0.01, yconv_min=0.1, conv_stall_window=200, use_condense
-false, same network and atm file). So the vm default is the ONLY config difference between the
-published row and the shipped default. **But the vm flip explains only most of the step gap, not
-all of it.** Measured (twice, reproducibly) with `use_vm_mol=false` +
-`use_hybrid_vm_mol=false` on an otherwise-shipped HD189.yaml: **1495** steps. So the vm default
-accounts for 2102 -> 1495 = 607 steps, and **199 steps (1495 -> 1296) remain unexplained** — at
-least one further change since that benchmark also moves HD189's convergence. Do not present the vm
-flip as the whole story. Note also that the C9 clip fix changes accepted-step counts by design and
-landed after the 2102 measurement, so the post-fix HD189 count is not yet measured.
-(`photo_off_convergence_investigation.md` also
-logs a 1301-step photo-on control, but that document is scoped to the W39b SNCHO column, not HD189 —
-it is not corroboration here, and 1301 is coincidentally our own W39b free-convergence count.)
-`jax_paper/scripts/bench_runner.py` also sets `use_photo = False` internally, so the published
+`jax_paper/scripts/bench_runner.py:35` sets `use_photo = False` internally, so the published
 benchmark protocol and the shipped defaults differ in a way the paper never states.
 
 **W39b free-convergence cross-check (2026-07-24):** master 1202 steps, VULCAN-JAX 1301 steps — 8%

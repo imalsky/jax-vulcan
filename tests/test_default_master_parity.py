@@ -442,8 +442,8 @@ def test_default_hd189_preloop_and_matched_steps_match_master() -> None:
         if master_res.returncode != 0:
             pytest.skip(
                 f"master subprocess failed {master_res.returncode}; "
-                f"skipping master parity check. Cause is NOT assumed — "
-                f"actual stderr tail:\n{master_res.stderr[-1500:]}"
+                f"skipping master parity check. stderr tail:\n"
+                f"{master_res.stderr[-1500:]}"
             )
         assert "MASTER_OK" in master_res.stdout
 

@@ -136,71 +136,69 @@ Deliberate divergences that fix a confirmed master bug.
   `element_abundances_vulcan.dat` differs because it is a per-run scratch
   file rewritten by the EQ initialization, not a correction.
 
-### C8 — Non-finite states scored as converged (solver-guard divergence, 2026-07-24)
-- **master:** `op.py:1053` computes `longdy = np.amax(longdy[ymix>0]/ymix[ymix>0])`. On a poisoned
-  state the boolean selection is empty and NumPy raises
-  `ValueError: zero-size array to reduction operation maximum` — master crashes loudly.
-- **JAX (before):** `outer_loop._conv_jax` masked with `jnp.where(s.ymix > 0, ...)`. `NaN > 0` is
-  False, so every non-finite cell contributed exactly `0.0` to the max — the guard deleted the cells
-  that most needed to be seen. Measured: a state correctly flagged unconverged at `longdy=0.03996`
-  flipped to `longdy=0.0` (perfect score) when the one offending cell was set NaN; an all-NaN state
-  read `0.0 < yconv_cri` and reported `end_case=1` "Integration successful".
-- **JAX (now):** `src/vulcan_jax/outer_loop.py` forces `longdy=+inf` when any `y`/`ymix` cell is
-  non-finite, reproducing master's "can never converge" semantics inside a jittable reduction. Both
-  convergence routes stay shut (the normal branch, and the stall fallback which also requires
-  `longdy < yconv_min`). Pinned by `tests/test_nonfinite_never_converges.py`.
-- **Note:** this is a *guard* divergence, not a physics one — no converging run changes. The
-  single-profile `cond_fn`/`_real_terminate` still carry no `isfinite` test; only the batched
-  `body_fn_batch` sets `termination_reason=5`.
+### C8 — Non-finite states scored as converged (2026-07-24)
+- **master:** `op.py:1053` `longdy = np.amax(longdy[ymix>0]/ymix[ymix>0])` — on a
+  poisoned state the selection is empty and NumPy raises a zero-size-reduction
+  `ValueError`, so master crashes loudly.
+- **JAX (before):** `outer_loop._conv_jax` masked with `jnp.where(s.ymix > 0, ...)`;
+  `NaN > 0` is False, so every non-finite cell contributed exactly `0.0` to the max.
+  Measured: NaN-ing one cell flipped a state from `longdy=0.03996` to a perfect
+  `0.0`, and an all-NaN state reported `end_case=1` "Integration successful".
+- **JAX (now):** `outer_loop.py` forces `longdy=+inf` on any non-finite `y`/`ymix`
+  cell — master's "can never converge" semantics, since a JIT'd reduction cannot
+  raise. Shuts the normal branch and the stall fallback (also `longdy < yconv_min`).
+  Pinned by `tests/test_nonfinite_never_converges.py`.
+- **Note:** a guard divergence, not a physics one — no converging run changes.
+  Single-profile `cond_fn`/`_real_terminate` still carry no `isfinite` test; only the
+  batched `body_fn_batch` sets `termination_reason=5`.
 
 ### C9 — Post-step clip fed the pre-step `ymix` (2026-07-24)
-- **master:** `Ros2.solver` writes `var.y = sol` AND recomputes `var.ymix` from the new solution
-  (`op.py:3028`, `op.py:3031-3034`); `one_step` then calls `clip` (`op.py:3139`), whose second rule
-  (`op.py:2503`) `y[ymix<mtol & y<0] = 0` therefore tests the **post-solve** mixing ratio. Any cell
-  with `y<0` has post-solve `ymix<0<mtol`, so master zeroes **every** negative unconditionally.
-- **JAX (before):** `outer_loop` passed the **pre-step** `s.ymix`, which is positive, so that branch
-  never fired. Measured on real HD189 Ros2 output: 267/204/204 negatives survived at
-  `dt=1e4/1e8/1e12` (worst magnitude 6.99e9 cm^-3) where master's clip leaves zero in every case.
-  Two consequences: negative number densities entered the carried state, and the `all_nonneg` accept
-  gate rejected steps master provably accepts.
-- **JAX (now):** both `_make_clip_fn` variants zero every negative, matching master's reduced rule.
-- **Note:** **this changes accepted-step counts.** Any benchmark or Table 1 regeneration must be run
-  after this change, not before.
+- **master:** `Ros2.solver` writes `var.y = sol` and recomputes `var.ymix` from the
+  new solution (`op.py:3028`, `op.py:3031-3034`) before `one_step` calls `clip`
+  (`op.py:3139`), so `clip`'s second rule (`op.py:2503`) `y[ymix<mtol & y<0] = 0`
+  tests the **post-solve** mixing ratio. Any cell with `y<0` has post-solve
+  `ymix<0<mtol`, so master zeroes **every** negative unconditionally.
+- **JAX (before):** `outer_loop` passed the **pre-step** `s.ymix`, which is positive,
+  so that branch never fired. Measured on real HD189 Ros2 output: 267/204/204
+  negatives survived at `dt=1e4/1e8/1e12` (worst 6.99e9 cm^-3). They entered the
+  carried state, and the `all_nonneg` accept gate rejected steps master accepts.
+- **JAX (now):** both `_make_clip_fn` variants zero every negative.
+- **Note:** **this changes accepted-step counts.** Any benchmark or Table 1
+  regeneration must be run after this change, not before.
 
 ### C10 — Diffusion-limited-escape term missing from the Jacobian diagonal (2026-07-24)
-- **master:** adds `diff_lim[sp] = atm.top_flux[sp]/y[-1,sp]` to the top-layer diagonal in all three
-  live variants (`op.py:2144-2148`, `2264-2268`, `2468-2472`), gated on a non-empty
-  `vulcan_cfg.diff_esc` list — **not** on `use_topflux`.
-- **JAX (before):** the escape flux reached the RHS (`jax_step._apply_diffusion_jax`, refreshed
-  in-loop by `atm_refresh.update_phi_esc_jax`) but the `diag_d` assembly added only `bot_vdep`;
-  `grep -rn diff_lim src/` returned nothing, so the Jacobian was inconsistent with the residual it
-  linearizes. Live on two shipped configs: `HD209.yaml` (`diff_esc: [H]`) and `Earth.yaml`
-  (`[H2, H]`), both `use_topflux: false`. Measured on the HD209 state, the omitted element is
-  **1.841x** the Rosenbrock diagonal at `dt=1 s` and **1.841e8x** at `dt=1e8 s` — dominant as `dt`
-  grows toward `dt_max`.
-- **JAX (now):** a `diff_esc_mask` (ni,) bool rides `AtmStatic` beside `top_flux`, built identically
-  in `make_atm_static` and `atm_jax.build_atm_static`, and the term is added with master's
-  `if y[-1,sp] > 0` guard. Verified no-op where `diff_esc` is empty (mask all-False for HD189/W39b,
-  flags `H` for HD209), so master-parity numbers on those columns are untouched.
+- **master:** adds `diff_lim[sp] = atm.top_flux[sp]/y[-1,sp]` to the top-layer
+  diagonal in all three live variants (`op.py:2144-2148`, `2264-2268`, `2468-2472`),
+  gated on a non-empty `vulcan_cfg.diff_esc` — **not** on `use_topflux`.
+- **JAX (before):** the escape flux reached the RHS (`jax_step._apply_diffusion_jax`,
+  refreshed by `atm_refresh.update_phi_esc_jax`) but `diag_d` added only `bot_vdep`,
+  so the Jacobian was inconsistent with the residual it linearizes. Live on
+  `HD209.yaml` (`diff_esc: [H]`) and `Earth.yaml` (`[H2, H]`), both
+  `use_topflux: false`. Measured on the HD209 state, the omitted element is
+  **1.841x** the Rosenbrock diagonal at `dt=1 s` and **1.841e8x** at `dt=1e8 s` —
+  dominant as `dt` grows toward `dt_max`.
+- **JAX (now):** a `diff_esc_mask` (ni,) bool rides `AtmStatic` beside `top_flux`,
+  built identically in `make_atm_static` and `atm_jax.build_atm_static`, and the term
+  carries master's `if y[-1,sp] > 0` guard. No-op where `diff_esc` is empty, so
+  HD189/W39b parity numbers are untouched.
 
 ### C11 — Retry budget force-accepted a step master would still be halving (2026-07-27)
-- **master:** `op.py:2549-2560` rejects a step, calls `reset_y` (which multiplies `dt` by
-  `dt_var_min`), and gives up ONLY when `var.dt < vulcan_cfg.dt_min` — at which point it clamps to
-  `dt_min`, zeroes negatives, prints "Keep producing negative values! Clipping negative solutions and
-  moving on!" and force-accepts. The give-up condition is a dt floor, with no retry count.
-- **JAX (before):** `lax.while_loop` cannot retry unboundedly the way master's Python loop can, so
-  the runner carries `batch_max_retries` as a deadlock backstop and force-accepts on
-  `dt_underflow | retry_exhausted` (`outer_loop.py:1097-1103`). At the shipped `batch_max_retries=64`
-  the COUNT fired first: walking `dt` from `dt_max=1e17` to `dt_min=1e-14` at `dt_var_min=0.5` takes
-  103 rejects, so at reject 64 `dt` was still `5.4e-3` — 5.4e11x larger than `dt_min` — and the step
-  was accepted 39 halvings early. `t` then advanced by `dt_min` while the solution came from a much
-  larger `dt`.
-- **JAX (now):** `batch_max_retries: 110` in all five shipped configs, so `dt_underflow` is the
-  operative trigger and the semantics match master's dt floor. The cap remains only as the JIT
-  deadlock backstop it was intended to be. Each config carries a comment with this arithmetic.
-- **Note:** verified a strict no-op on healthy runs — HD189 still converges in exactly 1296 accepted
-  steps (36.1 s), and the full suite is unchanged at 237 passed. Nothing in normal operation
-  approaches 64 rejects; this only changes behaviour on a step that was already pathological.
+- **master:** `op.py:2549-2560` rejects a step and calls `reset_y` (multiplying `dt`
+  by `dt_var_min`), giving up ONLY when `var.dt < vulcan_cfg.dt_min` — then clamping
+  to `dt_min`, zeroing negatives and force-accepting. The give-up condition is a dt
+  floor, with no retry count.
+- **JAX (before):** `lax.while_loop` cannot retry unboundedly, so the runner carries
+  `batch_max_retries` as a deadlock backstop and force-accepts on
+  `dt_underflow | retry_exhausted` (`outer_loop.py:1097-1103`). At the shipped
+  `batch_max_retries=64` the COUNT fired first: walking `dt` from `dt_max=1e17` to
+  `dt_min=1e-14` at `dt_var_min=0.5` takes 103 rejects, so the step was accepted 39
+  rejects early with `dt` still at `5.4e-3`, and `t` advanced by `dt_min` while the
+  solution came from a much larger `dt`.
+- **JAX (now):** `batch_max_retries: 110` in all five shipped configs, so
+  `dt_underflow` is the operative trigger and the cap is only the deadlock backstop
+  it was meant to be. The configs cite this entry for the arithmetic — keep in sync.
+- **Note:** a strict no-op on healthy runs — HD189 still converges in exactly 1296
+  accepted steps, and nothing in normal operation approaches 64 rejects.
 
 ## Bugs still present in the JAX port (inherited from master)
 

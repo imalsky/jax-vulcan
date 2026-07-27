@@ -211,8 +211,8 @@ def _run_probe(script: str, *args: Path, skip_on_failure: bool = False):
     )
     if result.returncode != 0 and skip_on_failure:
         pytest.skip(
-            f"probe subprocess failed {result.returncode}; cause is NOT assumed — "
-            f"actual stderr tail:\n{result.stderr[-1500:]}"
+            f"probe subprocess failed {result.returncode}; stderr tail:\n"
+            f"{result.stderr[-1500:]}"
         )
     assert result.returncode == 0, (
         f"probe failed with {result.returncode}\n"

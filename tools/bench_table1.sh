@@ -1,18 +1,12 @@
 #!/usr/bin/env bash
 # Table 1 benchmark: VULCAN 2.0 vs VULCAN-JAX 3.0, free convergence, one host.
 #
-# WHY THIS SCRIPT EXISTS
-# A 2026-07 attempt to regenerate Table 1 produced a 16.8x wall-clock speedup that had to be
-# retracted: VULCAN 2.0 consumed only 363 s of CPU across 1238 s of wall (ratio 0.29) because the
-# machine was throttled/oversubscribed — plausibly a closed laptop lid. Its wall time was therefore
-# not a measurement of VULCAN 2.0. Step counts were unaffected and remained valid.
-#
-# So this script GUARDS the measurement instead of trusting it:
-#   - refuses to start if load average is high
-#   - runs under `caffeinate` so the machine cannot sleep or downclock mid-run
-#   - records user+sys alongside real for every run
-#   - REFUSES to report a speedup unless VULCAN 2.0's cpu/wall is close to 1.0
-# A run that fails the guard prints step counts (which are load-independent) and no timing.
+# WHY THE TIMING GUARD EXISTS
+# A 2026-07 Table 1 run measured VULCAN 2.0 at 363 s CPU across 1238 s wall (ratio 0.29) on a
+# throttled machine, and the 16.8x speedup derived from it had to be retracted. So this script
+# records user+sys beside real and refuses to print a speedup unless VULCAN 2.0's cpu/wall is
+# near 1.0; step counts are load-independent and are still reported when the guard rejects.
+# Background: docs/vulcan_jax_notes.md, "Do not trust a wall-clock number from this laptop".
 #
 # Usage:  tools/bench_table1.sh [HD189|HD209|W39b] ...     (default: all three)
 
@@ -24,11 +18,8 @@ MASTER="$PROJECT/VULCAN-master"
 PY="${BENCH_PYTHON:-python}"
 OUT="${BENCH_OUT:-/tmp/bench_table1_$(date +%Y%m%d_%H%M%S)}"
 CPU_WALL_MIN="${CPU_WALL_MIN:-0.85}"   # VULCAN 2.0 is single-threaded: cpu/wall must be ~1
-# Load threshold scaled to the machine: a bare "2.0" is wrong on a 12-core box,
-# where load 6 still leaves half the cores idle. Half the cores is the default
-# ceiling. This is only a pre-flight heuristic — the authoritative check is the
-# cpu/wall ratio measured per run below, which catches throttling that load
-# average cannot see (e.g. a closed laptop lid).
+# Load ceiling scales with core count: a bare "2.0" is wrong on a 12-core box, where
+# load 6 still leaves half the cores idle. Default is half the cores.
 _NCPU="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null \
          || nproc 2>/dev/null || echo 4)"
 case "$_NCPU" in ''|*[!0-9]*) _NCPU=4 ;; esac
@@ -49,9 +40,8 @@ atoms_for() { case "$1" in
   esac; }
 
 # ---------------------------------------------------------------- preflight
-# Load average is a pre-flight courtesy check only, and it is not always
-# readable (sysctl is blocked in some sandboxes). Never let its absence abort the
-# run — the authoritative gate is the per-run cpu/wall ratio below.
+# Advisory only: sysctl/uptime are blocked in some sandboxes, so a missing load
+# average must not abort the run. The cpu/wall guard below is the real gate.
 load1="$(uptime 2>/dev/null | sed -n 's/.*averages*: *\([0-9.]*\).*/\1/p')"
 if [ -z "${load1:-}" ]; then
   load1="$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}')"
@@ -72,12 +62,8 @@ command -v caffeinate >/dev/null && CAF="caffeinate -dims" || CAF=""
 
 # time a command, emitting "real user sys" to stdout
 timed() { local log="$1"; shift
-  # Time the child in Python rather than with `/usr/bin/time -p`: getting time's
-  # own stderr into a file while ALSO routing the child's stderr to the log needs
-  # fd juggling that proved fragile here (the report kept reaching the terminal
-  # and .time stayed empty, blanking every summary field). resource.getrusage on
-  # RUSAGE_CHILDREN gives the same user/sys numbers with no redirection puzzle.
-  # Emits "real user sys" on stdout; child output goes to $log.
+  # Python, not `/usr/bin/time -p`: separating time's stderr from the child's needs fd
+  # juggling that kept silently leaving the .time file empty and blanking the summary.
   # shellcheck disable=SC2086  # $CAF is an intentional word-split prefix
   "$PY" - "$log" $CAF "$@" <<'TIMEEOF'
 import resource, subprocess, sys, time
@@ -105,10 +91,8 @@ t = p.read_text()
 t = re.sub(r"^network\s*=.*$", f"network = '{net}'", t, flags=re.M)
 for k in ("use_print_prog", "use_live_plot", "use_live_flux", "use_plot_end", "use_plot_evo"):
     t = re.sub(rf"^{k}\s*=.*$", f"{k} = False", t, flags=re.M)
-# master ships wall_clock_max = 1800 s, which ABORTS a healthy HD189 benchmark
-# mid-integration ("Wall-clock budget exceeded") — on this laptop that run needs
-# ~2000+ s even at cpu/wall 0.97. A benchmark must be bounded by convergence or
-# count_max, never by a wall-clock timer, or the measurement is of the timer.
+# master's shipped wall_clock_max = 1800 s aborts a healthy HD189 benchmark mid-integration:
+# that run needs ~2000+ s even at cpu/wall 0.97, so the timer, not convergence, would end it.
 if re.search(r"^wall_clock_max\s*=", t, flags=re.M):
     t = re.sub(r"^wall_clock_max\s*=.*$", "wall_clock_max = 1.e9", t, flags=re.M)
 else:

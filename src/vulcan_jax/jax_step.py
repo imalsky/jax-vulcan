@@ -619,11 +619,9 @@ def make_atm_static(atm, ni: int, nz: int, cfg=None) -> AtmStatic:
     use_botflux = bool(getattr(cfg, "use_botflux", False))
     gas_mask = jnp.zeros((ni,), dtype=jnp.bool_)
     gas_mask = gas_mask.at[jnp.asarray(atm.gas_indx, dtype=jnp.int32)].set(True)
-    # Diffusion-limited escape acts on the Jacobian's top-layer diagonal
-    # (master op.py:2144-2148). master gates it on a non-empty `diff_esc`
-    # list, NOT on `use_topflux`, so the mask is independent of the toggles
-    # above. Species not in the network are a config error caught by
-    # runtime_validation, so index lookup is safe here.
+    # Independent of the toggles above — see the diff_esc note at the Jacobian
+    # assembly site. Species not in the network are a config error caught by
+    # runtime_validation, so the index lookup is safe here.
     diff_esc_np = np.zeros((ni,), dtype=bool)
     for _sp in getattr(cfg, "diff_esc", []) or []:
         diff_esc_np[_SPEC_LIST.index(_sp)] = True

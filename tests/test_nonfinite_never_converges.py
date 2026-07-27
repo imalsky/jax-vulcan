@@ -2,17 +2,12 @@
 
 Regression guard for the defect where `_conv_jax`'s masks — all `<`/`>`
 comparisons, which are False for NaN — silently dropped poisoned cells from
-the `longdy` maximum. An all-NaN state therefore read `longdy == 0.0`, i.e.
-*perfectly* converged, and the run reported `end_case=1` "Integration
-successful". VULCAN-master cannot do this: its
-`np.amax(longdy[ymix>0]/ymix[ymix>0])` (op.py:1053) reduces an empty
-selection and raises.
-
-The fix forces `longdy = +inf` whenever `y` or `ymix` carries a non-finite
-cell, reproducing master's "can never converge" semantics inside a jittable
-reduction. Both convergence routes must stay blocked: the normal branch
-(`longdy < yconv_cri`) and the stall fallback (which requires
-`longdy < yconv_min`).
+the `longdy` maximum, so an all-NaN state read `longdy == 0.0` (*perfectly*
+converged) and the run reported `end_case=1` "Integration successful".
+VULCAN-master cannot do this: its `np.amax(longdy[ymix>0]/ymix[ymix>0])`
+(op.py:1053) reduces an empty selection and raises. The fix forces
+`longdy = +inf` on any non-finite `y`/`ymix` cell, reproducing master's "can
+never converge" semantics inside a jittable reduction.
 """
 
 from __future__ import annotations
@@ -65,8 +60,7 @@ def test_healthy_unconverged_state_is_not_converged():
 def test_single_nan_cell_cannot_improve_the_score():
     """Poisoning the one cell carrying the signal must not erase it.
 
-    This is the exact regression: pre-fix, NaN-ing the offending cell took
-    longdy from 0.03996 (correctly unconverged) to 0.0 (perfectly converged).
+    Pre-fix, NaN-ing that cell took longdy from 0.03996 to 0.0.
     """
     y, ymix, y_old, n_0 = _mk()
     before = float(_longdy(y, ymix, y_old, n_0))
