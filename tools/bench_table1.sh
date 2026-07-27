@@ -72,8 +72,23 @@ command -v caffeinate >/dev/null && CAF="caffeinate -dims" || CAF=""
 
 # time a command, emitting "real user sys" to stdout
 timed() { local log="$1"; shift
-  { /usr/bin/time -p $CAF "$@" >"$log" 2>&1; } 2>"$log.time" || true
-  awk '/^real/{r=$2} /^user/{u=$2} /^sys/{s=$2} END{print r, u, s}' "$log.time"
+  # Time the child in Python rather than with `/usr/bin/time -p`: getting time's
+  # own stderr into a file while ALSO routing the child's stderr to the log needs
+  # fd juggling that proved fragile here (the report kept reaching the terminal
+  # and .time stayed empty, blanking every summary field). resource.getrusage on
+  # RUSAGE_CHILDREN gives the same user/sys numbers with no redirection puzzle.
+  # Emits "real user sys" on stdout; child output goes to $log.
+  # shellcheck disable=SC2086  # $CAF is an intentional word-split prefix
+  "$PY" - "$log" $CAF "$@" <<'TIMEEOF'
+import resource, subprocess, sys, time
+log, cmd = sys.argv[1], sys.argv[2:]
+t0 = time.time()
+with open(log, "wb") as fh:
+    subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT)
+wall = time.time() - t0
+ru = resource.getrusage(resource.RUSAGE_CHILDREN)
+print(f"{wall:.2f} {ru.ru_utime:.2f} {ru.ru_stime:.2f}")
+TIMEEOF
 }
 
 printf '%-8s %-12s %8s %8s %8s %9s %7s\n' PLANET CODE REAL USER SYS CPU/WALL STEPS | tee "$OUT/summary.txt"
@@ -90,6 +105,14 @@ t = p.read_text()
 t = re.sub(r"^network\s*=.*$", f"network = '{net}'", t, flags=re.M)
 for k in ("use_print_prog", "use_live_plot", "use_live_flux", "use_plot_end", "use_plot_evo"):
     t = re.sub(rf"^{k}\s*=.*$", f"{k} = False", t, flags=re.M)
+# master ships wall_clock_max = 1800 s, which ABORTS a healthy HD189 benchmark
+# mid-integration ("Wall-clock budget exceeded") — on this laptop that run needs
+# ~2000+ s even at cpu/wall 0.97. A benchmark must be bounded by convergence or
+# count_max, never by a wall-clock timer, or the measurement is of the timer.
+if re.search(r"^wall_clock_max\s*=", t, flags=re.M):
+    t = re.sub(r"^wall_clock_max\s*=.*$", "wall_clock_max = 1.e9", t, flags=re.M)
+else:
+    t += "\nwall_clock_max = 1.e9\n"
 p.write_text(t)
 PYEOF
   read -r m_real m_user m_sys < <(cd "$W" && timed "$W/run.log" "$PY" vulcan.py)

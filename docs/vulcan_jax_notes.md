@@ -1217,8 +1217,14 @@ benchmark in this file (`HD189 off 1296 steps / 37 delta-rejects / 48.6 s`), who
 figure is `1202` — and 1202 is exactly what VULCAN-master produces on W39b today, so that row was
 measured at master-equivalent settings. `HD189.yaml` subsequently gained `use_vm_mol: true` and
 `use_hybrid_vm_mol: true` (commit `27d8db5`), and the upwind-molecular-diffusion note above records
-that the vm path has a deliberately different step count. **But the vm flip explains only most of
-the gap, not all of it.** Measured (twice, reproducibly) with `use_vm_mol=false` +
+that the vm path has a deliberately different step count. **Confirmed at the source (2026-07-27):**
+`git show 27d8db5^:src/vulcan_jax/cfg_examples/vulcan_cfg_HD189.py` — the config `run_benchmarks.py`
+actually used for Table 1 — carries `use_photo = True`, `use_vm_mol = False` and is otherwise
+knob-for-knob identical to today's `configs/HD189.yaml` (same nz=150, P_b=1e9, P_t=1e-2,
+count_min=120, count_max=1e4, yconv_cri=0.01, yconv_min=0.1, conv_stall_window=200, use_condense
+false, same network and atm file). So the vm default is the ONLY config difference between the
+published row and the shipped default. **But the vm flip explains only most of the step gap, not
+all of it.** Measured (twice, reproducibly) with `use_vm_mol=false` +
 `use_hybrid_vm_mol=false` on an otherwise-shipped HD189.yaml: **1495** steps. So the vm default
 accounts for 2102 -> 1495 = 607 steps, and **199 steps (1495 -> 1296) remain unexplained** — at
 least one further change since that benchmark also moves HD189's convergence. Do not present the vm
