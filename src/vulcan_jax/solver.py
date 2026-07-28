@@ -5,13 +5,14 @@ forward elimination computes `A'_j = A_j - C_j @ inv(A'_{j-1}) @ B_{j-1}`
 via `lu_factor`/`lu_solve` per block. Cost is O(nz * ni^3);
 differentiable, JIT-friendly, GPU-ready.
 
-Note on the two routines below: the reference `block_thomas` materializes
-`inv(A'_{j-1})` explicitly (`lu_solve(..., eye_ni)`), because the dense
-off-blocks need the full inverse. The hot-path
-`block_thomas_diag_offdiag` does NOT — it exploits the diffusion
-Jacobian's diagonal-in-species off-blocks so the update reduces to
-`lu_solve(A_prev_lu, B_jm1)` against the (ni,) off-diagonal vectors, an
-O(ni^2) rank update instead of an O(ni^3) matmul.
+Both routines below materialize `inv(A'_{j-1})` explicitly via
+`lu_solve(..., eye_ni)`. The reference `block_thomas` needs it because its
+off-blocks are dense. The hot-path `block_thomas_diag_offdiag` needs it too:
+with diagonal off-blocks the update becomes the ELEMENTWISE product
+`A_j - (c[:, None] * b[None, :]) * inv(A'_{j-1})`, which reads every one of
+the ni^2 entries. What the diagonal structure buys is replacing an O(ni^3)
+matmul with an O(ni^2) elementwise scaling; it does NOT avoid the inversion,
+and forming the inverse keeps the sweep O(nz * ni^3) either way.
 """
 
 from __future__ import annotations
@@ -36,7 +37,20 @@ class BlockThomasDiagFactors(NamedTuple):
 
 
 def factor_block_thomas_diag_offdiag(diag, sup_d, sub_d):
-    """Factor a diagonal-offdiag block-tridiagonal system once for reuse."""
+    """Factor a diagonal-offdiag block-tridiagonal system once for reuse.
+
+    OPTIMIZATION NOTE (measured 2026-07-27, ni=89/nz=150, CPU f64, paired
+    interleaved A/B): carrying ``G = inv(A'_j)`` instead of the LU factors
+    is 0.51x under ``jvp`` (2.0x faster) and 0.93x on the primal path. The
+    jvp gap is the point -- ``lu_factor``'s tangent rule is far costlier
+    than ``inv``'s ``-G A_dot G``, and under jvp this sweep is 85% of the
+    linear-algebra block. Agreement with this implementation was 5e-16
+    (primal), 5e-16 (jvp), 1e-15 (vjp), stable over cond(A) 1.5..4e2, and
+    the candidate's residual was no worse. NOT taken here: it changes the
+    numerical path and wants a GPU A/B plus a posterior check on a real
+    retrieval first (the gradient-heavy caller is vulcan-retrieval, which
+    runs ~35k jvp solves per SMC run).
+    """
     ni = diag.shape[1]
 
     lu_factor = jax.scipy.linalg.lu_factor
