@@ -1271,3 +1271,53 @@ regressions, the HD209 codegen test and the `ini_abun` roundtrip all silently *s
 oracle. Per this repo's own "skipped != passed" rule those should fail loudly.
 `runtime_validation._validate_numerical_bounds` also covers only 25 of 157 declared knobs; 28/28
 nonsense values were accepted, and `nz=1` plus inverted `P_b`/`P_t` ran to completion.
+
+## Rejected optimization: inverse carry in block-Thomas (2026-07-27)
+
+Measured 2.0x faster under `jvp` and rejected on accuracy. Recorded because the
+benchmark is genuinely attractive and someone will re-derive it.
+
+**The proposal.** `factor_block_thomas_diag_offdiag` carries `(lu, piv)` and calls
+`lu_solve(..., eye_ni)` each layer to form `inv(A'_{j-1})` for the elementwise rank
+update, then re-factorizes. Carrying `G = inv(A'_j)` directly skips the
+refactorization. Paired interleaved A/B at ni=89/nz=150, CPU f64: **0.51x under jvp**
+(2.0x faster), 0.93x primal. The jvp gap is real -- `lu_factor`'s tangent rule is
+much costlier than `inv`'s `-G A_dot G`, and under jvp the sweep is **85%** of the
+linear-algebra block (vs 50% primal).
+
+**Why it was rejected.** The factorized matrix is `I/(gamma*dt) - J`. On a converged
+HD189 state its blocks reach cond ~1.4e18 at dt=3.8e4 and ~6.7e23 at
+`dt_max=1e11` (which `vulcan-retrieval/runs/w39b_smc_retrieval/case.py` sets).
+Max relative residual, production LU vs inverse carry:
+
+| dt (s) | max cond | resid LU | resid INV | ratio |
+|---|---|---|---|---|
+| 1e2 | 1.1e15 | 1.25e-06 | 1.25e-06 | 1.0x |
+| 3.8e4 | 1.4e18 | 5.34e-03 | 2.60e-02 | 4.9x |
+| 1e6 | 5.8e19 | 1.82e+02 | 4.67e+02 | 2.6x |
+| 1e11 | 6.7e23 | 5.53e+03 | 3.15e+06 | **569x** |
+
+Degradation tracks condition number as theory predicts. The retrieval operates at
+the worst end, and in an SMC posterior solver noise does not announce itself -- it
+surfaces as subtly wrong gradients or a biased posterior.
+
+**Two methodological lessons.**
+1. **A first pass reported "no worse residual, stable across conditioning" and was
+   wrong.** It used synthetic diagonally-dominant blocks topping out at cond ~4e2 --
+   21 orders of magnitude short of production. Benchmark the solver on blocks built
+   from a real converged state (`output/HD189.vul` + `chem_jac_analytical_per_layer`
+   + `I/(gamma*dt)`), never on synthetic ones.
+2. **The `lu_solve(..., eye_ni)` at solver.py:~51 is NOT a redundant inversion.** Its
+   result is immediately re-factorized with partial pivoting, which is
+   backward-stable and stops error compounding over the nz-layer sweep. Carrying `G`
+   propagates an unpivoted inverse through all 150 layers.
+
+**Still open, and worth doing.** The 85%-of-jvp-cost finding stands. The
+stability-preserving attack is a **custom JVP rule** for the sweep: the tangent of a
+block-Thomas elimination has closed form, so it can avoid differentiating through
+pivoting while keeping pivoted LU in the primal.
+
+**Also observed:** the *production* solver's own residual at dt=1e11 is already
+5.5e+03 (cond 6.7e23 against float64's ~16 digits). Whether `dt_max=1e11` is
+necessary is a separate question worth asking.
+
