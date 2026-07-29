@@ -80,6 +80,19 @@ KNOWN_SFLUX_RESCALES: dict[str, float] = {
     "sflux-epseri.txt": 0.735**-4,
 }
 
+# Runtime inputs VULCAN-JAX ships that master has no counterpart for -- planet cases
+# added here with their own configs. This audit exists to catch DRIFT in the files
+# shared with master, not to stop this repo carrying an extra case, but each extra
+# must be named here so a stray or accidentally-copied file still fails. Asymmetric
+# on purpose: a file present only in MASTER is always an error (that is a vendored
+# input we dropped), and an unlisted jax-only file is too.
+JAX_ONLY_RUNTIME_FILES: frozenset[str] = frozenset(
+    {
+        # configs/K2-18b.yaml, a VULCAN-JAX-only ported case (no master counterpart)
+        "atm_K2-18b-Nep100X-apo-H2Oclouds.txt",
+    }
+)
+
 UI_OUTPUT_KEYS = {
     "output_dir",
     "plot_dir",
@@ -354,10 +367,15 @@ def _compare_runtime_data(master_root: Path, jax_root: Path) -> list[str]:
         jax_files = _runtime_files(jax_root / rel_dir)
         master_keys = set(master_files)
         jax_keys = set(jax_files)
-        if master_keys != jax_keys:
+        only_master = master_keys - jax_keys
+        only_jax = {
+            rel for rel in jax_keys - master_keys
+            if rel.name not in JAX_ONLY_RUNTIME_FILES
+        }
+        if only_master or only_jax:
             errors.append(
-                f"{rel_dir}: file set mismatch, only master={sorted(master_keys - jax_keys)}, "
-                f"only jax={sorted(jax_keys - master_keys)}"
+                f"{rel_dir}: file set mismatch, only master={sorted(only_master)}, "
+                f"only jax={sorted(only_jax)}"
             )
         for rel_path in sorted(master_keys & jax_keys):
             if master_files[rel_path] == jax_files[rel_path]:
