@@ -155,8 +155,8 @@ is better conditioned but, run as a *raw Neumann* iteration, is non-contractive
 (unstable total-density mode) and still singular. The working route above
 replaces all of these.
 
-Full development log and identities: `docs/vulcan_jax_notes.md` ("End-to-end AD" /
-"2026-06-16: reverse-mode steady-state adjoint"). Worked recipe:
+Scope, accuracy, and the `body_dt` regime map: `docs/differentiability.md`
+("Reverse mode: the steady-state adjoint"). Worked recipe:
 `examples/grad_reverse_example.py`; paper Fig `fig:so2_rev`.
 """
 
@@ -347,7 +347,7 @@ def _warn_poor_convergence(resid: float, fp_err: float, spread: float = 0.0) -> 
             f"exceeds {_ADJOINT_RESID_WARN:.0e}: the solve is in the stagnation "
             "regime observed on closed columns (dominant-reaction magnitudes "
             "bounce ~+/-25% around FD there; sign and ranking remain robust — "
-            "docs/vulcan_jax_notes.md). Treat magnitudes as ranking weights only. More "
+            "docs/differentiability.md). Treat magnitudes as ranking weights only. More "
             "cycles do not reliably reduce the residual; scan body_dt for a "
             "lower-residual regime (see BODY_MAP_DT) and check null_quality.",
             stacklevel=3,

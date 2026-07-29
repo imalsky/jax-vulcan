@@ -4,8 +4,12 @@
 *$py.class
 *.so
 
-# Claude code / internal docs (docs/ is tracked; CLAUDE.md stays internal)
+# Internal working documents. docs/ is tracked and is the published reference
+# set (differentiability, validation, benchmarks, corrections, file index).
+# These are narrative development logs: useful locally, not consumer content.
 CLAUDE.md
+docs/vulcan_jax_notes.md
+docs/photo_off_convergence_investigation.md
 
 # Distribution / packaging
 build/
