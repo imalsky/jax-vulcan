@@ -187,12 +187,20 @@ def _run_fastchem_locked(data_atm) -> None:
         ele_list = list(_CFG.atom_list)
         ele_list.remove("H")
 
+        # Elements FastChem knows but the VULCAN network does not: their rows get
+        # rescaled by `fastchem_met_scale` instead of read from cfg.<X>_H below.
+        # Used ONLY for membership (`sp in fc_list`), so the order here is inert —
+        # the rewritten file preserves the row order of solar_element_abundances.dat.
+        # Row order in THAT file is load-bearing (FastChem hard-codes element slot
+        # indices); see runtime_validation._FASTCHEM_ELEMENT_ORDER and
+        # tests/test_fastchem_element_order.py. Kept in upstream's order for a
+        # zero-diff comparison against VULCAN-master/build_atm.py:ini_fc.
         fc_list = [
             "C",
             "N",
             "O",
-            "S",
             "P",
+            "S",
             "Si",
             "Ti",
             "V",
