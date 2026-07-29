@@ -1,0 +1,190 @@
+# VULCAN-JAX configuration (K2-18b, 100x-Neptune metallicity, apoastron,
+# H2O clouds, DMS chemistry removed). Ported from the collaborator-supplied
+# legacy `vulcan_cfg`-style file K2-18b-Nep100X-apo-H2Oclouds-noDMS.py.
+# Authored surface: edit values here (or a CWD ./configs/K2-18b.yaml override).
+# Derived at load time (see config._DERIVED), do NOT add here:
+#   dt_max = runtime*1e-5, photo_switch_longdy_thresh = yconv_min*10,
+#   save_movie_rate = live_plot_frq, para_anaTP = para_warm.
+# Gravity is derived as gs = G*Mp/Rp^2 (set Mp + Rp, not gs).
+# Source-config knobs deliberately not carried across:
+#   fix_species_time      -> the pin is gated on stop_conden_time (config._REMOVED_KEYS)
+#   use_print_delta       -> live-UI knob not ported
+#   no_photo_ini_conden, use_other_ele -> not present in VULCAN-master either
+atom_list:
+- H
+- O
+- C
+- N
+- S
+- He
+network: thermo/SNCHO_photo_network_2025.txt
+use_lowT_limit_rates: false
+gibbs_text: thermo/gibbs_text.txt
+cross_folder: thermo/photo_cross/
+com_file: thermo/all_compose.txt
+atm_file: atm/atm_K2-18b-Nep100X-apo-H2Oclouds.txt
+sflux_file: atm/stellar_flux/sflux-GJ436.txt
+top_BC_flux_file: atm/BC_top.txt
+# Source config named atm/BC_bot_SdepOnly_noSorg.txt, which was not supplied.
+# Inert here: use_topflux and use_botflux are both false, so neither BC file is
+# read. Restore the intended filename if either flux flag is ever turned on.
+bot_BC_flux_file: atm/BC_bot.txt
+vul_ini: output/K2-18b.vul
+output_dir: output/
+plot_dir: plot/
+movie_dir: plot/movie/
+out_name: K2-18b.vul
+use_solar: false
+# Asplund 2009 solar, x100 (100x-Neptune-style metallicity); He_H unscaled.
+O_H: 4.8978e-2
+C_H: 2.6915e-2
+N_H: 6.7608e-3
+S_H: 1.3183e-3
+He_H: 0.08511
+ini_mix: EQ
+fastchem_met_scale: 1.0
+const_mix: {}
+use_photo: true
+r_star: 0.4445
+Rp: 1664333760.0
+Mp: 5.162832e+28
+orbit_radius: 0.19092
+sl_angle: 1.0122901111111111
+f_diurnal: 1.0
+scat_sp:
+- H2
+- He
+T_cross_sp: []
+edd: 0.5
+dbin1: 0.1
+dbin2: 2.0
+dbin_12trans: 240.0
+ini_update_photo_frq: 100
+final_update_photo_frq: 5
+use_ion: false
+atm_base: H2
+rocky: false
+nz: 130
+P_b: 500000000.0
+P_t: 0.01
+use_Kzz: true
+use_moldiff: true
+use_vm_mol: true
+use_hybrid_vm_mol: true
+use_vz: false
+high_temp_cut: true
+high_temp_cut_K: 3500.0
+high_temp_cut_P: 1000000.0
+atm_type: file
+Kzz_prof: const
+K_max: 100000.0
+K_p_lev: 0.1
+vz_prof: const
+Tiso: 1000
+para_warm:
+- 120.0
+- 1500.0
+- 0.1
+- 0.02
+- 1.0
+- 1.0
+const_Kzz: 10000000.0
+const_vz: 0
+update_frq: 100
+use_topflux: false
+use_botflux: false
+use_fix_sp_bot: {}
+diff_esc: []
+max_flux: 10000000000000.0
+# Reaction indices to switch off, in forward/reverse pairs. remove_list indexes
+# the SEQUENTIAL counter in ReadRate (i = 1, i += 2 per parsed reaction), not the
+# printed label; they agree on all 596 reactions of this network but diverge by 2
+# after the "# special" section in SNCHO_DMS_photo_network_Tsai2024.txt.
+# Here 315 = NH3 + CH -> NH2 + CH2 and 817 = SH + NO2 -> HSO + NO (316/818 are
+# their reverse slots) — NOT DMS reactions, despite the source config's "noDMS"
+# name. In the DMS network the CH3SCH3 block starts at 819, one pair later, so
+# these indices most likely came from a DMS-network run. Unresolved with the
+# author; see docs/validation.md.
+remove_list:
+- 315
+- 316
+- 817
+- 818
+use_relax:
+- H2O
+use_condense: true
+use_settling: true
+start_conden_time: 0
+stop_conden_time: 10000.0
+condense_sp:
+- H2O
+non_gas_sp:
+- H2O_l_s
+- S8_l_s
+r_p:
+  H2O_l_s: 0.001
+  S8_l_s: 0.0001
+rho_p:
+  H2O_l_s: 1
+  S8_l_s: 2.07
+fix_species:
+- H2O
+- H2O_l_s
+fix_species_from_coldtrap_lev: true
+humidity: 0.8
+use_ini_cold_trap: true
+use_sat_surfaceH2O: false
+st_factor: 0.5
+conv_step: 500
+ode_solver: Ros2
+use_print_prog: true
+print_prog_num: 500
+dttry: 1.0e-10
+trun_min: 100000000.0
+runtime: 1.0e+16
+dt_min: 1.0e-14
+dt_var_max: 2.0
+dt_var_min: 0.5
+count_min: 120
+count_max: 30000
+atol: 0.1
+mtol: 1.0e-14
+mtol_conv: 1.0e-16
+pos_cut: 0
+nega_cut: -1.0
+loss_eps: 0.1
+yconv_cri: 0.01
+slope_cri: 0.0001
+yconv_min: 0.1
+flux_cri: 0.1
+flux_atol: 1.0
+conver_ignore:
+- HC3N
+rtol: 0.1
+post_conden_rtol: 1.5
+use_adapt_rtol: true
+rtol_min: 0.01
+rtol_max: 2.5
+plot_TP: 0
+use_live_plot: false
+use_live_flux: false
+use_plot_end: false
+use_plot_evo: false
+use_save_movie: false
+use_flux_movie: false
+plot_height: false
+use_PIL: false
+live_plot_frq: 10
+y_time_freq: 1
+plot_spec:
+- H2O
+- He
+- H2O_l_s
+- CO2
+- CH4
+- H2S
+- CS2
+output_humanread: false
+use_shark: false
+save_evolution: false
+save_evo_frq: 10
