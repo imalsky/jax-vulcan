@@ -35,7 +35,8 @@ the workspace oracle differ. None of the items below affect the default
 
 ## Corrected in the JAX port
 
-Deliberate divergences that fix a confirmed master bug.
+Deliberate divergences that fix a confirmed master bug. All are live in the
+code today: each one is why a VULCAN-JAX file differs from master right now.
 
 ### C1 — CH2CN + H + M -> CH3CN + M low-pressure rate (data typo)
 - **master:** `thermo/SNCHO_photo_network.txt` (R1131) `k0 = 1.00E-20` (and
@@ -136,69 +137,88 @@ Deliberate divergences that fix a confirmed master bug.
   `element_abundances_vulcan.dat` differs because it is a per-run scratch
   file rewritten by the EQ initialization, not a correction.
 
-### C8 — Non-finite states scored as converged (2026-07-24)
-- **master:** `op.py:1053` `longdy = np.amax(longdy[ymix>0]/ymix[ymix>0])` — on a
-  poisoned state the selection is empty and NumPy raises a zero-size-reduction
-  `ValueError`, so master crashes loudly.
-- **JAX (before):** `outer_loop._conv_jax` masked with `jnp.where(s.ymix > 0, ...)`;
-  `NaN > 0` is False, so every non-finite cell contributed exactly `0.0` to the max.
-  Measured: NaN-ing one cell flipped a state from `longdy=0.03996` to a perfect
-  `0.0`, and an all-NaN state reported `end_case=1` "Integration successful".
-- **JAX (now):** `outer_loop.py` forces `longdy=+inf` on any non-finite `y`/`ymix`
-  cell — master's "can never converge" semantics, since a JIT'd reduction cannot
-  raise. Shuts the normal branch and the stall fallback (also `longdy < yconv_min`).
-  Pinned by `tests/test_nonfinite_never_converges.py`.
-- **Note:** a guard divergence, not a physics one — no converging run changes.
-  Single-profile `cond_fn`/`_real_terminate` still carry no `isfinite` test; only the
-  batched `body_fn_batch` sets `termination_reason=5`.
+### C12 — FastChem element row order vs hard-coded C++ slots (P/S swap) (logged 2026-07-29)
+- **Mechanism:** FastChem builds its `elements` vector in **abundance-file row
+  order** — `init_read_files.cpp:204` calls `addAtom(symbol)` once per line and
+  `init_add_species.cpp:55-57` does `elements.push_back` +
+  `index = elements.size()-1`. But `mass_action_constant.cpp:380-399` subtracts the
+  per-element NASA-9 reference polynomial by **hard-coded slot index** under its own
+  comment "in the order of the element_abundances.dat file": `index_P = 5`,
+  `index_S = 6`. Abundance *values* are set by symbol
+  (`init_read_files.cpp:202 -> setElementAbundance`) and are therefore always right;
+  what the row order controls is which reference polynomial each stoichiometric
+  coefficient is multiplied by.
+- **upstream:** `fastchem_vulcan/input/solar_element_abundances.dat` lists
+  `... O, S, P, Si ...` — S at slot 5, P at slot 6, the exact transpose of the C++.
+  So every S-bearing molecule's `log_K` is built with `log_P` and every P-bearing
+  one with `log_S`. Introduced by shami-EEG `604ca6e` (2025-12-17, "PHO network
+  running"), whose diff is literally a two-row `P`/`S` swap in that file. Verified
+  present in **exoclime/VULCAN HEAD** as of 2026-07-29, not just the shami fork.
+- **Reachable path:** `ini_mix='EQ'` only (FastChem sets the initial mixing ratios;
+  it is not on the kinetics path). Live on `W39b.yaml` and `K2-18b.yaml`, which are
+  `ini_mix: EQ` on an SNCHO network. `build_atm.py:82-129` rewrites the file
+  **preserving its row order**, so the config layer cannot mask or fix this.
+- **JAX:** `src/vulcan_jax/fastchem_vulcan/input/solar_element_abundances.dat:13-`
+  ships the canonical `C,H,He,N,O,P,S,...` order the C++ expects (fixed in
+  `45cc4c7`, 2026-06-08, alongside the port-introduced C/H/He regression).
+  Guarded two ways so a future reorder fails loudly rather than silently:
+  `runtime_validation.py:50,126` (`_FASTCHEM_ELEMENT_ORDER`, a row-ORDER check, not
+  values-only) and `tests/test_fastchem_element_order.py` (pins the C++ indices, the
+  validator constant, the shipped files, plus an end-to-end "CO forms" probe).
+  `ini_abun.py:192-199` documents that `fc_list` order is inert by contrast.
+- **Measured impact (2026-07-29, direct two-way FastChem run, identical binary and
+  element->value map, row order the only difference).** The error lands almost
+  entirely on whichever species is *not* the dominant reservoir, because element
+  conservation pins the reservoir and the polynomial error is absorbed by the
+  minor one:
+  - **On the real W39b evening column** (nz=150, W39b.yaml abundances, 7.6 bar /
+    2246 K to 4e-6 bar / 726 K): every molecular species is **unaffected** —
+    SO2, H2S, SO, S2, COS, CS all <= 0.004 dex, H2O/CO/CH4/CO2/NH3/HCN at 0.000 dex.
+    **Atomic S is wrong by 2.6-3.1 dex in all 150 layers** (median 2.58 dex across
+    the 1e-4..1e-2 bar transit slab).
+  - **Only where atomic S is itself a major reservoir** (hot *and* rarefied,
+    T >~ 2000 K at P <~ 1e-2 bar — off the W39b profile) does it reach the
+    molecules: up to 0.85 dex on SO2/H2S, 1.7 dex on S2, 3.4 dex on S4.
+  - Because this is an **initial condition** and VULCAN integrates to a
+    photochemical steady state — and atomic S has a very short chemical timescale —
+    the converged W39b science is not expected to move. **Not quantified:** the
+    effect of the wrong initial atomic-S on the convergence path/step count.
+- **Upstream is not fixed and now believes it is.** shami-EEG `8970337`
+  (2026-07-28) reordered `fc_list` to `C,N,O,P,S,...` with the comment "need to be
+  exactly the same order as element_abundances_vulcan.dat". `fc_list` is used only
+  for membership (`sp in fc_list`, `build_atm.py:113`), so that edit is **inert**,
+  and it does not touch the abundance file that actually sets the slots (membership
+  test at upstream `build_atm.py:114`). O1 remains open upstream. If reporting this,
+  point at the .dat row order, not `fc_list`.
+- **Workspace-oracle note:** `../VULCAN-master`'s copy of this file **has been
+  patched** to the corrected order, so `tools/audit_master_parity.py`'s
+  byte-identity check on the abundance file passes against a *patched* oracle. A
+  fresh upstream clone will trip that check; the drift message is expected and this
+  entry is the explanation. See "Workspace-oracle patches" below.
 
-### C9 — Post-step clip fed the pre-step `ymix` (2026-07-24)
-- **master:** `Ros2.solver` writes `var.y = sol` and recomputes `var.ymix` from the
-  new solution (`op.py:3028`, `op.py:3031-3034`) before `one_step` calls `clip`
-  (`op.py:3139`), so `clip`'s second rule (`op.py:2503`) `y[ymix<mtol & y<0] = 0`
-  tests the **post-solve** mixing ratio. Any cell with `y<0` has post-solve
-  `ymix<0<mtol`, so master zeroes **every** negative unconditionally.
-- **JAX (before):** `outer_loop` passed the **pre-step** `s.ymix`, which is positive,
-  so that branch never fired. Measured on real HD189 Ros2 output: 267/204/204
-  negatives survived at `dt=1e4/1e8/1e12` (worst 6.99e9 cm^-3). They entered the
-  carried state, and the `all_nonneg` accept gate rejected steps master accepts.
-- **JAX (now):** both `_make_clip_fn` variants zero every negative.
-- **Note:** **this changes accepted-step counts.** Any benchmark or Table 1
-  regeneration must be run after this change, not before.
+## Live constraints left behind by fixed port regressions
 
-### C10 — Diffusion-limited-escape term missing from the Jacobian diagonal (2026-07-24)
-- **master:** adds `diff_lim[sp] = atm.top_flux[sp]/y[-1,sp]` to the top-layer
-  diagonal in all three live variants (`op.py:2144-2148`, `2264-2268`, `2468-2472`),
-  gated on a non-empty `vulcan_cfg.diff_esc` — **not** on `use_topflux`.
-- **JAX (before):** the escape flux reached the RHS (`jax_step._apply_diffusion_jax`,
-  refreshed by `atm_refresh.update_phi_esc_jax`) but `diag_d` added only `bot_vdep`,
-  so the Jacobian was inconsistent with the residual it linearizes. Live on
-  `HD209.yaml` (`diff_esc: [H]`) and `Earth.yaml` (`[H2, H]`), both
-  `use_topflux: false`. Measured on the HD209 state, the omitted element is
-  **1.841x** the Rosenbrock diagonal at `dt=1 s` and **1.841e8x** at `dt=1e8 s` —
-  dominant as `dt` grows toward `dt_max`.
-- **JAX (now):** a `diff_esc_mask` (ni,) bool rides `AtmStatic` beside `top_flux`,
-  built identically in `make_atm_static` and `atm_jax.build_atm_static`, and the term
-  carries master's `if y[-1,sp] > 0` guard. No-op where `diff_esc` is empty, so
-  HD189/W39b parity numbers are untouched.
+The regressions themselves are fixed and are no longer described here. What
+survives is the invariant each fix left behind.
 
-### C11 — Retry budget force-accepted a step master would still be halving (2026-07-27)
-- **master:** `op.py:2549-2560` rejects a step and calls `reset_y` (multiplying `dt`
-  by `dt_var_min`), giving up ONLY when `var.dt < vulcan_cfg.dt_min` — then clamping
-  to `dt_min`, zeroing negatives and force-accepting. The give-up condition is a dt
-  floor, with no retry count.
-- **JAX (before):** `lax.while_loop` cannot retry unboundedly, so the runner carries
-  `batch_max_retries` as a deadlock backstop and force-accepts on
-  `dt_underflow | retry_exhausted` (`outer_loop.py:1097-1103`). At the shipped
-  `batch_max_retries=64` the COUNT fired first: walking `dt` from `dt_max=1e17` to
-  `dt_min=1e-14` at `dt_var_min=0.5` takes 103 rejects, so the step was accepted 39
-  rejects early with `dt` still at `5.4e-3`, and `t` advanced by `dt_min` while the
-  solution came from a much larger `dt`.
-- **JAX (now):** `batch_max_retries: 110` in all five shipped configs, so
-  `dt_underflow` is the operative trigger and the cap is only the deadlock backstop
-  it was meant to be. The configs cite this entry for the arithmetic — keep in sync.
-- **Note:** a strict no-op on healthy runs — HD189 still converges in exactly 1296
-  accepted steps, and nothing in normal operation approaches 64 rejects.
+### C11 — `batch_max_retries` must be 110, not 64
+All five shipped configs cite this anchor; keep it. `lax.while_loop` cannot retry
+unboundedly, so the runner carries `batch_max_retries` as a deadlock backstop and
+force-accepts on `dt_underflow | retry_exhausted` (`outer_loop.py:1097-1103`).
+Master's give-up condition is a dt floor with no retry count (`op.py:2549-2560`).
+Walking `dt` from `dt_max=1e17` to `dt_min=1e-14` at `dt_var_min=0.5` takes 103
+rejects, so any cap below that makes the COUNT fire first and force-accepts a step
+master would still be halving. 110 keeps `dt_underflow` the operative trigger.
+**If `dt_max`, `dt_min` or `dt_var_min` change, redo this arithmetic and update all
+five configs.**
+
+### Known gap — no NaN-specific termination on the single-profile path
+`_conv_jax` (`outer_loop.py:918`) forces `longdy=+inf` on any non-finite `y`/`ymix`,
+so a poisoned state can never be scored as converged. But `_real_terminate`
+(`:957`) and `cond_fn` (`:1004`) carry no `isfinite` test of their own, so a
+single-profile NaN run exhausts its budget and reports budget exhaustion rather
+than a NaN reason. Only the batched path sets `termination_reason=5`
+(`:1690-1693`).
 
 ## Bugs still present in the JAX port (inherited from master)
 
@@ -268,6 +288,21 @@ so these do not reach any inference result.
   JAX `outer_loop.py:721-751` (`non_gas_present` gas-only error denominator). The
   adaptive step can accept a step whose largest error is in a settling condensate.
 
+### `atm_type='table'` stale `pico`
+- **Where:** master `vulcan.py:118->120->148`, `build_atm.py:406` (pco rewrite),
+  `:530/554/562` (stale-pico integration); JAX production setup path.
+- **What:** in `table` mode setup runs `f_pico` (pico from the logspace `P_b..P_t`
+  grid) BEFORE `load_TPK` overwrites `pco` from the table, and never recomputes
+  `pico`. So `f_mu_dz` integrates `dz`/`dzi`/`pref_indx` from a stale `pico`:
+  g/Hp ~1% off, `dzi` up to ~12% off when the table grid differs from logspace.
+  Masked when the grids match, which is the common restart case.
+- **Not live on any shipped config** — all six use `atm_type: file`. The on-graph
+  `atm_jax.build_atm_static` (the retrieval path) recomputes `pico`
+  self-consistently, so it does not carry this.
+- **Status:** deferred, deliberately. Keep production matching master for parity;
+  do NOT silently fix VULCAN-JAX alone. The real fix is one line upstream. Revisit
+  if upstream fixes the `f_pico`/`pco` ordering.
+
 ### Off-path data typo
 - `src/vulcan_jax/thermo/SNCHO_photo_network_C3.txt` still carries the C1 CH2CN
   `1.00E-20` typo. No shipped config or sibling repo selects this variant, so it
@@ -288,18 +323,65 @@ Not a JAX bug; recorded so no one "fixes" JAX to match master's weaker behavior.
   default; only the scattered flux is affected), but JAX is the correct one -- do
   not "restore parity" by reintroducing the inconsistency.
 
+## Workspace-oracle patches (read before trusting a parity result)
+
+`../VULCAN-master` is the do-not-refactor oracle, but it is **not pristine
+upstream** — three upstream defects were patched into the workspace copy so the
+paper's comparison runs are apples-to-apples. Anything measured against it is
+measured against a partially-corrected VULCAN. Re-cloning upstream will change
+these files and trip `tools/audit_master_parity.py`.
+
+| Item | Workspace master | exoclime/VULCAN HEAD (2026-07-29) |
+|---|---|---|
+| C6 H2S cmHg constant (`build_atm.py`) | `0.01333` (patched, `:857`) | `0.001333`, 10x low (`:858`) |
+| C7 `NH3_l_s` mass (`thermo/all_compose.txt:167`) | `17.031` (patched) | `16.023` (NH2's mass) |
+| C12 FastChem element row order | `...O,P,S...` (patched) | `...O,S,P...` (swapped) |
+
+Still un-patched in the workspace oracle, so parity runs carry them on both sides:
+C1 (SNCHO CH2CN `1.00E-20`, `thermo/SNCHO_photo_network.txt:520`), C2 (S2/S8 masses
+`op.py:1244,1290`), C3 (H2O saturation zero at 273 K, `build_atm.py:809`), C5
+(duplicate `CH2_1`).
+
+## Upstream defects NOT inherited by VULCAN-JAX
+
+Recorded so they are not re-investigated and so they can be reported upstream.
+Each is confirmed present in exoclime/VULCAN HEAD as of 2026-07-29; none is a
+VULCAN-JAX bug, so none needs a fix here.
+
+| Upstream defect | Location (upstream) | Why JAX is clear |
+|---|---|---|
+| FastChem uses fixed shared I/O filenames, and `rm`s its own output; two concurrent runs in one checkout clobber each other | `build_atm.py:129,139,154,170` | per-run isolation + `fcntl.flock` (`ini_abun`), `$VULCAN_JAX_FASTCHEM_DIR` per-worker trees |
+| Shipped Earth example sets `const_mix` `Ar` and `atom_list` `Ar`, but `SNCHO_full_photo_network.txt` has no Ar species, so the example raises on init | `cfg_examples/vulcan_cfg_Earth.py:6,39` | `Earth.yaml` does not request Ar |
+| Flux-convergence test calls `np.nanmax` on an empty selection for a fully dark/filtered column | `op.py:2737` | explicitly guarded: `outer_loop.py:538` `jnp.where(jnp.any(mask), max, 0.0)`; `op_jax.py:79-88` has the `else: 0.0` branch |
+| `S4` has a saturation-pressure branch but is absent from `sat_sp_list`, so selecting S4 condensation raises before the implemented code runs | `build_atm.py:788` vs `:833` | `S4` present in both `atm_setup.py:884` and `conden.py:51,68,77` |
+| Kinetic NH3 condensation looks for reaction label `NH3 -> NH3_l`; the low-T network defines `NH3 -> NH3_l_s`, so the rate never attaches | `op.py:1151` vs `thermo/NCHO_photo_network_lowT_Jupiter.txt:441` | JAX matches on `NH3_l_s` |
+| `check_conserv` runs `np.genfromtxt(dtype=None)` then `str(sp)`; under NumPy < 2 byte-string behavior names become `b'OH'` and the post-codegen conservation check raises, leaving an unchecked generated kernel | `make_chem_funs.py:719-725` | JAX uses content-hashed codegen + a fail-fast network guard; also does not reproduce under NumPy 2.3.5 |
+
+## Provenance
+
+Upstream-side items above were cross-checked against a collaborator audit,
+`~/Desktop/VULCAN_original_code_error_audit.md` (2026-07-29), which also lists 16
+historical upstream defects that upstream has already fixed. Those are upstream
+history, not parity items, and are deliberately not restated here.
+
+Verified independently 2026-07-29: the C12 mechanism and its `604ca6e` introduction;
+C1/C2/C3/C6/C7 still open at exoclime/VULCAN HEAD; every row of the not-inherited
+table. One correction to that audit: it lists the dark-column `nanmax` crash as
+"inherited in JAX" — it is not, both JAX paths guard the empty selection.
+
 ## Scope / verification
 
 - C1/C2/C3 verified against the fetched `vm_branch` source and the workspace
   oracle; they keep `tests/test_conden_profile_builder.py` green and H2O
   saturation continuous through 273 K. The still-present items were verified to
   exist in the JAX code.
-- Deliberately NOT logged (not real, or off the active paths): stale generated-
-  kernel / `-n` regeneration workflow (JAX uses content-hashed codegen + a
-  fail-fast network guard), the atomic-P / pressure column collision (JAX reads
-  `fc["P_1"]`), the dense ~1 GiB Jacobian (JAX bands it), the dark-column `nanmax`
-  crash (JAX is vectorized), FastChem I/O concurrency (per-run isolation), the
-  `NH3 -> NH3_l` condensation mismatch (JAX uses `NH3_l_s`), plus approximations,
+- Upstream defects that JAX does not inherit now have their own section above
+  ("Upstream defects NOT inherited by VULCAN-JAX") — dark-column `nanmax`, FastChem
+  I/O concurrency, `NH3 -> NH3_l`, `S4` saturation, the Earth `Ar` example, and the
+  `check_conserv` byte-string failure. Also deliberately NOT logged: the stale
+  generated-kernel / `-n` regeneration workflow (JAX uses content-hashed codegen +
+  a fail-fast network guard), the atomic-P / pressure column collision (JAX reads
+  `fc["P_1"]`), the dense ~1 GiB Jacobian (JAX bands it), plus approximations,
   data-file duplicates, and documentation/packaging items.
 - Not a bug, do not "fix": FastChem retains rocky elements (Mg/Si/Fe/…) at solar
   in its equilibrium (`build_atm.py` solar and customized branches both), so a few
@@ -308,15 +390,3 @@ Not a JAX bug; recorded so no one "fixes" JAX to match master's weaker behavior.
   suppressed abundance file, which is a legitimate initial-condition difference for
   the truncated NCHO/SNCHO networks. (There is no `use_other_ele` flag in either
   codebase.)
-
-
-## 2026-07-20 — atm_type='table' stale pico (upstream, faithfully ported, NOT fixed)
-
-Moved from VULCAN-JAX/CLAUDE.md during the memory-threshold
-consolidation; this is the authoritative record. Policy fit: real,
-results-affecting upstream bug, divergence documented, master left
-untouched (do-not-refactor oracle).
-
-### atm_type='table' stale pico (full record) (verbatim pre-consolidation text)
-
-**KNOWN ISSUE — `atm_type='table'` stale `pico` (latent UPSTREAM bug, faithfully ported; NOT being fixed this release per Isaac, 2026-06-17).** In `table` mode, setup runs `f_pico` (pico from the original logspace `P_b..P_t` grid) BEFORE `load_TPK` overwrites `pco` from the table file, and never recomputes `pico` — so `f_mu_dz` integrates `dz`/`dzi`/`pref_indx` from a stale `pico` (g/Hp ~1%, dzi ~12% off when the table grid differs from logspace; masked when it matches, which is the common restart case). **VULCAN-master has the identical bug** (`vulcan.py:118`→`120`→`148`; `build_atm.py:406` pco rewrite, `:530/554/562` stale-pico integration), so VULCAN-JAX's production path is a faithful port; `build_atm_static` recomputes `pico` self-consistently (the deviation). DECISION: keep production matching master for parity; do NOT silently fix VULCAN-JAX alone (would diverge from master); the real fix is one line upstream. Revisit only if upstream fixes the `f_pico`/`pco` ordering.
