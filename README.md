@@ -148,18 +148,40 @@ parts of the run consistent.
 
 VULCAN-JAX uses YAML configuration files. The package supplies:
 
-| Name | Target | Network | Result |
-| --- | --- | --- | --- |
-| `default` | HD 189733 b baseline, the recommended first run | NCHO | Converges in 2102 steps |
-| `HD189` | HD 189733 b | NCHO | Converges in 1296 steps |
-| `HD209` | HD 209458 b | NCHO | Converges in 1206 steps |
-| `W39b` | WASP-39 b | SNCHO (sulfur) | Converges in 1202 steps |
-| `K2-18b` | K2-18 b | SNCHO 2025 | Runs, does not converge |
-| `Earth` | Earth | SNCHO full | Runs, does not converge |
+| Name | Target | Network | Mode | Result |
+| --- | --- | --- | --- | --- |
+| `default` | HD 189733 b baseline, the recommended first run | NCHO | VULCAN 2 parity | Converges in 1495 steps |
+| `HD189` | HD 189733 b | NCHO | VULCAN 2 parity | Converges in 1495 steps |
+| `HD209` | HD 209458 b | NCHO | VULCAN 2 parity | Converges in 1206 steps |
+| `W39b` | WASP-39 b | SNCHO (sulfur) | VULCAN 2 parity | see below |
+| `HD189_vulcan3` | HD 189733 b | NCHO | **VULCAN 3** | see below |
+| `K2-18b` | K2-18 b | SNCHO 2025 | VULCAN 3 | Runs, does not converge |
+| `Earth` | Earth | SNCHO full | VULCAN 2 parity | Runs, does not converge |
 
 Every one of these runs without error. The three sulfur configurations need a
 reaction network other than the default, which the command line selects for you;
 see **Select a different network** below.
+
+### VULCAN 2 parity versus VULCAN 3
+
+The configurations come in two flavours, and the difference is deliberate.
+
+**VULCAN 2 parity** configurations reproduce upstream VULCAN. Their convergence
+settings match `exoclime/VULCAN` `master` as fetched on 2026-07-30: molecular
+diffusion is central-difference, `conver_ignore` is empty, `high_temp_cut` is
+off, adaptive `rtol` is off, and the JAX-only stall fallback is off. Use these
+when you want a result comparable with published VULCAN 2 work.
+
+**VULCAN 3** configurations use the newer numerics from `shami-EEG/VULCAN`
+`vm_branch`: hybrid molecular diffusion (first-order upwind to convergence, then
+central difference), the high-temperature bottom cut, and adaptive `rtol`. Each
+such setting in `HD189_vulcan3.yaml` carries a comment citing the `vm_branch`
+line it came from. `HD189_vulcan3` is the same planet as `HD189`, so you can run
+both and compare the two numerical schemes directly.
+
+The step counts above are for the parity configurations. They are reproducible
+but not portable claims: a step count depends on every convergence knob, so
+quote it together with the configuration it came from.
 
 `Earth` and `K2-18b` hit their step limits before they reach a steady state.
 Their results are therefore not converged atmospheres. `Earth` carries VULCAN's

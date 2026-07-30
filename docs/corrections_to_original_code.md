@@ -19,6 +19,24 @@ from upstream VULCAN, and for confirmed bugs in VULCAN-master. It is also the
    present" if the port inherits it. Give `file:line` and the measured or
    estimated impact.
 
+2b. **"What does upstream do?" is answered by FETCHING upstream, never by reading
+   `../VULCAN-master/`.** That directory is an unversioned copy (`git rev-parse`
+   fails in it) and it is **contaminated**: verified 2026-07-30, it contains
+   VULCAN-JAX's own stall detector (`store.py:204-209`, `op.py:1078-1104`), its
+   `conv_stall_window` knob (`vulcan_cfg.py:141`,
+   `cfg_examples/vulcan_cfg_HD189.py:122`), its `wall_clock_max`/`end_case=4`
+   exit (`op.py:1119-1126`), and a 13-species `conver_ignore`
+   (`vulcan_cfg.py:183`) that exists in no upstream repository. Citing it as
+   upstream is how a wrong config change shipped on 2026-07-26 (`eebc8a5`) and
+   2026-07-30 (`2fdc66b`). Fetch instead:
+   `raw.githubusercontent.com/exoclime/VULCAN/master/<path>` for VULCAN 2, and
+   `shami-EEG/VULCAN` `vm_branch` for VULCAN 3 features.
+   `tools/audit_master_parity.py` now refuses to run against a checkout carrying
+   VULCAN-JAX-only identifiers, and `tests/test_default_master_parity.py` skips
+   (loudly, not passes) rather than reporting a circular parity verdict.
+   The copy is still useful as a *numerical* oracle for per-step kernel
+   comparisons, which do not depend on the contaminated convergence/config code.
+
 3. **Only real, results-affecting bugs belong here.** A "real bug" changes a
    number a user relies on, crashes, or silently corrupts a result on a path that
    can actually run. Do **not** log or report comment typos, stale docstrings,
@@ -28,7 +46,10 @@ from upstream VULCAN, and for confirmed bugs in VULCAN-master. It is also the
    be read end to end without wading through trivia.
 
 Conventions: locations are `file:line`. "master" = the workspace
-`../VULCAN-master` validation oracle. The JAX port was ported from
+`../VULCAN-master` validation oracle **for per-step numerical comparisons only**
+(see Policy 2b — it is not a provenance source for any config or convergence
+question). "fetched master" / "fetched vm_branch" mean the files pulled from
+`raw.githubusercontent.com` on the date given. The JAX port was ported from
 `shami-EEG/VULCAN vm_branch @ 362cfa2`; a few entries note where that branch and
 the workspace oracle differ. None of the items below affect the default
 (gas-only, HD189) validated results unless stated.
@@ -404,6 +425,29 @@ table. One correction to that audit: it lists the dark-column `nanmax` crash as
   a fail-fast network guard), the atomic-P / pressure column collision (JAX reads
   `fc["P_1"]`), the dense ~1 GiB Jacobian (JAX bands it), plus approximations,
   data-file duplicates, and documentation/packaging items.
+- **Initial elemental composition differs from upstream, and it dominates any
+  cross-code comparison (recorded 2026-07-30).** Two separate, deliberate
+  divergences live in the same file,
+  `fastchem_vulcan/input/solar_element_abundances.dat`:
+  (a) **Lodders 2019 (Wogan & Tsai 2023) values instead of upstream's Lodders
+  2009.** For the C-H-N-O networks the only changed value is helium,
+  `He 10.9864` (upstream) -> `10.9232` (JAX), i.e. He/H lower by 0.063 dex.
+  Sulfur also moves, `7.12` -> `7.1492`. C, H, N and O are identical.
+  (b) rocky suppression to `-3.0` (the bullet below).
+  **Measured consequence, HD 189733 b, both codes converged, everything else
+  matched (same network, same cfg to 1 UI flag, same TP/Kzz/stellar files):**
+  median relative difference across all species above a 1e-12 floor is
+  **2.0e-01**, and it is present in the deep well-mixed column, not just the
+  photochemical upper atmosphere: inert He differs by a uniform 11.6%, H2O by
+  25%, CO2 by 42% below 1 bar. For scale, upstream compared against *itself*
+  (same code, one reaction changed, different step counts) agrees to
+  **7e-06** median. So the composition file, not the solver, is what separates
+  the two codes on a free-convergence run.
+  **This is an initial-condition choice, not a defect** — the rocky suppression
+  is deliberate for the truncated networks, and the Lodders update is a data
+  refresh. But it means *"VULCAN-JAX vs VULCAN 2.0"* numbers are only meaningful
+  if this file is matched first. Any parity figure or step-count comparison must
+  say which composition it used.
 - Not a bug, do not "fix": FastChem retains rocky elements (Mg/Si/Fe/…) at solar
   in its equilibrium (`build_atm.py` solar and customized branches both), so a few
   percent of O can sit in untracked gas species. This is a modeling choice, not a
