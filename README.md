@@ -80,14 +80,14 @@ The run writes two files under `output/`:
 - `HD189.vul` contains the model result
 - `HD189.vul.config.yaml` contains the complete resolved configuration
 
-The very first run also compiles FastChem. That costs about 10 seconds and
-happens once per installation. Generating the chemistry function for a new
-reaction network costs under a second, and is cached per network.
+The first run is slower, by roughly half a minute on a laptop CPU. It compiles
+FastChem (about 10 seconds, once per installation), generates the chemistry
+function for the network (under a second), and compiles the JAX program (about
+4 seconds). Later runs reuse all three, and the compile step drops to under
+2 seconds.
 
-Every run then compiles the JAX program before it integrates. That costs about
-25 seconds for the default network on a laptop CPU. It is not yet a one-off
-cost. The compiled program is written to a cache, but the cache is never read
-back, so every run pays it again. See **Known limits**.
+The compiled program is cached in `~/.cache/jax_vulcan`. Delete that directory
+to force a rebuild.
 
 Run any other supplied configuration the same way:
 
@@ -342,9 +342,6 @@ rather than quoting numbers from elsewhere.
   validated for gradient inference.
 - One process can use only one reaction network. See **Select a different
   network**.
-- The compiled JAX program is not reused between runs. Each run writes a new
-  entry to the compilation cache under a key that changes every time, so the
-  cache grows without ever being read and every run pays the compile cost again.
 - The `Earth` and `K2-18b` configurations reach their step limits without
   converging. See **Configuration**.
 - The supplied `Earth` configuration drops the argon that VULCAN's own Earth

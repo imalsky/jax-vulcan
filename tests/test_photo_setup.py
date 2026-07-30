@@ -195,3 +195,36 @@ def test_photo_setup_matches_T_dep_fixture(monkeypatch):
         FIXTURE_DIR / "photo_setup_hd189_T_dep.npz",
         expected_T_sp=("CO2", "H2O", "NH3"),
     )
+
+
+@pytest.mark.strict_isolation
+def test_branch_key_order_is_deterministic():
+    """Branch rows must be sorted, not in set-iteration order.
+
+    `var.photo_sp` / `var.ion_sp` are sets (`legacy_io.ReadRate.read_rate`), and
+    Python randomizes string hashing per process, so iterating them directly
+    gave `cross_J` a different row order in every run. Those rows are baked into
+    the runner's closure as constants, so the compiled program differed run to
+    run and the persistent compilation cache missed every single time -- it grew
+    without ever being read. Sorting is what makes a run reproducible.
+
+    Checking sortedness pins the invariant in one process; the failure it guards
+    against only shows up across processes.
+    """
+    import vulcan_jax.photo_setup as photo_setup
+
+    var, atm = _build_state_through_read_rate()
+    static = photo_setup._build_photo_static_dense(var, atm)
+
+    for name in ("branch_keys", "branch_T_keys", "ion_branch_keys"):
+        keys = getattr(static, name)
+        if not keys:
+            continue
+        species = [sp for sp, _ in keys]
+        assert species == sorted(species), (
+            f"{name} is not in sorted species order: {species[:8]}..."
+        )
+        # Branches within one species stay in ascending branch number.
+        for sp in set(species):
+            branches = [br for s, br in keys if s == sp]
+            assert branches == sorted(branches), f"{name}: {sp} branches {branches}"

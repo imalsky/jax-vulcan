@@ -553,24 +553,33 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
         )
 
     # Canonical iteration order consumers (photo runtime kernels + .vul writer) rely on.
+    #
+    # `photo_sp` and `ion_sp` are SETS (`legacy_io.ReadRate.read_rate` does
+    # `var.photo_sp = set(photo_sp)`), and iterating a set of strings gives a
+    # different order in every process because Python randomizes string hashing.
+    # These rows are baked into the runner's closure as constants, so an
+    # unsorted order made the compiled program differ run to run: the persistent
+    # compilation cache then missed every time, writing a fresh entry and
+    # re-paying the whole compile. Sort for the same reason `absp_sp_list` above
+    # is a sorted union.
     absp_sp_ordered = tuple(absp_sp_list)
     absp_T_sp_ordered = tuple(sp for sp in absp_sp_list if sp in T_cross_sp)
     scat_sp_ordered = tuple(scat_sp_list)
     branch_keys_ordered = tuple(
         (sp, i)
-        for sp in photo_sp
+        for sp in sorted(photo_sp)
         if sp not in T_cross_sp
         for i in range(1, var.n_branch[sp] + 1)
     )
     branch_T_keys_ordered = tuple(
         (sp, i)
-        for sp in photo_sp
+        for sp in sorted(photo_sp)
         if sp in T_cross_sp
         for i in range(1, var.n_branch[sp] + 1)
     )
     if use_ion:
         ion_branch_keys_ordered = tuple(
-            (sp, i) for sp in ion_sp for i in range(1, var.ion_branch[sp] + 1)
+            (sp, i) for sp in sorted(ion_sp) for i in range(1, var.ion_branch[sp] + 1)
         )
     else:
         ion_branch_keys_ordered = ()
