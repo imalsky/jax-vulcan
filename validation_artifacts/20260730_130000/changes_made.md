@@ -72,6 +72,28 @@ convergence metric, not by changing the physics. Every run above exits on the
 normal convergence criterion (`termination_reason = 1`), never the stall
 fallback.
 
+### `src/vulcan_jax/configs/Earth.yaml`
+
+`conver_ignore: ['HC3N']` -> `[]`, `use_conv_stall` -> `false`.
+
+Upstream's own `cfg_examples/vulcan_cfg_Earth.py` declares no `conver_ignore` at
+all, and fetched master ships `[]`. **Measured: the two values are identical**
+here as well — 20001 accepted steps against the 20000 cap either way,
+`termination_reason = 3`, `longdy = 1.0`, max |atom_loss| 2.98e+03. So this is an
+upstream-fidelity change with no behavioural cost. Earth is not a usable result
+under either value; see `unresolved_items.md` U3.
+
+### `src/vulcan_jax/configs/K2-18b.yaml`
+
+`conver_ignore` left at the collaborator-supplied `['HC3N']` (which is also
+vm_branch's value) — this is a VULCAN 3 case, not a parity case, and the plan is
+explicit that the collaborator's intent is preserved. Three declarations added:
+`use_conv_stall: true` and `conv_stall_window: 200` (previously inherited
+implicitly, which after this change would have flipped to the parity default),
+and **`batch_max_retries: 110`**. The last is a real fix: K2-18b omitted the key
+and was silently taking the code default 64, unlike every other shipped config,
+against the C11 anchor in `docs/corrections_to_original_code.md`.
+
 ### `src/vulcan_jax/configs/HD189_vulcan3.yaml` (NEW)
 
 The explicit VULCAN 3 preset the source-of-truth policy asks for: HD189's physics

@@ -114,6 +114,34 @@
   "k2_18b_classification": "C - unresolved diagnostic case",
   "earth_status": "runs, does not converge, atom conservation violated (max|atom_loss| 2.98e3)",
   "tests": {
-    "baseline": "242 passed, 5 skipped, 0 failed"
-  }
+    "baseline": {
+      "passed": 242,
+      "skipped": 5,
+      "failed": 0,
+      "commit": "2fdc66b"
+    },
+    "final": {
+      "passed": 252,
+      "skipped": 6,
+      "failed": 0,
+      "commit": "3647ef5"
+    },
+    "new_skip_reason": "test_audit_master_parity_with_staged_stock_fastchem now SKIPS (loudly, naming reasons) instead of asserting a clean audit against the contaminated ../VULCAN-master"
+  },
+  "quality_gates": {
+    "git_diff_check": "clean",
+    "ruff_check": "clean",
+    "ruff_format_check": "clean",
+    "cli_help": "ok",
+    "all_shipped_yaml_load": true,
+    "resolved_config_roundtrip": true
+  },
+  "commits_pushed": [
+    "d13d7bb",
+    "b6b0381",
+    "a9dc0eb",
+    "23a24b7",
+    "71263c8",
+    "3647ef5"
+  ]
 }

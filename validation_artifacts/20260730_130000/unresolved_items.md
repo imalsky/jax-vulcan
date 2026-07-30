@@ -64,9 +64,13 @@ Both choices are deliberate. The rocky suppression was already recorded in
   VULCAN 2.0."* Both numbers need re-deriving. A pristine upstream clone
   converges in **1131** steps, not 1396.
 
-**Not edited this session.** The paper is a separate, unversioned directory and
-the right fix depends on U1. Editing the numbers before the network question is
-settled would just create a second set of numbers to retract.
+**Not edited this session.** The paper is a separate, unversioned directory, and
+the replacement numbers are a scientific judgement call, not a mechanical
+substitution: with U1 resolved there is now a *better* validation statement
+available (VULCAN-JAX vs a pristine upstream clone, median 3.8e-06 with the
+composition matched) than the step-count matching the current text leans on.
+Which of those to put in the paper, and how to describe the composition choice,
+is Isaac's and Shami's call.
 
 ---
 
@@ -100,13 +104,15 @@ Do not call it validated. Do not use it as a headline figure.
 
 ---
 
-## U5. `K2-18b.yaml` silently gets `batch_max_retries = 64`, not 110
+## U5. FIXED — `K2-18b.yaml` was silently getting `batch_max_retries = 64`
 
-It is one of 25 keys K2-18b omits, so it falls back to the code default
-(`outer_loop.py`, `runtime_validation.py`), while the other configs declare 110.
-`docs/corrections_to_original_code.md` says "All five shipped configs cite this
-anchor" and "update all five configs" — there are now seven. Small, but it is a
-real silent divergence in a shipped config.
+It omitted the key (one of 25 it omits) and fell back to the code default 64,
+while every other shipped config declares 110. `K2-18b.yaml` now declares 110
+explicitly, with the C11 anchor cited.
+
+Still stale and NOT fixed: `docs/corrections_to_original_code.md` says "All five
+shipped configs cite this anchor" and "update all five configs". There are now
+**seven** shipped configs.
 
 ---
 
