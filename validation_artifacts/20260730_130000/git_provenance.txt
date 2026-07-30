@@ -1,0 +1,111 @@
+GIT / SOURCE PROVENANCE  --  captured 2026-07-30
+================================================================
+
+## Local checkouts
+### VULCAN-JAX
+  path:    /Users/imalsky/Desktop/Emulators/VULCAN_Project/VULCAN-JAX
+  remotes: origin	git@github.com:imalsky/jax-vulcan.git (fetch)
+  branch:  main
+  HEAD:    2fdc66bcfa2b1896417fd1c189dd5a0bdf79f1d5
+  last:    2fdc66b 2026-07-30 fix: restore default.yaml parity; make the compile cache actually cache
+  status:  9 modified, 29 untracked
+
+### vulcan-forward
+  path:    /Users/imalsky/Desktop/Emulators/VULCAN_Project/vulcan-forward
+  remotes: origin	https://github.com/imalsky/vulcan-forward.git (fetch)
+  branch:  main
+  HEAD:    91dccd868803bba384c68dce007ef7bef8caf186
+  last:    91dccd8 2026-07-29 0.2.1: paths.ensure_layout() so a setup command can create the data layout
+  status:  0 modified, 0 untracked
+
+### vulcan-retrieval
+  path:    /Users/imalsky/Desktop/Emulators/VULCAN_Project/vulcan-retrieval
+  remotes: origin	https://github.com/imalsky/vulcan-retrieval.git (fetch)
+  branch:  main
+  HEAD:    25078300f8cce8be052eb306ea1cf80308236d3b
+  last:    2507830 2026-07-29 0.13.0: the engine extraction is a public-layout change for this dist
+  status:  0 modified, 0 untracked
+
+### vulcan-jwst-tool
+  path:    /Users/imalsky/Desktop/Emulators/VULCAN_Project/vulcan-jwst-tool
+  remotes: origin	https://github.com/imalsky/vulcan-jwst-tool.git (fetch)
+  branch:  main
+  HEAD:    304ca11709288df09659c323a65d005672b780a9
+  last:    304ca11 2026-07-29 space: bump SRC_STAMP to 3ec7a52 so the deployed stack matches HEAD
+  status:  0 modified, 0 untracked
+
+### neoVULCAN
+  path:    /Users/imalsky/Desktop/Emulators/VULCAN_Project/neoVULCAN
+  remotes: origin	https://github.com/NewStrangeWorlds/neoVULCAN.git (fetch)
+  branch:  master
+  HEAD:    258ce2dcc2c4c60fd8aa523ea336ab442c1fb78b
+  last:    258ce2d 2026-06-11 Some code cleanup
+  status:  0 modified, 0 untracked
+
+### VULCAN-master
+  path:    /Users/imalsky/Desktop/Emulators/VULCAN_Project/VULCAN-master
+  NOT A GIT CHECKOUT -- 'git rev-parse' fails; no remotes; cannot be fetched.
+  It is an unversioned directory copy and it is HAND-PATCHED (see below).
+
+### jax_paper
+  path:    /Users/imalsky/Desktop/Emulators/VULCAN_Project/jax_paper
+  NOT A GIT CHECKOUT.
+
+## Upstream, fetched over raw HTTP on 2026-07-30 (NOT from the local copy)
+  https://raw.githubusercontent.com/exoclime/VULCAN/master/vulcan_cfg.py
+  https://raw.githubusercontent.com/exoclime/VULCAN/master/cfg_examples/vulcan_cfg_HD189.py
+  https://raw.githubusercontent.com/exoclime/VULCAN/master/op.py (+ build_atm/store/make_chem_funs/...)
+  https://raw.githubusercontent.com/shami-EEG/VULCAN/master/vulcan_cfg.py
+  https://raw.githubusercontent.com/shami-EEG/VULCAN/vm_branch/vulcan_cfg.py
+  https://raw.githubusercontent.com/shami-EEG/VULCAN/vm_branch/op.py
+  Copies kept under upstream_fetch/ in this artifact directory.
+
+  FACT: exoclime/VULCAN master vulcan_cfg.py and shami-EEG/VULCAN master
+        vulcan_cfg.py are BYTE-IDENTICAL (md5 be64301868912c77ee1105ef52e0bbed).
+
+## The local VULCAN-master copy is contaminated with VULCAN-JAX's own code
+   Diffs vs fetched exoclime/VULCAN master are saved in patches/.
+   md5 comparison of the top-level sources:
+     build_atm.py         DIFFERS from upstream
+     chem_funs.py         DIFFERS from upstream
+     diagnose.py          identical to upstream
+     make_chem_funs.py    DIFFERS from upstream
+     op.py                DIFFERS from upstream
+     phy_const.py         identical to upstream
+     store.py             DIFFERS from upstream
+     vulcan.py            identical to upstream
+     vulcan_cfg.py        DIFFERS from upstream
+
+   Classified:
+     op.py / store.py / vulcan_cfg.py / cfg_examples/vulcan_cfg_HD189.py
+       CONTAMINATED WITH VULCAN-JAX FEATURES. The local copy contains
+       VULCAN-JAX's own stall detector back-ported into upstream:
+         store.py:204-209    longdy_seen_min / count_since_new_min state
+         op.py:1078-1104     the 5%-improvement stall predicate, end_case=1
+         op.py:1119-1126     wall_clock_max -> end_case=4 (also JAX-only)
+         vulcan_cfg.py:141   conv_stall_window = 200
+         cfg_examples/vulcan_cfg_HD189.py:122  conv_stall_window = 200
+       `conv_stall_window` does not exist anywhere in real upstream VULCAN.
+       Shami asked what it was ("7. Is conv_stall_window a new convergence
+       condition?", email 2026-07-14), which confirms it is not his.
+
+     vulcan_cfg.py:183 and cfg_examples/vulcan_cfg_HD189.py:149
+       conver_ignore = [13 heavy hydrocarbons], with the comment text
+       "heavy hydrocarbons that sit on the chem_rhs ULP cancellation floor
+       and stall convergence" -- the same wording used in VULCAN-JAX commit
+       eebc8a5 and in the shipped YAML comments. Real upstream ships [].
+
+     build_atm.py / make_chem_funs.py
+       DELIBERATE, DOCUMENTED bug fixes (fc_list P/S order; H2S 0.01333
+       conversion; numpy>=1.24 genfromtxt bytes decode). These are recorded
+       in docs/corrections_to_original_code.md and are not the problem.
+
+     chem_funs.py   generated file; regeneration difference, not a patch.
+
+   CONSEQUENCE: any past step-count or convergence comparison that used this
+   directory as "VULCAN 2.0" is circular -- the oracle carried both the JAX
+   stall detector and the JAX conver_ignore list. This includes the paper's
+   "HD189 1296 matches exactly" and "both codes independently accept 1202
+   steps (W39b)" claims.
+
+   This directory was NOT modified by this session. It stays read-only.

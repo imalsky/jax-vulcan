@@ -1,0 +1,16 @@
+--- make_chem_funs.py	2026-07-30 13:02:17
++++ /Users/imalsky/Desktop/Emulators/VULCAN_Project/VULCAN-master/make_chem_funs.py	2026-06-08 16:24:05
+@@ -721,8 +721,11 @@
+     conserv_check = True
+     compo = np.genfromtxt(vulcan_cfg.com_file,names=True,dtype=None)
+     compo_row = list(compo['species'])
+-    # Convert bytes to strings
+-    compo_row = [str(sp) for sp in compo_row]
++    # Convert bytes to strings. numpy>=1.24 genfromtxt(dtype=None) yields
++    # numpy.bytes_, and str(b'OH') -> "b'OH'" (NOT "OH"), which made every
++    # compo_row.index(sp) below raise "'OH' is not in list" and silently skip the
++    # conservation check / break master oracle + timing runs. decode() instead.
++    compo_row = [sp.decode() if isinstance(sp, bytes) else str(sp) for sp in compo_row]
+     #print (compo_row)
+     num_atoms = len(compo.dtype.names) - 2 # dtype.names returns the column names and -2 is for 'species' and 'mass'
+  

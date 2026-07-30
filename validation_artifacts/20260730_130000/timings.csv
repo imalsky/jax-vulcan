@@ -1,0 +1,22 @@
+config,mode,repeat,wall_total_s,t_import_s,t_setup_s,t_run_s,accept_steps,delta_rejects,termination_reason,longdy
+HD189,cold,1,38.21,0.25,3.11,34.57,1495,37,1,0.0917211
+HD189,warm,1,35.82,0.25,3.03,32.28,1495,37,1,0.0917211
+HD189,warm,2,35.76,0.24,3.01,32.25,1495,37,1,0.0917211
+HD189,warm,3,36.03,0.24,3.03,32.49,1495,37,1,0.0917211
+HD189_vulcan3,cold,1,66.91,0.24,3.18,63.19,2820,73,1,0.0996204
+HD189_vulcan3,warm,1,64.67,0.24,3.24,60.91,2820,73,1,0.0996204
+HD189_vulcan3,warm,2,64.51,0.25,3.26,60.74,2820,73,1,0.0996204
+HD189_vulcan3,warm,3,64.50,0.25,3.24,60.74,2820,73,1,0.0996204
+
+# SUMMARY (Apple M3 Pro, 12 cores, quiet machine, lid open, load avg 2.5)
+# config,mode,warm_median_s,warm_min_s,cold_s,compile_overhead_s,setup_s,accept_steps,rejects,termination_reason
+# HD189,VULCAN2_parity,35.82,35.76,38.21,2.39,3.11,1495,37,1
+# HD189_vulcan3,VULCAN3_hybrid,64.51,64.50,66.91,2.40,3.18,2820,73,1
+#
+# Notes:
+#  * warm = same populated XLA cache dir; cold = empty cache dir, so cold-warm is the XLA compile.
+#  * t_setup_s is FastChem + network parse + pre-loop; unaffected by the XLA cache.
+#  * FastChem binary build (~10 s) happens once per install, not per run, and is not in these numbers.
+#  * The two rows are NOT a speed ratio: they are different numerical schemes with different
+#    step counts (1495 central vs 2820 hybrid). Do not divide them.
+#  * All 8 runs are deterministic: identical accept_steps, rejects and longdy to 6 s.f.

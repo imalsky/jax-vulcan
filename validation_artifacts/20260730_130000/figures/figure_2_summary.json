@@ -1,0 +1,52 @@
+{
+  "runs": {
+    "VULCAN 2 parity (central)": {
+      "accept_steps": 1495,
+      "termination_reason": 1,
+      "longdy": 0.09172106695866633,
+      "longdydt": 4.866379538193199e-09,
+      "hybrid_use_vm_final": 0.0
+    },
+    "pure upwind": {
+      "accept_steps": 1495,
+      "termination_reason": 1,
+      "longdy": 0.09163045955416395,
+      "longdydt": 4.8815334234971105e-09,
+      "hybrid_use_vm_final": 1.0
+    },
+    "hybrid (upwind -> central)": {
+      "accept_steps": 2102,
+      "termination_reason": 1,
+      "longdy": 0.07540238580020288,
+      "longdydt": 3.999447119171349e-09,
+      "hybrid_use_vm_final": 0.0
+    },
+    "VULCAN 3 preset": {
+      "accept_steps": 2820,
+      "termination_reason": 1,
+      "longdy": 0.0996203681126331,
+      "longdydt": 5.531427539343299e-09,
+      "hybrid_use_vm_final": 0.0
+    }
+  },
+  "switch_step": 1500.0,
+  "abundance_floor": 1e-12,
+  "diff_vs_central": {
+    "pure upwind": {
+      "median": 2.450379159213971e-06,
+      "max": 2.61253407227987
+    },
+    "hybrid (upwind -> central)": {
+      "median": 2.2783743041439177e-06,
+      "max": 0.00016874607000606502
+    }
+  },
+  "species_plotted": [
+    "H2O",
+    "CH4",
+    "CO",
+    "HCN",
+    "C2H2",
+    "H"
+  ]
+}

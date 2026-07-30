@@ -1,0 +1,18 @@
+--- store.py	2026-07-30 13:02:18
++++ /Users/imalsky/Desktop/Emulators/VULCAN_Project/VULCAN-master/store.py	2026-04-30 12:48:01
+@@ -198,6 +198,15 @@
+         self.pic_count = 0 # for live plotting
+         
+         self.fix_species_start = False # flag for the start of fixing condensed species
++
++        # Stall-detector state. Tracks the running minimum of var.longdy and the
++        # number of accepted steps since a new minimum was seen. When the latter
++        # exceeds vulcan_cfg.conv_stall_window with longdy below yconv_min, the
++        # integration is declared converged via end_case=1 even if the strict
++        # convergence test never trips (e.g. one trace species pinned on the
++        # chem_rhs ULP cancellation floor near yconv_min).
++        self.longdy_seen_min = float('inf')
++        self.count_since_new_min = 0
+         
+         # These are the "Tableau 20" colors as RGB.    
+         self.tableau20 = [(31, 119, 180),(255, 127, 14),(44, 160, 44),(214, 39, 40),(148, 103, 189),(140, 86, 75), (227, 119, 194),(127, 127, 127),(188, 189, 34),(23, 190, 207),\

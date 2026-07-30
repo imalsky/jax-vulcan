@@ -1,0 +1,21 @@
+--- build_atm.py	2026-07-30 13:02:17
++++ /Users/imalsky/Desktop/Emulators/VULCAN_Project/VULCAN-master/build_atm.py	2026-06-03 14:55:20
+@@ -90,8 +90,7 @@
+             ele_list = list(vulcan_cfg.atom_list)
+             ele_list.remove('H')
+             
+-            # need to be exactly the same order as element_abundances_vulcan.dat
+-            fc_list = ['C', 'N', 'O', 'P', 'S', 'Si', 'Ti','V','Cl','K','Na','Mg','F','Ca','Fe']
++            fc_list = ['C', 'N', 'O', 'S', 'P', 'Si', 'Ti','V','Cl','K','Na','Mg','F','Ca','Fe']
+             
+             if vulcan_cfg.use_solar == True: 
+                 new_str = f.read() # read in as a string
+@@ -855,7 +854,7 @@
+                 h2s_l_log10 = -1145./T + 7.94746 - 0.00322*T     # 187.6 < T <= 213.2
+                 
+                 saturate_p = 10**( (T <= 187.6)*h2s_ice_log10 + (T > 187.6)*h2s_l_log10 )
+-                atm.sat_p[sp] = saturate_p * 0.001333 * 1.e6
++                atm.sat_p[sp] = saturate_p * 0.01333 * 1.e6  # cmHg -> bar -> dyne/cm^2
+ 
+             
+ if __name__ == "__main__":

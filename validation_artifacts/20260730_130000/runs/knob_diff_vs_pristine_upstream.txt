@@ -1,0 +1,9 @@
+HD189: pristine exoclime/VULCAN cfg_examples vs VULCAN-JAX HD189.yaml
+==============================================================================
+  shared keys: 122   upstream-only: 3   jax-only: 36
+
+  DIFFERING shared knobs: 1
+    use_live_plot              upstream=True                                             jax=False
+
+  upstream-only keys (not in the JAX config):
+    ['fix_species_time', 'gs', 'use_print_delta']
