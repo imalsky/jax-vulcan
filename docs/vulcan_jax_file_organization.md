@@ -26,19 +26,30 @@ trivial private helpers are summarised in groups.
 ## Top-level driver and configuration
 
 ### `vulcan_jax_cli.py`
-Driver / console entry point `cli_main` (the `vulcan-jax` script; ~80 lines).
-Mirrors `vulcan.py`'s orchestration. Sets the JAX
-persistent-compilation-cache dir, runs `validate_runtime_config(cfg, ROOT)`,
+Driver / console entry point `cli_main` (the `vulcan-jax` script). Mirrors
+`vulcan.py`'s orchestration. Sets the JAX
+persistent-compilation-cache dir, resolves the import-frozen knobs (below),
+runs `validate_runtime_config(cfg, ROOT)`,
 builds `RunState.with_pre_loop_setup(cfg)`, instantiates `Ros2JAX` +
 `OuterLoop`, calls `integ(runstate)`, and pickles the `.vul` output. Fires
 end-of-run plotters (`plot_end`, `plot_evo`) on the legacy `(var, atm,
 para)` view if the corresponding cfg flags are set.
+
+`_frozen_knob_mismatch(cfg)` diffs `network`/`atom_list`/`com_file` against
+`default_config()` (exactly what the import-time freeze read) and
+`_relaunch_for_frozen_knobs` `os.execve`s once with the corresponding
+`$VULCAN_JAX_*` set, guarded against looping by `$VULCAN_JAX_CLI_RELAUNCHED`.
+This runs BEFORE `validate_runtime_config`, since a wrong-network config trips
+validation first. Because `load_config` lets an explicitly-set env var win over
+the YAML, a caller's deliberate override never registers as a mismatch and never
+relaunches. Regression: `tests/test_cli_smoke.py`.
 **[Δ master]** Single device-side call replaces master's Python
-`while not stop()` loop.
+`while not stop()` loop. Master reaches the same one-network-per-process state
+by editing `vulcan_cfg.py` and regenerating `chem_funs.py` (`vulcan.py:68`).
 
 ### `config.py` + `configs/*.yaml`
 The config surface is authored as **YAML** (`configs/`: `default.yaml` = HD189,
-plus `HD189`/`HD209`/`W39b`/`Earth`). `config.load_config(name_or_path, **overrides)`
+plus `HD189`/`HD209`/`W39b`/`K2-18b`/`Earth`). `config.load_config(name_or_path, **overrides)`
 reads a YAML (CWD `./configs/<name>.yaml` first, then the packaged copy), folds
 the import-frozen env (`$VULCAN_JAX_NETWORK` / `$VULCAN_JAX_ATOM_LIST` /
 `$VULCAN_JAX_COM_FILE`), applies overrides, resolves the derived values
@@ -511,7 +522,7 @@ Pre-run configuration validation.
 - `_validate_fastchem_input_vs_network(cfg, root)` — pin the FastChem element file's values and order against the network's atoms.
 - `_validate_network_assets(cfg, root)` — check every species / photo / atom file referenced by `cfg` exists.
 - `_validate_numerical_bounds(cfg)` — bound-check tuning knobs (rtol/loss/photo-switch/Newton-tol/step-size) so typos fail early.
-- `validate_runtime_config(cfg, root=None)` — top-level entry, called from `vulcan_jax_cli.py` and the `OuterLoop` entry points. Also rejects upfront: non-Ros2 solvers, inconsistent flag combos, `const_mix` keys that are not network species (master crashes identically, e.g. its Earth example's 'Ar'), and `condense_sp` entries outside the supported condensate tiers (kinetics set vs sat-only H2S).
+- `validate_runtime_config(cfg, root=None)` — top-level entry, called from `vulcan_jax_cli.py` and the `OuterLoop` entry points. Also rejects upfront: non-Ros2 solvers, inconsistent flag combos, `const_mix` keys that are not network species (master crashes identically on its own Earth example's 'Ar' — C13 in `corrections_to_original_code.md`; our shipped `Earth.yaml` drops it), and `condense_sp` entries outside the supported condensate tiers (kinetics set vs sat-only H2S).
 
 ### `legacy_io.py`
 Vendored host-side glue from VULCAN-master's `op.py` — the rate-metadata

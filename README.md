@@ -7,7 +7,7 @@ photochemistry, vertical transport, condensation, and ion chemistry.
 
 VULCAN-JAX uses the same reaction networks, atmosphere files, configuration
 names, and `.vul` output format as VULCAN. It runs the integration loop with
-JAX on a central processing unit (CPU) or graphics processing unit (GPU).
+JAX on a CPU or GPU.
 
 ## Main capabilities
 
@@ -19,9 +19,6 @@ JAX on a central processing unit (CPU) or graphics processing unit (GPU).
 - Photochemistry and molecular or eddy diffusion
 - Optional condensation and ion chemistry
 - VULCAN-compatible `.vul` output
-
-This is research software. Check convergence and run the relevant validation
-tests before you use a result in a publication.
 
 ## Requirements
 
@@ -83,27 +80,38 @@ The run writes two files under `output/`:
 - `HD189.vul` contains the model result
 - `HD189.vul.config.yaml` contains the complete resolved configuration
 
-The first run can be slower. VULCAN-JAX must compile FastChem, generate the
-chemistry function for the selected network, and compile the JAX program.
-Later runs reuse these files.
+The very first run also compiles FastChem. That costs about 10 seconds and
+happens once per installation. Generating the chemistry function for a new
+reaction network costs under a second, and is cached per network.
 
-Run another configuration:
+Every run then compiles the JAX program before it integrates. That costs about
+25 seconds for the default network on a laptop CPU. It is not yet a one-off
+cost. The compiled program is written to a cache, but the cache is never read
+back, so every run pays it again. See **Known limits**.
 
-```bash
-vulcan-jax --config HD209
-```
-
-The supplied `W39b` configuration uses a sulfur network. Select this network
-before Python imports VULCAN-JAX:
+Run any other supplied configuration the same way:
 
 ```bash
-VULCAN_JAX_NETWORK=thermo/SNCHO_photo_network.txt VULCAN_JAX_ATOM_LIST=H,O,C,N,S vulcan-jax --config W39b
+vulcan-jax --config W39b
 ```
 
-Do not assume that a stopped run has converged. Check the final message or the
-`end_case` value in the output. A value of `1` means that the run converged.
-The other values mean that the run hit a limit: `2` the model runtime, `3` the
-step count, `4` the wall-clock budget.
+### When a run stops
+
+A run ends when the atmosphere reaches a photochemical steady state. VULCAN-JAX
+measures this with two numbers. `longdy` is the largest relative change in any
+mixing ratio over the convergence lookback window. `longdydt` is that same
+change per unit of model time.
+
+The run has converged once both numbers fall below their thresholds
+(`yconv_cri` and `slope_cri`) and the actinic flux has stopped changing
+(`flux_cri`). A minimum model time (`trun_min`) and a minimum step count
+(`count_min`) must also have passed. An atmosphere therefore cannot converge
+before it has had time to evolve.
+
+A run that does not converge stops at a limit instead. There are three: the
+model runtime, the step count, and the wall-clock budget. The final message says
+which one it hit. The output file stores the same answer as `end_case`, where
+`1` means converged.
 
 [`examples/quickstart.ipynb`](examples/quickstart.ipynb) is the gentlest
 introduction. It builds an HD 189733 b model and plots the results.
@@ -140,13 +148,23 @@ parts of the run consistent.
 
 VULCAN-JAX uses YAML configuration files. The package supplies:
 
-| Name | Target | Status |
-| --- | --- | --- |
-| `default` | HD 189733 b baseline | Recommended first run |
-| `HD189` | HD 189733 b | Ready |
-| `HD209` | HD 209458 b | Ready |
-| `W39b` | WASP-39 b | Requires the sulfur-network environment variables |
-| `Earth` | Upstream Earth example | Does not run unchanged; see **Known limits** |
+| Name | Target | Network | Result |
+| --- | --- | --- | --- |
+| `default` | HD 189733 b baseline, the recommended first run | NCHO | Converges in 2102 steps |
+| `HD189` | HD 189733 b | NCHO | Converges in 1296 steps |
+| `HD209` | HD 209458 b | NCHO | Converges in 1206 steps |
+| `W39b` | WASP-39 b | SNCHO (sulfur) | Converges in 1202 steps |
+| `K2-18b` | K2-18 b | SNCHO 2025 | Runs, does not converge |
+| `Earth` | Earth | SNCHO full | Runs, does not converge |
+
+Every one of these runs without error. The three sulfur configurations need a
+reaction network other than the default, which the command line selects for you;
+see **Select a different network** below.
+
+`Earth` and `K2-18b` hit their step limits before they reach a steady state.
+Their results are therefore not converged atmospheres. `Earth` carries VULCAN's
+own numerical settings for that case unchanged, including its 20000-step limit.
+Treat both as starting points that still need tuning, not as validated cases.
 
 Use a file path to run a custom configuration:
 
@@ -161,9 +179,22 @@ repeated exactly.
 
 ### Select a different network
 
-The reaction network, atom list, and composition table are fixed when Python
-first imports VULCAN-JAX. Set their environment variables before the first
-import:
+The reaction network, the atom list, and the composition table are read once.
+This happens when Python first imports VULCAN-JAX. The parsed network, the
+species tables, and the generated chemistry function are all built from them.
+No later setting can change them in the same process.
+
+On the command line you do not have to do anything. If the configuration you
+asked for names a different network, `vulcan-jax` sets the three environment
+variables below and restarts itself once, then reports what it did:
+
+```
+Config 'W39b' needs import-frozen settings that differ from the defaults; relaunching with VULCAN_JAX_ATOM_LIST=H,O,C,N,S VULCAN_JAX_NETWORK=thermo/SNCHO_photo_network.txt
+```
+
+Set the variables yourself when you drive VULCAN-JAX from Python, or when you
+want a network that no configuration file names. They must be set before the
+first import, and a value you set explicitly always wins:
 
 ```bash
 VULCAN_JAX_NETWORK=/absolute/path/to/network.txt VULCAN_JAX_ATOM_LIST=H,O,C,N,S VULCAN_JAX_COM_FILE=/absolute/path/to/all_compose.txt vulcan-jax --config path/to/my_config.yaml
@@ -172,11 +203,61 @@ VULCAN_JAX_NETWORK=/absolute/path/to/network.txt VULCAN_JAX_ATOM_LIST=H,O,C,N,S 
 Restart Python before you change one of these values in a notebook or
 interactive session.
 
+VULCAN has the same one-network-per-process restriction, but reaches it another
+way. There you edit `network` and `atom_list` in `vulcan_cfg.py`. `vulcan.py`
+then runs `make_chem_funs.py` to write a new `chem_funs.py` before importing it.
+VULCAN-JAX is an installed package with a cached chemistry function, not a
+script sitting next to an editable `vulcan_cfg.py`. It therefore reads the same
+choice from the environment instead of from a file it would have to rewrite.
+
 ## Differentiation
 
 Use forward-mode differentiation when the model has a small number of input
-parameters. The complete `lax.while_loop` supports `jax.jvp` and `jax.jacfwd`.
-See:
+parameters. The complete `lax.while_loop` supports `jax.jvp` and `jax.jacfwd`,
+so a tangent can travel through the whole integration.
+
+This example differentiates the converged mixing ratios with respect to eddy
+diffusion. Run the model once to compile the integration loop, then push a
+tangent through the compiled loop with `jax.jvp`:
+
+```python
+import jax
+import jax.numpy as jnp
+
+import vulcan_jax
+from vulcan_jax import legacy_io, op_jax, outer_loop
+from vulcan_jax.jax_step import make_atm_static
+from vulcan_jax.state import legacy_view
+
+cfg = vulcan_jax.make_config(use_print_prog=False)
+state = vulcan_jax.RunState.with_pre_loop_setup(cfg)
+model = outer_loop.OuterLoop(op_jax.Ros2JAX(), legacy_io.Output(cfg=cfg), cfg=cfg)
+model(state)  # one run compiles the integration loop
+
+_var, atm, _para = legacy_view(state, cfg=cfg)
+nz, ni = state.step.y.shape
+atm_static = make_atm_static(atm, ni, nz, cfg=cfg)
+state0 = model._pack_state_from_runstate(state)
+
+
+def ymix_from_Kzz(Kzz):
+    final = model._runner(state0, atm_static._replace(Kzz=Kzz))
+    return final.y / jnp.sum(final.y, axis=1, keepdims=True)
+
+
+# The tangent is Kzz itself, so the result is d(ymix) / d(ln Kzz).
+Kzz = atm_static.Kzz
+ymix, dymix = jax.jvp(ymix_from_Kzz, (Kzz,), (Kzz,))
+print("sensitivity shape:", dymix.shape)
+```
+
+Differentiate `model._runner`, not `model`. The outer object copies arrays back
+to the host between steps, which breaks tracing. To differentiate with respect
+to something else, substitute a different field of `atm_static`, or the rate
+array. Temperature needs one extra step, because the rate constants are built
+before the loop starts. See the differentiability document below.
+
+Longer examples:
 
 - [`examples/grad_jvp_example.py`](examples/grad_jvp_example.py)
 - [`examples/grad_physical_example.py`](examples/grad_physical_example.py)
@@ -259,9 +340,17 @@ rather than quoting numbers from elsewhere.
   diagnostics can show when a result is not reliable.
 - Condensation can run in the forward model, but the condensation path is not
   validated for gradient inference.
-- The supplied `Earth` configuration contains argon as a fixed gas, but its
-  reaction network does not contain argon. VULCAN has the same problem.
-  Remove argon from `const_mix` and `atom_list` before you run this case.
+- One process can use only one reaction network. See **Select a different
+  network**.
+- The compiled JAX program is not reused between runs. Each run writes a new
+  entry to the compilation cache under a key that changes every time, so the
+  cache grows without ever being read and every run pays the compile cost again.
+- The `Earth` and `K2-18b` configurations reach their step limits without
+  converging. See **Configuration**.
+- The supplied `Earth` configuration drops the argon that VULCAN's own Earth
+  example carries, because no reaction network contains argon and VULCAN's
+  example therefore cannot run. This is recorded as C13 in the corrections
+  document.
 - VULCAN-JAX contains documented corrections and intentional differences from
   VULCAN. Review
   [`docs/corrections_to_original_code.md`](docs/corrections_to_original_code.md)

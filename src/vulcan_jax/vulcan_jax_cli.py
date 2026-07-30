@@ -22,14 +22,92 @@ _jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
 print("Using JAX-native chem_funs with SymPy-faithful chem_rhs codegen")
 
 import argparse
+import sys
 
 from . import legacy_io as op
-from .config import dump_config, load_config
+from .config import default_config, dump_config, load_config
 from . import op_jax
 from . import outer_loop
 from .runtime_validation import validate_runtime_config
 from .state import RunState
 from ._paths import PACKAGE_ROOT
+
+# Set on the re-executed process by `_relaunch_for_frozen_knobs` so a relaunch
+# that fails to resolve the mismatch raises instead of looping.
+_RELAUNCH_GUARD = "VULCAN_JAX_CLI_RELAUNCHED"
+
+# Import-frozen knob -> its environment override. Mirrors `config._FROZEN_ENV`;
+# the values are read once at the first `import vulcan_jax`.
+_FROZEN_KNOB_ENV = {
+    "network": "VULCAN_JAX_NETWORK",
+    "atom_list": "VULCAN_JAX_ATOM_LIST",
+    "com_file": "VULCAN_JAX_COM_FILE",
+}
+
+
+def _frozen_knob_mismatch(cfg):
+    """Import-frozen knobs `cfg` disagrees with, as ``{env var: value}``.
+
+    Compares against `default_config()` because that is exactly what the
+    import-time freeze read. `load_config` folds ``$VULCAN_JAX_*`` over the YAML
+    before returning, so a knob the caller overrode explicitly matches the
+    frozen value and never appears here.
+    """
+    frozen = default_config()
+    mismatch = {}
+    for knob, env in _FROZEN_KNOB_ENV.items():
+        want = getattr(cfg, knob, None)
+        have = getattr(frozen, knob, None)
+        if knob == "atom_list":
+            if list(want or ()) != list(have or ()):
+                mismatch[env] = ",".join(str(a) for a in want)
+        elif str(want) != str(have):
+            mismatch[env] = str(want)
+    return mismatch
+
+
+def _relaunch_for_frozen_knobs(cfg, config_ref):
+    """Re-exec with ``$VULCAN_JAX_*`` set when the config needs a different network.
+
+    ``network`` / ``atom_list`` / ``com_file`` are read once at the first
+    ``import vulcan_jax`` -- the parsed network, the composition tables, and the
+    codegen RHS are all built from them -- so a config naming a different
+    network cannot be honored in this process. Re-exec once with the variables
+    set instead of making the caller prefix them onto every command, so
+    ``vulcan-jax --config W39b`` works on its own.
+
+    Returns normally when no relaunch is needed; otherwise does not return.
+    """
+    mismatch = _frozen_knob_mismatch(cfg)
+    if not mismatch:
+        return
+    assignments = " ".join(f"{k}={v}" for k, v in sorted(mismatch.items()))
+    if os.environ.get(_RELAUNCH_GUARD):
+        raise RuntimeError(
+            f"config {config_ref!r} still disagrees with the import-frozen "
+            f"network settings after a relaunch with {assignments}. This should "
+            "not happen; run with the environment variables set manually and "
+            "report the config."
+        )
+    env = dict(os.environ)
+    env.update(mismatch)
+    env[_RELAUNCH_GUARD] = "1"
+    print(
+        f"Config {config_ref!r} needs import-frozen settings that differ from the "
+        f"defaults; relaunching with {assignments}"
+    )
+    sys.stdout.flush()
+    os.execve(
+        sys.executable,
+        [
+            sys.executable,
+            "-m",
+            "vulcan_jax.vulcan_jax_cli",
+            "--config",
+            str(config_ref),
+        ],
+        env,
+    )
 
 
 def cli_main(argv=None):
@@ -39,6 +117,9 @@ def cli_main(argv=None):
     CWD-first then packaged) or an explicit YAML path. The resolved config is
     written next to the output as ``<out_name>.config.yaml`` so the run can be
     reproduced with ``vulcan-jax --config <that file>``.
+
+    A config selecting a non-default network re-execs once with the matching
+    ``$VULCAN_JAX_*`` variables set (see `_relaunch_for_frozen_knobs`).
     """
     parser = argparse.ArgumentParser(prog="vulcan-jax")
     parser.add_argument(
@@ -50,6 +131,9 @@ def cli_main(argv=None):
     args = parser.parse_args(argv)
 
     cfg = load_config(args.config)
+    # Before any validation: a config naming a non-default network can only be
+    # honored by a process that imported vulcan_jax with it already selected.
+    _relaunch_for_frozen_knobs(cfg, args.config)
     validate_runtime_config(cfg, PACKAGE_ROOT)
 
     runstate = RunState.with_pre_loop_setup(cfg)

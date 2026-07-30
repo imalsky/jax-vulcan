@@ -29,6 +29,10 @@ _EXPECTED_GS = {
     "HD189": 2140.0,
     "HD209": 936.0,
     "W39b": 422.0,
+    # Not tuned to a round adopted value like the rest: K2-18b's Mp/Rp came
+    # across verbatim from the collaborator-supplied source config, so this
+    # pins what they imply rather than a separately adopted gravity.
+    "K2-18b": 1243.978492,
     "Earth": 980.0,
 }
 

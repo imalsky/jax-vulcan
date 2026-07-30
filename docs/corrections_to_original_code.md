@@ -196,6 +196,27 @@ code today: each one is why a VULCAN-JAX file differs from master right now.
   fresh upstream clone will trip that check; the drift message is expected and this
   entry is the explanation. See "Workspace-oracle patches" below.
 
+### C13 — Earth example lists argon, which no network contains (logged 2026-07-30)
+- **master:** `cfg_examples/vulcan_cfg_Earth.py:6` puts `'Ar'` in `atom_list` and
+  line 39 puts `'Ar':9.34e-3` in `const_mix`, but the network that same file
+  selects (`thermo/SNCHO_full_photo_network.txt`, 99 species) has no `Ar`
+  species. `build_atm.py:200` does
+  `y_ini[:,species.index(sp)] = gas_tot*const_mix[sp]` over every `const_mix`
+  key, so the run dies on `ValueError: 'Ar' is not in list` during setup. The
+  shipped upstream Earth example therefore does not run at all.
+- **JAX:** `src/vulcan_jax/configs/Earth.yaml` drops `Ar` from both
+  `atom_list` and `const_mix`. Nothing else changed. `runtime_validation.py:575`
+  would otherwise reject the config with the same finding.
+- **Effect:** the `const_mix` total falls from 0.98974 to 0.98040. Neither sums
+  to 1 — upstream leaves the remainder unassigned either way — so this shifts
+  the initial condition by 0.93% of the column and lowers the initial mean
+  molecular weight slightly, argon being heavier than the N2 it sat beside.
+  Argon is chemically inert and absent from the network, so it could not have
+  participated in any reaction; the loss is in the initial normalization only,
+  and Earth integrates to a photochemical steady state from there.
+- **Note:** the alternative (fold 9.34e-3 into N2) preserves the total but
+  misstates the composition, so the deficit was kept visible instead.
+
 ## Live constraints left behind by fixed port regressions
 
 The regressions themselves are fixed and are no longer described here. What

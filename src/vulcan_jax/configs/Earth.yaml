@@ -5,11 +5,13 @@
 #   save_movie_rate = live_plot_frq, para_anaTP = para_warm.
 # Gravity is derived as gs = G*Mp/Rp^2 (set Mp + Rp, not gs).
 
+# Ar is deliberately absent (master's cfg_examples/vulcan_cfg_Earth.py lists it).
+# No shipped network contains an Ar species, so `species.index('Ar')` makes the
+# upstream example unrunnable; see C-Earth in docs/corrections_to_original_code.md.
 atom_list:
 - H
 - O
 - C
-- Ar
 - N
 - S
 use_lowT_limit_rates: false
@@ -35,12 +37,12 @@ He_H: 0.09692
 ini_mix: const_mix
 fastchem_met_scale: 1.0
 fastchem_solar_abundance_file: fastchem_vulcan/input/solar_element_abundances.dat
+# Ar: 0.00934 dropped with the atom_list entry above (not a network species).
 const_mix:
   N2: 0.78
   O2: 0.2
   H2O: 1.0e-06
   CO2: 0.0004
-  Ar: 0.00934
   SO2: 2.0e-10
 use_photo: true
 r_star: 1
