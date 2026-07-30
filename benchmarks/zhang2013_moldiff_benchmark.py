@@ -50,6 +50,7 @@ Writes benchmarks/zhang2013_moldiff_benchmark.png and prints an error table.
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -171,6 +172,10 @@ def make_atm_static(col, Dzz_trace_iface, Kzz_iface, *, use_vm_mol):
         bot_flux=jnp.zeros(ni),
         bot_vdep=jnp.zeros(ni),
         gas_indx_mask=jnp.asarray([True, True]),
+        # No diffusion-limited escape in this benchmark: the top boundary is
+        # zero-flux (top_flux is zero and use_topflux is False), so no species
+        # takes the `diff_esc` branch in `_build_diff_coeffs_jax`.
+        diff_esc_mask=jnp.zeros(ni, dtype=bool),
         use_vm_mol=bool(use_vm_mol),
         use_settling=False,
         use_topflux=False,
@@ -339,7 +344,31 @@ def stability_sweep(nz_values, n_scale_heights):
     return np.array(peclet), np.array(cmin), np.array(umin)
 
 
-def main() -> int:
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--outdir",
+        type=Path,
+        default=Path(__file__).resolve().parent,
+        help="directory for the figure and CSV (default: alongside this script).",
+    )
+    parser.add_argument(
+        "--basename",
+        default="zhang2013_moldiff_benchmark",
+        help="stem for the written files.",
+    )
+    parser.add_argument(
+        "--formats",
+        default="png",
+        help="comma-separated figure formats, e.g. 'png,pdf'.",
+    )
+    parser.add_argument(
+        "--csv",
+        action="store_true",
+        help="also write the plotted data as CSV.",
+    )
+    args = parser.parse_args(argv)
+
     inv_H_trace = M_TRACE * G_CGS / (R_GAS * T_ISO)
     inv_H_atm = MU_ATM * G_CGS / (R_GAS * T_ISO)
     kappa = inv_H_trace - inv_H_atm  # 1/H_i - 1/H_atm, 1/cm
@@ -470,9 +499,34 @@ def main() -> int:
     )
     fig.tight_layout(rect=(0, 0, 1, 0.95))
 
-    out_png = Path(__file__).resolve().parent / "zhang2013_moldiff_benchmark.png"
-    fig.savefig(out_png, dpi=200)
-    print(f"\nwrote {out_png}")
+    args.outdir.mkdir(parents=True, exist_ok=True)
+    for ext in [e.strip() for e in args.formats.split(",") if e.strip()]:
+        out = args.outdir / f"{args.basename}.{ext}"
+        fig.savefig(out, dpi=200)
+        print(f"\nwrote {out}")
+
+    if args.csv:
+        out_csv = args.outdir / f"{args.basename}_data.csv"
+        with out_csv.open("w") as fh:
+            fh.write(
+                "# Panel A: steady-state mole fraction vs pressure "
+                f"(nz={NZ}, D/(D+K)={frac:.3f})\n"
+            )
+            fh.write(
+                "panel,p_mbar,analytic,jax_central_hybrid,jax_upwind,"
+                "vulcan2_central,vulcan2_upwind\n"
+            )
+            for k in range(len(p_mbar)):
+                fh.write(
+                    f"A,{p_mbar[k]:.10e},{res['analytic'][k]:.10e},"
+                    f"{res['central'][k]:.10e},{res['upwind'][k]:.10e},"
+                    f"{res['central_ref'][k]:.10e},{res['upwind_ref'][k]:.10e}\n"
+                )
+            fh.write("# Panel B: stability sweep, pure molecular (K=0)\n")
+            fh.write("panel,cell_peclet,central_min_frac,upwind_min_frac\n")
+            for pe, c, u in zip(peclet, cmin, umin):
+                fh.write(f"B,{pe:.10e},{c:.10e},{u:.10e}\n")
+        print(f"wrote {out_csv}")
 
     ok = (
         res["central_max_fe"] < 0.05
