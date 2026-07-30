@@ -34,7 +34,26 @@ _EXPECTED_GS = {
     # pins what they imply rather than a separately adopted gravity.
     "K2-18b": 1243.978492,
     "Earth": 980.0,
+    # Explicit VULCAN 3 preset: HD189 physics, vm_branch numerics.
+    "HD189_vulcan3": 2140.0,
 }
+
+
+def test_expected_gs_covers_every_shipped_config():
+    """A newly added config must not slip past this file's coverage.
+
+    `_EXPECTED_GS` is hand-maintained; without this check a new
+    `configs/*.yaml` would silently go untested by every parametrized test
+    below (which is how HD189_vulcan3.yaml would have been missed).
+    """
+    from vulcan_jax._paths import PACKAGE_ROOT
+
+    shipped = {p.stem for p in (PACKAGE_ROOT / "configs").glob("*.yaml")}
+    assert shipped == set(_EXPECTED_GS), (
+        "shipped configs and _EXPECTED_GS disagree: "
+        f"only on disk {sorted(shipped - set(_EXPECTED_GS))}, "
+        f"only in the table {sorted(set(_EXPECTED_GS) - shipped)}"
+    )
 
 
 @pytest.mark.parametrize("name", sorted(_EXPECTED_GS))

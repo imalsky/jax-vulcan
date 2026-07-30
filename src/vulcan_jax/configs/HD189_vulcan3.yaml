@@ -1,10 +1,20 @@
-# VULCAN-JAX configuration (default).
-# Authored surface: edit values here (or a CWD ./configs/default.yaml override).
+# VULCAN-JAX configuration -- HD 189733 b, VULCAN 3 preset.
+#
+# This is the EXPLICIT VULCAN 3 configuration. It is HD189.yaml's physics with
+# the numerics of shami-EEG/VULCAN `vm_branch` (fetched 2026-07-30), which is
+# the branch VULCAN 3 is being built from. Use HD189.yaml for a VULCAN 2 parity
+# run against exoclime/VULCAN `master`; use this one to exercise the VULCAN 3
+# feature set.
+#
+# Every knob below that differs from HD189.yaml is a vm_branch value, cited to
+# the fetched file, EXCEPT `use_conv_stall`, which is a VULCAN-JAX-only
+# convergence fallback with no upstream counterpart and is flagged as such.
+#
+# Authored surface: edit values here (or a CWD ./configs/HD189_vulcan3.yaml).
 # Derived at load time (see config._DERIVED), do NOT add here:
 #   dt_max = runtime*1e-5, photo_switch_longdy_thresh = yconv_min*10,
 #   save_movie_rate = live_plot_frq, para_anaTP = para_warm.
 # Gravity is derived as gs = G*Mp/Rp^2 (set Mp + Rp, not gs).
-
 atom_list:
 - H
 - O
@@ -23,7 +33,7 @@ vul_ini: output/HD189-nominal.vul
 output_dir: output/
 plot_dir: plot/
 movie_dir: plot/movie/
-out_name: HD189.vul
+out_name: HD189_vulcan3.vul
 use_solar: true
 O_H: 0.00060618
 C_H: 0.00027761
@@ -42,11 +52,6 @@ const_mix:
 use_photo: true
 r_star: 0.805
 Rp: 8135789599.999999
-# Mp chosen so G*Mp/Rp^2 reproduces the adopted HD189 gs = 2140 cm/s^2 to
-# sub-ULP (same value as HD189.yaml). The raw literature mass 2.1220758e30
-# gives 2139.77 (-1.07e-4 rel), which measurably shifts photolysis rates
-# (up to ~7% per-layer J) and upper-layer radicals (~2.6e-3 in 20 steps).
-Mp: 2.1223033871582308e+30
 orbit_radius: 0.03142
 sl_angle: 0.8377573333333332
 f_diurnal: 1.0
@@ -68,10 +73,17 @@ P_b: 1000000000.0
 P_t: 0.01
 use_Kzz: true
 use_moldiff: true
-use_vm_mol: false
-use_hybrid_vm_mol: false
+# vm_branch vulcan_cfg.py:147-148 -- upwind molecular diffusion, then the
+# in-loop flip to central difference. A completed hybrid run ends in the
+# central phase, so the converged state is a central-difference fixed point.
+use_vm_mol: true
+use_hybrid_vm_mol: true
 use_vz: false
-high_temp_cut: false
+# vm_branch vulcan_cfg.py:149-151. Not a temperature clip: it raises P_b to
+# the shallowest deep level cooler than high_temp_cut_K and re-grids.
+# Inert on this planet (HD 189733 b never reaches 3500 K); it is set here to
+# match vm_branch, NOT because this config validates the feature.
+high_temp_cut: true
 high_temp_cut_K: 3500.0
 high_temp_cut_P: 1000000.0
 atm_type: file
@@ -79,6 +91,7 @@ Kzz_prof: file
 K_max: 100000.0
 K_p_lev: 0.1
 vz_prof: const
+Mp: 2.1223033871582308e+30
 Tiso: 1000
 para_warm:
 - 120.0
@@ -119,7 +132,7 @@ conv_step: 500
 # predicate is folded away at trace time (bit-identical to not having it).
 # `conv_stall_window` is the lookback and is NOT an off switch: it must be
 # >= 1, and a small value makes the fallback fire sooner, not never.
-use_conv_stall: false
+use_conv_stall: true
 conv_stall_window: 200
 ode_solver: Ros2
 use_print_prog: true
@@ -131,10 +144,12 @@ dt_min: 1.0e-14
 dt_var_max: 2.0
 dt_var_min: 0.5
 count_min: 120
-count_max: 10000
+# vm_branch vulcan_cfg.py:121 -- count_max = int(2E4)
+count_max: 20000
 atol: 0.1
 mtol: 1.0e-22
-mtol_conv: 1.0e-20
+# vm_branch vulcan_cfg.py:124 (master ships 1e-20)
+mtol_conv: 1.0e-18
 pos_cut: 0
 nega_cut: -1.0
 loss_eps: 0.1
@@ -143,31 +158,25 @@ slope_cri: 0.0001
 yconv_min: 0.1
 flux_cri: 0.1
 flux_atol: 1.0
-# VULCAN 2 parity: fetched exoclime/VULCAN master vulcan_cfg.py:151 and
-# cfg_examples/vulcan_cfg_HD189.py:148 BOTH ship the empty list, as does
-# shami-EEG/VULCAN master (that file is byte-identical to exoclime's).
-# shami-EEG vm_branch:157 ships ['HC3N'] -- that is the VULCAN 3 value and it
-# lives in HD189_vulcan3.yaml.
-#
-# A 13-heavy-hydrocarbon list used to sit here, credited to "VULCAN-master
-# cfg:149". That attribution was false: the list exists in NO upstream
-# repository. It is VULCAN-JAX's own early test list (Shami, 2026-07-14:
-# "Usually, I only have HC3N"), and it had been written into the local
-# ../VULCAN-master copy, which was then cited as proof it was upstream.
-# Measured 2026-07-30, HD189, stall fallback off: [] and ['HC3N'] are
-# IDENTICAL (1495 steps, longdy 0.09172, same controlling cell); the
-# 13-species list is what produced 1296. Do not restore it to buy a step count.
-conver_ignore: []
-rtol: 0.2
+# shami-EEG/VULCAN vm_branch vulcan_cfg.py:157. Upstream master ships [];
+# this single entry is the VULCAN 3 value and matches Shami's own practice
+# (2026-07-14: "Usually, I only have HC3N").
+conver_ignore:
+- HC3N
+# vm_branch vulcan_cfg.py:161
+rtol: 0.25
 post_conden_rtol: 0.1
-use_adapt_rtol: false
-rtol_min: 0.0
-rtol_max: 1.0
+# vm_branch vulcan_cfg.py:160 + op.py:836-851. Note the ONLY adaptive-rtol
+# difference between master and vm_branch is the decrease factor (0.75 ->
+# 0.5); the periods and the increase factor are identical in both.
+use_adapt_rtol: true
+rtol_min: 0.01
+rtol_max: 2.5
 loss_criteria: 0.0005
 adapt_rtol_dec_period: 10
-adapt_rtol_inc_period: 500
+adapt_rtol_inc_period: 1000
 adapt_rtol_dec: 0.5
-adapt_rtol_inc: 1.5
+adapt_rtol_inc: 1.25
 adapt_rtol_loss_mul: 2.0
 adapt_rtol_inc_loss_thresh: 0.0002
 # 110 (not 64) so `dt < dt_min` ends a reject chain, as master does — see C11 in

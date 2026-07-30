@@ -137,12 +137,19 @@ use_ini_cold_trap: true
 use_sat_surfaceH2O: false
 st_factor: 0.5
 conv_step: 500
-# Declared explicitly: an absent key falls back to the getattr default at the
-# read site, which for `conver_ignore` is an EMPTY list rather than
-# default.yaml's [HC3N] — and HC3N is in this network, so it would gate
-# convergence here contrary to intent.
-conver_ignore:
-- HC3N
+# VULCAN 2 parity: upstream's own cfg_examples/vulcan_cfg_Earth.py declares no
+# `conver_ignore` at all, and fetched exoclime master's vulcan_cfg.py ships [].
+# Earth does not converge under either value (it hits its 20000-step cap with
+# atom conservation violated by ~3 orders of magnitude), so this is an
+# upstream-fidelity choice, not a convergence tuning choice. See
+# validation_artifacts/20260730_130000/unresolved_items.md U3.
+conver_ignore: []
+# JAX-ONLY convergence fallback. No counterpart in VULCAN 2.0 master or
+# vm_branch, so a VULCAN 2 parity run must keep this false. When false the
+# predicate is folded away at trace time (bit-identical to not having it).
+# `conv_stall_window` is the lookback and is NOT an off switch: it must be
+# >= 1, and a small value makes the fallback fire sooner, not never.
+use_conv_stall: false
 conv_stall_window: 200
 ode_solver: Ros2
 use_print_prog: true

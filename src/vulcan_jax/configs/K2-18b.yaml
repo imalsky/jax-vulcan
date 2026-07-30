@@ -158,8 +158,19 @@ slope_cri: 0.0001
 yconv_min: 0.1
 flux_cri: 0.1
 flux_atol: 1.0
+# Left at the collaborator-supplied value, which is also shami-EEG vm_branch's
+# (vulcan_cfg.py:157). This is a VULCAN 3 case, not a VULCAN 2 parity case.
 conver_ignore:
 - HC3N
+# JAX-only convergence fallback, on for this VULCAN 3 case. Declared explicitly
+# rather than inherited: an omitted key takes the code default, which is the
+# opposite of what the VULCAN 2 parity configs ship.
+use_conv_stall: true
+conv_stall_window: 200
+# 110 (not the code default 64) so `dt < dt_min` ends a reject chain, as master
+# does -- see C11 in docs/corrections_to_original_code.md. This config omitted
+# the key and was silently taking 64, unlike every other shipped config.
+batch_max_retries: 110
 rtol: 0.1
 post_conden_rtol: 1.5
 use_adapt_rtol: true

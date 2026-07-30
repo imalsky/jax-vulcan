@@ -114,6 +114,12 @@ use_ini_cold_trap: false
 use_sat_surfaceH2O: false
 st_factor: 0.5
 conv_step: 500
+# JAX-ONLY convergence fallback. No counterpart in VULCAN 2.0 master or
+# vm_branch, so a VULCAN 2 parity run must keep this false. When false the
+# predicate is folded away at trace time (bit-identical to not having it).
+# `conv_stall_window` is the lookback and is NOT an off switch: it must be
+# >= 1, and a small value makes the fallback fire sooner, not never.
+use_conv_stall: false
 conv_stall_window: 200
 ode_solver: Ros2
 use_print_prog: true
@@ -137,23 +143,21 @@ slope_cri: 0.0001
 yconv_min: 0.1
 flux_cri: 0.1
 flux_atol: 1.0
-# Master's list (VULCAN-master cfg:149) + HC3N: heavy hydrocarbons on the chem_rhs
-# ULP floor that stall convergence.
-conver_ignore:
-- C6H6
-- C2H2
-- C6H5
-- C2H
-- C2H4
-- C2H5
-- C2H6
-- C3H2
-- C3H3
-- C4H5
-- CH2NH
-- CH3NH2
-- H2CCO
-- HC3N
+# VULCAN 2 parity: fetched exoclime/VULCAN master vulcan_cfg.py:151 and
+# cfg_examples/vulcan_cfg_HD189.py:148 BOTH ship the empty list, as does
+# shami-EEG/VULCAN master (that file is byte-identical to exoclime's).
+# shami-EEG vm_branch:157 ships ['HC3N'] -- that is the VULCAN 3 value and it
+# lives in HD189_vulcan3.yaml.
+#
+# A 13-heavy-hydrocarbon list used to sit here, credited to "VULCAN-master
+# cfg:149". That attribution was false: the list exists in NO upstream
+# repository. It is VULCAN-JAX's own early test list (Shami, 2026-07-14:
+# "Usually, I only have HC3N"), and it had been written into the local
+# ../VULCAN-master copy, which was then cited as proof it was upstream.
+# Measured 2026-07-30, HD189, stall fallback off: [] and ['HC3N'] are
+# IDENTICAL (1495 steps, longdy 0.09172, same controlling cell); the
+# 13-species list is what produced 1296. Do not restore it to buy a step count.
+conver_ignore: []
 rtol: 0.2
 post_conden_rtol: 0.1
 use_adapt_rtol: false
