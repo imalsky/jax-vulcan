@@ -647,6 +647,7 @@ class _Statics(NamedTuple):
     conv_step: int  # ring buffer length (vulcan_cfg.conv_step)
     count_min: int
     count_max: int
+    use_conv_stall: bool  # enable the JAX-only stalled-convergence fallback
     conv_stall_window: int  # accepted steps without longdy improvement before declaring stalled-convergence
     runtime: float
     trun_min: float
@@ -784,6 +785,7 @@ def _make_runner(
     # _pack_state_from_runstate; the termination test reads the carry
     # (s.count_min_dyn / s.count_max_dyn / s.runtime_dyn) so the hybrid phase
     # flip can extend it. They are intentionally not bound as closure locals.
+    use_conv_stall = statics.use_conv_stall
     conv_stall_window = statics.conv_stall_window
     trun_min = statics.trun_min
     st_factor = statics.st_factor
@@ -946,12 +948,20 @@ def _make_runner(
         # don't terminate while a new species is actively evolving — only
         # when the chem_rhs ULP-floor oscillation around the converged state
         # has been going on long enough.
-        is_stalled = (
-            (s.count_since_new_min > jnp.int32(conv_stall_window))
-            & (s.longdy_seen_min < jnp.float64(yconv_min))
-            & (s.longdy < jnp.float64(yconv_min))
-            & (s.aflux_change < jnp.float64(flux_cri))
-        )
+        #
+        # This has NO counterpart in VULCAN 2.0 or vm_branch, so a VULCAN 2
+        # parity run must set `use_conv_stall: false`. The gate is a static
+        # Python bool, so when off the predicate is folded away at trace time
+        # and the run is bit-identical to one built without the feature.
+        if use_conv_stall:
+            is_stalled = (
+                (s.count_since_new_min > jnp.int32(conv_stall_window))
+                & (s.longdy_seen_min < jnp.float64(yconv_min))
+                & (s.longdy < jnp.float64(yconv_min))
+                & (s.aflux_change < jnp.float64(flux_cri))
+            )
+        else:
+            is_stalled = jnp.zeros_like(conv_normal)
         return (conv_normal | is_stalled), conv_normal, is_stalled
 
     def _real_terminate(s: JaxIntegState):
@@ -1657,11 +1667,18 @@ def _make_runner(
     def runner(state: JaxIntegState, atm_static: AtmStatic):
         # One-shot run. The carry's counters accumulate across the entire
         # integration; cond_fn checks count_max / runtime / convergence.
-        return jax.lax.while_loop(
+        final = jax.lax.while_loop(
             cond_fn,
             lambda s: body_fn(s, atm_static),
             state,
         )
+        # Record WHY the loop stopped. `cond_fn` already evaluates this every
+        # iteration but discards the code; re-evaluating once on the terminal
+        # state is O(1) per run and is the only way the single-profile path can
+        # distinguish a normal convergence (1) from a stall convergence (4).
+        # A chunked exit leaves `real_term` false and reports 0 (still running).
+        _real_term, reason = _real_terminate(final)
+        return final._replace(termination_reason=reason)
 
     def cond_fn_batch(s: JaxIntegState):
         # Per-lane stop predicate for the vmapped runner. Gates ONLY on flags
@@ -2015,6 +2032,7 @@ class OuterLoop:
             conv_step=int(self._cfg.conv_step),
             count_min=int(self._cfg.count_min),
             count_max=int(self._cfg.count_max),
+            use_conv_stall=bool(getattr(self._cfg, "use_conv_stall", True)),
             conv_stall_window=int(getattr(self._cfg, "conv_stall_window", 200)),
             runtime=float(self._cfg.runtime),
             trun_min=float(self._cfg.trun_min),
@@ -2685,6 +2703,7 @@ class OuterLoop:
                 dtype=jnp.float64,
             ),
             fix_species_start=bool(state.fix_species_started),
+            termination_reason=int(state.termination_reason),
         )
 
         atom_loss_arr = np.asarray(state.atom_loss, dtype=np.float64)
@@ -3113,6 +3132,7 @@ class OuterLoop:
 
         # Determine end_case (op.py:1075-1087) for the final print.
         para.end_case = self._classify_end_case(final_state, wall_clock_hit)
+        para.termination_reason = int(final_state.termination_reason)
         if para.end_case == 3:
             print(
                 "Integration not completed...\nMaximal allowed steps "
@@ -3124,8 +3144,13 @@ class OuterLoop:
                 f"exceeded ({self._cfg.runtime} sec)!"
             )
         elif para.end_case == 1:
+            how = (
+                "via the stall fallback (JAX-only; no VULCAN 2.0 counterpart)"
+                if para.termination_reason == 4
+                else "on the standard convergence criterion"
+            )
             print(
-                f"Integration successful with {para.count} steps and "
+                f"Integration successful {how} with {para.count} steps and "
                 f"long dy, long dydt = {var.longdy}, {var.longdydt}\n"
                 f"Actinic flux change: {var.aflux_change:.2E}"
             )
@@ -3230,8 +3255,13 @@ class OuterLoop:
         # thus the .vul 'parameter' dict). _unpack_state_to_runstate cannot
         # see a wall-clock bail (count<count_max, t<runtime) and would
         # otherwise mislabel a truncated run as converged (end_case=1).
+        reason = int(final_state.termination_reason)
         if rs_out.params is not None:
-            rs_out = rs_out._replace(params=rs_out.params._replace(end_case=end_case))
+            rs_out = rs_out._replace(
+                params=rs_out.params._replace(
+                    end_case=end_case, termination_reason=reason
+                )
+            )
         if end_case == 3:
             print(
                 "Integration not completed...\nMaximal allowed steps "
@@ -3243,8 +3273,16 @@ class OuterLoop:
                 f"exceeded ({self._cfg.runtime} sec)!"
             )
         elif end_case != 4:
+            # reason 4 is the JAX-only stall fallback, which shares end_case=1
+            # with a normal convergence. Say so, so a stalled exit is never
+            # read as having met VULCAN's convergence criterion.
+            how = (
+                "via the stall fallback (JAX-only; no VULCAN 2.0 counterpart)"
+                if reason == 4
+                else "on the standard convergence criterion"
+            )
             print(
-                f"Integration successful with {count} steps and "
+                f"Integration successful {how} with {count} steps and "
                 f"long dy, long dydt = {rs_out.step.longdy}, "
                 f"{rs_out.step.longdydt}\n"
                 f"Actinic flux change: "

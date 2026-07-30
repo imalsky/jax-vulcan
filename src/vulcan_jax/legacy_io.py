@@ -701,6 +701,9 @@ def _synthesize_save_dicts(runstate, cfg, photo_static=None):
         para_save["small_y"] = float(p.small_y)
         para_save["nega_y"] = float(p.nega_y)
         para_save["end_case"] = int(getattr(p, "end_case", 0))
+        # VULCAN-JAX addition: end_case cannot separate a normal
+        # convergence from the JAX-only stall fallback (both are 1).
+        para_save["termination_reason"] = int(getattr(p, "termination_reason", 0))
         para_save["solver_str"] = "solver"
         para_save["switch_final_photo_frq"] = bool(
             getattr(p, "switch_final_photo_frq", False)
@@ -719,6 +722,7 @@ def _synthesize_save_dicts(runstate, cfg, photo_static=None):
     # public .vul schema should still expose the same parameter key.
     para_save["tableau20"] = _master_tableau20()
     para_save.setdefault("end_case", 0)
+    para_save.setdefault("termination_reason", 0)
     para_save.setdefault("solver_str", "solver")
     para_save.setdefault("switch_final_photo_frq", False)
     if runstate.step is not None:

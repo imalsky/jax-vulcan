@@ -142,6 +142,13 @@ class ParamInputs(NamedTuple):
     pic_count: int
     where_varies_most: jnp.ndarray  # shape: (nz, ni)
     fix_species_start: bool
+    # Why the integration stopped, at finer grain than `end_case` (which cannot
+    # tell a normal convergence from a stall convergence — both are 1):
+    # 0 still running, 1 converged, 2 runtime exceeded, 3 step-count exceeded,
+    # 4 stalled-convergence, 5 non-finite state. Codes match the runner's
+    # `JaxIntegState.termination_reason`. Defaulted so pre-existing callers
+    # that build a `ParamInputs` positionally keep working.
+    termination_reason: int = 0
 
 
 class AtomInputs(NamedTuple):
@@ -473,6 +480,7 @@ def runstate_from_store(var, atm, para) -> RunState:
             dtype=jnp.float64,
         ),
         fix_species_start=bool(getattr(para, "fix_species_start", False)),
+        termination_reason=int(getattr(para, "termination_reason", 0)),
     )
 
     atom_order = _atom_order_for(_cfg)
@@ -568,6 +576,7 @@ def runstate_to_store(state: RunState, var, atm, para) -> None:
         para.small_y = float(state.params.small_y)
         para.nega_y = float(state.params.nega_y)
         para.end_case = int(state.params.end_case)
+        para.termination_reason = int(state.params.termination_reason)
         para.switch_final_photo_frq = bool(state.params.switch_final_photo_frq)
         para.pic_count = int(state.params.pic_count)
         para.where_varies_most = np.asarray(
@@ -1152,6 +1161,7 @@ def legacy_view(rs: RunState, cfg=None):
         para.small_y = float(rs.params.small_y)
         para.nega_y = float(rs.params.nega_y)
         para.end_case = int(rs.params.end_case)
+        para.termination_reason = int(rs.params.termination_reason)
         para.solver_str = "solver"
         para.switch_final_photo_frq = bool(rs.params.switch_final_photo_frq)
         para.pic_count = int(rs.params.pic_count)
@@ -1372,6 +1382,7 @@ class _Parameters(object):
         self.loss_count = 0
         self.delta_count = 0
         self.end_case = 0
+        self.termination_reason = 0
         self.solver_str = ""
         self.switch_final_photo_frq = False
         self.where_varies_most = np.zeros((_nz, _ni))
