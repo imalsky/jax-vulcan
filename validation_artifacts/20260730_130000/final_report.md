@@ -427,11 +427,12 @@ mismatch of section 6 would dominate any curve from the clean clone.
 
 Full list in `unresolved_items.md`. The blocking ones:
 
-1. **The paper should now carry the new parity number.** Section 6 gives a
-   real, independent cross-code agreement figure (3.8e-06 median) that the
-   project did not previously have. It supersedes any agreement claim measured
-   against the local copy, and it requires stating that the composition was
-   matched.
+1. **The paper is corrected and rebuilt** (see `unresolved_items.md` U2).
+   Table 1's HD 189733 b row is now 217 s (1590 steps) against 38.7 s (1495),
+   re-measured against a pristine upstream clone with the network and
+   composition matched; the two unsupportable "matches exactly" claims are gone;
+   and the agreement numbers improved (median 7.3e-06 -> 3.3e-06, worst
+   above-floor cell 2.5e-02 -> 5.2e-04). The 4.4-6.7x speedup range is unchanged.
 2. **The paper's Table 1 and its two `\rev` claims** need revising; 1296 -> 1495
    for the parity configuration, and neither "matches exactly" claim survives.
 3. **The extra `NH3 + CH` reaction** has no established provenance. It has been

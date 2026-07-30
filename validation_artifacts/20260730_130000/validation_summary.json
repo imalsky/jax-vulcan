@@ -143,5 +143,64 @@
     "23a24b7",
     "71263c8",
     "3647ef5"
-  ]
+  ],
+  "paper_corrections": {
+    "file": "jax_paper/main.tex",
+    "backup": "main.tex.bak_20260730_pre_conver_ignore_fix",
+    "archived_data": "jax_paper/data/archive/pre_conver_ignore_fix_20260730/",
+    "rebuilt": "make paper, exit 0, no LaTeX errors",
+    "table1_HD189": {
+      "vulcan2_before": "188 s (1396)",
+      "vulcan2_after": "217 s (1590)",
+      "vulcan3_before": "35.5 s (1296)",
+      "vulcan3_after": "38.7 s (1495)"
+    },
+    "vulcan2_repeats": {
+      "walls_s": [
+        213.73,
+        217.11,
+        222.54
+      ],
+      "steps": [
+        1580,
+        1590,
+        1602
+      ],
+      "cpu_wall": [
+        0.997,
+        0.999,
+        0.999
+      ]
+    },
+    "vulcan3_repeats": {
+      "walls_s": [
+        38.89,
+        38.47,
+        38.68
+      ],
+      "steps": [
+        1495,
+        1495,
+        1495
+      ]
+    },
+    "median_frac_diff_HD189": {
+      "before": 7.290843561592977e-06,
+      "after": 3.263024573109561e-06
+    },
+    "max_frac_above_1e-10_any_run": {
+      "before": 0.02474,
+      "after": 0.0005182
+    },
+    "atom_drift_HD189": {
+      "before": 2.526663241612523e-05,
+      "after": 2.6126101967707614e-05
+    },
+    "projection_off_median": {
+      "before": 0.00039,
+      "after": 0.0003993104
+    },
+    "speedup_range": "4.4-6.7x, UNCHANGED (HD189 5.3x -> 5.6x, inside the existing range)",
+    "not_remeasured": "HD209 and W39b: step-matched rows, and JAX free-convergence is insensitive to conver_ignore (1206 / 1202 for all three lists)"
+  }
 }

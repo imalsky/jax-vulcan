@@ -46,31 +46,47 @@ Both choices are deliberate. The rocky suppression was already recorded in
   `IndexError: index 877 is out of bounds for axis 0 with size 877`. That blocks
   a documented workflow and should be fixed.
 
-## U2. The paper's Table 1 and two `\rev` claims need revising
+## U2. DONE — the paper has been corrected and rebuilt
 
-`jax_paper/main.tex`:
+`jax_paper/main.tex` updated 2026-07-30 and rebuilt clean (`make paper`, exit 0,
+no LaTeX errors). `main.tex` backed up to
+`main.tex.bak_20260730_pre_conver_ignore_fix`; superseded data archived under
+`jax_paper/data/archive/pre_conver_ignore_fix_20260730/` with a README.
 
-- Table 1, HD 189733 b, `VULCAN 3.0` column: `35.5 (1296)`. The 1296 came from
-  the 13-species `conver_ignore`. The VULCAN 2 parity number is **1495**.
-- Caption: *"re-running HD 189733b at the current release gives 1296 accepted
-  steps in 37.4 s, matching the tabulated step count exactly."* No longer true,
-  and it was never an independent match.
-- Footnote †: *"Allowed to converge freely on the same configuration, both codes
-  independently accept 1202 steps."* WASP-39b at 1202 does reproduce on the
-  VULCAN-JAX side under every `conver_ignore` variant, but the "both codes"
-  half was measured against the contaminated local copy and has not been
-  re-established against a clean upstream clone.
-- Line 249: *"HD 189733b converges in 1296 steps with VULCAN 3.0 and 1396 for
-  VULCAN 2.0."* Both numbers need re-deriving. A pristine upstream clone
-  converges in **1131** steps, not 1396.
+Re-measured against a PRISTINE `exoclime/VULCAN` clone (HEAD `8970337`), both
+codes given the same network and the same `solar_element_abundances.dat`, three
+repeats each, quiet machine:
 
-**Not edited this session.** The paper is a separate, unversioned directory, and
-the replacement numbers are a scientific judgement call, not a mechanical
-substitution: with U1 resolved there is now a *better* validation statement
-available (VULCAN-JAX vs a pristine upstream clone, median 3.8e-06 with the
-composition matched) than the step-count matching the current text leans on.
-Which of those to put in the paper, and how to describe the composition choice,
-is Isaac's and Shami's call.
+| | before | after |
+|---|---|---|
+| Table 1 HD189, VULCAN 2.0 | 188 s (1396) | **217 s (1590)** |
+| Table 1 HD189, VULCAN 3.0 | 35.5 s (1296) | **38.7 s (1495)** |
+| profiling figure totals | 195 s / 36 s | **203 s / 39 s** |
+| HD189 median frac. diff. | 7.3e-06 | **3.3e-06** |
+| max frac. diff. above 1e-10, any run | 2.5e-02 | **5.2e-04** |
+| HD189 atom-sum drift | 2.5e-05 | **2.6e-05** |
+| projection-off median | 3.9e-04 | **4.0e-04** (reproduced) |
+
+VULCAN 2.0's cpu/wall was 0.997-0.999 in all three repeats, so the wall times
+are compute rather than contention. VULCAN 3.0 accepted 1495 steps in every
+repeat; VULCAN 2.0 varied (1580/1590/1602), which the text now says explicitly.
+
+Two claims were removed rather than re-derived:
+- "matching the tabulated step count exactly" — it never was an independent
+  match, and the caption now states the protocol instead.
+- the WASP-39b "both codes independently accept 1202 steps" — the VULCAN-JAX
+  half reproduces robustly and is kept; the "both codes" half was measured
+  against the contaminated copy and is dropped.
+
+**The speedup range is unchanged at 4.4-6.7x.** HD 189733 b moves 5.3x -> 5.6x,
+inside the range already set by HD 209458 b (4.4x) and WASP-39b (6.7x), so the
+abstract and conclusions needed no edit.
+
+HD 209458 b and WASP-39b were deliberately NOT re-measured: both are
+step-matched rows, and VULCAN-JAX's free-convergence step count for each is
+insensitive to `conver_ignore` (HD209 1206, W39b 1202, for all three lists).
+Verified that only the two HD189 rows of `benchmarks.csv` and `parity_metrics.csv`
+changed.
 
 ---
 

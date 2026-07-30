@@ -39,10 +39,24 @@ not the species that gates convergence, atomic C is. The 13-species list only
 moves HD189, and it does that by dropping species out of the convergence test
 rather than by changing the physics.
 
-This matters for the paper. Our HD189 number of 1296 accepted steps came from
-that list. The honest VULCAN 2 parity number is 1495. WASP-39b at 1202 is
-unaffected. I am revising the table and removing the claim that we match the
-published step count exactly.
+This matters for the paper, so I have already fixed it. Our HD189 number of 1296
+accepted steps came from that list, and so did the VULCAN 2.0 number of 1396,
+because my local copy had the same list in it. I re-measured both against a
+clean clone of your repository, three runs each, on a quiet machine:
+
+  VULCAN 2.0   217 s   1590 steps  (1580 / 1590 / 1602 across the three runs)
+  VULCAN 3.0    38.7 s 1495 steps  (1495 in all three)
+
+Table 1 now carries those, and I removed the claim that we match the published
+step count exactly, because that was never an independent match. The speedup
+range in the abstract does not change: HD189 moves from 5.3x to 5.6x, which is
+still inside the 4.4-6.7x set by HD209 and WASP-39b. HD209 and WASP-39b did not
+need re-measuring, since both are step-matched rows and our step count for each
+is insensitive to this setting.
+
+The agreement numbers actually got better. Our median difference against
+VULCAN 2.0 on HD189 improved from 7.3e-6 to 3.3e-6, and the worst single cell
+above a 1e-10 mixing ratio dropped from 2.5e-2 to 5.2e-4.
 
 **VULCAN 2 parity and VULCAN 3 are now separate presets**
 
