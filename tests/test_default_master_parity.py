@@ -387,10 +387,50 @@ def _atom_dict(data: np.lib.npyio.NpzFile) -> dict[str, float]:
 
 
 @pytest.mark.master_serial
+def test_audit_refuses_a_contaminated_oracle() -> None:
+    """The audit must refuse a checkout carrying VULCAN-JAX's own code.
+
+    Regression test for the 2026-07-30 failure: the sibling `../VULCAN-master/`
+    copy had VULCAN-JAX's stall detector, `conv_stall_window`, `wall_clock_max`
+    and 13-species `conver_ignore` back-ported into it, and was then cited as
+    "master parity" evidence for a config change. Auditing against that is
+    circular. `_check_oracle_is_pristine` exists to make it impossible to do
+    silently, so assert it actually fires on such a tree.
+    """
+    from tools.audit_master_parity import _check_oracle_is_pristine
+
+    with tempfile.TemporaryDirectory(prefix="fake_oracle_") as tmp:
+        contaminated = Path(tmp)
+        (contaminated / "op.py").write_text(
+            "stall_window = getattr(vulcan_cfg, 'conv_stall_window', 200)\n"
+        )
+        errors = _check_oracle_is_pristine(contaminated)
+
+    assert errors, "the guard did not flag a checkout containing conv_stall_window"
+    assert any("conv_stall_window" in e for e in errors)
+    # An unversioned copy is also flagged: provenance cannot be established.
+    assert any("no .git" in e for e in errors)
+
+
+@pytest.mark.master_serial
 def test_audit_master_parity_with_staged_stock_fastchem() -> None:
-    """Audit is clean when master is temporarily staged with stock FastChem."""
+    """Audit is clean when master is temporarily staged with stock FastChem.
+
+    SKIPPED, not passed, when the sibling checkout is not pristine upstream:
+    a parity verdict measured against a tree containing VULCAN-JAX's own code
+    would be meaningless. See `_check_oracle_is_pristine`.
+    """
     if not VULCAN_MASTER.is_dir():
         pytest.skip(f"VULCAN-master absent at {VULCAN_MASTER}")
+
+    from tools.audit_master_parity import _check_oracle_is_pristine
+
+    provenance = _check_oracle_is_pristine(VULCAN_MASTER)
+    if provenance:
+        pytest.skip(
+            "sibling VULCAN-master is not pristine upstream, so this parity "
+            "verdict would be circular — NOT a pass. Reasons: " + " | ".join(provenance)
+        )
 
     stock = PACKAGE_ROOT / "fastchem_vulcan/input/solar_element_abundances.dat"
     target = VULCAN_MASTER / "fastchem_vulcan/input/solar_element_abundances.dat"

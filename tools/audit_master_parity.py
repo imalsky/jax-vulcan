@@ -37,7 +37,7 @@ JAX_ONLY_DEFAULTS: dict[str, Any] = {
     "adapt_rtol_inc": 1.25,
     "adapt_rtol_loss_mul": 2.0,
     "adapt_rtol_inc_loss_thresh": 2e-4,
-    "batch_max_retries": 64,
+    "batch_max_retries": 110,
     "step_size_safety": 0.9,
     "step_size_zero_delta_frac": 0.01,
     "photo_switch_longdy_thresh": 1.0,
@@ -53,9 +53,13 @@ JAX_ONLY_DEFAULTS: dict[str, Any] = {
 
 # Shared config keys where VULCAN-JAX deliberately differs from master. These are
 # intentional solver/physics choices, not drift, so the audit ignores them:
-#   use_vm_mol   -- vm_branch upwind molecular diffusion is on by default in JAX.
-#   conver_ignore-- JAX ships a leaner convergence-ignore list under its rtol=0.2
-#                   tuning (scientific parity, not byte parity).
+#   use_vm_mol   -- vm_branch upwind molecular diffusion; on in the VULCAN 3
+#                   preset, off in the VULCAN 2 parity configs (which match
+#                   fetched exoclime master).
+#   conver_ignore-- the parity configs ship upstream master's `[]`; the VULCAN 3
+#                   preset ships vm_branch's `['HC3N']`. Measured 2026-07-30:
+#                   the two are behaviourally identical on HD189/HD209 (same
+#                   step count, same longdy, same controlling cell).
 INTENTIONAL_JAX_DELTAS = {
     "use_vm_mol",
     "conver_ignore",
@@ -369,7 +373,8 @@ def _compare_runtime_data(master_root: Path, jax_root: Path) -> list[str]:
         jax_keys = set(jax_files)
         only_master = master_keys - jax_keys
         only_jax = {
-            rel for rel in jax_keys - master_keys
+            rel
+            for rel in jax_keys - master_keys
             if rel.name not in JAX_ONLY_RUNTIME_FILES
         }
         if only_master or only_jax:
@@ -401,8 +406,68 @@ def _compare_runtime_data(master_root: Path, jax_root: Path) -> list[str]:
     return errors
 
 
+# VULCAN-JAX-only identifiers. If any of these appear in the checkout being used
+# as the oracle, that checkout is NOT pristine upstream VULCAN: someone has
+# back-ported VULCAN-JAX code into it, and every comparison below becomes
+# circular (the audit would be checking VULCAN-JAX against itself).
+#
+# This is not hypothetical. On 2026-07-30 the sibling `../VULCAN-master/` copy was
+# found to contain VULCAN-JAX's stall detector (store.py, op.py), its
+# `conv_stall_window` knob (vulcan_cfg.py, cfg_examples/), its `wall_clock_max`
+# end_case=4 exit, and its 13-species `conver_ignore` list -- and that copy had
+# been cited as "master parity" evidence for a config change.
+_JAX_ONLY_MARKERS = (
+    "conv_stall_window",
+    "longdy_seen_min",
+    "count_since_new_min",
+    "wall_clock_max",
+)
+
+
+def _check_oracle_is_pristine(master_root: Path) -> list[str]:
+    """Refuse to audit against a checkout carrying VULCAN-JAX's own code.
+
+    Returns error strings (not warnings): a contaminated oracle produces
+    silently wrong "parity" results, which is worse than no audit.
+    """
+    errors: list[str] = []
+    for rel in (
+        "op.py",
+        "store.py",
+        "vulcan_cfg.py",
+        "cfg_examples/vulcan_cfg_HD189.py",
+    ):
+        path = master_root / rel
+        if not path.exists():
+            continue
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        hits = sorted({m for m in _JAX_ONLY_MARKERS if m in text})
+        if hits:
+            errors.append(
+                f"{rel}: contains VULCAN-JAX-only identifier(s) {', '.join(hits)} "
+                "-- this checkout is not pristine upstream VULCAN, so a parity "
+                "result from it would be circular. Fetch upstream instead: "
+                "raw.githubusercontent.com/exoclime/VULCAN/master/<path> "
+                "(or shami-EEG/VULCAN vm_branch for VULCAN 3 features)."
+            )
+    if not (master_root / ".git").exists():
+        errors.append(
+            f"{master_root} has no .git: it is an unversioned copy whose "
+            "provenance cannot be established. Do not cite it as upstream."
+        )
+    return errors
+
+
 def audit(master_root: Path, jax_root: Path) -> list[str]:
     """Return all HD189 parity audit errors (JAX side loaded from YAML)."""
+    # Establish that the oracle is actually upstream BEFORE comparing anything.
+    provenance = _check_oracle_is_pristine(master_root)
+    if provenance:
+        return provenance
+
     master_cfg = master_root / "cfg_examples" / "vulcan_cfg_HD189.py"
     if not master_cfg.exists():
         return [f"missing master HD189 cfg: {master_cfg}"]
