@@ -229,6 +229,20 @@ The central phase therefore always starts from an unconverged upwind state with
 half the intended budget. This is a faithful port of the upstream logic, not a
 port defect; the scheme simply does not suit this planet.
 
+**Provenance: this was never a validated case.** The whole record is two lines of
+email. On 2026-07-14 the author wrote "I will also share the cfg file for a
+sub-Neptune soon"; on 2026-07-29 he attached it with "sry it is still in the old
+.py format, which includes condensation. **We can include this as a benchmark
+case?**" That question mark is the entire status. He never said it converges,
+never said he had run it, and gave no step count, runtime or reference output to
+compare against. Treating it as "his working case that our port fails on" was an
+assumption, not something he stated.
+
+Relevant context from the same exchange: he had previously said a VULCAN run
+taking more than three hours was not unexpected. Every attempt recorded here was
+20 minutes at 30000 steps, so this case may simply never have been run at a
+budget where it could finish.
+
 **The real obstacle is the timestep, and no config knob moves it.** The run does
 not converge slowly; it stops advancing. Model time is `6.18e+04` s at 3001 steps
 and still `6.18e+04` s at 30001 steps, while `dt` shrinks from 4.53e-04 to
@@ -255,9 +269,19 @@ What survives every variant is `dt` pinning near **1e-4 s**. It starts at
 size needs of order 1e19 steps.
 
 So this is not a convergence-criterion problem, a thermodynamic-data problem, or
-a condensation problem, and it is not fixable by a knob. The question to put to
-the case's author is whether their own run of it ever converged, and if so with
-what, because as supplied it does not converge in either code.
+a condensation problem, and it is not fixable by a knob. Three questions for the
+case's author, in order of usefulness:
+
+1. **Is the case derived from the DMS study?** The filename is
+   `K2-18b-Nep100X-apo-H2Oclouds-noDMS.py`, and its `remove_list` indices land on
+   the DMS network's numbering rather than this network's: 315/316 and 817/818
+   resolve here to `NH3 + CH` and `SH + NO2`, neither of which is a DMS reaction,
+   while in `SNCHO_DMS_photo_network_Tsai2024.txt` the CH3SCH3 block starts at
+   819, one pair later. That is the strongest evidence that the config was
+   assembled against a different network than the one it names, and it would
+   explain more than any knob tried here.
+2. **Has it ever been run to convergence, and at what `count_max` and wall time?**
+3. **Which `solar_element_abundances.dat` was in that checkout?**
 
 Three provenance items were closed before the case was withdrawn:
 
@@ -358,3 +382,37 @@ P and S are swapped back into the order FastChem's own
 `mass_action_constant.cpp` expects (`index_P=5`, `index_S=6`). Upstream ships
 them the other way round; that is correction C12, and copying the file verbatim
 would have shipped the bug.
+
+### The hybrid scheme costs ~40% more steps and returns the same atmosphere
+
+Measured 2026-07-31 on HD 189733 b, four runs, everything matched except the
+diffusion scheme. VULCAN 2.0 is `shami-EEG/VULCAN` `vm_branch` (HEAD `84d010d`)
+in BOTH rows, with only `use_vm_mol` / `use_hybrid_vm_mol` flipped, so the scheme
+is never confounded with a code version. VULCAN 3.0 is `HD189.yaml` with only the
+same two knobs flipped, NOT the full `HD189_vulcan3.yaml` preset.
+
+| | central difference | upwind then central | penalty |
+|---|---|---|---|
+| VULCAN 2.0 | 1590 | 2201 | +611 |
+| VULCAN 3.0 | 1495 | 2102 | +607 |
+
+The two independent implementations pay almost exactly the same price, and
+VULCAN 2.0's central run reproduces the Table 1 value of 1590 exactly.
+
+**The scheme does not change the answer here.** Worst species of the whole
+network, central versus hybrid within one code: VULCAN 2.0 0.008 dex,
+VULCAN 3.0 0.000 dex. That is by construction, not a coincidence: the hybrid
+converges on upwind and then *switches to central and finishes there*, so it
+lands back on the central fixed point. Its value is stability, not accuracy. The
+accuracy claim is the Zhang+2013 benchmark instead (central 0.8%, first-order
+upwind 46%).
+
+HD 189733 b is therefore NOT a case where the new scheme changes results: it runs
+a constant `Kzz` of 1e10, so eddy mixing dominates and molecular diffusion has
+little to act on. The scheme bites where molecular diffusion competes with eddy
+mixing, meaning LOW `Kzz` and the upper atmosphere, where an earlier measurement
+found up to 1.7 dex. No shipped config is in that regime. Do not present a
+high-`Kzz` planet as evidence that the scheme matters.
+
+Code-to-code agreement in this experiment: 0.001 dex worst species under central,
+0.008 dex under the hybrid, both far below any physical significance.
