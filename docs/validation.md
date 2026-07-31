@@ -229,6 +229,36 @@ The central phase therefore always starts from an unconverged upwind state with
 half the intended budget. This is a faithful port of the upstream logic, not a
 port defect; the scheme simply does not suit this planet.
 
+**The real obstacle is the timestep, and no config knob moves it.** The run does
+not converge slowly; it stops advancing. Model time is `6.18e+04` s at 3001 steps
+and still `6.18e+04` s at 30001 steps, while `dt` shrinks from 4.53e-04 to
+2.33e-04. The target `runtime` is 1e16 s, so it covers one part in 1e11 and then
+freezes. `longdy` falling from 2.85 to 0.459 over those 27000 steps is the state
+relaxing at a standstill, not the atmosphere evolving.
+
+Three candidate causes were tested and all three were falsified:
+
+| variant | model time | dt | longdy | note |
+|---|---|---|---|---|
+| baseline (central) | 6.18e+04 | 4.53e-04 | 2.85 | |
+| `use_lowT_limit_rates: true` | **6.18e+04** | 3.46e-04 | 1.52 | dies at the same time to 3 s.f. |
+| `P_t: 1.0` (no layer below 200 K) | 5.20e+03 | 3.22e-05 | 1.32e+05 | Gibbs warning gone, run much worse |
+| condensation and settling off | 1.20e+05 | 3.22e-04 | 3.36e+06 | clock advances 2x, still pinned |
+
+The setup warning "Temperatures exceed the valid range of Gibbs free energy" is a
+**red herring**: it comes from exactly one layer of 117 at 199.34 K, 0.66 K below
+the 200 K floor, and raising `P_t` removes it entirely while making the run worse.
+
+What survives every variant is `dt` pinning near **1e-4 s**. It starts at
+`dttry = 1e-10`, grows four orders of magnitude, and stops. It is not at the
+`dt_min = 1e-14` floor, so nothing is clamping it. Reaching 1e16 s at that step
+size needs of order 1e19 steps.
+
+So this is not a convergence-criterion problem, a thermodynamic-data problem, or
+a condensation problem, and it is not fixable by a knob. The question to put to
+the case's author is whether their own run of it ever converged, and if so with
+what, because as supplied it does not converge in either code.
+
 Three provenance items were closed before the case was withdrawn:
 
 - `remove_list` resolves correctly **by position** against
