@@ -137,7 +137,12 @@ print_prog_num: 500
 dttry: 1.0e-10
 trun_min: 100.0
 runtime: 1.0e+22
-wall_clock_max: 3600.0
+# null, like every other config. This was 3600.0, a one-hour wall-clock cap.
+# Upstream VULCAN has no such knob, so a run that hit it terminated for a reason
+# VULCAN 2.0 cannot reproduce, and on slower hardware the same config would stop
+# at a different point in the integration. A convenience limit does not belong
+# in a configuration labelled VULCAN 2 parity. Set it per run if you need one.
+wall_clock_max: null
 dt_min: 1.0e-14
 dt_var_max: 2.0
 dt_var_min: 0.5

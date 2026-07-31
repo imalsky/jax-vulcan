@@ -176,7 +176,7 @@ code today: each one is why a VULCAN-JAX file differs from master right now.
   running"), whose diff is literally a two-row `P`/`S` swap in that file. Verified
   present in **exoclime/VULCAN HEAD** as of 2026-07-29, not just the shami fork.
 - **Reachable path:** `ini_mix='EQ'` only (FastChem sets the initial mixing ratios;
-  it is not on the kinetics path). Live on `W39b.yaml` and `K2-18b.yaml`, which are
+  it is not on the kinetics path). Live on `W39b.yaml`, which is
   `ini_mix: EQ` on an SNCHO network. `build_atm.py:82-129` rewrites the file
   **preserving its row order**, so the config layer cannot mask or fix this.
 - **JAX:** `src/vulcan_jax/fastchem_vulcan/input/solar_element_abundances.dat:13-`
@@ -225,9 +225,12 @@ code today: each one is why a VULCAN-JAX file differs from master right now.
   `y_ini[:,species.index(sp)] = gas_tot*const_mix[sp]` over every `const_mix`
   key, so the run dies on `ValueError: 'Ar' is not in list` during setup. The
   shipped upstream Earth example therefore does not run at all.
-- **JAX:** `src/vulcan_jax/configs/Earth.yaml` drops `Ar` from both
-  `atom_list` and `const_mix`. Nothing else changed. `runtime_validation.py:575`
-  would otherwise reject the config with the same finding.
+- **JAX:** VULCAN-JAX no longer ships an Earth config at all (removed
+  2026-07-30: it converged in neither code, see `validation.md`). While it did,
+  it dropped `Ar` from both `atom_list` and `const_mix` and changed nothing else.
+  `runtime_validation.py` still rejects any config whose `const_mix` names a
+  non-network species, with this finding as the message, so a user writing their
+  own Earth case is told upfront rather than crashing in setup.
 - **Effect:** the `const_mix` total falls from 0.98974 to 0.98040. Neither sums
   to 1 — upstream leaves the remainder unassigned either way — so this shifts
   the initial condition by 0.93% of the column and lowers the initial mean
@@ -280,7 +283,9 @@ The regressions themselves are fixed and are no longer described here. What
 survives is the invariant each fix left behind.
 
 ### C11 — `batch_max_retries` must be 110, not 64
-All five shipped configs cite this anchor; keep it. `lax.while_loop` cannot retry
+All five shipped configs cite this anchor; keep it. A withdrawn K2-18b config
+omitted the key and silently inherited the code default of 64, which is exactly
+the failure this anchor exists to prevent, so declare it in every new config. `lax.while_loop` cannot retry
 unboundedly, so the runner carries `batch_max_retries` as a deadlock backstop and
 force-accepts on `dt_underflow | retry_exhausted` (`outer_loop.py:1097-1103`).
 Master's give-up condition is a dt floor with no retry count (`op.py:2549-2560`).

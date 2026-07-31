@@ -38,7 +38,7 @@ warnings.filterwarnings("ignore")
 # It stays in the code as an opt-in, and its counters stay as diagnostics
 # (vulcan-forward and vulcan-retrieval read them), but nothing ships with a
 # convergence decision that VULCAN 2.0 could not also have made.
-_PARITY_CONFIGS = ("default", "HD189", "HD209", "W39b", "Earth")
+_PARITY_CONFIGS = ("default", "HD189", "HD209", "W39b")
 _V3_CONFIGS = ("HD189_vulcan3",)
 
 

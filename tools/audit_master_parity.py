@@ -31,10 +31,15 @@ JAX_ONLY_DEFAULTS: dict[str, Any] = {
     "use_sat_surfaceH2O": False,
     "rtol_min": 0.0,
     "rtol_max": 1.0,
+    # These must match the shipped PARITY YAMLs (default/HD189/HD209/W39b), not
+    # the code fallbacks. They carried the code fallbacks (1000 / 0.75) until
+    # 2026-07-30, so the audit was comparing against values no config uses.
+    # The parity configs carry Shami's 2026-07-14 email values and leave the
+    # controller OFF; HD189_vulcan3 carries vm_branch's 1000 / 0.5 / 1.25.
     "adapt_rtol_dec_period": 10,
-    "adapt_rtol_inc_period": 1000,
-    "adapt_rtol_dec": 0.75,
-    "adapt_rtol_inc": 1.25,
+    "adapt_rtol_inc_period": 500,
+    "adapt_rtol_dec": 0.5,
+    "adapt_rtol_inc": 1.5,
     "adapt_rtol_loss_mul": 2.0,
     "adapt_rtol_inc_loss_thresh": 2e-4,
     "batch_max_retries": 110,
@@ -226,19 +231,37 @@ def _check_stock_fastchem(path: Path, label: str) -> list[str]:
     return errors
 
 
-def _check_fastchem_files_match(master_path: Path, jax_path: Path) -> list[str]:
-    """The two repos' FastChem abundance files must be byte-identical.
+def _report_master_fastchem_preset(master_path: Path) -> list[str]:
+    """Identify the oracle's composition. Never an error on its own.
 
-    A content drift here silently changes initial conditions in either run.
+    The two codes legitimately ship different elemental abundances: VULCAN-JAX
+    defaults to rocky-suppressed Lodders 2019, upstream to full-solar
+    Lodders 2009. Which one a comparison should use depends on the question
+    being asked, so this reports rather than judges. An unrecognised file IS an
+    error, because it means the oracle's composition came from somewhere
+    undocumented.
     """
-    if not master_path.exists() or not jax_path.exists():
+    if not master_path.exists():
         return []  # missing-file errors are reported by _check_stock_fastchem
-    if _sha256(master_path) != _sha256(jax_path):
-        return [
-            f"FastChem abundance drift: master {master_path} vs jax {jax_path} "
-            "differ by SHA-256"
-        ]
-    return []
+    abundances = _parse_abundances(master_path)
+    he = abundances.get("He")
+    mg = abundances.get("Mg")
+    if he is None or mg is None:
+        return [f"oracle FastChem file {master_path} is unreadable or truncated"]
+    if abs(he - 10.9864) < 1e-9 and mg > 0:
+        print(f"  oracle composition: full-solar Lodders 2009 ({master_path.name})")
+        return []
+    if abs(he - 10.9232) < 1e-9 and mg == -3.0:
+        print(
+            f"  oracle composition: rocky-suppressed Lodders 2019 "
+            f"({master_path.name}) -- matches VULCAN-JAX's default"
+        )
+        return []
+    return [
+        f"oracle FastChem file {master_path} matches neither known preset "
+        f"(He={he}, Mg={mg}). Its composition has an undocumented provenance, "
+        "so any cross-code number from it is unattributable."
+    ]
 
 
 def _compare_cfgs(master_cfg: Path) -> list[str]:
@@ -475,15 +498,30 @@ def audit(master_root: Path, jax_root: Path) -> list[str]:
     errors: list[str] = []
     errors.extend(_compare_cfgs(master_cfg))
     errors.extend(_compare_runtime_data(master_root, jax_root))
+    # VULCAN-JAX's own file must be one of the two shipped presets. This is a
+    # check on OUR tree and is always meaningful.
     errors.extend(_check_stock_fastchem(jax_root / STOCK_FASTCHEM, "JAX FastChem"))
+
+    # The upstream side is NOT checked against our rocky-suppressed file, and
+    # the two are NOT required to match.
+    #
+    # Doing either was a contradiction introduced on 2026-07-30: this tool now
+    # refuses a checkout carrying VULCAN-JAX-only identifiers (see
+    # _check_oracle_is_pristine), yet the old checks demanded that same
+    # checkout carry VULCAN-JAX's rocky-suppressed abundance file. A pristine
+    # upstream tree ships full-solar Lodders 2009, so no checkout could satisfy
+    # both. The tool could only ever pass against a hand-patched oracle, which
+    # is exactly what the pristine guard exists to reject.
+    #
+    # Composition parity is a SCIENCE-INPUT question, not a provenance one, and
+    # it is answered by selecting a preset rather than by editing a checkout:
+    # point `fastchem_solar_abundance_file` at
+    # solar_element_abundances_lodders2009.dat to reproduce upstream's
+    # composition. See docs/validation.md, "Elemental abundances are a config
+    # choice". This audit reports the upstream file's identity so a reader can
+    # see which composition the oracle would use, and says nothing further.
     errors.extend(
-        _check_stock_fastchem(master_root / STOCK_FASTCHEM, "master FastChem")
-    )
-    errors.extend(
-        _check_fastchem_files_match(
-            master_root / STOCK_FASTCHEM,
-            jax_root / STOCK_FASTCHEM,
-        )
+        _report_master_fastchem_preset(master_root / STOCK_FASTCHEM),
     )
     return errors
 

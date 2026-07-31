@@ -111,7 +111,11 @@ before it has had time to evolve.
 A run that does not converge stops at a limit instead. There are three: the
 model runtime, the step count, and the wall-clock budget. The final message says
 which one it hit. The output file stores the same answer as `end_case`, where
-`1` means converged.
+`1` means converged, and as `termination_reason`, which is finer: `0` still
+running, `1` converged normally, `2` runtime, `3` step count, `4` the stall
+fallback, `5` a non-finite state. Prefer `termination_reason` when the
+distinction matters, because `end_case` reports `1` for both a normal and a
+stall convergence.
 
 [`examples/quickstart.ipynb`](examples/quickstart.ipynb) is the gentlest
 introduction. It builds an HD 189733 b model and plots the results.
@@ -155,10 +159,8 @@ VULCAN-JAX uses YAML configuration files. The package supplies:
 | `HD209` | HD 209458 b | NCHO | VULCAN 2 parity | Converges in 1206 steps |
 | `W39b` | WASP-39 b | SNCHO (sulfur) | VULCAN 2 parity | see below |
 | `HD189_vulcan3` | HD 189733 b | NCHO | **VULCAN 3** | see below |
-| `K2-18b` | K2-18 b | SNCHO 2025 | VULCAN 3 | Runs, does not converge |
-| `Earth` | Earth | SNCHO full | VULCAN 2 parity | Runs, does not converge |
 
-Every one of these runs without error. The three sulfur configurations need a
+Every one of these runs without error and reaches a steady state. `W39b` needs a
 reaction network other than the default, which the command line selects for you;
 see **Select a different network** below.
 
@@ -166,11 +168,18 @@ see **Select a different network** below.
 
 The configurations come in two flavours, and the difference is deliberate.
 
-**VULCAN 2 parity** configurations reproduce upstream VULCAN. Their convergence
-settings match `exoclime/VULCAN` `master` as fetched on 2026-07-30: molecular
-diffusion is central-difference, `conver_ignore` is empty, `high_temp_cut` is
-off, adaptive `rtol` is off, and the JAX-only stall fallback is off. Use these
-when you want a result comparable with published VULCAN 2 work.
+**VULCAN 2 parity** configurations reproduce upstream VULCAN's *numerical
+settings*. As fetched on 2026-07-30: molecular diffusion is central-difference,
+`conver_ignore` is empty, `high_temp_cut` is off, adaptive `rtol` is off, and the
+JAX-only stall fallback is off. Use these when you want a result comparable with
+published VULCAN 2 work.
+
+**"Parity" here means settings, not inputs.** These configurations still use
+VULCAN-JAX's default elemental abundances, which are not upstream's. That alone
+moves HD 189733 b by roughly 20 percent in the median, which is far more than any
+solver difference. For a true like-for-like comparison you must also point
+`fastchem_solar_abundance_file` at the full-solar file, on both sides. See
+**Elemental abundances** below.
 
 **VULCAN 3** configurations use the newer numerics from `shami-EEG/VULCAN`
 `vm_branch`: hybrid molecular diffusion (first-order upwind to convergence, then
@@ -179,35 +188,52 @@ such setting in `HD189_vulcan3.yaml` carries a comment citing the `vm_branch`
 line it came from. `HD189_vulcan3` is the same planet as `HD189`, so you can run
 both and compare the two numerical schemes directly.
 
+**The stall fallback is off in both flavours.** `use_conv_stall` has no upstream
+counterpart. Measured on every case tried, it never fires: each one either
+converges on the normal criterion first, or never gets close enough for the
+fallback's gate to open. So no shipped configuration decides convergence on a
+criterion VULCAN 2.0 lacks. The switch stays available if you want it, and the
+code default is off, so a configuration that omits the key does not get it by
+accident.
+
+Use `termination_reason` to see which exit a run took: 0 still running, 1
+converged normally, 2 runtime, 3 step count, 4 the stall fallback, 5 a non-finite
+state. `end_case` cannot tell you this, because it reports 1 for both a normal
+and a stall convergence.
+
+### Elemental abundances
+
+Two composition files ship, and which one you pick changes the answer more than
+the solver does:
+
+| `fastchem_solar_abundance_file` | Contents |
+| --- | --- |
+| `fastchem_vulcan/input/solar_element_abundances.dat` | Lodders 2019, rocky elements (P, Si, Ti, V, Cl, K, Na, Mg, F, Ca, Fe) suppressed to `-3.0`. **The default.** |
+| `fastchem_vulcan/input/solar_element_abundances_lodders2009.dat` | Lodders 2009, every element at solar. **What upstream VULCAN ships.** |
+
+The suppression is right for the networks shipped here. They contain no Mg, Si or
+Fe species, so at solar abundance FastChem locks oxygen into MgO, SiO2 and FeO
+that the chemistry can never release. For a carbon-hydrogen-nitrogen-oxygen
+network the only value that actually differs between the two files is helium,
+which takes part in no reaction. That is why the difference is easy to miss: it
+shows up as a flat offset deep in the atmosphere rather than as anything that
+looks like a chemistry problem.
+
+It matters. On HD 189733 b, VULCAN-JAX and upstream VULCAN differ by about 20
+percent in the median if you leave them on different files, and by 3.8e-06 once
+you match them. **Match this file before comparing against any other code.**
+
+Every supplied configuration states which file it uses. A file that is neither
+preset is rejected at validation time rather than accepted quietly.
+
 The step counts above are for the parity configurations. They are reproducible
 but not portable claims: a step count depends on every convergence knob, so
 quote it together with the configuration it came from.
 
-`Earth` and `K2-18b` hit their step limits before they reach a steady state.
-Their results are therefore not converged atmospheres. `Earth` carries VULCAN's
-own numerical settings for that case unchanged, including its 20000-step limit.
-Treat both as starting points that still need tuning, not as validated cases.
-
-Two things about `Earth` that look alarming and are not (measured 2026-07-30):
-
-- **Its reported hydrogen `atom_loss` of about 3000 is not a conservation
-  failure.** The diagnostic is `(current - initial) / initial` over a closed
-  column, and Earth is not a closed column. Its initial condition sets H2O to
-  1e-6 everywhere while `use_fix_sp_bot` pins H2O to 8.94e-3 at the surface, so
-  water floods up from the ground and the hydrogen inventory is *supposed* to
-  grow by roughly that ratio. Counting hydrogen atoms in the output reproduces
-  the reported 2.9818e+03 exactly, and turning hydrogen escape off leaves it
-  unchanged. Earth also has surface fluxes, escape, condensate settling and
-  relaxation, none of which the diagnostic accounts for.
-- **What actually blocks convergence is one trace species.** `longdy` is set by
-  atomic carbon near the top of the column, at a mixing ratio of 8.1e-12, which
-  is about 20 atoms per cubic centimetre against a local total of 2.5e12. A
-  relative-change test on a species that small measures roundoff. `Earth` ships
-  `conver_ignore: []`, matching upstream, and upstream's own Earth example
-  declares no `conver_ignore` either, so both codes are in the same position.
-  Deciding whether atomic carbon belongs in Earth's `conver_ignore` is a
-  judgement call for the maintainers, not something to change to make a number
-  look better.
+Every shipped configuration converges. Two that did not, `Earth` and `K2-18b`,
+were removed on 2026-07-30 rather than shipped with a warning, because a
+configuration that converges in neither code is misleading. Both are documented
+in [`docs/validation.md`](docs/validation.md), including what blocks each one.
 
 Use a file path to run a custom configuration:
 
@@ -398,12 +424,6 @@ rather than quoting numbers from elsewhere.
   validated for gradient inference.
 - One process can use only one reaction network. See **Select a different
   network**.
-- The `Earth` and `K2-18b` configurations reach their step limits without
-  converging. See **Configuration**.
-- The supplied `Earth` configuration drops the argon that VULCAN's own Earth
-  example carries, because no reaction network contains argon and VULCAN's
-  example therefore cannot run. This is recorded as C13 in the corrections
-  document.
 - VULCAN-JAX contains documented corrections and intentional differences from
   VULCAN. Review
   [`docs/corrections_to_original_code.md`](docs/corrections_to_original_code.md)

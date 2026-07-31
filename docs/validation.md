@@ -41,15 +41,19 @@ across all species is:
 | Planet | Median fractional difference |
 |---|---|
 | WASP-39b | 1.1e-9 |
-| HD 189733b | 7.3e-6 |
+| HD 189733b | 3.3e-6 |
 | HD 209458b | 1.4e-4 |
 
-WASP-39b converges in the same 4548 accepted steps in both codes. The largest
-single-cell differences reach order unity, but only in trace species sitting at
-the numerical floor. For cells with a mixing ratio above 1e-10, the largest
-single-cell difference in any run is 2.5e-2.
+The largest single-cell differences reach order unity, but only in trace species
+sitting at the numerical floor. For cells with a mixing ratio above 1e-10, the
+largest single-cell difference in any run is 5.2e-4.
 
-Maximum atom-sum drift is 2.5e-5 for HD 189733b, 3.1e-4 for HD 209458b, and
+**These numbers only mean anything with the composition matched.** VULCAN-JAX and
+upstream ship different `solar_element_abundances.dat` files; unmatched, HD 189733b
+disagrees by ~20% median rather than 3.3e-6. See "Elemental abundances are a
+config choice" below.
+
+Maximum atom-sum drift is 2.6e-5 for HD 189733b, 3.1e-4 for HD 209458b, and
 1.7e-5 for WASP-39b. All are far below VULCAN 2.0's default fractional
 atomic-loss budget of 1e-1.
 
@@ -69,8 +73,13 @@ atomic-loss budget of 1e-1.
   faithful, but the call site is not identical.
 - **The output writer synthesizes `J_sp` and `Jion_sp` at pickle time** rather
   than accumulating them incrementally.
-- **A convergence stall fallback** (`conv_stall_window`) handles
-  heavy-hydrocarbon oscillation.
+- **A convergence stall fallback** (`use_conv_stall`) exists but is **off in
+  every shipped config** and has no upstream counterpart. Measured 2026-07-30, it
+  never fires on any shipped case, so nothing shipped decides convergence on a
+  criterion VULCAN 2.0 lacks. `termination_reason` (0 running, 1 converged,
+  2 runtime, 3 step count, 4 stall, 5 non-finite) reports which exit was taken;
+  `end_case` cannot, because it reports 1 for both a normal and a stall
+  convergence.
 - **Config validation is stricter.** Non-network `const_mix` keys and unsupported
   `condense_sp` entries fail at validation time with an explanation. VULCAN 2.0
   crashes deep in setup for the first and silently zero-rates the second.
@@ -105,8 +114,11 @@ which is a latent species-mixing bug.
 
 ### Hybrid molecular diffusion
 
-`use_hybrid_vm_mol` is on by default together with `use_vm_mol`. It converges on
-the robust upwind scheme, then switches to central difference and finishes.
+`use_hybrid_vm_mol` is **off in the VULCAN 2 parity configs and on only in
+`HD189_vulcan3.yaml`**. It converges on the robust upwind
+scheme, then switches to central difference and finishes, matching the sequence
+upstream describes: first-order upwind, then convergence, then central difference
+for at most 2000 further steps.
 
 Because the runner is one JIT-compiled `lax.while_loop`, this is implemented as an
 **in-loop phase flip** rather than a host-side two-stage driver. A carry blend
@@ -174,87 +186,145 @@ cold. A fresh subprocess parses and compiles the 1141-reaction low-temperature
 Jupiter network to prove that batched NH3 condensation matches solo runs end to
 end. JAX's persistent compilation cache makes identical re-runs much cheaper.
 
-### The K2-18b config is a ported collaborator case, not a validated benchmark
+### The K2-18b configuration was removed on 2026-07-30
 
-`configs/K2-18b.yaml` is a port of a collaborator-supplied legacy `vulcan_cfg`
-file (100x-Neptune metallicity, apoastron, H2O clouds, DMS reactions removed).
-It exercises the condensation and settling path that no other shipped config
-turns on: `use_condense` and `use_settling` with `condense_sp: [H2O]`,
-`non_gas_sp: [H2O_l_s, S8_l_s]`, `humidity: 0.8`, `use_ini_cold_trap`,
-`fix_species` on H2O plus its condensate, and `use_adapt_rtol` with
-`post_conden_rtol: 1.5`.
+It was ported from a collaborator-supplied case and never converged. Measured on
+the full 30000-step budget:
 
-It is covered by `tests/test_cfg_examples.py` (pre-loop setup) and has been run
-locally for 1402 accepted steps (t = 9.6e2 s, 89 delta-rejections, 57 s wall):
-finite throughout, initial cold trap placed at level 48, H2O condensate reaching
-a 3.9e-3 mixing ratio. The run was launched with `count_max = 400`, which is
-**not** the count it stopped at — `use_vm_mol` + `use_hybrid_vm_mol` are both on
-here, and the hybrid phase flip re-seeds the dynamic step budget
-(`count_max_dyn = count + 2000` on a phase-0 convergence), so the static cap is
-not the operative terminator. It is **not** a
-validated benchmark — there is no VULCAN 2.0 cross-check for it, and three
-provenance items are unresolved:
+| scheme | steps | longdy | gating cell | verdict |
+|---|---|---|---|---|
+| hybrid upwind to central (as supplied) | 31002 | 25.80 | z=120, C3H2 | not converged |
+| pure central difference | 30001 | 0.459 | (not reported) | not converged |
+| upstream VULCAN 2.0, 3000-step budget | 3000 | 1.00 | z=0, OH | not converged |
 
-- `remove_list: [315, 316, 817, 818]` resolves in the vendored
-  `SNCHO_photo_network_2025.txt` to `NH3 + CH -> NH2 + CH2` and
-  `SH + NO2 -> HSO + NO` (plus their reverse slots), which are not DMS
-  reactions despite the source config's "noDMS" name. The author's copy of the
-  2025 network is presumably indexed differently.
-- The source config's `bot_BC_flux_file` (`atm/BC_bot_SdepOnly_noSorg.txt`) was
-  not supplied. Inert as configured, since `use_botflux` is false.
-- `S8_l_s` is in `non_gas_sp` (so it settles, and carries `r_p`/`rho_p`) but
-  `S8` is not in `condense_sp`. `op.conden` gates each condensation reaction on
-  the **gas-phase** name, so `S8 -> S8_l_s` (printed index 1069) never activates
-  and `S8_l_s` — whose only source is that reaction — stays identically zero.
-  Reproduced in both codes; whether it is intended is a question for the author.
+The criterion is `yconv_cri = 0.01`, and at the end of the central run
+`longdy/dt` is still 4.8 against a `slope_cri` of 1e-4, so it is not asymptoting
+either. Atom conservation is fine throughout (worst 5.6e-02 on nitrogen), so this
+is a genuine convergence failure rather than a misread diagnostic.
 
-Four further divergences from upstream defaults were checked and are recorded
-here so they are not re-diagnosed as port bugs:
+**The hybrid scheme is what makes it far worse, and the mechanism is exact.**
+Isolating the two VULCAN 3 knobs at a 3000-step budget:
 
-- **`use_relax: [H2O]` short-circuits the H2O condensation kinetics.**
-  `op.conden` zeroes `k[re]`/`k[re+1]` for a species in `use_relax` and routes it
-  through `h2o_conden_evap_relax` (implicit-Euler relaxation toward
-  `sat_p * humidity`) instead. The case therefore exercises the relaxation path,
-  not kinetic condensation. Ported faithfully (`conden.py` gives relax-shorted
-  rows `coeff = 0.0`).
-- **`mtol: 1e-14` / `mtol_conv: 1e-16` are 8 and 4 orders looser than upstream's
-  `1e-22` / `1e-20`.** `mtol` masks entries out of the Ros2 embedded
-  truncation-error estimate (`delta = |sol - yk2|`, consumed as
-  `h_factor = 0.9*(rtol/delta)^0.5`) and clips negative trace entries; it does
-  **not** freeze the species. At the EQ-initialised state 83.7% of
-  species-levels fall below `1e-14` (vs 76.6% below `1e-22`), and 17 of 93
-  species lie entirely below it — those are integrated without step-size error
-  control. Faithful to the config as written, but a deliberate accuracy
-  trade the author should confirm.
-- **`high_temp_cut: true` never fires here.** The atmosphere file peaks at
-  2059.9 K, below `high_temp_cut_K: 3500`, so no layer satisfies the cut.
-- **`use_vm_mol` / `use_hybrid_vm_mol` are both true**, where upstream ships
-  `use_vm_mol = False` ("under testing") and has no `use_hybrid_vm_mol` or
-  `high_temp_cut` knob at all — the source config descends from a vm_branch
-  fork. This is also why `count_max` is not the operative terminator above.
+| variant | upwind/hybrid | high_temp_cut | longdy | gating cell |
+|---|---|---|---|---|
+| as supplied | on | on | 74111.21437235552 | z=124, H |
+| high_temp_cut off | on | off | 74111.21437235552 | z=124, H |
+| upwind off | off | on | 2.8486787705982635 | z=122, NS |
+| both off | off | off | 2.8486787705982635 | z=122, NS |
 
-Two knobs in the source config (`no_photo_ini_conden`, `use_other_ele`) appear
-nowhere in upstream `op.py`, `build_atm.py`, `store.py`, or `vulcan_cfg.py`, so
-they were inert in the author's runs too. `fix_species_time` is likewise dead
-upstream — `op.py` gates the pin on `stop_conden_time` only — which is why
-dropping it on import costs nothing. `conver_ignore: [HC3N]` is correct and
-needs no change: HC3N has five sources and zero sinks in this network, exactly
-the case upstream's own comment cites.
+The pairs are identical to every digit, so `high_temp_cut` contributes nothing
+(this planet peaks near 2060 K, below the 3500 K threshold, so the cut never
+fires). The upwind/hybrid scheme is entirely responsible.
 
-### The Earth config cannot run, in either code
+The mechanism shows in the accepted-step counts. Phase 0 (upwind) is not allowed
+to end a run: it flips to central difference when it converges, and the central
+phase then gets `count + 2000`. If phase 0 instead exhausts its budget, the flip
+still happens but the central phase gets only `count + 1000`. On this case phase 0
+never converges, so the flip always fires on the budget:
 
-`configs/Earth.yaml` ships but does not run, and it does not run in VULCAN 2.0
-either. It lists Ar in `atom_list` and `const_mix`, but Ar appears in no reaction
-of the SNCHO network, so it is not a network species. VULCAN 2.0's
-`build_atm.ini_y` calls `species.index(sp)` unconditionally and fails with
-`ValueError: 'Ar' is not in list` at `build_atm.py:200`. This is reproduced end to
-end on the shipped Earth example.
+    count_max 3000  -> 4002 accepted   (3000 + 1000)
+    count_max 30000 -> 31002 accepted  (30000 + 1000)
 
-Inert background gases without network reactions were never live VULCAN 2.0
-physics, so VULCAN-JAX does not invent them. `runtime_validation` rejects such a
-`const_mix` upfront with an explanation instead of failing mid-setup; see
-`tests/test_validation_const_mix_conden.py`. The config is kept verbatim as
-upstream ships it. Running it means removing Ar from `const_mix` and `atom_list`.
-Note that VULCAN 2.0 would additionally poison its atom-conservation diagnostics
-with NaN for any `atom_list` atom carried by no species, through a 0/0 in
-`atom_loss`.
+The central phase therefore always starts from an unconverged upwind state with
+half the intended budget. This is a faithful port of the upstream logic, not a
+port defect; the scheme simply does not suit this planet.
+
+Three provenance items were closed before the case was withdrawn:
+
+- `remove_list` resolves correctly **by position** against
+  `SNCHO_photo_network_2025.txt` (ni=93, nr=1192): 315/316 =
+  `NH3 + CH -> NH2 + CH2` forward/reverse, 817/818 = `SH + NO2 -> HSO + NO`.
+  Neither is a DMS reaction, despite the source config's "noDMS" name. See
+  correction C14 for why position rather than the printed id is canonical.
+- The missing `atm/BC_bot_SdepOnly_noSorg.txt` was inert, verified against the
+  code path rather than asserted: `atm_setup.py:859` opens `bot_BC_flux_file`
+  only when `use_botflux` is true (false here), and the second reader at line
+  871 is gated on `use_fix_sp_bot` being the literal `True` (this config set
+  `{}`).
+- S8 condensation was not intended. `S8_l_s` appeared in `non_gas_sp` because
+  both `S8` and `S8_l_s` are real network species that must be kept out of the
+  mixing-ratio normalization, but `condense_sp` listed only `H2O`.
+
+Two defects found in the config while checking it, both now moot but worth
+recording as failure modes: it omitted `batch_max_retries` and silently took the
+code default 64 instead of 110, and it enabled `use_adapt_rtol` while declaring
+none of the six controller constants, so it silently took code defaults including
+a decrease factor of 0.75, which is upstream master's value rather than
+vm_branch's 0.5.
+
+### The Earth configuration was removed on 2026-07-30
+
+It did not converge, and neither does upstream VULCAN's own Earth example.
+
+Upstream's example cannot even run as shipped, for two independent reasons. It
+lists `Ar` in `atom_list` and `const_mix` while `Ar` is in no reaction of the
+SNCHO network, so `build_atm.ini_y` dies at `build_atm.py:200` with
+`ValueError: 'Ar' is not in list` (correction C13). It also omits `conver_ignore`,
+`rtol_min`, `rtol_max` and `use_adapt_rtol`, all of which `op.py` reads, so it
+raises `AttributeError` before that. Upstream's HD189 example has the same
+missing-key defect.
+
+Made runnable (Ar dropped, the four keys taken from upstream's own default
+`vulcan_cfg.py`) and run at a 2000-step budget matched to VULCAN-JAX:
+
+| code | longdy at step 2000 | gating cell | verdict |
+|---|---|---|---|
+| VULCAN 2.0 | 0.880 | z=81, C2H4 | "Integration not completed" |
+| VULCAN-JAX | 54.33 | z=116, atomic C | step cap, not converged |
+
+The convergence criterion is `yconv_cri = 0.01`, so neither is close. Shipping a
+configuration that converges in neither code is misleading, so it was removed
+rather than kept with a warning.
+
+**One thing is recorded but not explained.** VULCAN-JAX with `diff_esc` emptied
+lands at `longdy = 0.879` on the same cell (z=81, C2H4) as upstream reaches with
+`diff_esc` active. The escape formula itself is not the difference: VULCAN-JAX's
+`atm_refresh.update_phi_esc_jax` is algebraically identical to upstream's
+`op.update_phi_esc` (same expression, same `-max_flux` floor) and both refresh on
+the same `update_frq` cadence. So the near-coincidence is unexplained rather than
+diagnosed, and it may simply be that both runs settle on the same
+slowest-converging species. `HD209.yaml` is the only remaining shipped config
+using `diff_esc`, and it converges and agrees with upstream to 1.4e-4 median, so
+nothing shipped is known to be affected.
+
+### Elemental abundances are a config choice
+
+VULCAN-JAX and upstream VULCAN do not start from the same composition, and this
+is the single most common way to get a wrong cross-code number.
+
+| file | contents |
+|---|---|
+| `fastchem_vulcan/input/solar_element_abundances.dat` | Lodders 2019, rocky elements (P, Si, Ti, V, Cl, K, Na, Mg, F, Ca, Fe) suppressed to -3.0. **The default.** |
+| `fastchem_vulcan/input/solar_element_abundances_lodders2009.dat` | Lodders 2009, every element at solar. **What upstream ships.** |
+
+`fastchem_solar_abundance_file` selects, and every shipped config declares it
+explicitly. `runtime_validation` accepts either preset exactly and rejects
+anything else, naming both, because a hand-edited composition otherwise fails
+silently.
+
+Suppression is right for the shipped networks: they have no Mg, Si or Fe species,
+so at solar dex FastChem locks oxygen into MgO/SiO2/FeO that the kinetics can
+never release. For a C-H-N-O network the only value that actually differs is
+**helium** (10.9864 upstream, 10.9232 here), which is inert, which is why the
+difference hid as a flat offset in the deep column rather than as anything that
+looked like a chemistry bug.
+
+Measured on HD 189733b, both codes converged, floor 1e-12:
+
+| | median | max |
+|---|---|---|
+| upstream defaults | 2.0e-01 | 8.8e+01 |
+| + VULCAN-JAX network | 2.0e-01 | 8.8e+01 |
+| **+ network AND composition** | **3.8e-06** | 4.5e-02 |
+| control: upstream vs upstream | 7.0e-06 | 1.7e-02 |
+
+Selecting the upstream preset in VULCAN-JAX reproduces the expected direction at
+the deep layer: He +13.1%, H2O -19.3%, CO2 -29.1%, CO -14.1%, H2 -2.2%. It also
+converges in 911 accepted steps instead of 1495, so composition moves convergence
+as well as abundances.
+
+The upstream preset carries upstream's values verbatim with **one** deviation:
+P and S are swapped back into the order FastChem's own
+`mass_action_constant.cpp` expects (`index_P=5`, `index_S=6`). Upstream ships
+them the other way round; that is correction C12, and copying the file verbatim
+would have shipped the bug.

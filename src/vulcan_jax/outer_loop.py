@@ -2032,7 +2032,11 @@ class OuterLoop:
             conv_step=int(self._cfg.conv_step),
             count_min=int(self._cfg.count_min),
             count_max=int(self._cfg.count_max),
-            use_conv_stall=bool(getattr(self._cfg, "use_conv_stall", True)),
+            # Default FALSE. The fallback has no VULCAN counterpart and no
+            # shipped case needs it (measured 2026-07-30), so a config that
+            # omits the key must not silently get a convergence criterion
+            # VULCAN 2.0 lacks. Opting in has to be deliberate.
+            use_conv_stall=bool(getattr(self._cfg, "use_conv_stall", False)),
             conv_stall_window=int(getattr(self._cfg, "conv_stall_window", 200)),
             runtime=float(self._cfg.runtime),
             trun_min=float(self._cfg.trun_min),

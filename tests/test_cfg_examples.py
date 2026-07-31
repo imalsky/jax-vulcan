@@ -77,7 +77,7 @@ print("PASS")
 """
 
 
-@pytest.mark.parametrize("cfg_name", ["HD209", "K2-18b"])
+@pytest.mark.parametrize("cfg_name", ["HD209", "W39b"])
 def test_cfg_example_setup(cfg_name: str) -> None:
     from vulcan_jax._paths import PACKAGE_ROOT
 

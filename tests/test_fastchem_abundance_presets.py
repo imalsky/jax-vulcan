@@ -162,8 +162,9 @@ def test_a_hand_edited_file_is_rejected_naming_both_presets(tmp_path):
 def test_every_config_declares_its_abundance_file():
     """No config may inherit the composition implicitly.
 
-    K2-18b.yaml used to omit the key and fall back to the code default, so its
-    composition was invisible in the file that was supposed to define the run.
+    A config that omits the key falls back to the code default, so its
+    composition becomes invisible in the file that is supposed to define the
+    run. That happened to the K2-18b case before it was withdrawn.
     """
     missing = []
     for cfg_path in sorted(glob.glob("src/vulcan_jax/configs/*.yaml")):

@@ -49,7 +49,7 @@ by editing `vulcan_cfg.py` and regenerating `chem_funs.py` (`vulcan.py:68`).
 
 ### `config.py` + `configs/*.yaml`
 The config surface is authored as **YAML** (`configs/`: `default.yaml` = HD189,
-plus `HD189`/`HD209`/`W39b`/`K2-18b`/`Earth`). `config.load_config(name_or_path, **overrides)`
+plus `HD189`/`HD189_vulcan3`/`HD209`/`W39b`). `config.load_config(name_or_path, **overrides)`
 reads a YAML (CWD `./configs/<name>.yaml` first, then the packaged copy), folds
 the import-frozen env (`$VULCAN_JAX_NETWORK` / `$VULCAN_JAX_ATOM_LIST` /
 `$VULCAN_JAX_COM_FILE`), applies overrides, resolves the derived values
@@ -180,7 +180,7 @@ mutation of `data_var`; JAX wraps the FastChem invocation in a cross-process
 `fcntl.flock` so `pytest -n auto` is safe, and routes the five modes
 through a small `_MODE_DISPATCH` table.
 
-- `_fastchem_solar_abundance_path()` — resolve the FastChem solar-element abundance file (defaults to `fastchem_vulcan/input/solar_element_abundances.dat`; can be overridden by `cfg.fastchem_solar_abundance_file`).
+- `_fastchem_solar_abundance_path()` — resolve the FastChem solar-element abundance file. Two presets ship: `fastchem_vulcan/input/solar_element_abundances.dat` (Lodders 2019, rocky elements suppressed to -3.0; the default) and `solar_element_abundances_lodders2009.dat` (all-solar, upstream's, with only the P/S row order corrected per C12). Selected by `cfg.fastchem_solar_abundance_file`; `runtime_validation._FASTCHEM_ABUNDANCE_PRESETS` accepts either exactly and rejects anything else. **Match this file before any cross-code number** — unmatched, HD189 disagrees with upstream by ~20% median; matched, 3.8e-06.
 - `_abun_lowT_residual(x, O_H, C_H, He_H, N_H)` — 5-mol residual for the cold-start system (`ini_mix='const_lowT'`).
 - `_jax_newton(residual_fn, m0, args, max_iter, tol)` — small dense Newton solver via `lax.while_loop`. Defaults come from `cfg.fastchem_newton_*`.
 - `compute_atom_ini(y, compo_arr=compo_array)` — per-element column sum of initial abundances.
@@ -522,7 +522,7 @@ Pre-run configuration validation.
 - `_validate_fastchem_input_vs_network(cfg, root)` — pin the FastChem element file's values and order against the network's atoms.
 - `_validate_network_assets(cfg, root)` — check every species / photo / atom file referenced by `cfg` exists.
 - `_validate_numerical_bounds(cfg)` — bound-check tuning knobs (rtol/loss/photo-switch/Newton-tol/step-size) so typos fail early.
-- `validate_runtime_config(cfg, root=None)` — top-level entry, called from `vulcan_jax_cli.py` and the `OuterLoop` entry points. Also rejects upfront: non-Ros2 solvers, inconsistent flag combos, `const_mix` keys that are not network species (master crashes identically on its own Earth example's 'Ar' — C13 in `corrections_to_original_code.md`; our shipped `Earth.yaml` drops it), and `condense_sp` entries outside the supported condensate tiers (kinetics set vs sat-only H2S).
+- `validate_runtime_config(cfg, root=None)` — top-level entry, called from `vulcan_jax_cli.py` and the `OuterLoop` entry points. Also rejects upfront: non-Ros2 solvers, inconsistent flag combos, `const_mix` keys that are not network species (upstream crashes on its own Earth example's 'Ar' — C13 in `corrections_to_original_code.md`), and `condense_sp` entries outside the supported condensate tiers (kinetics set vs sat-only H2S).
 
 ### `legacy_io.py`
 Vendored host-side glue from VULCAN-master's `op.py` — the rate-metadata
@@ -590,7 +590,10 @@ Run `vulcan-jax --config <name>`.
 - `HD189.yaml` — HD 189733b. Its shared physics + Mp/Rp gravity match `VULCAN-master/cfg_examples/vulcan_cfg_HD189.py`. **Canonical parity target** (`tools/audit_master_parity.py`).
 - `HD209.yaml` — HD 209458b (no S species, weaker gravity).
 - `W39b.yaml` — WASP-39b (SNCHO network, paper-match).
-- `Earth.yaml` — Earth troposphere/stratosphere reference (see the README note on the Ar `const_mix` limitation).
+- `HD189_vulcan3.yaml` — the explicit **VULCAN 3 preset**: HD189's physics with `shami-EEG/VULCAN` `vm_branch` numerics (hybrid vm_mol, `high_temp_cut`, adaptive rtol at the branch's 1000/1.25, `conver_ignore: ['HC3N']`, `count_max` 20000, `mtol_conv` 1e-18). Every differing knob cites the vm_branch line it came from. Use `HD189.yaml` for a VULCAN 2 comparison and this one to exercise the VULCAN 3 feature set.
+
+**Two knobs every config declares explicitly, because an omitted key is silently wrong:**
+`use_conv_stall` (code default `False` since 2026-07-30; all five configs also declare `false`, since no case tried needs the JAX-only stall fallback) and `fastchem_solar_abundance_file` (a config that omits it inherits the rocky-suppressed default, hiding its composition from the file that is supposed to define the run).
 
 ### `tests/`
 Curated suite focused on hot-path kernels, oracle agreement, and JAX
@@ -642,6 +645,9 @@ transform consistency. Run with
 - `test_outer_loop_ion_run_subprocess.py` — end-to-end ion-chemistry run (subprocess).
 - `test_sat_p_h2s_anchor.py` — H2S saturation-pressure anchor value.
 - `test_zero_guards.py` — zero-denominator / underflow guards (atm-refresh mu-zero layer, photo chi sign).
+- `test_conv_stall_gate.py` — the JAX-only stall fallback: `use_conv_stall` on -> `termination_reason` 4, off -> the predicate folds away and the run falls through to the step-count ladder; `conv_stall_window: 0` is rejected rather than meaning "off"; NO shipped config may enable it; every config must declare it; the code reaches the `.vul` file.
+- `test_network_reaction_ids.py` — photolysis/ion reactions must be indexed by parser POSITION, not by the printed id column (correction C14). Every index in-range and odd for all 18 vendored networks; the two parsers agree; every network a shipped config selects is renumbered (so no published result moved); the stale-file warning names the file and the `remove_list` risk.
+- `test_fastchem_abundance_presets.py` — both elemental-abundance presets validate clean and use the FastChem row order with P before S; the upstream preset carries upstream's values exactly; the presets differ only in helium among C/H/N/O; a hand-edited file is rejected naming both; every config declares a file that exists.
 
 ### `benchmarks/`
 - `bench_step.py` — per-step JAX timing + comparison to VULCAN-master if a sibling checkout is present.
