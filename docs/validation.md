@@ -115,20 +115,43 @@ which is a latent species-mixing bug.
 ### Hybrid molecular diffusion
 
 `use_hybrid_vm_mol` is **off in the VULCAN 2 parity configs and on only in
-`HD189_vulcan3.yaml`**. It converges on the robust upwind
-scheme, then switches to central difference and finishes, matching the sequence
-upstream describes: first-order upwind, then convergence, then central difference
-for at most 2000 further steps.
+`HD189_vulcan3.yaml`**. It integrates on the robust upwind scheme, then switches
+to central difference and finishes, matching the sequence upstream describes:
+first-order upwind, then convergence, then central difference for a bounded
+number of further steps.
 
 Because the runner is one JIT-compiled `lax.while_loop`, this is implemented as an
 **in-loop phase flip** rather than a host-side two-stage driver. A carry blend
-factor `hybrid_use_vm` starts at 1.0 for upwind and flips to 0.0 for central the
-first time phase 0 reaches the convergence criteria. The flip resets the
-convergence trackers and extends the step and runtime budgets the same way the
-reference two-stage driver does.
+factor `hybrid_use_vm` starts at 1.0 for upwind and flips to 0.0 for central.
 
-The returned state is a central-difference fixed point, so forward-mode `jvp`
-through the runner and the steady-state adjoint both apply to it unchanged. Set
+**The flip has three triggers, not one.** Phase 0 can never end a run, so it
+hands over when it converges, when it exhausts the model runtime, or when it
+exhausts the step count. Priority matches the reference driver's `stop()`:
+convergence, then runtime, then step count. The budget the next phase receives
+depends on which one fired:
+
+| phase 0 ended by | phase 1 step budget | runtime |
+|---|---|---|
+| convergence | `count + 2000` | unchanged |
+| model runtime | `count + 1000` | `runtime * 1.1` |
+| step count | `count + 1000` | unchanged |
+
+The flip also resets the convergence trackers, so phase 1 must satisfy the
+criteria on its own.
+
+**What the returned state does and does not guarantee.** A hybrid run that
+terminates through the loop's own stopping test always ends in the
+central-difference phase, because phase 0 is excluded from that test. It is a
+central-difference **fixed point** only when phase 1 also converged, that is when
+`end_case` is 1. A phase-1 run that exhausts its extended budget returns a
+central-difference state that is not converged, and two paths can return while
+still in phase 0: a wall-clock exit, which the host takes between compiled chunks
+without consulting the phase, and the batched runner freezing a lane on a
+non-finite step.
+
+Forward-mode `jvp` through the runner and the steady-state adjoint apply to a
+converged phase-1 state. Check `end_case == 1` and the terminal `hybrid_use_vm`
+before treating a hybrid result as a differentiable steady state. Set
 `use_vm_mol=False` for a fixed central-difference scheme, which is what batched
 emulator generation wants, because it is deterministic.
 

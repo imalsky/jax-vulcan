@@ -87,8 +87,10 @@ P_t: 0.01
 use_Kzz: true
 use_moldiff: true
 # vm_branch vulcan_cfg.py:147-148 -- upwind molecular diffusion, then the
-# in-loop flip to central difference. A completed hybrid run ends in the
-# central phase, so the converged state is a central-difference fixed point.
+# in-loop flip to central difference. Phase 0 hands over on convergence,
+# runtime, or step count, so a run that stops on the loop's own test is in the
+# central phase; it is a central-difference fixed point only when it also
+# converged (end_case 1). See docs/validation.md, "Hybrid molecular diffusion".
 use_vm_mol: true
 use_hybrid_vm_mol: true
 use_vz: false
@@ -211,6 +213,8 @@ use_pi_controller: false
 pi_controller_alpha: 0.7
 pi_controller_beta: 0.4
 photo_switch_longdydt_thresh: 1.0e-06
+# Only read when use_fix_H2He is true: the model time at which the H2/He
+# bottom mixing ratios are snapshotted and pinned. Inert otherwise.
 hycean_pin_time: 1000000.0
 loss_ex: []
 fastchem_newton_tol: 1.0e-12

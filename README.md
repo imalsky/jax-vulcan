@@ -5,14 +5,21 @@ VULCAN-JAX is a JAX port of
 kinetics model for planetary atmospheres. It supports exoplanet
 photochemistry, vertical transport, condensation, and ion chemistry.
 
-VULCAN-JAX uses the same reaction networks, atmosphere files, configuration
-names, and `.vul` output format as VULCAN. It runs the integration loop with
-JAX on a CPU or GPU.
+VULCAN-JAX reads the same reaction network files, atmosphere files, and
+configuration names as VULCAN, and writes the same `.vul` output format. It runs
+the integration loop with JAX on a CPU or GPU.
+
+The vendored network files come from upstream. One difference is open: the
+N-C-H-O network here contains `NH3 + CH -> NH2 + CH2`, which is absent from both
+current upstream branches. It has not been changed pending a decision from the
+upstream author, because adding or removing a reaction changes the chemistry.
 
 ## Main capabilities
 
 - Just-in-time (JIT) compiled Rosenbrock integration for stiff chemical kinetics
-- Forward-mode differentiation through the complete integration
+- Forward-mode differentiation through the compiled integration loop (host-side
+  setup is excluded; see
+  [`docs/differentiability.md`](docs/differentiability.md))
 - Reverse-mode reaction sensitivity at a converged state
 - Batched atmosphere runs with `jax.vmap`
 - Analytical chemistry Jacobians
@@ -75,10 +82,13 @@ Run the default HD 189733 b model:
 vulcan-jax --config default
 ```
 
-The run writes two files under `output/`:
+The run writes three files under `output/`:
 
 - `HD189.vul` contains the model result
 - `HD189.vul.config.yaml` contains the complete resolved configuration
+- `cfg_HD189.txt` is a plain-text snapshot of the same configuration, written
+  for compatibility with VULCAN. Use the YAML file to reproduce a run; it is the
+  one `vulcan-jax --config` can read back.
 
 The first run is slower, by roughly half a minute on a laptop CPU. It compiles
 FastChem (about 10 seconds, once per installation), generates the chemistry
@@ -110,12 +120,27 @@ before it has had time to evolve.
 
 A run that does not converge stops at a limit instead. There are three: the
 model runtime, the step count, and the wall-clock budget. The final message says
-which one it hit. The output file stores the same answer as `end_case`, where
-`1` means converged, and as `termination_reason`, which is finer: `0` still
-running, `1` converged normally, `2` runtime, `3` step count, `4` the stall
-fallback, `5` a non-finite state. Prefer `termination_reason` when the
-distinction matters, because `end_case` reports `1` for both a normal and a
-stall convergence.
+which one it hit.
+
+The output file records why the run stopped twice, and neither field covers
+every case on its own.
+
+`end_case` is `1` for converged, `2` for runtime, `3` for step count, and `4`
+for the wall-clock budget.
+
+`termination_reason` is finer where it applies: `0` still running, `1` converged
+normally, `2` runtime, `3` step count, `4` the stall fallback, `5` a non-finite
+state. It is the only field that separates a normal convergence from a stall
+convergence, which `end_case` reports as `1` in both cases.
+
+Two limits of `termination_reason` are worth knowing:
+
+- A wall-clock exit leaves it at `0`. The host stops the run between compiled
+  chunks, so the loop never evaluates its own stopping test. Read `end_case`
+  for that case; it reports `4`.
+- Reason `5` is only ever set by the batched runner (`OuterLoop.run_batch`),
+  which freezes a lane at its last finite state. A single-profile run does not
+  produce it.
 
 [`examples/quickstart.ipynb`](examples/quickstart.ipynb) is the gentlest
 introduction. It builds an HD 189733 b model and plots the results.

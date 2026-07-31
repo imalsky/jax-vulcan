@@ -223,8 +223,10 @@ class JaxIntegState(NamedTuple):
     # the vm/central-difference diffusion in jax_ros2_step: 1.0 = upwind
     # (phase 0), 0.0 = central-difference (phase 1). Seeded to 1.0 when
     # use_vm_mol is on, else 0.0. When hybrid is enabled the body flips it
-    # 1.0 -> 0.0 the first time phase 0 converges, so the run finishes on a
-    # central-difference fixed point. Non-hybrid runs never flip it (constant
+    # 1.0 -> 0.0 the first time phase 0 ends — by convergence, runtime, OR
+    # step-count — so a run that stops via `_real_terminate` is in the
+    # central-difference PHASE. That is a fixed point only if phase 1 also
+    # converged (end_case 1). Non-hybrid runs never flip it (constant
     # 1.0 for pure-vm, 0.0 for central), so their trace is bit-identical.
     hybrid_use_vm: jnp.ndarray  # ()  float64
 
@@ -990,8 +992,13 @@ def _make_runner(
             # Phase 0 (upwind, hybrid_use_vm≈1) NEVER terminates here — the body
             # flips to central-difference (phase 1) and extends the budget
             # instead, mirroring vm_branch op.py stop(). Only phase 1
-            # (hybrid_use_vm≈0) terminates, so the returned state is always a
-            # central-difference fixed point.
+            # (hybrid_use_vm≈0) terminates here, so a run that stops through
+            # THIS predicate is in the central-difference phase. It is a
+            # central-difference fixed point only when phase 1 converged
+            # (reason 1/4); phase 1 can also exit on runtime/step-count. Exits
+            # that bypass this predicate entirely (the host-side wall-clock
+            # bail-out in `_run_chunked`, the batched non-finite freeze) can
+            # return while still in phase 0.
             real_term = real_term & (s.hybrid_use_vm < jnp.float64(0.5))
         # Convergence wins over runtime wins over step-count, matching master's
         # stop() (op.py:1072-1118): a step that is both converged and at

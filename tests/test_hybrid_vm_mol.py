@@ -2,8 +2,10 @@
 
 The runner blends the vm/central-difference diffusion by a traced carry value
 `hybrid_use_vm` (1.0 upwind, 0.0 central). When use_hybrid_vm_mol is on, the
-body flips it 1.0 -> 0.0 the first time phase 0 (upwind) converges, so the run
-finishes on a central-difference fixed point. Non-hybrid runs never flip it, so
+body flips it 1.0 -> 0.0 the first time phase 0 (upwind) ends — by convergence,
+runtime, or step count — so a run that stops on the loop's own termination test
+finishes in the central-difference phase. That state is a central-difference
+fixed point only when phase 1 converged too. Non-hybrid runs never flip it, so
 their trace is bit-identical to the pre-change static path.
 
 Ports the two-stage strategy of vm_branch op.py stop() into a single
