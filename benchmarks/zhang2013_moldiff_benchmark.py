@@ -409,7 +409,23 @@ def main(argv=None) -> int:
     print("(accurate) -> it reproduces the analytic curve without the instability.")
 
     # ---- Figure -------------------------------------------------------------
-    fig, (axA, axB) = plt.subplots(1, 2, figsize=(11.5, 5.2))
+    # Match the jax_paper figure style (see jax_paper/scripts/_common.py):
+    # serif family, dejavuserif mathtext, FS-based sizing, 14.0 x 7.4 canvas.
+    FS = 19
+    plt.rcParams.update(
+        {
+            "font.family": "serif",
+            "font.serif": [
+                "Times New Roman",
+                "Times",
+                "Palatino",
+                "DejaVu Serif",
+                "serif",
+            ],
+            "mathtext.fontset": "dejavuserif",
+        }
+    )
+    fig, (axA, axB) = plt.subplots(1, 2, figsize=(14.0, 7.4))
     blue, red = "#1f77b4", "#d62728"
 
     # Panel A: accuracy (steady-state profile vs pressure, well-resolved grid).
@@ -451,20 +467,21 @@ def main(argv=None) -> int:
     axA.set_xscale("log")
     axA.set_yscale("log")
     axA.set_ylim(p_mbar.max(), p_mbar.min())  # pressure decreasing upward
-    axA.set_xlabel("tracer mole fraction")
-    axA.set_ylabel("pressure (mbar)")
-    axA.set_title(f"A. Accuracy (well resolved, nz={NZ})", fontsize=10)
+    axA.set_xlabel("Tracer mole fraction", fontsize=FS)
+    axA.set_ylabel("Pressure (mbar)", fontsize=FS)
+    axA.set_title(f"(a) Accuracy (well resolved, nz={NZ})", fontsize=FS - 2, pad=10)
+    axA.tick_params(labelsize=FS - 3)
     axA.grid(True, which="major", alpha=0.25)
-    axA.legend(loc="upper right", fontsize=8)
+    axA.legend(loc="upper right", fontsize=FS - 6, framealpha=0.92)
     axA.text(
         0.04,
         0.04,
         f"max error vs analytic\ncentral / hybrid: {_fmt_err(res['central_max_fe'])}\n"
         f"upwind only: {_fmt_err(res['upwind_max_fe'])}",
         transform=axA.transAxes,
-        fontsize=8,
+        fontsize=FS - 5,
         va="bottom",
-        bbox=dict(boxstyle="round", fc="white", ec="0.7", alpha=0.9),
+        bbox=dict(boxstyle="round,pad=0.45", fc="white", ec="0.6", alpha=0.92),
     )
 
     # Panel B: stability (worst mole fraction vs cell Peclet number).
@@ -477,25 +494,27 @@ def main(argv=None) -> int:
     axB.plot(
         peclet, umin, color=red, lw=1.8, marker="s", ms=4, label="upwind (stabilizer)"
     )
-    axB.set_xlabel("cell Peclet number   |vm| dz / D")
-    axB.set_ylabel("minimum mole fraction / base value")
-    axB.set_title("B. Stability (pure molecular diffusion, K=0)", fontsize=10)
+    axB.set_xlabel(r"Cell Peclet number  $|v_m|\,\Delta z / D$", fontsize=FS)
+    axB.set_ylabel("Minimum mole fraction / base value", fontsize=FS)
+    axB.set_title(
+        "(b) Stability (pure molecular diffusion, $K=0$)", fontsize=FS - 2, pad=10
+    )
+    axB.tick_params(labelsize=FS - 3)
     axB.grid(True, which="major", alpha=0.25)
-    axB.legend(loc="lower left", fontsize=8)
+    axB.legend(loc="lower left", fontsize=FS - 6, framealpha=0.92)
     axB.text(
         2.1,
         0.03,
         "Pe > 2:\ncentral goes negative\n(unphysical oscillation)",
         transform=axB.get_xaxis_transform(),
-        fontsize=8,
+        fontsize=FS - 6,
         color="#a00000",
         va="bottom",
     )
 
     fig.suptitle(
-        "Molecular diffusion: the hybrid scheme is accurate (central) and "
-        "stable (upwind)",
-        fontsize=11,
+        "Molecular diffusion: the hybrid is accurate (central) and stable (upwind)",
+        fontsize=FS - 1,
     )
     fig.tight_layout(rect=(0, 0, 1, 0.95))
 
