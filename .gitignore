@@ -130,6 +130,13 @@ plot/*.svg
 # Generated example figures (examples/output/ is already covered by output/)
 examples/plot/
 
+# Generated benchmark figures. The scripts in benchmarks/ are tracked and each
+# one regenerates its own figure and self-checks, so the images are build
+# output, not source. Same reasoning as tests/data/*.npz below: keeping them
+# committed put a fresh ~300 KB blob in history on every restyle.
+benchmarks/*.png
+benchmarks/*.pdf
+
 # Local parity-comparison artifacts (figures, scripts, .vul/.npz dumps) vs shami vm_branch / VULCAN-master — not shipped
 parity-tests/
 
