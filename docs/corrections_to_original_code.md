@@ -151,8 +151,13 @@ code today: each one is why a VULCAN-JAX file differs from master right now.
   duplicate check, so the second entry does enter the element-conservation sums;
   downstream, `build_atm.py`'s `np.genfromtxt(names=True)` renames the second
   output column `CH2_1_1` and VULCAN reads the first — trace-level at most.
-  Upstream HEAD confirmed to carry the duplicate (byte-identical to workspace
-  master; entries at lines 19 and 421 of SNCHOTi.dat, identical coefficients).
+  **CLOSED UPSTREAM 2026-07-28, re-verified 2026-07-31 against a fresh
+  `exoclime/VULCAN` clone.** Commit `8970337` deletes the second `CH2_1` block
+  from all three files; `git show 8970337^:<file> | grep -c '^CH2_1'` returns 2
+  and `git show 8970337:<file>` returns 1 for each. Upstream HEAD and the
+  vendored JAX copies now agree at one entry apiece, so this is no longer a
+  divergence — only the unversioned workspace `../VULCAN-master/` copy still
+  carries the duplicate (2 entries in SNCHOTi.dat).
 - **Note (same diff, separate):** the vendored `nasa9_logK_SNCHOTi.dat` also
   adds an SiO2 entry absent from master's copy; and
   `element_abundances_vulcan.dat` differs because it is a per-run scratch

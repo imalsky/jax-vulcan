@@ -500,7 +500,7 @@ taking WASP-39b SO2 dominant rows to ~0.1–0.2%. The earlier "~few %" was a
 steady-state-definition ceiling once documented here; `"bare"` is retained
 only to reproduce the pre-2026-07 raw-step behavior. Forward-mode is the
 exact route for any single ill-conditioned row. See the module docstring +
-`docs/notes.md` for why it works and the residual-IFT attempts that failed.
+`docs/vulcan_jax_notes.md` for why it works and the residual-IFT attempts that failed.
 - `steady_state_reaction_sensitivity(loss_fn, y_star, k_arr, atm, net, *, compo_array, dz, solver_map="renorm", photo_recompute_k="auto", runner_photo_static=None, converged_state=None, integ=None, ...)` — the public entry point; returns `dL/d(ln k_r)` `(nr+1,)` (and an info dict with `return_info=True`).
 - `make_photo_recompute_k(runner_photo_static, converged_state)` — build the `photo_recompute_k` callable (reuses the runner's two-stream RT photo branch) so photo-coupled rows carry `dJ/dy`; needs `integ._photo_static`, not the public `PhotoStaticInputs`.
 - `steady_state_input_sensitivity(loss_fn, y_star, k_arr, atm, net, p0, rebuild, ...)` — reverse-mode w.r.t. arbitrary physical inputs (e.g. a full `(nz,)` T profile) from the same adjoint solve plus one VJP of a differentiable `rebuild(p) -> (k(p), atm(p))`; consistency-checked at `p0`.

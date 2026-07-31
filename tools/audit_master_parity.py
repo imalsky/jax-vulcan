@@ -97,7 +97,9 @@ KNOWN_SFLUX_RESCALES: dict[str, float] = {
 # input we dropped), and an unlisted jax-only file is too.
 JAX_ONLY_RUNTIME_FILES: frozenset[str] = frozenset(
     {
-        # configs/K2-18b.yaml, a VULCAN-JAX-only ported case (no master counterpart)
+        # Input for the withdrawn configs/K2-18b.yaml (removed 2026-07-30: it
+        # converged in neither code). The T-P file stays vendored so the case can
+        # be re-run; it has no master counterpart either way.
         "atm_K2-18b-Nep100X-apo-H2Oclouds.txt",
     }
 )
