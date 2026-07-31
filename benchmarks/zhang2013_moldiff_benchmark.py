@@ -512,11 +512,7 @@ def main(argv=None) -> int:
         va="bottom",
     )
 
-    fig.suptitle(
-        "Molecular diffusion: the hybrid is accurate (central) and stable (upwind)",
-        fontsize=FS - 1,
-    )
-    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    fig.tight_layout()
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     for ext in [e.strip() for e in args.formats.split(",") if e.strip()]:
