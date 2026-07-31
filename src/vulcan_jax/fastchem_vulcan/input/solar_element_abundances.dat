@@ -9,7 +9,15 @@
 # tests/test_fastchem_element_order.py.
 # Rocky elements (P,Si,Ti,V,Cl,K,Na,Mg,F,Ca,Fe) are suppressed to -3.0 because
 # the shipped NCHO/SNCHO networks have no species for them (solar dex would
-# sequester O into MgO/SiO2/FeO). Full-rocky Lodders-2009 in *.dat.bak.
+# sequester O into MgO/SiO2/FeO the kinetics can never release).
+#
+# THIS IS NOT WHAT UPSTREAM VULCAN SHIPS. Upstream uses Lodders 2009 with every
+# element at solar; for a C-H-N-O network the only value that differs is helium
+# (10.9864 -> 10.9232 here). Out of the box the two codes therefore disagree by
+# ~20% median on HD 189733 b; matched, they agree to 3.8e-06. To reproduce
+# upstream, point `fastchem_solar_abundance_file` at
+# fastchem_vulcan/input/solar_element_abundances_lodders2009.dat, which sits
+# beside this file. ALWAYS match this file before quoting a cross-code number.
 C   8.4434
 H   12.00
 He  10.9232

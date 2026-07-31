@@ -36,6 +36,42 @@ _CANONICAL_FASTCHEM_ABUNDANCES = {
     "Fe": -3.0,
 }
 
+# Upstream VULCAN's own file: Lodders (2009), every element at solar. Selectable
+# via `fastchem_solar_abundance_file` so a cross-code comparison can be run on
+# matched inputs — the single most common way to get a wrong VULCAN-JAX vs
+# VULCAN 2.0 number is to leave the two codes on different composition files
+# (~20% median on HD 189733 b; 3.8e-06 once matched). Values are upstream's
+# verbatim; only the P/S row ORDER is corrected (see C12).
+_UPSTREAM_LODDERS2009_ABUNDANCES = {
+    "H": 12.00,
+    "He": 10.9864,
+    "C": 8.4434,
+    "N": 7.9130,
+    "O": 8.7826,
+    "S": 7.12,
+    "P": 5.5058,
+    "Si": 7.5867,
+    "Ti": 4.9794,
+    "V": 4.0437,
+    "Cl": 5.3002,
+    "K": 5.1619,
+    "Na": 6.3479,
+    "Mg": 7.5995,
+    "F": 4.49196,
+    "Ca": 6.3677,
+    "Fe": 7.5151,
+}
+
+# The abundance presets a config may select. Anything else is rejected: the
+# failure mode is silent (plausible output from a composition nobody chose), so
+# an unrecognised file must not pass.
+_FASTCHEM_ABUNDANCE_PRESETS = {
+    "rocky-suppressed Lodders 2019 (VULCAN-JAX default)": (
+        _CANONICAL_FASTCHEM_ABUNDANCES
+    ),
+    "full-solar Lodders 2009 (upstream VULCAN)": _UPSTREAM_LODDERS2009_ABUNDANCES,
+}
+
 
 # Element row order REQUIRED by the vendored FastChem. Its
 # fastchem_src/mass_action_constant.cpp subtracts per-element NASA9 reference
@@ -75,10 +111,14 @@ def _validate_fastchem_input_vs_network(cfg, root: Path) -> list[str]:
     Two independent failure modes, both silent (no crash, plausible-looking
     output):
 
-    1. Values: someone (re-)installs the historical Lodders-2009 file with
-       Mg / Si / Fe / etc. at solar dex. That sequesters ~19% of O into
-       silicate / metal-oxide species the NCHO / SNCHO networks cannot
-       represent, biasing initial conditions against `_load_eq_y`.
+    1. Values: the file has been hand-edited into something that is neither
+       shipped preset. Both presets are legitimate — rocky-suppressed
+       Lodders 2019 (the default) and full-solar Lodders 2009 (upstream's, for
+       matched cross-code runs) — but an arbitrary edit is not. Leaving
+       Mg / Si / Fe at solar dex sequesters ~19% of O into silicate /
+       metal-oxide species the NCHO / SNCHO networks cannot represent, biasing
+       initial conditions against `_load_eq_y`; that is a deliberate trade when
+       you pick the upstream preset on purpose and a silent bug otherwise.
     2. Order: someone reorders the rows (e.g. H,He,C,... instead of
        C,H,He,...). FastChem's mass_action_constant.cpp subtracts per-element
        NASA9 references by hard-coded slot, so a reorder makes carbon take
@@ -134,23 +174,41 @@ def _validate_fastchem_input_vs_network(cfg, root: Path) -> list[str]:
             "full."
         )
 
-    mismatches: list[str] = []
-    for elem, expected in _CANONICAL_FASTCHEM_ABUNDANCES.items():
-        actual = parsed.get(elem)
-        if actual is None:
-            mismatches.append(f"{elem} missing (expected {expected:+.4f})")
-        elif actual != expected:
-            mismatches.append(f"{elem}={actual:+.4f} (expected {expected:+.4f})")
+    # The file must be one of the two shipped presets exactly. Both are valid
+    # science; a file that is neither is almost always an accidental edit, and
+    # its failure mode is silent, so it is rejected rather than warned about.
+    per_preset: dict[str, list[str]] = {}
+    for preset_name, table in _FASTCHEM_ABUNDANCE_PRESETS.items():
+        mismatches: list[str] = []
+        for elem, expected in table.items():
+            actual = parsed.get(elem)
+            if actual is None:
+                mismatches.append(f"{elem} missing (expected {expected:+.4f})")
+            elif actual != expected:
+                mismatches.append(f"{elem}={actual:+.4f} (expected {expected:+.4f})")
+        if not mismatches:
+            return errors  # exact match against a known preset
+        per_preset[preset_name] = mismatches
 
-    if mismatches:
-        errors.append(
-            f"FastChem input {abun_rel!r} deviates from the canonical "
-            f"rocky-suppressed abundances: "
-            + "; ".join(mismatches)
-            + ". Restore the file to its shipped contents — leaving Mg/Si/Fe "
-            "at solar dex sequesters O into species the network cannot "
-            "represent (the original HD209 atom_loss anomaly)."
+    closest = min(per_preset, key=lambda k: len(per_preset[k]))
+    errors.append(
+        f"FastChem input {abun_rel!r} matches neither shipped abundance preset. "
+        f"Closest is the {closest} set, which it deviates from in: "
+        + "; ".join(per_preset[closest][:8])
+        + (
+            f" (+{len(per_preset[closest]) - 8} more)"
+            if len(per_preset[closest]) > 8
+            else ""
         )
+        + ". Point `fastchem_solar_abundance_file` at "
+        "fastchem_vulcan/input/solar_element_abundances.dat (rocky-suppressed "
+        "Lodders 2019, the default) or "
+        "fastchem_vulcan/input/solar_element_abundances_lodders2009.dat "
+        "(full-solar Lodders 2009, matches upstream VULCAN). A hand-edited file "
+        "fails silently: leaving Mg/Si/Fe at solar dex while the network has no "
+        "species for them sequesters O into MgO/SiO2/FeO the kinetics cannot "
+        "release (the original HD209 atom_loss anomaly)."
+    )
     return errors
 
 

@@ -43,6 +43,20 @@ S_H: 1.3183e-3
 He_H: 0.08511
 ini_mix: EQ
 fastchem_met_scale: 1.0
+# Elemental abundances FastChem starts from. Two files ship:
+#   solar_element_abundances.dat            rocky elements suppressed to -3.0,
+#                                           Lodders 2019. The default. Correct
+#                                           for the C-H-N-O and S-C-H-N-O
+#                                           networks, which have no Mg/Si/Fe
+#                                           species to hold the oxygen.
+#   solar_element_abundances_lodders2009.dat every element at solar, Lodders
+#                                           2009. What upstream VULCAN ships.
+#                                           Use it to compare against an
+#                                           unmodified VULCAN checkout.
+# The two disagree by ~20% median on HD 189733 b, so MATCH THIS FILE before
+# quoting any VULCAN-JAX vs VULCAN 2.0 number. Matched, the codes agree to
+# 3.8e-06.
+fastchem_solar_abundance_file: fastchem_vulcan/input/solar_element_abundances.dat
 const_mix: {}
 use_photo: true
 r_star: 0.4445
@@ -162,10 +176,17 @@ flux_atol: 1.0
 # (vulcan_cfg.py:157). This is a VULCAN 3 case, not a VULCAN 2 parity case.
 conver_ignore:
 - HC3N
-# JAX-only convergence fallback, on for this VULCAN 3 case. Declared explicitly
-# rather than inherited: an omitted key takes the code default, which is the
-# opposite of what the VULCAN 2 parity configs ship.
-use_conv_stall: true
+# JAX-only convergence fallback. OFF, like every other shipped config.
+#
+# It was on here until 2026-07-30. That was the wrong default: the fallback
+# declares convergence when longdy has sat near its running minimum, which is a
+# criterion VULCAN 2.0 does not have, and `end_case` reports 1 for it exactly as
+# it does for a real convergence. On a case that does not otherwise converge,
+# that is the difference between an honest step-limit exit and a run that looks
+# converged and is not. Read `termination_reason` (4 = stall) if you turn it
+# back on. Declared explicitly rather than inherited: an omitted key takes the
+# code default, which is True.
+use_conv_stall: false
 conv_stall_window: 200
 # 110 (not the code default 64) so `dt < dt_min` ends a reject chain, as master
 # does -- see C11 in docs/corrections_to_original_code.md. This config omitted

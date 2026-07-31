@@ -36,6 +36,19 @@ S_H: 1.3183e-05
 He_H: 0.09692
 ini_mix: const_mix
 fastchem_met_scale: 1.0
+# Elemental abundances FastChem starts from. Two files ship:
+#   solar_element_abundances.dat            rocky elements suppressed to -3.0,
+#                                           Lodders 2019. The default. Correct
+#                                           for the C-H-N-O and S-C-H-N-O
+#                                           networks, which have no Mg/Si/Fe
+#                                           species to hold the oxygen.
+#   solar_element_abundances_lodders2009.dat every element at solar, Lodders
+#                                           2009. What upstream VULCAN ships.
+#                                           Use it to compare against an
+#                                           unmodified VULCAN checkout.
+# The two disagree by ~20% median on HD 189733 b, so MATCH THIS FILE before
+# quoting any VULCAN-JAX vs VULCAN 2.0 number. Matched, the codes agree to
+# 3.8e-06.
 fastchem_solar_abundance_file: fastchem_vulcan/input/solar_element_abundances.dat
 # Ar: 0.00934 dropped with the atom_list entry above (not a network species).
 const_mix:
