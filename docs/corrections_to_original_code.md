@@ -238,6 +238,42 @@ code today: each one is why a VULCAN-JAX file differs from master right now.
 - **Note:** the alternative (fold 9.34e-3 into N2) preserves the total but
   misstates the composition, so the deficit was kept visible instead.
 
+### C14 — photolysis reaction index read from the file's id column (logged 2026-07-30)
+- **master:** the id column of a network file is *output*, not input.
+  `make_chem_funs.py:71-72` rewrites every reaction line as
+  `'{:<4d} {:s}'.format(i, ...)` — the comment says "updating the numerical
+  index in the network (1, 3, ...)" — and line 109
+  (`with open(vulcan_cfg.network, 'w+') as f: f.write(new_network)`) writes the
+  file back **in place**. Only after that does `op.py:245` do
+  `pho_rate_index[(columns[0], int(columns[1]))] = Rindx[i]`, reading back the
+  number it just wrote. So in master's workflow the id column always equals the
+  parser position, and reading either is the same thing.
+- **JAX:** VULCAN-JAX deliberately does not rewrite vendored network files, so
+  the id column is whatever the file shipped with. It is stale in **6 of the 18
+  vendored networks** — a file fetched from a remote or hand-edited but never run
+  through upstream has never been renumbered. `network.py:288` already indexed by
+  `parser_i` (position) and `rates.apply_remove_list` masks positionally, but
+  `legacy_io.py` had been ported verbatim from `op.py:245` and used the id
+  column, so the two parsers disagreed on exactly those files.
+- **Effect:** `op_jax.compute_J` writes `var.k_arr[ridx, :]`, and `k_arr` is a
+  dense `[nr+1, nz]` array. Three networks raised `IndexError` (e.g.
+  `NCHO_photo_network_lowT.txt`: 16 photolysis rows past `nr = 674`), and three
+  more — `CHO_photo_network.txt` (36 rows), `NCHO_full_photo_network.txt` (57),
+  `TiSNCHO_photo_network.txt` (65) — had every photolysis id in range but wrong,
+  so each J landed on an unrelated reaction with no error at all. Master's
+  `var.k` is a dict, so the same stale file there silently drops or misassigns
+  the rate instead of raising.
+- **Fix:** `legacy_io.py` now indexes `pho_rate_index` / `ion_rate_index` by the
+  parser position, matching `network.py`, and `_warn_stale_reaction_ids` raises a
+  `RuntimeWarning` naming the file when its ids disagree — because a
+  `cfg.remove_list` written by reading ids off an un-renumbered file selects the
+  wrong reactions in **both** codes. Pinned by
+  `tests/test_network_reaction_ids.py`.
+- **No shipped result moves:** every network selected by a shipped config
+  (`NCHO_photo_network.txt`, `SNCHO_photo_network.txt`,
+  `SNCHO_photo_network_2025.txt`, `SNCHO_full_photo_network.txt`) is renumbered,
+  so position and id already agreed there. A test pins that too.
+
 ## Live constraints left behind by fixed port regressions
 
 The regressions themselves are fixed and are no longer described here. What

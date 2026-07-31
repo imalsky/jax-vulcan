@@ -18,6 +18,7 @@ import numpy as np
 import os
 import pickle
 import time
+import warnings
 
 from .config import default_config
 from . import chem_funs
@@ -118,6 +119,42 @@ def _master_tableau20() -> list[tuple[float, float, float]]:
     return [(r / 255.0, g / 255.0, b / 255.0) for r, g, b in colors]
 
 
+def _warn_stale_reaction_ids(
+    network_path: str, stale: list[tuple[int, int, str]]
+) -> None:
+    """Announce a network file whose written reaction ids are stale.
+
+    VULCAN's own ``make_chem_funs.py`` renumbers a network file in place the
+    first time it runs, so a file that has been run through upstream has
+    ``file_id == parser_position`` on every row. A file fetched from a remote,
+    hand-edited, or simply never run does not, and 6 of the 18 networks vendored
+    here are in that state.
+
+    The rate array is indexed positionally everywhere (``network.py`` builds it
+    from ``parser_i``; ``rates.apply_remove_list`` masks positionally), so the
+    parse is correct regardless. But ``cfg.remove_list`` is written by a human
+    reading the ids out of the file, and on a stale file those ids do not select
+    the reactions they appear to. Say so rather than let it pass silently.
+    """
+    if not stale:
+        return
+    shown = ", ".join(
+        f"{txt.strip()!r} written {fid} but at {pos}" for pos, fid, txt in stale[:3]
+    )
+    more = f" (+{len(stale) - 3} more)" if len(stale) > 3 else ""
+    warnings.warn(
+        f"Network {network_path} has {len(stale)} photo/ion reaction(s) whose "
+        f"written id disagrees with its position: {shown}{more}. The file has not "
+        "been renumbered by VULCAN's make_chem_funs.py. Rates are indexed by "
+        "position, so this run is correct — but any cfg.remove_list entry taken "
+        "from this file's id column will select the WRONG reaction. Renumber the "
+        "file, or write remove_list using positions (1-based, forward reactions "
+        "odd).",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+
+
 class ReadRate(object):
     """Network parser + rate-coef builder. Populates host-side metadata
     dicts on `var`; rate values are discarded (recomputed downstream)."""
@@ -172,6 +209,11 @@ class ReadRate(object):
 
         Tco = atm.Tco.copy()
         M = atm.M.copy()
+
+        # (position, file_id, reaction_text) for every photo/ion row whose written
+        # id disagrees with its parser position. Reported once at the end of the
+        # parse by _warn_stale_reaction_ids; see the pho_rate_index comment below.
+        stale_ids: list[tuple[int, int, str]] = []
 
         special_re = False
         conden_re = False
@@ -320,8 +362,19 @@ class ReadRate(object):
                     li = line.partition("]")[-1].strip()
                     columns = li.split()
                     Rindx[i] = int(line.partition("[")[0].strip())
+                    if Rindx[i] != i:
+                        stale_ids.append((i, Rindx[i], Rf[i]))
                     # columns[0]: the species being dissocited; branch index: columns[1]
-                    pho_rate_index[(columns[0], int(columns[1]))] = Rindx[i]
+                    # Index by the PARSER POSITION `i`, not the file's id column.
+                    # `var.k_arr` is built by rates.build_rate_array on positional
+                    # 1-based slots (network.py `parser_i`), and cfg.remove_list is
+                    # applied positionally too, so the position is the canonical
+                    # index. The id column is only self-consistent in files that
+                    # upstream's make_chem_funs.py has renumbered in place; 6 of the
+                    # 18 vendored networks are not renumbered, and using their ids
+                    # here pointed photolysis rates at the wrong reaction slot (or
+                    # off the end of k_arr). See _warn_stale_reaction_ids.
+                    pho_rate_index[(columns[0], int(columns[1]))] = i
 
                     # store the number of branches
                     var.n_branch[columns[0]] = int(columns[1])
@@ -338,8 +391,11 @@ class ReadRate(object):
                     li = line.partition("]")[-1].strip()
                     columns = li.split()
                     Rindx[i] = int(line.partition("[")[0].strip())
+                    if Rindx[i] != i:
+                        stale_ids.append((i, Rindx[i], Rf[i]))
                     # columns[0]: the species being dissocited; branch index: columns[1]
-                    ion_rate_index[(columns[0], int(columns[1]))] = Rindx[i]
+                    # Positional index, for the same reason as pho_rate_index above.
+                    ion_rate_index[(columns[0], int(columns[1]))] = i
 
                     # store the number of branches
                     var.ion_branch[columns[0]] = int(columns[1])
@@ -355,6 +411,8 @@ class ReadRate(object):
         var.photo_sp = set(photo_sp)
         if _CFG.use_ion:
             var.ion_sp = set(ion_sp)
+
+        _warn_stale_reaction_ids(str(resolve_data_path(_CFG.network)), stale_ids)
 
         if cache_key is not None:
             _RATE_PARSE_CACHE[cache_key] = _snapshot_rate_parse(var)

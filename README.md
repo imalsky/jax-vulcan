@@ -225,6 +225,19 @@ VULCAN_JAX_NETWORK=/absolute/path/to/network.txt VULCAN_JAX_ATOM_LIST=H,O,C,N,S 
 Restart Python before you change one of these values in a notebook or
 interactive session.
 
+One thing to know about the reaction number written at the start of each line in
+a network file: VULCAN-JAX ignores it and counts the reaction's position
+instead. VULCAN treats that column as output rather than input. It rewrites the
+file in place on the first run so the numbers become 1, 3, 5, and so on
+(`make_chem_funs.py:71-72,109`). VULCAN-JAX does not rewrite vendored data, so a
+file that has never been run through VULCAN still carries whatever numbers its
+author left in it. Six of the networks shipped here are in that state. This does
+not affect the rates, but it does mean `remove_list` is a list of **positions**,
+not of the numbers printed in the file. If you write `remove_list` by reading
+numbers off an un-renumbered network you will silently disable the wrong
+reactions, in VULCAN as well as here. VULCAN-JAX warns when it loads such a
+file.
+
 VULCAN has the same one-network-per-process restriction, but reaches it another
 way. There you edit `network` and `atom_list` in `vulcan_cfg.py`. `vulcan.py`
 then runs `make_chem_funs.py` to write a new `chem_funs.py` before importing it.
