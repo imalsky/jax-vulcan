@@ -188,6 +188,27 @@ Their results are therefore not converged atmospheres. `Earth` carries VULCAN's
 own numerical settings for that case unchanged, including its 20000-step limit.
 Treat both as starting points that still need tuning, not as validated cases.
 
+Two things about `Earth` that look alarming and are not (measured 2026-07-30):
+
+- **Its reported hydrogen `atom_loss` of about 3000 is not a conservation
+  failure.** The diagnostic is `(current - initial) / initial` over a closed
+  column, and Earth is not a closed column. Its initial condition sets H2O to
+  1e-6 everywhere while `use_fix_sp_bot` pins H2O to 8.94e-3 at the surface, so
+  water floods up from the ground and the hydrogen inventory is *supposed* to
+  grow by roughly that ratio. Counting hydrogen atoms in the output reproduces
+  the reported 2.9818e+03 exactly, and turning hydrogen escape off leaves it
+  unchanged. Earth also has surface fluxes, escape, condensate settling and
+  relaxation, none of which the diagnostic accounts for.
+- **What actually blocks convergence is one trace species.** `longdy` is set by
+  atomic carbon near the top of the column, at a mixing ratio of 8.1e-12, which
+  is about 20 atoms per cubic centimetre against a local total of 2.5e12. A
+  relative-change test on a species that small measures roundoff. `Earth` ships
+  `conver_ignore: []`, matching upstream, and upstream's own Earth example
+  declares no `conver_ignore` either, so both codes are in the same position.
+  Deciding whether atomic carbon belongs in Earth's `conver_ignore` is a
+  judgement call for the maintainers, not something to change to make a number
+  look better.
+
 Use a file path to run a custom configuration:
 
 ```bash
