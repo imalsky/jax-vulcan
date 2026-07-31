@@ -132,3 +132,8 @@ examples/plot/
 
 # Local parity-comparison artifacts (figures, scripts, .vul/.npz dumps) vs shami vm_branch / VULCAN-master — not shipped
 parity-tests/
+
+# Benchmark / validation artifact bundles. Never shipped: these are local
+# evidence sets (runs, .vul dumps, figures, timings). Kept outside the repo.
+validation_artifacts/
+validation_artifacts_*/
