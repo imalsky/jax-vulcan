@@ -459,7 +459,6 @@ rather than quoting numbers from elsewhere.
 | --- | --- |
 | [`docs/validation.md`](docs/validation.md) | Agreement with VULCAN layer by layer, benchmarks (where the time goes), and the parity & bug guide |
 | [`docs/differentiability.md`](docs/differentiability.md) | What is differentiable, how, and to what accuracy, plus the condensation contract |
-| [`docs/vulcan_jax_notes.md`](docs/vulcan_jax_notes.md) | Dated implementation and measurement log, plus a file-by-file guide to the source tree |
 
 ## Support
 
