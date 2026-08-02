@@ -14,8 +14,11 @@ jobs:
           cache: pip
       - name: Install
         run: python -m pip install -e ".[dev,plot]"
+      - name: Show resolved versions
+        run: python -c "import jax, numpy, scipy, vulcan_jax; print('jax', jax.__version__, '| numpy', numpy.__version__, '| scipy', scipy.__version__, '| vulcan_jax', vulcan_jax.__version__)"
       # The master-oracle comparison tests skip on their own (no ../VULCAN-master
       # here). The NH3 batched-condensation subprocess test takes ~10 minutes on
       # a laptop and longer on this runner, so it stays a local-only test.
+      # Serial (no -n) while diagnosing a worker crash on this runner.
       - name: Run tests
-        run: python -m pytest tests -n auto -q --tb=short -ra --deselect tests/test_nh3_conden_batch_subprocess.py
+        run: python -m pytest tests -q --tb=short -ra --deselect tests/test_nh3_conden_batch_subprocess.py
