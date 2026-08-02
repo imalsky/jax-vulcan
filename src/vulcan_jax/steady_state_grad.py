@@ -1178,7 +1178,7 @@ def steady_state_reaction_sensitivity(
     # changed the earlier drainage that set the reservoir. Reaction rates do not
     # move the saturation curve directly, so the conditional ranking is the most
     # defensible condensation-AD case: label it, do not forbid it. See
-    # docs/condensation_differentiation.md (F2).
+    # docs/differentiability.md (F2).
     _conden_pinned = body_terms is not None and body_terms.fix_mask is not None
     _conden_in_window = body_terms is not None and body_terms.conden_static is not None
     if _conden_pinned or _conden_in_window:
@@ -1193,7 +1193,7 @@ def steady_state_reaction_sensitivity(
             + "; it does not include how the rate changes what condenses. It is "
             "a valid conditional ranking, not the total rate sensitivity "
             "(info['conditional_on_fixed_reservoir']). See "
-            "docs/condensation_differentiation.md.",
+            "docs/differentiability.md.",
             stacklevel=2,
         )
 
@@ -1373,7 +1373,7 @@ def steady_state_input_sensitivity(
       frozen in dG/dp and, post-pin, the captured reservoir is held fixed, so
       the result is O(1)-unreliable vs FD (0.91 relative; the JWST/Fisher case).
       Opt in with `allow_frozen_condensation_input_grad=True` only for the known
-      leading-order number. See docs/condensation_differentiation.md.
+      leading-order number. See docs/differentiability.md.
     * **Other frozen-by-design pieces** (their p-derivative is omitted): the
       photolysis T-cross-section interpolation and the atm-refresh geometry
       cascade (dz/Hp/g — second-order; rebuild what you need on-graph in
@@ -1392,7 +1392,7 @@ def steady_state_input_sensitivity(
     # absent. The pinned-species forward-mode tangent disagrees with re-converged
     # finite differences at O(1) (0.91 relative, measured). Refuse by default;
     # this is the same contract Fisher / retrieval-inference through condensation
-    # follows project-wide. See docs/condensation_differentiation.md (F1).
+    # follows project-wide. See docs/differentiability.md (F1).
     _conden_in_window = body_terms is not None and body_terms.conden_static is not None
     _conden_pinned = body_terms is not None and body_terms.fix_mask is not None
     if _conden_in_window or _conden_pinned:
@@ -1409,7 +1409,7 @@ def steady_state_input_sensitivity(
                 "disagrees with re-converged finite differences at O(1) (0.91 "
                 "relative; tests/test_condensation_live_tp.py) -- the same reason "
                 "Fisher / retrieval-inference through condensation is refused "
-                "project-wide (docs/condensation_differentiation.md). Use "
+                "project-wide (docs/differentiability.md). Use "
                 "forward-mode jvp on a single switch-free direction and validate "
                 "it against FD, or disable condensation. Set "
                 "allow_frozen_condensation_input_grad=True ONLY to obtain the "

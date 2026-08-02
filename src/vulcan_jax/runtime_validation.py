@@ -513,7 +513,7 @@ def _validate_condensation(cfg) -> list[str]:
     NOTE: the completed *pinned* condensation state is not differentiable-through
     (transient snapshot, discrete phase switches). That contract is enforced at
     the autodiff entry points in `steady_state_grad.py`, not here, and is
-    documented in `../../docs/condensation_differentiation.md`.
+    documented in `../../docs/differentiability.md`.
     """
     if not bool(getattr(cfg, "use_condense", False)):
         return []

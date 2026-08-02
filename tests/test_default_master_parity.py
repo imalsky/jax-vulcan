@@ -118,7 +118,7 @@ def run() -> None:
         # Stage the JAX logK table too: upstream's nasa9_logK_SNCHOPTi.dat
         # carries a DUPLICATE CH2_1 species block (double-counted singlet
         # methylene shifts every element's equilibrium by ~1e-10..1e-7); the
-        # JAX copy deduplicates it (corrections_to_original_code.md, C5).
+        # JAX copy deduplicates it (validation.md, C5).
         shutil.copy2(
             jax_fastchem_bin.parent / "input/nasa9_logK_SNCHOPTi.dat",
             master_root / "fastchem_vulcan/input/nasa9_logK_SNCHOPTi.dat",

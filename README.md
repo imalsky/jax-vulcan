@@ -450,19 +450,16 @@ rather than quoting numbers from elsewhere.
 - One process can use only one reaction network. See **Select a different
   network**.
 - VULCAN-JAX contains documented corrections and intentional differences from
-  VULCAN. Review
-  [`docs/corrections_to_original_code.md`](docs/corrections_to_original_code.md)
-  before a strict parity study.
+  VULCAN. Review the parity & bug guide in
+  [`docs/validation.md`](docs/validation.md) before a strict parity study.
 
 ## Documentation
 
 | File | Contents |
 | --- | --- |
-| [`docs/differentiability.md`](docs/differentiability.md) | What is differentiable, how, and to what accuracy |
-| [`docs/validation.md`](docs/validation.md) | Agreement with VULCAN, layer by layer |
-| [`docs/benchmarks.md`](docs/benchmarks.md) | Where the time goes in a step |
-| [`docs/corrections_to_original_code.md`](docs/corrections_to_original_code.md) | Corrections made in the port, and the parity policy |
-| [`docs/vulcan_jax_file_organization.md`](docs/vulcan_jax_file_organization.md) | A file-by-file guide to the source tree |
+| [`docs/validation.md`](docs/validation.md) | Agreement with VULCAN layer by layer, benchmarks (where the time goes), and the parity & bug guide |
+| [`docs/differentiability.md`](docs/differentiability.md) | What is differentiable, how, and to what accuracy, plus the condensation contract |
+| [`docs/vulcan_jax_notes.md`](docs/vulcan_jax_notes.md) | Dated implementation and measurement log, plus a file-by-file guide to the source tree |
 
 ## Support
 

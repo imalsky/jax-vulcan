@@ -1,6 +1,6 @@
 """Measure the impact of upstream VULCAN's FastChem P/S element-slot swap.
 
-Background (full record: ``docs/corrections_to_original_code.md`` C12). FastChem
+Background (full record: ``docs/validation.md`` C12). FastChem
 builds its element vector in **abundance-file row order** — ``readElementAbundances``
 calls ``addAtom(symbol)`` once per line and ``addAtom`` does ``elements.push_back``
 with ``index = elements.size()-1``. But ``mass_action_constant.cpp`` subtracts the

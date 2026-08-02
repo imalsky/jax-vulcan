@@ -82,7 +82,7 @@ KNOWN_THERMO_DIVERGENCES: dict[str, tuple[str, ...]] = {
 # uniform flux rescale. Master's builder (atm/make_spectra_in_nm.py) multiplied
 # by R_star where the surface-flux conversion divides, so the shipped eps Eri
 # spectrum is low by exactly R_star^4 = 0.735^4; JAX ships the corrected file
-# (corrections_to_original_code.md, C4). Wavelength columns must stay identical
+# (validation.md, C4). Wavelength columns must stay identical
 # and every flux ratio must sit at the documented factor (2-sig-fig rounding
 # tolerance); any other difference is real drift and fails.
 KNOWN_SFLUX_RESCALES: dict[str, float] = {

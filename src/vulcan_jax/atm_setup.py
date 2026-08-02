@@ -906,7 +906,7 @@ def sat_p_jax(sp: str, T: jnp.ndarray) -> jnp.ndarray:
         # which evaluates to exactly 0 at T=273.0 K (both masks vanish) -- an
         # artificial cold trap / discontinuity. A single `where` keeps the
         # ice/liquid split but is continuous through 0 C. See
-        # docs/corrections_to_original_code.md.
+        # docs/validation.md.
         ice = c0 * jnp.exp((c1 * T_C + T_C**2 / c2) / (T_C + c3))
         liquid = w0 * jnp.exp((w1 * T_C + T_C**2 / w2) / (T_C + w3))
         return jnp.where(T_C < 0, ice, liquid)

@@ -24,7 +24,7 @@ from vulcan_jax.config import Config, default_config, load_config
 _EXPECTED_GS = {
     # default.yaml is HD189-flavored and must reproduce the adopted 2140
     # (the pre-2026-07-21 pin 2139.770515 enshrined a raw-literature-Mp slip
-    # that shifted photolysis J up to ~7%; see docs/corrections_to_original_code.md).
+    # that shifted photolysis J up to ~7%; see docs/validation.md).
     "default": 2140.0,
     "HD189": 2140.0,
     "HD209": 936.0,
