@@ -19,6 +19,9 @@ jobs:
       # The master-oracle comparison tests skip on their own (no ../VULCAN-master
       # here). The NH3 batched-condensation subprocess test takes ~10 minutes on
       # a laptop and longer on this runner, so it stays a local-only test.
-      # Serial (no -n) while diagnosing a worker crash on this runner.
+      # ALLOW_MISSING_FIXTURES: the large .npz test fixtures are not in the git
+      # repo; this is the suite's own reduced-coverage switch for such machines.
       - name: Run tests
-        run: python -m pytest tests -q --tb=short -ra --deselect tests/test_nh3_conden_batch_subprocess.py
+        env:
+          VULCAN_JAX_ALLOW_MISSING_FIXTURES: "1"
+        run: python -m pytest tests -n auto -q --tb=short -ra --deselect tests/test_nh3_conden_batch_subprocess.py
