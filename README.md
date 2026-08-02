@@ -30,7 +30,11 @@ upstream author, because adding or removing a reaction changes the chemistry.
 ## Requirements
 
 - Python 3.10 or later
-- JAX 0.4.31 or later
+- JAX 0.4.31 or later. Continuous integration runs JAX 0.6.2, which is the
+  version the numerical tests are calibrated against. Newer JAX runs the model
+  correctly, but two tests compare against tolerances that assume the older
+  compiler and report differences of about 1e-6 on it. See **Running the
+  tests** below.
 - NumPy 1.24 or later
 - SciPy 1.12 or later
 - PyYAML 6 or later
@@ -413,6 +417,25 @@ python -m pytest tests -n auto -q
 Some tests require a sibling VULCAN checkout at `../VULCAN-master/`. These
 tests skip cleanly when it is not available. Slow tests, including the adjoint
 ones, run only when `VULCAN_JAX_RUN_SLOW=1`.
+
+Two tests are sensitive to the JAX version and the processor, and they are the
+reason continuous integration pins JAX 0.6.2. Both compare a number against a
+tolerance that was set on one compiler, so neither indicates a wrong model.
+
+- `test_vmap_photo_batch` requires a profile inside a batch to match the same
+  profile run on its own to one part in a billion. On JAX 0.10 and later the
+  batched and unbatched forms of the same arithmetic round differently in the
+  last digit, the adaptive step-size controller resolves one comparison the
+  other way, and the mixing ratios end up about one part in a million apart.
+  Everything else in the run, including the rate constants and the radiation
+  field, still agrees to thirteen digits.
+- `test_forward_jvp_physical` cross-checks a derivative against a coarse
+  one-step finite difference. The derivative is stable everywhere tested; the
+  finite difference moves with the processor and overshoots the check's 30
+  percent bound on x86 Linux while passing on arm64 macOS.
+
+If you run the suite on newer JAX and see only these two, the installation is
+fine.
 
 Run the per-step benchmark on your computer:
 

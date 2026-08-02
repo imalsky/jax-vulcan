@@ -13,6 +13,10 @@ requires-python = ">=3.10"
 license = "GPL-3.0-only"
 license-files = ["LICENSE"]
 dependencies = [
+    # The floor is the oldest API-compatible release; 0.6.2 is what CI runs and
+    # what the numerical tolerances are calibrated against. Newer JAX runs the
+    # model correctly but trips two version/platform-sensitive tests -- see the
+    # "Tests and benchmarks" section of the README.
     "jax>=0.4.31",
     "numpy>=1.24",
     "scipy>=1.12",  # lgmres(rtol=...) for the reverse-mode steady-state adjoint
