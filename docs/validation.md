@@ -632,16 +632,25 @@ Deliberate divergences that fix a confirmed master bug. All are live in the
 code today: each one is why a VULCAN-JAX file differs from master right now.
 
 ### C1 — CH2CN + H + M -> CH3CN + M low-pressure rate (data typo)
-- **master:** `thermo/SNCHO_photo_network.txt` (R1131) `k0 = 1.00E-20` (and
-  `thermo/SNCHO_photo_network_C3.txt`). Correct: `1.00E-29`. The 10.2025 typo fix
-  was applied to master's **NCHO** network (the default) but missed on the
-  **SNCHO** (sulfur) base file, which still carries `1.00E-20` on the workspace
-  oracle. With `1e-20` the association never falls off (pinned at `k_inf`), wrong
-  by up to ~1e7x at the model top; trace nitrile channel, small spectral effect.
-- **JAX:** `src/vulcan_jax/thermo/SNCHO_photo_network.txt:520` -> `1.00E-29`.
-  Allowlisted in `tools/audit_master_parity.py` (`KNOWN_THERMO_DIVERGENCES`).
+- **master:** the 10.2025 typo fix (correct `k0 = 1.00E-29`, `k_inf = 1.00E-10`)
+  was applied to master's **NCHO** network (the default) but not to its sulfur
+  files. On the workspace oracle, `thermo/SNCHO_photo_network.txt:520` and
+  `thermo/SNCHO_photo_network_C3.txt:535` ship `k0 = 1.00E-20`, and
+  `thermo/SNCHO_DMS_photo_network_Tsai2024.txt:544` ships k0/k_inf fully swapped
+  (`1.00E-10` / `1.00E-29`). With a too-large `k0` the association never falls
+  off (pinned at `k_inf`), wrong by up to ~1e7x at the model top; trace nitrile
+  channel, small spectral effect.
+- **JAX:** all three sulfur files ship the corrected values
+  (`SNCHO_photo_network.txt:520`; the C3 and DMS files fixed 2026-08-02). All
+  three allowlisted in `tools/audit_master_parity.py`
+  (`KNOWN_THERMO_DIVERGENCES`). No shipped config selects the C3 or DMS variant
+  (`W39b.yaml` uses the base file), so no published number moves.
+- **Upstream status (fetched 2026-08-02):** shami-EEG `vm_branch` ships the base
+  SNCHO fix; exoclime master does not (base + C3 still `1.00E-20`, DMS still
+  swapped; the C3 and DMS files do not exist on vm_branch). Reported to the
+  maintainer by email 2026-08-02.
 - **Note:** master's DEFAULT config uses NCHO (already `1e-29`), so default master
-  runs are unaffected; this divergence only appears on SNCHO/sulfur runs.
+  runs are unaffected; this divergence only appears on sulfur runs.
 
 ### C2 — S2 / S8 condensate molecular masses (copy-paste error)
 - **master:** `op.py:1282` `45.019/Navo` (S2) and `op.py:1328` `360.152/Navo`
@@ -1001,6 +1010,19 @@ Still un-patched in the workspace oracle, so parity runs carry them on both side
 C1 (SNCHO CH2CN `1.00E-20`, `thermo/SNCHO_photo_network.txt:520`), C2 (S2/S8 masses
 `op.py:1244,1290`), C3 (H2O saturation zero at 273 K, `build_atm.py:809`), C5
 (duplicate `CH2_1`).
+
+**Oracle vintage — `NH3 + CH -> NH2 + CH2` (logged 2026-08-02).** Upstream
+removed this reaction from the NCHO network on 2026-04-21 (exoclime `39f1906`,
+"rm NH3 + CH reaction"). The workspace oracle and all six vendored `NCHO_*`
+network files predate the removal and still carry it (printed id 315 in
+`NCHO_photo_network.txt`), so the parity audit cannot see this divergence —
+both sides are old-vintage, and it is otherwise the ONLY reaction-list
+difference between the vendored `NCHO_photo_network.txt` and fetched upstream
+HEAD. The reaction survives in upstream's SNCHO networks (fetched exoclime
+master, shami master, and vm_branch, 2026-08-02). Asked the maintainer by
+email 2026-08-02 whether to drop it from NCHO. **Do not remove it before that
+answer:** it is on the DEFAULT network, so removing it changes HD189/HD209
+chemistry and every published step count, and would need a full re-baseline.
 
 ## Upstream defects NOT inherited by VULCAN-JAX
 

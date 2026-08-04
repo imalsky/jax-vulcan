@@ -469,7 +469,6 @@ def main(argv=None) -> int:
     axA.set_ylim(p_mbar.max(), p_mbar.min())  # pressure decreasing upward
     axA.set_xlabel("Tracer mole fraction", fontsize=FS)
     axA.set_ylabel("Pressure (mbar)", fontsize=FS)
-    axA.set_title(f"(a) Accuracy (well resolved, nz={NZ})", fontsize=FS - 2, pad=10)
     axA.tick_params(labelsize=FS - 3)
     axA.grid(True, which="major", alpha=0.25)
     axA.legend(loc="upper right", fontsize=FS - 6, framealpha=0.92)
@@ -496,21 +495,9 @@ def main(argv=None) -> int:
     )
     axB.set_xlabel(r"Cell Peclet number  $|v_m|\,\Delta z / D$", fontsize=FS)
     axB.set_ylabel("Minimum mole fraction / base value", fontsize=FS)
-    axB.set_title(
-        "(b) Stability (pure molecular diffusion, $K=0$)", fontsize=FS - 2, pad=10
-    )
     axB.tick_params(labelsize=FS - 3)
     axB.grid(True, which="major", alpha=0.25)
     axB.legend(loc="lower left", fontsize=FS - 6, framealpha=0.92)
-    axB.text(
-        2.1,
-        0.03,
-        "Pe > 2:\ncentral goes negative\n(unphysical oscillation)",
-        transform=axB.get_xaxis_transform(),
-        fontsize=FS - 6,
-        color="#a00000",
-        va="bottom",
-    )
 
     fig.tight_layout()
 

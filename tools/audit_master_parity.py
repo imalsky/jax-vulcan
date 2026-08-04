@@ -71,11 +71,16 @@ INTENTIONAL_JAX_DELTAS = {
 }
 
 # Vendored network files where JAX intentionally diverges from master by a known,
-# documented set of reactions. SNCHO carries master's own 10.2025 CH2CN typo fix
-# (k0 1.00E-20 -> 1.00E-29) that master applied to NCHO but left unapplied to
-# SNCHO; JAX applies it to both. Any OTHER differing line is real drift and fails.
+# documented set of reactions. The sulfur networks carry master's own 10.2025
+# CH2CN typo fix (correct k0 = 1.00E-29, k_inf = 1.00E-10) that master applied
+# to NCHO but left unapplied to its sulfur files: the oracle's base SNCHO and
+# C3 files ship k0 = 1.00E-20 and its DMS Tsai2024 file ships k0/k_inf swapped.
+# JAX corrects all three (validation.md, C1). Any OTHER differing line is real
+# drift and fails.
 KNOWN_THERMO_DIVERGENCES: dict[str, tuple[str, ...]] = {
     "SNCHO_photo_network.txt": ("CH2CN + H + M -> CH3CN + M",),
+    "SNCHO_photo_network_C3.txt": ("CH2CN + H + M -> CH3CN + M",),
+    "SNCHO_DMS_photo_network_Tsai2024.txt": ("CH2CN + H + M -> CH3CN + M",),
 }
 
 # Vendored stellar-flux files where JAX intentionally diverges from master by a
