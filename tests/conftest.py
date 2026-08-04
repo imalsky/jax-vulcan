@@ -32,7 +32,17 @@ from typing import Any
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-VULCAN_MASTER = ROOT.parent / "VULCAN-master"
+
+# Oracle location comes from $VULCAN_MASTER_DIR, never from a sibling guess.
+# An auto-detected ../VULCAN-master pins no revision, and the copy on this
+# project's machine is not a git checkout at all (it was found in 2026-07 to
+# contain VULCAN-JAX's own code, which had then been cited as upstream
+# evidence). `tests/oracle.py` resolves the path and verifies the pinned commit
+# and a clean worktree before any comparison runs. This constant exists only so
+# the import-leak cleanup below can strip the path from sys.path.
+_master_env = os.environ.get("VULCAN_MASTER_DIR")
+VULCAN_MASTER = (Path(_master_env).expanduser().resolve() if _master_env
+                 else Path("/nonexistent/VULCAN-oracle-unset"))
 VULCAN_MASTER_STR = str(VULCAN_MASTER)
 
 # Many tests assume cwd == ROOT for relative paths in vulcan_cfg.py.
@@ -306,11 +316,17 @@ def hd189_state(_hd189_pristine: HD189State) -> HD189State:
 # a fresh clone the tests comparing against them SKIPPED and the suite still
 # went green.
 #
-# path -> script that regenerates it (`python <script>`); the two adjoint states
-# land in jax_paper/outputs/ and must then be copied into tests/data/.
+# Every one is now reproducible FROM THIS REPOSITORY with a single command --
+# `python tests/gen_fixtures.py --all` -- with no sibling checkout. Until
+# 2026-08-03 the two adjoint states could only be built through the unpublished
+# `jax_paper/` sibling, and those generators had themselves rotted (a hardcoded
+# `/Users/.../Desktop/...` root that no longer exists), so the default suite
+# could not run from the published source at all.
+#
+# path -> the generator that writes it.
 _EXPECTED_FIXTURES = {
-    "tests/data/adj_state_hd189.npz": "../jax_paper/scripts/adj_save_state.py",
-    "tests/data/adj_state_w39b.npz": "../jax_paper/scripts/adj_save_state_w39b.py",
+    "tests/data/adj_state_hd189.npz": "tests/_gen_adj_state.py hd189",
+    "tests/data/adj_state_w39b.npz": "tests/_gen_adj_state.py w39b",
     "tests/data/photo_setup_hd189_baseline.npz": "tests/_gen_photo_baseline.py",
     "tests/data/photo_setup_hd189_T_dep.npz": "tests/_gen_photo_baseline.py",
 }
@@ -327,15 +343,19 @@ def pytest_collection_finish():
     if not missing:
         return
     lines = [
-        f"  - {rel}\n      regenerate: python {how}"
+        f"  - {rel}\n      (individually: python {how})"
         for rel, how in sorted(missing.items())
     ]
     msg = (
         f"{len(missing)} numerical-regression oracle(s) are missing, so the tests "
         f"comparing against them would SKIP and the suite would still report "
-        f"green:\n" + "\n".join(lines) + "\n"
-        "Restore them, or set VULCAN_JAX_ALLOW_MISSING_FIXTURES=1 to accept the "
-        "reduced coverage."
+        f"green:\n" + "\n".join(lines) + "\n\n"
+        "Build them all with one command:\n"
+        "    python tests/gen_fixtures.py --all\n"
+        "(then `--verify` checks them against tests/data/FIXTURES.json).\n\n"
+        "VULCAN_JAX_ALLOW_MISSING_FIXTURES=1 accepts the reduced coverage. That "
+        "is a DEVELOPER escape hatch: it must not be set in release CI, where "
+        "the point is that these oracles ran."
     )
     if os.environ.get("VULCAN_JAX_ALLOW_MISSING_FIXTURES") == "1":
         warnings.warn(msg, RuntimeWarning, stacklevel=1)

@@ -32,7 +32,25 @@ warnings.filterwarnings("ignore")
 
 from vulcan_jax._paths import resolve_data_path
 
-VULCAN_MASTER = ROOT.parent / "VULCAN-master"
+def _oracle_dir():
+    """Configured upstream oracle checkout, or a non-existent sentinel path.
+
+    Returning a path that does not exist (rather than None) keeps every
+    `if not VULCAN_MASTER.is_dir(): skip` site below working unchanged, while
+    removing the silent sibling fallback.
+    """
+    import os
+    from pathlib import Path as _P
+
+    raw = os.environ.get("VULCAN_MASTER_DIR")
+    return _P(raw).expanduser().resolve() if raw else _P("/nonexistent/VULCAN-oracle-unset")
+
+
+# Oracle location comes from $VULCAN_MASTER_DIR, never from a sibling guess:
+# an auto-detected ../VULCAN-master pins nothing, and the copy on this project's
+# machine is not even a git checkout. `tests/oracle.py` resolves it and verifies
+# the pinned revision + a clean tree before any comparison runs.
+VULCAN_MASTER = _oracle_dir()
 PROJECT_ROOT = ROOT.parent
 
 
@@ -400,7 +418,11 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path.cwd()                               # set by test caller; = VULCAN-JAX
-VULCAN_MASTER = ROOT.parent / "VULCAN-master"
+# Oracle location comes from $VULCAN_MASTER_DIR, never from a sibling guess:
+# an auto-detected ../VULCAN-master pins nothing, and the copy on this project's
+# machine is not even a git checkout. `tests/oracle.py` resolves it and verifies
+# the pinned revision + a clean tree before any comparison runs.
+VULCAN_MASTER = _oracle_dir()
 warnings.filterwarnings("ignore")
 
 # === 1. Run master pipeline FROM master cwd so its relative paths resolve

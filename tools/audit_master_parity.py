@@ -388,30 +388,103 @@ def _known_sflux_rescale_only(
     return errors
 
 
+def _load_supported_inputs() -> dict:
+    """The curated file list from tests/science_sources.yaml.
+
+    Returns {} when the manifest is absent so the tool still runs standalone.
+    """
+    import yaml
+
+    p = Path(__file__).resolve().parent.parent / "tests" / "science_sources.yaml"
+    if not p.is_file():
+        return {}
+    return yaml.safe_load(p.read_text()).get("supported_inputs", {}) or {}
+
+
+def _check_supported_inputs(jax_root: Path) -> list[str]:
+    """Every manifest-listed vendored input must exist with its recorded hash.
+
+    This is the positive half of the audit: it states what the port PROMISES to
+    carry. A silent edit to a vendored network or abundance file changes results
+    everywhere and is otherwise invisible.
+    """
+    errors: list[str] = []
+    for rel, spec in sorted(_load_supported_inputs().items()):
+        p = jax_root / rel
+        if not p.is_file():
+            errors.append(f"supported input missing from this checkout: {rel}")
+            continue
+        got = _sha256(p)
+        want = spec.get("sha256")
+        if want and got != want:
+            errors.append(
+                f"{rel}: sha256 {got[:16]}... does not match the manifest's "
+                f"{want[:16]}... -- a vendored scientific input changed. If "
+                "that was deliberate, update tests/science_sources.yaml and "
+                "re-measure anything that depends on it.")
+    return errors
+
+
 def _compare_runtime_data(master_root: Path, jax_root: Path) -> list[str]:
-    """Compare non-code atm/ and thermo/ runtime files byte-for-byte.
+    """Compare the SUPPORTED vendored runtime files against the oracle.
+
+    Scope is the curated `supported_inputs` list in
+    ``tests/science_sources.yaml`` -- the files this port actually promises to
+    carry -- NOT whole-tree equality. Whole-tree equality was the previous rule
+    and it cannot succeed against any real upstream: current public master ships
+    CRAHCNO_V3 / HNC / NCCN files this release deliberately does not carry, and
+    the cited Shami base carries many unrelated historical files, so the audit
+    failed on "file set mismatch" before comparing anything meaningful. That is
+    not a definition of supported VULCAN 3 parity.
 
     Files listed in ``KNOWN_THERMO_DIVERGENCES`` are allowed to differ on their
     documented reaction lines only; files in ``KNOWN_SFLUX_RESCALES`` must differ
     by exactly their documented flux rescale; any other difference still fails.
+    A supported file that the ORACLE lacks is reported (this port claims to
+    carry it faithfully, so an oracle without it cannot confirm that), but a
+    file present only in the oracle is NOT an error -- that is upstream being
+    newer or broader than this release, which `not_in_this_release` records.
     """
     errors: list[str] = []
+    supported = _load_supported_inputs()
+    if supported:
+        by_dir: dict[str, set[Path]] = {}
+        for rel in supported:
+            parts = Path(rel).parts
+            if parts[0] in ("atm", "thermo"):
+                by_dir.setdefault(parts[0], set()).add(Path(*parts[1:]))
+    else:
+        by_dir = {}
+
     for rel_dir in ("atm", "thermo"):
         master_files = _runtime_files(master_root / rel_dir)
         jax_files = _runtime_files(jax_root / rel_dir)
         master_keys = set(master_files)
         jax_keys = set(jax_files)
-        only_master = master_keys - jax_keys
-        only_jax = {
-            rel
-            for rel in jax_keys - master_keys
-            if rel.name not in JAX_ONLY_RUNTIME_FILES
-        }
-        if only_master or only_jax:
-            errors.append(
-                f"{rel_dir}: file set mismatch, only master={sorted(only_master)}, "
-                f"only jax={sorted(only_jax)}"
-            )
+        if by_dir:
+            scope = by_dir.get(rel_dir, set())
+            master_keys &= scope
+            jax_keys &= scope
+            missing_from_oracle = scope - set(master_files)
+            if missing_from_oracle:
+                errors.append(
+                    f"{rel_dir}: the oracle does not carry supported input(s) "
+                    f"{sorted(str(p) for p in missing_from_oracle)} -- this "
+                    "port claims to carry them faithfully, so parity cannot be "
+                    "confirmed against this revision")
+        else:
+            # No manifest: fall back to the old whole-tree symmetric check.
+            only_master = master_keys - jax_keys
+            only_jax = {
+                rel
+                for rel in jax_keys - master_keys
+                if rel.name not in JAX_ONLY_RUNTIME_FILES
+            }
+            if only_master or only_jax:
+                errors.append(
+                    f"{rel_dir}: file set mismatch, only master={sorted(only_master)}, "
+                    f"only jax={sorted(only_jax)}"
+                )
         for rel_path in sorted(master_keys & jax_keys):
             if master_files[rel_path] == jax_files[rel_path]:
                 continue
@@ -493,16 +566,21 @@ def _check_oracle_is_pristine(master_root: Path) -> list[str]:
 
 def audit(master_root: Path, jax_root: Path) -> list[str]:
     """Return all HD189 parity audit errors (JAX side loaded from YAML)."""
+    # Our OWN vendored inputs must match the manifest first. This half needs no
+    # oracle and is always meaningful: it states what the port promises to
+    # carry, so a silent edit to a network or abundance file is caught even
+    # when no upstream checkout is available.
+    errors: list[str] = list(_check_supported_inputs(jax_root))
+
     # Establish that the oracle is actually upstream BEFORE comparing anything.
     provenance = _check_oracle_is_pristine(master_root)
     if provenance:
-        return provenance
+        return errors + provenance
 
     master_cfg = master_root / "cfg_examples" / "vulcan_cfg_HD189.py"
     if not master_cfg.exists():
-        return [f"missing master HD189 cfg: {master_cfg}"]
+        return errors + [f"missing master HD189 cfg: {master_cfg}"]
 
-    errors: list[str] = []
     errors.extend(_compare_cfgs(master_cfg))
     errors.extend(_compare_runtime_data(master_root, jax_root))
     # VULCAN-JAX's own file must be one of the two shipped presets. This is a

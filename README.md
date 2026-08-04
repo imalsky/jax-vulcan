@@ -9,10 +9,20 @@ VULCAN-JAX reads the same reaction network files, atmosphere files, and
 configuration names as VULCAN, and writes the same `.vul` output format. It runs
 the integration loop with JAX on a CPU or GPU.
 
-The vendored network files come from upstream. One difference is open: the
-N-C-H-O network here contains `NH3 + CH -> NH2 + CH2`, which is absent from both
-current upstream branches. It has not been changed pending a decision from the
-upstream author, because adding or removing a reaction changes the chemistry.
+The vendored network files come from upstream at the exact revisions recorded in
+[`tests/science_sources.yaml`](tests/science_sources.yaml), which also lists
+every vendored scientific input with its SHA-256 and every deliberate divergence
+from upstream with its reason.
+
+**One unresolved network decision:** the N-C-H-O network here contains
+`NH3 + CH -> NH2 + CH2`, which upstream removed in commit `39f1906` and which is
+absent from both current upstream branches. It is unchanged pending a decision
+from the upstream author, because adding or removing a reaction changes the
+chemistry. This is why the manifest pins the NCHO oracle family to `80f75b9`,
+that commit's parent: reaction indices are positional, so comparing against a
+later revision shifts every index past this reaction and produces failures
+unrelated to the ported kernels. Full context:
+[`docs/validation.md`](docs/validation.md).
 
 ## Main capabilities
 

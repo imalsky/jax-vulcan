@@ -18,10 +18,30 @@ os.chdir(ROOT)
 
 # Oracle test: requires VULCAN-master sibling for the upstream chemdf/symjac
 # and op references. Skip cleanly when absent.
-VULCAN_MASTER = ROOT.parent / "VULCAN-master"
+def _oracle_dir():
+    """Configured upstream oracle checkout, or a non-existent sentinel path.
+
+    Returning a path that does not exist (rather than None) keeps every
+    `if not VULCAN_MASTER.is_dir(): skip` site below working unchanged, while
+    removing the silent sibling fallback.
+    """
+    import os
+    from pathlib import Path as _P
+
+    raw = os.environ.get("VULCAN_MASTER_DIR")
+    return _P(raw).expanduser().resolve() if raw else _P("/nonexistent/VULCAN-oracle-unset")
+
+
+# Oracle location comes from $VULCAN_MASTER_DIR, never from a sibling guess:
+# an auto-detected ../VULCAN-master pins nothing, and the copy on this project's
+# machine is not even a git checkout. `tests/oracle.py` resolves it and verifies
+# the pinned revision + a clean tree before any comparison runs.
+VULCAN_MASTER = _oracle_dir()
 if not VULCAN_MASTER.is_dir():
     pytest.skip(
-        f"VULCAN-master oracle absent at {VULCAN_MASTER}; "
+        f"upstream oracle not configured (looked at {VULCAN_MASTER}). Set "
+        f"$VULCAN_MASTER_DIR to a clean clone at the commit pinned in "
+        f"tests/science_sources.yaml; "
         "this comparison test requires the upstream sibling repo.",
         allow_module_level=True,
     )
