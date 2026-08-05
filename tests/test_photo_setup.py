@@ -201,15 +201,10 @@ def test_photo_setup_matches_T_dep_fixture(monkeypatch):
 def test_branch_key_order_is_deterministic():
     """Branch rows must be sorted, not in set-iteration order.
 
-    `var.photo_sp` / `var.ion_sp` are sets (`legacy_io.ReadRate.read_rate`), and
-    Python randomizes string hashing per process, so iterating them directly
-    gave `cross_J` a different row order in every run. Those rows are baked into
-    the runner's closure as constants, so the compiled program differed run to
-    run and the persistent compilation cache missed every single time -- it grew
-    without ever being read. Sorting is what makes a run reproducible.
-
-    Checking sortedness pins the invariant in one process; the failure it guards
-    against only shows up across processes.
+    `var.photo_sp` / `var.ion_sp` are sets and string hashing is per-process,
+    so unsorted iteration changes the compiled program every run and makes the
+    persistent compile cache write-only. Sortedness pins the invariant in one
+    process; the failure it guards against only shows up across processes.
     """
     import vulcan_jax.photo_setup as photo_setup
 

@@ -1,16 +1,11 @@
 """Smoke test for outer_loop.OuterLoop.
 
 Runs 50 accepted Ros2 steps end-to-end on the HD189 reference state and
-asserts:
-    1. count progressed exactly 50 (no silent retries lost / counted as accept)
-    2. atom_loss agrees with VULCAN-master's tracked baseline
-       (1.95e-4 per atom; the end-to-end 50-step HD189 oracle is the 1.59e-10
-       relative-difference reference).
-    3. no force-accept / nega / loss / delta retries fired (HD189 is smooth)
-    4. dt advanced from 1e-10 (dttry) to ~1e-3 (typical 50-step HD189)
+asserts: exact step count, atom_loss at the tracked ~4.4e-5 baseline
+(EXPECTED_ATOM_LOSS below), no retries on the smooth HD189 case, and
+finite-positive dt / t.
 
-The canonical "did anything break the established baseline" smoke test
-for any change to outer_loop.py — fast (~10s including JIT compile).
+The canonical smoke test for any change to outer_loop.py (~10s incl. JIT).
 """
 
 from __future__ import annotations
@@ -40,13 +35,9 @@ ATOM_LOSS_RTOL = 0.50
 
 
 def main() -> int:
-    # Sync vulcan_cfg references. test_chem pops `vulcan_cfg` from
-    # sys.modules mid-run; a plain `import vulcan_cfg` here would create a
-    # fresh module object distinct from the one outer_loop / legacy_io
-    # captured at their module-import time, and our `count_max = 50` would
-    # land on the detached copy while the runner reads count_max from
-    # outer_loop's still-stale reference. Pin everything to legacy_io's
-    # reference instead so the runner and the printer see what we set.
+    # Pin cfg to legacy_io's reference: tests that pop `vulcan_cfg` from
+    # sys.modules fork fresh module objects, and a detached copy would not be
+    # the one the runner reads count_max from.
     import vulcan_jax.outer_loop as outer_loop
     import vulcan_jax.legacy_io as op
 
@@ -145,8 +136,7 @@ def main() -> int:
 
 @pytest.mark.strict_isolation
 def test_main():
-    """Pytest wrapper. `main()` returns 0 on success; convert to an
-    assertion so `pytest tests/` collects and runs this script."""
+    """Pytest wrapper around main()."""
     assert main() == 0
 
 

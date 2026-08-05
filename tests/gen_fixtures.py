@@ -6,15 +6,9 @@ That one command, run in a clean clone with no sibling repositories, produces
 all four fixtures and writes `tests/data/FIXTURES.json` recording each file's
 SHA-256 alongside the commit, config, and dependency versions that made it.
 
-WHY THIS EXISTS. The four fixtures are deliberately required -- `conftest.py`
-fails collection when one is missing, because a skipped numerical oracle still
-reports green. But they are gitignored (~36 MB, 32.5 MB of it one file) and
-until 2026-08-03 two of them could ONLY be regenerated through an unpublished
-sibling repository, `jax_paper/`. So the default suite could not run from the
-published source at all. Worse, those two generators had rotted: both hardcoded
-a `/Users/.../Desktop/...` project root that no longer exists, so the fixtures
-were unreproducible even WITH the sibling present. Both now live in
-`tests/_gen_adj_state.py` and derive their paths from `__file__`.
+The fixtures are deliberately required -- `conftest.py` fails collection when
+one is missing, because a skipped numerical oracle still reports green -- but
+they are gitignored (~36 MB), so a clean clone must be able to regenerate them.
 
 ONE PROCESS PER NETWORK. The reaction network is frozen at the first
 `import vulcan_jax`, and the HD189 and W39b adjoint states need different

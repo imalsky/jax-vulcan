@@ -1,30 +1,14 @@
 """End-to-end condensation runtime coverage, in a subprocess.
 
-This closes the gap that `tests/test_config_matrix.py::test_use_settling_populates_vs_for_non_gas`
-and `::test_fix_species_runtime_smoke` only mark as a conditional skip: the
-default HD189 / NCHO network has no condensate species (`H2O_l_s`, `S8_l_s`), so
-the assembled condensation runtime path is never exercised by the curated suite.
+The default NCHO network has no condensate species, so the curated suite never
+exercises the assembled condensation runtime path. The network is
+import-locked, so the child selects `SNCHO_photo_network_2025.txt` (the one
+vendored network with both `H2O_l_s` and `S8_l_s`) via `$VULCAN_JAX_NETWORK`.
+Self-contained: isothermal TP + const_mix init, no photo, no FastChem.
 
-The reaction network is import-locked (parsed once at the first
-``import vulcan_jax``), so a condensate network must be selected via
-``$VULCAN_JAX_NETWORK`` *before* that first import — hence a child process.
-``SNCHO_photo_network_2025.txt`` is the one vendored network carrying both
-``H2O_l_s`` and ``S8_l_s``.
-
-Self-contained — no committed data artifact:
-  * vendored reaction network + thermo tables only,
-  * ``atm_type="isothermal"`` (synthetic TP, reads no atm file),
-  * ``ini_mix="const_mix"`` (no FastChem), ``use_photo=False`` (no cross sections).
-
-Two checks, mirroring the two skipped tests but on a network that actually has
-the condensates:
-  1. **settling** — ``atm_setup.compute_settling_velocity`` gives a downward
-     (negative) velocity for each non-gas condensate column and exactly zero for
-     gas species (the property `test_use_settling_populates_vs_for_non_gas` checks);
-  2. **condensation forms** — a short H2O-relaxation run completes finite and
-     actually moves mass into the condensate (``H2O_l_s`` total > 0), exercising
-     the full runner conden path (`_build_conden_static`, `apply_h2o_relax_jax`,
-     the conden gate).
+Checks: (1) settling velocities are downward for each condensate column and
+exactly zero for gas species; (2) a short H2O-relaxation run stays finite and
+actually moves mass into `H2O_l_s` (full runner conden path).
 """
 
 from __future__ import annotations

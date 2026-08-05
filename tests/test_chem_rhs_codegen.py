@@ -1,18 +1,11 @@
 """Validate the SymPy-faithful chem_rhs codegen against two oracles.
 
-1. `chem_rhs_numpy` (master-faithful term order, NumPy float64): asserted at
-   rtol=1e-5 on significant cells, regardless of whether `../VULCAN-master/`
-   is present. The threshold absorbs XLA's FMA fusion vs NumPy `*`-chains on
-   cancellation-prone cells; the actual worst-cell agreement is ~2e-13 and
-   bulk species (H2O/CO2/H2/CO) agree to ~1e-16. This is the primary
-   regression test — if the codegen and numpy reference share the emission
-   rules and disagree beyond that floor, one of them is wrong.
+1. `chem_rhs_numpy` (master-faithful term order, NumPy float64), always run:
+   rtol=1e-5 on significant cells. The threshold absorbs XLA FMA fusion vs
+   NumPy `*`-chains; actual worst-cell agreement is ~2e-13.
+2. VULCAN-master's `chemdf` via subprocess; skipped when the oracle is absent.
 
-2. VULCAN-master's `chemdf` via subprocess: rtol=1e-12 (XLA last-bit
-   wiggle vs NumPy). Skipped when the sibling repo is absent.
-
-The (y, M, k) state is captured fresh from `RunState.with_pre_loop_setup`
-on the current `vulcan_cfg.network` (one pre-loop pipeline run, ~1-3 s).
+The (y, M, k) state is captured fresh from `RunState.with_pre_loop_setup`.
 """
 
 from __future__ import annotations
@@ -33,11 +26,8 @@ warnings.filterwarnings("ignore")
 from vulcan_jax._paths import resolve_data_path
 
 def _oracle_dir():
-    """Configured upstream oracle checkout, or a non-existent sentinel path.
-
-    Returning a path that does not exist (rather than None) keeps every
-    `if not VULCAN_MASTER.is_dir(): skip` site below working unchanged, while
-    removing the silent sibling fallback.
+    """Oracle checkout from $VULCAN_MASTER_DIR, else a non-existent sentinel
+    path so every `if not VULCAN_MASTER.is_dir(): skip` site works unchanged.
     """
     import os
     from pathlib import Path as _P
@@ -46,10 +36,9 @@ def _oracle_dir():
     return _P(raw).expanduser().resolve() if raw else _P("/nonexistent/VULCAN-oracle-unset")
 
 
-# Oracle location comes from $VULCAN_MASTER_DIR, never from a sibling guess:
-# an auto-detected ../VULCAN-master pins nothing, and the copy on this project's
-# machine is not even a git checkout. `tests/oracle.py` resolves it and verifies
-# the pinned revision + a clean tree before any comparison runs.
+# Oracle location comes from $VULCAN_MASTER_DIR only, never a sibling guess:
+# an auto-detected ../VULCAN-master pins nothing. `tests/oracle.py` verifies
+# the pinned revision and a clean tree before any comparison runs.
 VULCAN_MASTER = _oracle_dir()
 PROJECT_ROOT = ROOT.parent
 
@@ -272,10 +261,9 @@ def test_hd209_jit_rhs_projection_removes_atom_residual() -> None:
     c_idx = atoms.index("C")
     raw_residual = out_jit @ atom_counts  # shape: (nz, n_atoms)
     nojit_residual = out_nojit @ atom_counts
-    # State-robust floor for the raw JIT FMA-drift: the exact magnitude depends
-    # on which converged HD209 state was captured (~6e8-1e9 across runs/code
-    # versions), so assert it is many orders above the < 1e4 corrected value
-    # rather than pinning the paper's original > 1e9.
+    # State-robust floor for the raw JIT FMA drift: its magnitude varies with
+    # the captured HD209 state (~6e8-1e9), so assert it sits far above the
+    # < 1e4 corrected value instead of pinning an exact number.
     assert abs(float(raw_residual[0, c_idx])) > 1.0e8
     assert abs(float(nojit_residual[0, c_idx])) < 1.0e4
 
@@ -317,19 +305,11 @@ def test_hd209_jacobian_projection_uses_same_reservoir_rows() -> None:
 
 
 def test_codegen_matches_numpy_oracle():
-    """Codegen RHS matches chem_rhs_numpy at rtol=1e-9 with per-species floor.
+    """Codegen RHS matches chem_rhs_numpy at 1e-5 with a per-species floor.
 
-    Both share the same emission rules (stoich-replicated multiplies,
-    products-then-reactants per-species accumulation, terminal *M for
-    three-body, asymmetric M per-slot). The per-species floor at 1e-12 of
-    the species's peak |dydt| absorbs pure float64 cancellation noise on
-    trace species (where dydt ~ 1e-30 from rate cancellations of ~1e11
-    terms — below any meaningful precision). Bulk species (H2O, CO2, SO,
-    SO2, H2, CO, S, H2S) agree to <1e-9.
-
-    XLA fusion can reorder a single (a*b)*c chain into an FMA, so codegen
-    is not bit-identical to NumPy `*` chains; rtol=1e-9 absorbs that.
-    The master oracle (test below) verifies the actual term order.
+    The floor (1e-12 of each species's peak |dydt|) absorbs float64
+    cancellation noise on trace species; the 1e-5 threshold absorbs XLA FMA
+    fusion vs NumPy `*` chains. The master oracle test verifies term order.
     """
     y, M, k_arr, net = _capture_state()
 
@@ -351,11 +331,9 @@ def test_codegen_matches_numpy_oracle():
         f"layer {idx[0]}, species {net.species[idx[1]]}"
     )
 
-    # Bulk-species check uses the same per-cell-significance filter:
-    # restrict to cells where |dydt| > 1e-6 of that species's peak. This
-    # avoids penalizing cancellation residue at near-zero cells (CO2 in
-    # HD189 is a trace species — its peak |dydt| is ~1e9 but at deep
-    # layers it cancels to ~1e3, giving spurious 1e-5 relerr noise).
+    # Bulk-species check restricts to cells where |dydt| > 1e-6 of the
+    # species's peak, so cancellation residue at near-zero cells is not
+    # penalized (e.g. HD189 CO2 cancels ~1e9 -> ~1e3 at depth).
     bulk_relerr = {}
     for sp in ("H2O", "CO2", "SO", "SO2", "H2", "CO", "S", "H2S"):
         if sp in net.species_idx:
@@ -370,12 +348,8 @@ def test_codegen_matches_numpy_oracle():
         print(f"  {sp:>5}: {r:.3e}  peak={peak:.3e}")
 
     # 1e-5 absorbs XLA FMA-vs-NumPy `*` chain drift on cancellation-prone
-    # cells (e.g. HD189's CO2 at deep layers cancels from ~1e9 down to
-    # ~1e3, producing few-ULP-per-multiply residues that compound). Both
-    # the codegen and numpy oracle use the same emission ORDER but XLA
-    # may fuse multiplies into FMA. The bulk-species check at 1e-5 is
-    # 2-3 orders better than the original chem_rhs floor (~1e-3 to 1e-2
-    # on heavy radicals) and well below the 12% (~0.05 dex) target.
+    # cells (same emission ORDER on both sides, but XLA may fuse multiplies
+    # into FMA). Well below the 12% (~0.05 dex) target.
     assert max_rel < 1e-5, (
         f"codegen vs numpy oracle disagreement: max relerr={max_rel:.3e} "
         f"at layer {idx[0]} species {net.species[idx[1]]} (threshold 1e-5)"
@@ -387,9 +361,7 @@ def test_codegen_matches_numpy_oracle():
 @pytest.mark.master_serial
 def test_codegen_matches_master_chemdf():
     """Codegen RHS bit-faithful to VULCAN-master's `chemdf` at rtol=1e-12.
-
-    Subprocess pattern mirrors `tests/test_chem.py`. Skips cleanly when
-    the sibling repo isn't present.
+    Runs in a subprocess; skips cleanly when the oracle is absent.
     """
     if not VULCAN_MASTER.is_dir():
         pytest.skip(f"VULCAN-master sibling absent at {VULCAN_MASTER}")

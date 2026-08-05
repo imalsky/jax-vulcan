@@ -92,8 +92,7 @@ def main() -> int:
 
 
 def test_main():
-    """Pytest wrapper. `main()` returns 0 on success; convert to an
-    assertion so `pytest tests/` collects and runs this script."""
+    """Pytest wrapper around main()."""
     assert main() == 0
 
 

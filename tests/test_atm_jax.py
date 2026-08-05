@@ -1,18 +1,12 @@
 """Tests for the differentiable on-graph atmosphere builder (`atm_jax.py`).
 
-Two things are pinned:
-
-  1. Equivalence -- `build_atm_static` reproduces the frozen `AtmStatic` the
-     production runner consumes (`make_atm_static`), field for field, at
-     machine precision, for the configuration the runner uses (`atm_type`
-     file/analytical/isothermal, `use_moldiff=on`). The integrated check runs on
-     the real HD189 setup; two targeted checks cover the `use_vm_mol` and
-     settling branches the HD189 config does not exercise. (`atm_type='table'`
-     and `use_moldiff=off` intentionally differ -- build_atm_static is the more
-     self-consistent one there; see the build_atm_static docstring.)
-  2. Differentiability -- forward-mode tangents through `build_atm_static`
-     match finite differences for dz/dgs and M/Dzz/dTco; the Heng+14 T(P)
-     front-end and the pressure-grid / Kzz-profile front-ends differentiate too.
+Pins two things:
+  1. Equivalence: `build_atm_static` reproduces the production `AtmStatic`
+     (`make_atm_static`) field for field at machine precision, plus targeted
+     vm/settling branch checks. (`atm_type='table'` and `use_moldiff=off`
+     intentionally differ; build_atm_static is the more self-consistent one.)
+  2. Differentiability: forward-mode tangents match finite differences for
+     the gs, Tco, pressure-grid, Kzz-profile, and Heng+14 T(P) front-ends.
 """
 
 from __future__ import annotations
@@ -177,12 +171,10 @@ def _reference_vm_branch_vm(
 ):
     """Transparent NumPy port of the canonical vm_branch interface vm.
 
-    Mirrors `op.update_mu_dz` from
-    https://github.com/shami-EEG/VULCAN/tree/vm_branch *verbatim* (including its
-    `np.roll(species_Hi, -1, axis=0)` layer-averaging — the build_atm.py copy
-    drops `axis=0`, a latent species-mixing bug that op.update_mu_dz overrides
-    during the run). Used to pin `compute_mol_diff`'s physics to the upstream
-    expression independently of VULCAN-JAX's own slicing-based refactor.
+    Mirrors `op.update_mu_dz` from shami-EEG/VULCAN vm_branch VERBATIM,
+    including its `np.roll(species_Hi, -1, axis=0)` layer-averaging. Do not
+    port the build_atm.py copy instead: it drops `axis=0`, a latent
+    species-mixing bug that op.update_mu_dz overrides during the run.
     """
     from vulcan_jax.atm_setup import _Dzz_gen_for_base
     from vulcan_jax.phy_const import Navo, kb
@@ -221,11 +213,9 @@ def _reference_vm_branch_vm(
 
 
 def test_compute_mol_diff_vm_matches_vm_branch_reference():
-    """compute_mol_diff's upwind vm equals the canonical vm_branch expression.
-
-    This pins the *physics* of the advective molecular-diffusion velocity to the
-    extensively-tested upstream branch, independent of the production kernel's
-    discretization (covered separately in test_diffusion_production_kernel)."""
+    """compute_mol_diff's upwind vm equals the canonical vm_branch expression
+    (the production kernel's discretization is covered separately in
+    test_diffusion_production_kernel)."""
     species_list, ms_arr, nz, ni, Tco, n_0, g, Hp, dz, alpha = (
         _synthetic_mol_diff_setup()
     )
@@ -359,10 +349,8 @@ def test_jvp_dz_wrt_gs_matches_fd(hd189_state):
 
 
 def test_jvp_M_Dzz_wrt_Tco_matches_fd(hd189_state):
-    """Temperature is a differentiable leaf: scaling Tco moves M and Dzz, and
-    the jvp matches a central difference. This is the headline T-sensitivity
-    (warming the column); a specific T(P) parameterisation just composes in
-    front of the Tco leaf (see `analytical_TP_H14`)."""
+    """Temperature is a differentiable leaf: scaling Tco moves M and Dzz and
+    the jvp matches a central difference."""
     from vulcan_jax.config import default_config
 
     cfg = default_config()
@@ -384,10 +372,8 @@ def test_jvp_M_Dzz_wrt_Tco_matches_fd(hd189_state):
 
 def test_analytical_TP_front_end_differentiates():
     """The Heng+14 T(P) front-end composes onto the Tco leaf: dTco/dT_irr is
-    finite. Evaluated on a NARROW pressure range -- `jax.scipy.special.expn`'s
-    forward-mode is very slow when its argument spans a deep column's many
-    decades, so fast dL/dT_irr over a full atmosphere wants a cheaper T(P) (or
-    pass Tco directly). The plumbing (Tco differentiable) is unaffected."""
+    finite. Keep the NARROW pressure range: `jax.scipy.special.expn`'s
+    forward-mode is very slow over a deep column's many decades."""
     pco = jnp.asarray(np.logspace(5.0, 4.0, 8))  # narrow -> small expn argument
     base = jnp.asarray([500.0, 1200.0, 0.1, 0.02, 0.7, 0.7], dtype=jnp.float64)
 
@@ -398,12 +384,9 @@ def test_analytical_TP_front_end_differentiates():
     assert np.isfinite(float(tangent)) and float(tangent) != 0.0
 
 
-# Note: build_atm_static is proven field-for-field identical to the production
-# make_atm_static by test_build_atm_static_matches_make_atm_static above, so it
-# feeds jax_ros2_step / outer_loop.runner exactly as the frozen production
-# AtmStatic does -- no separate through-solver test is needed. Forward-mode T
-# sensitivity through a full run composes via the runner's lax.while_loop (with
-# rates_jax for the T->k path); see examples/grad_physical_example.py.
+# No separate through-solver test is needed: the equivalence test above proves
+# build_atm_static feeds the runner exactly as the frozen production AtmStatic
+# does. Full-run T sensitivity: examples/grad_physical_example.py.
 
 
 def test_pco_from_endpoints_matches_logspace_and_differentiates():

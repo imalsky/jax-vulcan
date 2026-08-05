@@ -1,25 +1,9 @@
-"""Validate that the photo update inside the JAX runner matches a single
-Python-side `compute_tau` / `compute_flux` / `compute_J` round-trip.
+"""The in-runner photo branch must match the Python-side
+compute_tau / compute_flux / compute_J round-trip on HD189.
 
-Builds the HD189 reference state and runs the photo branch *both* ways:
-  (A) via `op_jax.Ros2JAX.compute_{tau,flux,J}` writing into var.tau /
-      var.k_arr (Python-side dispatch around the same JAX kernels).
-  (B) via the in-runner photo branch closed over by
-      `outer_loop._make_runner`, operating on a `JaxIntegState` carry and
-      feeding back into var via `_unpack_state`.
-
-The two should agree to machine precision because they share the same
-kernels (`compute_tau_jax`, `compute_flux_jax`,
-`compute_J_jax_flat`/`_compute_J_inner`) — the only difference is
-whether the round-trip happens before or after device sync. Anything
-beyond ~1e-13 indicates a wiring bug in the carry plumbing.
-
-Validates:
-    1. var.tau / var.aflux / var.sflux / var.dflux_d / var.dflux_u / var.prev_aflux
-       agree to ≤ 1e-13.
-    2. var.aflux_change agrees to ≤ 1e-13.
-    3. var.k_arr entries for active photo branches agree to ≤ 1e-13.
-    4. var.J_sp[(sp, nbr)] entries (incl. the (sp, 0) total) agree to ≤ 1e-13.
+Both paths share the same JAX kernels, so tau / fluxes / aflux_change /
+photo k_arr rows / J_sp entries must agree to <= 1e-13; anything beyond that
+is a wiring bug in the carry plumbing.
 """
 
 from __future__ import annotations
@@ -61,21 +45,15 @@ def main() -> int:
     data_var, data_atm, data_para = legacy_view(rs)
     output = op.Output()
 
-    # `with_pre_loop_setup` already ran the full photo pipeline once
-    # (compute_tau/flux/J + apply_photo_remove), so the legacy_view
-    # state already has Path A's outputs — capture them as the Path A
-    # snapshot directly. To get the pre-photo state for Path B, we need
-    # to undo the photo pass; instead, re-import network and reset
-    # var.k_arr to the post-rate-build, pre-photo values via
-    # `setup_var_k`, then re-run Path A explicitly so we have a clean
-    # pre/post split.
+    # with_pre_loop_setup already ran the photo pipeline once. Reset var.k_arr
+    # to the post-rate-build, pre-photo values via setup_var_k, then re-run
+    # Path A explicitly so there is a clean pre/post split.
     import vulcan_jax.rates as _rates_mod
 
     _network = _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
 
-    # Snapshot the pre-photo state so Path B can run from the SAME starting
-    # point as Path A — otherwise Path B's compute_flux is computing the
-    # 2nd photo update (using Path A's dflux_u as `dflux_u_prev`), not the 1st.
+    # Snapshot the pre-photo state so Path B starts where Path A did --
+    # otherwise Path B computes the 2nd photo update, not the 1st.
     pre_photo = dict(
         y=data_var.y.copy(),
         ymix=data_var.ymix.copy(),
@@ -234,8 +212,7 @@ def main() -> int:
 
 
 def test_main():
-    """Pytest wrapper. `main()` returns 0 on success; convert to an
-    assertion so `pytest tests/` collects and runs this script."""
+    """Pytest wrapper around main()."""
     assert main() == 0
 
 

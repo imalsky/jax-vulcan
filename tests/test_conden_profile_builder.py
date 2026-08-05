@@ -1,23 +1,13 @@
 """Unit tests for the on-graph condensation-profile builder.
 
 `conden.build_conden_profile` must reproduce, from a live (traced) T-P and
-structure, every temperature/structure-dependent quantity the legacy host
-packer froze at setup: saturation number densities, growth/diffusion terms,
-the H2O/NH3 relax inputs, the NH3 cold-trap index, and the fix-species
-saturation mixing ratios.
-
-The oracle here is an INDEPENDENT NumPy re-implementation of the upstream
-formulas (op.conden's rate inputs at op.py:1128-1291, build_atm's saturation
-formulas, and ini_abun._apply_condense's sat_mix construction) — not a call
-back into the code under test. The host packer `_build_conden_static` now
+structure, every T/structure-dependent quantity the legacy host packer froze
+at setup. The oracle is an independent NumPy re-typing of the upstream
+formulas (op.conden rate inputs, build_atm saturation, _apply_condense
+sat_mix), not a call back into the code under test. The host packer
 delegates to the same builder, so this file carries the numerical parity
-burden for both paths (the delegation itself was verified bit-exact against
-the pre-refactor packer on isothermal and non-isothermal columns).
-
-Also covered: temperature sensitivity (saturation curves and condensation
-boundaries move with T; the NH3 cold-trap argmin moves layer-wise), and the
-jit / vmap / forward-mode jvp contracts the retrieval's per-proposal rebuild
-relies on.
+burden for both paths. Also covered: T sensitivity and the jit / vmap /
+forward-mode jvp contracts the retrieval's per-proposal rebuild relies on.
 """
 
 from types import SimpleNamespace

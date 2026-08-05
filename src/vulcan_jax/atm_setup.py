@@ -45,11 +45,10 @@ def compute_pico(pco: jnp.ndarray) -> jnp.ndarray:
 
 
 def surface_gravity(cfg) -> float:
-    """Surface gravity at the reference level (cm/s^2).
+    """Surface gravity at the reference level (cm/s^2): ``g = G*Mp/Rp**2``.
 
-    Derived from planet mass and radius (upstream vm_branch): ``g = G*Mp/Rp**2``.
-    This is the single source of gravity; callers that used to pass ``gs``
-    directly now supply ``Mp`` (planet mass, g) and ``Rp`` (planet radius, cm).
+    Single source of gravity (upstream vm_branch); there is no ``gs`` knob.
+    Callers supply ``Mp`` (planet mass, g) and ``Rp`` (planet radius, cm).
     """
     Mp = getattr(cfg, "Mp", None)
     Rp = getattr(cfg, "Rp", None)
@@ -68,13 +67,11 @@ def high_temp_cut_regrid(
 
     ``pco[0]`` is the deepest (highest-pressure) level. If any layer at
     ``P >= P_min`` is hotter than ``T_max``, the bottom pressure is raised to
-    the first deep level that is cool enough (or floored at ``P_min`` when the
-    entire deep column is too hot), and the column is re-gridded onto ``nz``
-    logspaced levels between the new bottom and ``P_t``. Returns ``None`` when
-    no cut is needed (deep column already below ``T_max``, no layers at/below
-    ``P_min``, or the new bottom would not actually raise ``P_b``).
-
-    Pure NumPy port of the selection in vm_branch ``build_atm.apply_high_temp_cut``.
+    the first deep level that is cool enough (floored at ``P_min``) and the
+    column is re-gridded onto ``nz`` logspaced levels down to ``P_t``.
+    Returns ``None`` when no cut is needed. NumPy port of vm_branch
+    ``build_atm.apply_high_temp_cut``; host-side setup only (not part of the
+    on-graph ``atm_jax.build_atm_static`` path).
     """
     pco = np.asarray(pco, dtype=np.float64)
     Tco = np.asarray(Tco, dtype=np.float64)
@@ -134,21 +131,17 @@ def kzz_profile_jax(
     K_p_lev: float = 0.0,
     const_Kzz: float = 0.0,
 ) -> jnp.ndarray:
-    """Analytic eddy-diffusion profile Kzz(P) at interior interfaces.
+    """Analytic eddy-diffusion profile Kzz(P) at interior interfaces (cm^2/s).
 
-    `pico_int` is ``pico[1:-1]`` (interface pressures, shape ``(nz-1,)``).
-    Single source of truth for the ``const``/``JM16``/``Pfunc`` branches of
-    :func:`load_TPK`, expressed in ``jnp`` so the profile is differentiable
-    w.r.t. its parameters (``K_deep``/``K_max``/``K_p_lev``) and the pressure
-    grid. The ``file`` profile has no closed form and is handled in
-    :func:`load_TPK`. Each branch reads only its own parameter; the others
-    default to 0.0 so a caller passes just the one its profile needs (the
-    caller is responsible for supplying it -- a missing required knob should
-    fail loud at the call site, not be silently defaulted here).
+    `pico_int` is ``pico[1:-1]`` (interface pressures, shape ``(nz-1,)``,
+    dyne/cm^2). Single source for the ``const``/``JM16``/``Pfunc`` branches of
+    :func:`load_TPK`, in ``jnp`` so the profile is differentiable w.r.t. its
+    parameters and the grid (the ``file`` profile has no closed form and lives
+    in :func:`load_TPK`). Each branch reads only its own parameter; a missing
+    required knob must fail loud at the call site, not be defaulted here.
     """
-    # jnp.asarray (not float()) keeps the profile parameters tracer-safe so the
-    # profile is differentiable w.r.t. K_deep / K_max / K_p_lev; for the
-    # production Python-float call path the value is bit-identical.
+    # jnp.asarray (not float()) keeps the parameters tracer-safe for AD;
+    # bit-identical for the production Python-float call path.
     pico_int = jnp.asarray(pico_int, dtype=jnp.float64)
     K_deep = jnp.asarray(K_deep, dtype=jnp.float64)
     K_max = jnp.asarray(K_max, dtype=jnp.float64)
@@ -167,7 +160,7 @@ def kzz_profile_jax(
 
 
 # ---------------------------------------------------------------------------
-# 3. Load TPK (T, Kzz, vz from cfg / file)  — host-side I/O
+# Load TPK (T, Kzz, vz from cfg / file) -- host-side I/O
 # ---------------------------------------------------------------------------
 
 
@@ -239,9 +232,8 @@ def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray
                 jnp.asarray(pco),
                 cfg.para_anaTP,
                 gs=surface_gravity(cfg),
-                # pco[0] is the deepest level (= P_b for the standard logspace
-                # grid); using it keeps the profile self-consistent after a
-                # `high_temp_cut` re-grid raises the effective bottom pressure.
+                # pco[0] (deepest level) keeps the profile self-consistent
+                # after a high_temp_cut re-grid raises the bottom pressure.
                 Pb=float(np.asarray(pco)[0]),
             )
         )
@@ -297,9 +289,7 @@ def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray
     out["Tco"] = Tco
 
     # Read each profile's own parameter DIRECTLY (not getattr-with-default):
-    # a config selecting a branch without that branch's knob must fail loud,
-    # exactly as the previous code and VULCAN-master do (master reads
-    # `_CFG.K_deep` for JM16). kzz_profile_jax defaults the unused knobs.
+    # a branch selected without its knob must fail loud, as in master.
     if Kzz_prof == "const":
         out["Kzz"] = np.asarray(
             kzz_profile_jax("const", pico[1:-1], const_Kzz=cfg.const_Kzz),
@@ -361,7 +351,7 @@ def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray
 
 
 def compute_mean_mass(ymix: jnp.ndarray, ms_arr: jnp.ndarray) -> jnp.ndarray:
-    """Mean molecular weight (g/mol) per layer. ymix (nz, ni), ms_arr (ni,) → (nz,)."""
+    """Mean molecular weight (g/mol) per layer. ymix (nz, ni), ms_arr (ni,) -> (nz,)."""
     return jnp.einsum("zi,i->z", jnp.asarray(ymix), jnp.asarray(ms_arr))
 
 
@@ -412,7 +402,7 @@ def _scan_down_mu_dz_g(
 ) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, jnp.ndarray]:
     """Sequential downward height integration from `pref_indx-1` to 0.
 
-    Requires `pref_indx >= 1`. Returns arrays in low→high index order.
+    Requires `pref_indx >= 1`. Returns arrays in low-to-high index order.
     """
     Tco_dn_rev = Tco[:pref_indx][::-1]
     mu_dn_rev = mu[:pref_indx][::-1]
@@ -455,9 +445,8 @@ def compute_mu_dz_g(
     rocky = bool(cfg.rocky)
     Pb = float(cfg.P_b)
 
-    # `pref_indx` anchors g(z)=gs. Gas giants (rocky=False) with P_b ≥ 1 bar
-    # anchor at the layer closest to log10(pico)=6 (1 bar in cgs); rocky
-    # planets anchor at the surface (index 0).
+    # `pref_indx` anchors g(z)=gs: gas giants with P_b >= 1 bar anchor at the
+    # layer nearest 1 bar (log10 pico = 6 cgs); rocky planets at index 0.
     pico_host = np.asarray(pico_j)
     if (not rocky) and Pb >= 1e6:
         pref_indx = int(
@@ -539,17 +528,17 @@ def settling_velocity_jax(
     g: jnp.ndarray,
     settle_coeff: jnp.ndarray,
 ) -> jnp.ndarray:
-    """JAX core of the Stokes-regime settling velocity. Returns (nz-1, ni).
+    """JAX core of the Stokes-regime settling velocity. Returns (nz-1, ni), cm/s.
 
-    `settle_coeff` is the per-species ``rho_p * r_p**2`` (zero for gas
+    `settle_coeff` is the per-species ``rho_p * r_p**2`` (g/cm, zero for gas
     species); `(na, a, b)` is the Cloutman dynamic-viscosity polynomial for
-    the background gas. Single source of truth for
-    :func:`compute_settling_velocity`, expressed in ``jnp`` so the fall speed
-    is differentiable w.r.t. temperature, gravity and particle size/density.
+    the background gas. Single source for :func:`compute_settling_velocity`,
+    in ``jnp`` so the fall speed is differentiable w.r.t. temperature, gravity
+    and particle size/density.
     """
     Tco = jnp.asarray(Tco, dtype=jnp.float64)
     g = jnp.asarray(g, dtype=jnp.float64)
-    dmu = a * Tco**na / (b + Tco)  # dynamic viscosity, (nz,) g/(cm·s)
+    dmu = a * Tco**na / (b + Tco)  # dynamic viscosity, (nz,) g/(cm s)
     gi = 0.5 * (g[:-1] + g[1:])  # (nz-1,)
     factor = -(2.0 / 9.0) * gi / dmu[1:]  # (nz-1,)
     return factor[:, None] * jnp.asarray(settle_coeff, dtype=jnp.float64)[None, :]
@@ -636,11 +625,11 @@ def _alpha_array_for_base(
 ) -> np.ndarray:
     """Thermal-diffusion factor per species, atm_base-dependent. Returns (ni,).
 
-    Defaults to zero. For an H2 base, H gets -0.1 and every species heavier than
-    4 amu gets 0.25; the He=0.145 line below is then overwritten to 0.25 because
-    He is 4.0026 amu > 4 — this faithfully reproduces VULCAN-master
-    (build_atm.py:690-693), so the effective He factor is 0.25, not 0.145. For an
-    N2/O2/CO2 base, H/H2/He get -0.25 and Ar gets 0.17. Other atm_base raises.
+    Defaults to zero. H2 base: H = -0.1; every species over 4 amu gets 0.25,
+    which then OVERWRITES the He = 0.145 line (He is 4.0026 amu). That is
+    master-faithful (build_atm.py:690-693): the effective He factor is 0.25,
+    not 0.145; do not "fix" it. N2/O2/CO2 base: H/H2/He = -0.25, Ar = 0.17.
+    Other atm_base raises.
     """
     ni = len(species_list)
     alpha = np.zeros(ni, dtype=np.float64)
@@ -719,17 +708,15 @@ def compute_mol_diff(
         Hp_j = jnp.asarray(Hp, dtype=jnp.float64)
         dz_j = jnp.asarray(dz, dtype=jnp.float64)
         alpha_j = jnp.asarray(alpha_arr, dtype=jnp.float64)
-        # Interface-centered upwind advective velocity, matching VULCAN's
-        # vm_branch (op.update_mu_dz): vm = -Dzz * (1/H_i - 1/Hp + thermal) on
-        # the cell interfaces. Interface temperature, scale height and spacing
-        # are the same arithmetic means compute_mu_dz_g forms for Ti/Hpi/dzi.
+        # Interface-centered upwind drift velocity (vm_branch op.update_mu_dz):
+        # vm = -Dzz * (1/H_i - 1/Hp + thermal) on cell interfaces, using the
+        # same arithmetic means compute_mu_dz_g forms for Ti/Hpi/dzi.
         Ti = 0.5 * (Tco_j[:-1] + Tco_j[1:])  # (nz-1,)
         Hpi = 0.5 * (Hp_j[:-1] + Hp_j[1:])  # (nz-1,)
         dzi = 0.5 * (dz_j[1:] + dz_j[:-1])  # (nz-1,)
         delta_Ti = Tco_j[1:] - Tco_j[:-1]  # (nz-1,) = T[k+1]-T[k]
-        # 1/H_i of each species at the cell centers, then average the scale
-        # heights H_i across adjacent cells and invert back to 1/H_i at the
-        # interface (harmonic-type interface average; vm_branch axis=0 form).
+        # Per-species 1/H_i at cell centers; average H_i across adjacent cells
+        # and invert back (harmonic-type interface average; vm_branch form).
         inv_Hi = ms_j[None, :] * g_j[:, None] / (Navo * kb * Tco_j[:, None])  # (nz, ni)
         H_cell = 1.0 / inv_Hi
         Hi_interf = 1.0 / (0.5 * (H_cell[:-1] + H_cell[1:]))  # (nz-1, ni)
@@ -752,7 +739,7 @@ def read_sflux_binned(
 ) -> dict[str, Any]:
     """Interpolate the stellar flux onto VULCAN's uniform photo bins grid.
 
-    Returns sflux_top, the dbin1→dbin2 transition index, and the raw
+    Returns sflux_top, the dbin1 -> dbin2 transition index, and the raw
     read for diagnostics. `sflux_raw` may be supplied for tests.
     """
     if sflux_raw is None:
@@ -863,10 +850,9 @@ def read_bc_flux(cfg, species_list: list[str]) -> dict[str, np.ndarray]:
             if sp in species_list:
                 out["bot_flux"][species_list.index(sp)] = float(tokens[1])
                 out["bot_vdep"][species_list.index(sp)] = float(tokens[2])
-    # Master treats `use_fix_sp_bot` as a truthy-dict in `Atm.BC_flux`. The
-    # only call that hits `==True` is when the cfg sets it to the literal
-    # `True` (not a dict) — we preserve that path verbatim. Production
-    # callers feed a dict and the OuterLoop pin handles those entries.
+    # Master treats `use_fix_sp_bot` as a truthy-dict; only a literal `True`
+    # (not a dict) reaches this branch, preserved verbatim. Production feeds a
+    # dict, whose entries the OuterLoop pin handles.
     if getattr(cfg, "use_fix_sp_bot", False) is True:
         print("Using the prescribed fixed bottom mixing ratios.")
         for tokens in _parse_bc_file(cfg.bot_BC_flux_file):
@@ -901,12 +887,10 @@ def sat_p_jax(sp: str, T: jnp.ndarray) -> jnp.ndarray:
         T_C = T - 273.0
         c0, c1, c2, c3 = 6111.5, 23.036, -333.7, 279.82  # ice constants
         w0, w1, w2, w3 = 6112.1, 18.729, -227.3, 257.87  # liquid constants
-        # Murray formulae: ice for T<0°C, liquid water for T>=0°C.
-        # CORRECTION (vs upstream): op.sp_sat writes `(T<0)*ice + (T>0)*water`,
-        # which evaluates to exactly 0 at T=273.0 K (both masks vanish) -- an
-        # artificial cold trap / discontinuity. A single `where` keeps the
-        # ice/liquid split but is continuous through 0 C. See
-        # docs/validation.md.
+        # Murray formulae: ice for T < 0 C, liquid water for T >= 0 C.
+        # CORRECTION vs upstream: op.sp_sat's `(T<0)*ice + (T>0)*water` is
+        # exactly 0 at T = 273.0 K (artificial cold trap); the single `where`
+        # is continuous through 0 C. See docs/validation.md.
         ice = c0 * jnp.exp((c1 * T_C + T_C**2 / c2) / (T_C + c3))
         liquid = w0 * jnp.exp((w1 * T_C + T_C**2 / w2) / (T_C + w3))
         return jnp.where(T_C < 0, ice, liquid)
@@ -937,9 +921,8 @@ def sat_p_jax(sp: str, T: jnp.ndarray) -> jnp.ndarray:
         ice_log10 = -1329.0 / T + 9.28588 - 0.0051263 * T
         l_log10 = -1145.0 / T + 7.94746 - 0.00322 * T
         sat_p = 10 ** jnp.where(T <= 187.6, ice_log10, l_log10)
-        # cmHg -> bar (0.0133322) -> dyne/cm^2 (1e6). The literal 0.01333
-        # is the cmHg->bar factor; anchored by the H2S boiling point
-        # (T=212.8 K -> formula gives 76.1 cmHg = 1.015 bar ~ 1 atm).
+        # 0.01333 = cmHg -> bar factor; * 1e6 -> dyne/cm^2. Anchored by the
+        # H2S boiling point (212.8 K -> 76.1 cmHg = 1.015 bar ~ 1 atm).
         return sat_p * 0.01333 * 1e6
     raise IOError(
         f"No saturation vapor data for {sp}. Check `sat_p_jax` in atm_setup.py"
@@ -1001,13 +984,12 @@ class Atm:
         return data_atm
 
     def apply_high_temp_cut(self, data_atm):
-        """Raise the bottom pressure so the deepest temperature does not exceed
-        ``high_temp_cut_K``, dropping ultra-hot deep layers for numerical
-        stability (upstream vm_branch ``build_atm.apply_high_temp_cut``).
+        """Raise the bottom pressure so deep T does not exceed
+        ``high_temp_cut_K`` (vm_branch ``build_atm.apply_high_temp_cut``).
 
-        Delegates the grid selection to :func:`high_temp_cut_regrid`, then
-        reloads T/Kzz on the re-gridded column. No-op when the deep column is
-        already below ``T_max``.
+        Delegates grid selection to :func:`high_temp_cut_regrid`, then reloads
+        T/Kzz on the re-gridded column. No-op when the deep column is already
+        below ``T_max``.
         """
         T_max = float(getattr(_CFG, "high_temp_cut_K", 3500.0))
         P_min = float(getattr(_CFG, "high_temp_cut_P", 1e6))
@@ -1049,14 +1031,11 @@ class Atm:
         return compo["mass"][compo_row.index(sp)]
 
     def mean_mass(self, var, atm, ni):
-        """Compute per-layer mean molecular mass and write to `atm.mu`.
+        """Compute per-layer mean molecular mass (amu, (nz,)) and write `atm.mu`.
 
-        Kept for the VULCAN-master oracle tests: master's
-        `op.Integration.update_mu_dz` (op.py:951) calls
-        `make_atm.mean_mass(var, atm, ni)` on a duck-typed `Atm`, so this
-        method has no in-repo call site but IS a live cross-repo contract
-        (`tests/test_outer_loop_atm_refresh.py`). Static analysis cannot see
-        that; do not delete.
+        No in-repo call site, but a LIVE cross-repo contract: master's
+        `op.Integration.update_mu_dz` (op.py:951) duck-types this method on
+        our `Atm` (tests/test_outer_loop_atm_refresh.py). Do not delete.
         """
         from .composition import species
 

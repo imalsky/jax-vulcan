@@ -1,26 +1,20 @@
 """Pinned, isolated access to an upstream VULCAN checkout for oracle tests.
 
-Three rules, all of which used to be broken:
+Three rules (each guards against a failure that actually happened):
 
-1. NO SILENT SIBLING. `VULCAN_MASTER_DIR` must name the checkout. Tests used to
-   auto-detect `../VULCAN-master/` and compare against whatever commit was
-   there; the copy on the maintainer's machine is not even a git checkout, and
-   in 2026-07 was found to contain VULCAN-JAX's own code, which had then been
-   cited as evidence of upstream behavior.
+1. NO SILENT SIBLING. `VULCAN_MASTER_DIR` must name the checkout; never
+   auto-detect `../VULCAN-master/` (an unversioned, hand-patched copy was once
+   cited as evidence of upstream behavior).
 
-2. EXACT REVISION, CLEAN TREE. `require_oracle()` verifies `git rev-parse HEAD`
-   against `tests/science_sources.yaml` and that the worktree is clean, BEFORE
-   any calculation. A newer checkout fails with one "unsupported oracle
-   revision" message naming expected and actual, instead of a cascade of
-   rate-index failures: current public master deleted `NH3 + CH -> NH2 + CH2`
-   (39f1906), so every reaction position past it shifts.
+2. EXACT REVISION, CLEAN TREE. `require_oracle()` verifies HEAD against
+   `tests/science_sources.yaml` and a clean worktree BEFORE any calculation.
+   Reaction indices are positional, so a one-commit-newer checkout must fail
+   with one clear message, not a cascade of rate-index failures.
 
-3. NEVER MUTATE THE ORACLE. Upstream setup code rewrites files in place --
-   `make_chem_funs.py` renumbers a network file and writes it back, and FastChem
-   shells out into `fastchem_vulcan/`. During the 2026-08 audit that renumbered
-   a tracked upstream network file. `oracle_worktree()` hands out a temporary
-   COPY, and `assert_oracle_unchanged()` proves the original is byte-identical
-   afterwards.
+3. NEVER MUTATE THE ORACLE. Upstream setup rewrites files in place
+   (make_chem_funs renumbers a network file; FastChem writes into
+   fastchem_vulcan/). `oracle_worktree()` hands out a temporary COPY and
+   proves the original unchanged afterwards.
 
 Local runs may skip when no oracle is configured; a release CI job must set
 `VULCAN_JAX_REQUIRE_ORACLE=1` so a missing oracle FAILS instead of skipping

@@ -1,17 +1,9 @@
-"""Validate VULCAN-JAX initial-abundance pipeline.
+"""Validate the VULCAN-JAX initial-abundance pipeline.
 
-Coverage matrix over `ini_mix ∈ {EQ, const_mix, vulcan_ini, table,
-const_lowT}`:
-
-- `test_const_mix_matches_reference` — algebraic per-species check.
-- `test_vulcan_ini_roundtrip` — pickle restore from a known `.vul`.
-- `test_table_roundtrip` — `genfromtxt` on a synthetic table.
-- `test_const_lowT_matches_scipy` — JAX Newton vs `scipy.optimize.fsolve`
-  on a grid of elemental ratios.
-- `test_charge_list_no_ions` — `use_ion=False` → empty `charge_list`.
-- `test_zzz_main_eq_vs_master` — EQ-mode HD189 fork against VULCAN-master
-  (bit-exact gate; runs in a subprocess so the upstream imports cannot
-  pollute the pytest worker).
+Covers all five `ini_mix` modes (EQ, const_mix, vulcan_ini, table,
+const_lowT) plus the charge_list invariant. The EQ mode is a bit-exact
+gate against VULCAN-master, run in a subprocess so the upstream imports
+cannot pollute the pytest worker.
 """
 
 from __future__ import annotations
@@ -29,11 +21,8 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 def _oracle_dir():
-    """Configured upstream oracle checkout, or a non-existent sentinel path.
-
-    Returning a path that does not exist (rather than None) keeps every
-    `if not VULCAN_MASTER.is_dir(): skip` site below working unchanged, while
-    removing the silent sibling fallback.
+    """Oracle checkout from $VULCAN_MASTER_DIR, else a non-existent sentinel
+    path so every `if not VULCAN_MASTER.is_dir(): skip` site works unchanged.
     """
     import os
     from pathlib import Path as _P
@@ -42,10 +31,9 @@ def _oracle_dir():
     return _P(raw).expanduser().resolve() if raw else _P("/nonexistent/VULCAN-oracle-unset")
 
 
-# Oracle location comes from $VULCAN_MASTER_DIR, never from a sibling guess:
-# an auto-detected ../VULCAN-master pins nothing, and the copy on this project's
-# machine is not even a git checkout. `tests/oracle.py` resolves it and verifies
-# the pinned revision + a clean tree before any comparison runs.
+# Oracle location comes from $VULCAN_MASTER_DIR only, never a sibling guess:
+# an auto-detected ../VULCAN-master pins nothing. `tests/oracle.py` verifies
+# the pinned revision and a clean tree before any comparison runs.
 VULCAN_MASTER = _oracle_dir()
 
 warnings.filterwarnings("ignore")
@@ -81,14 +69,9 @@ def _cfg_overrides(**kwargs):
 
 def _build_hd189_atm():
     """Return `(data_var, data_atm, make_atm)` after `load_TPK` (and
-    `sp_sat` if condense is on). Caller takes a deep copy if it plans
-    to mutate cfg before calling `InitialAbun.ini_y`.
-
-    Callers of this helper only need the partial setup (`f_pico` +
-    `load_TPK`) — full `RunState.with_pre_loop_setup` would also run rate
-    parsing / FastChem / photo cross-section reads which the parametrized
-    mode tests don't use; using the private `state._Variables` /
-    `_AtmData` containers keeps this lightweight.
+    `sp_sat` if condense is on). Deliberately partial setup: the full
+    `RunState.with_pre_loop_setup` would also run rates / FastChem / photo
+    reads these mode tests do not use.
     """
     from vulcan_jax.atm_setup import Atm
     from vulcan_jax.state import _Variables, _AtmData
@@ -107,13 +90,13 @@ def _build_hd189_atm():
 
 
 # ---------------------------------------------------------------------------
-# const_mix mode — algebraic, no FastChem, no scipy.
+# const_mix mode: algebraic, no FastChem, no scipy.
 # ---------------------------------------------------------------------------
 
 
 def test_const_mix_matches_reference():
     """`y[:, i] = const_mix[sp] * gas_tot` for every species in the dict;
-    zeros elsewhere. Mode is purely algebraic — no scipy, no FastChem.
+    zeros elsewhere.
     """
     from vulcan_jax.ini_abun import InitialAbun
     import vulcan_jax.composition as composition
@@ -143,14 +126,12 @@ def test_const_mix_matches_reference():
 
 
 # ---------------------------------------------------------------------------
-# vulcan_ini mode — pickle round-trip against an existing `.vul` file.
+# vulcan_ini mode: pickle round-trip against an existing `.vul` file.
 # ---------------------------------------------------------------------------
 
 
 def test_vulcan_ini_roundtrip():
-    """Load `output/HD189.vul` via `vulcan_ini` mode and assert each
-    species column matches the file's `y[:, species.index(sp)]` exactly.
-    """
+    """`vulcan_ini` mode restores each species column from the `.vul` exactly."""
     from vulcan_jax.ini_abun import InitialAbun
     import vulcan_jax.composition as composition
 
@@ -189,18 +170,14 @@ def test_vulcan_ini_roundtrip():
 
 
 # ---------------------------------------------------------------------------
-# table mode — synthesize a tiny mixing-ratio table on tmp_path.
+# table mode: synthesize a tiny mixing-ratio table on tmp_path.
 # ---------------------------------------------------------------------------
 
 
 def test_table_roundtrip(tmp_path):
-    """Write a per-layer mixing table containing every species in the
-    network (most zero, three populated); load via `table` mode; verify
-    `y[:, sp] == n_0 * table[sp]` for the populated species.
-
-    Master's `ini_y[ini_mix=='table']` iterates over the full species
-    list and indexes `table[sp]` for each, so the file MUST contain a
-    column per species — we cannot get away with a sparse table.
+    """`table` mode yields `y[:, sp] == n_0 * table[sp]`. The file MUST
+    contain a column per species (master indexes `table[sp]` for every
+    species); a sparse table does not work.
     """
     from vulcan_jax.ini_abun import InitialAbun
     import vulcan_jax.composition as composition
@@ -246,7 +223,7 @@ def test_table_roundtrip(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# const_lowT mode — JAX Newton vs scipy.fsolve.
+# const_lowT mode: JAX Newton vs scipy.fsolve.
 # ---------------------------------------------------------------------------
 
 
@@ -259,11 +236,8 @@ def test_table_roundtrip(tmp_path):
     ],
 )
 def test_const_lowT_matches_scipy(O_H, C_H, He_H, N_H):
-    """Solve the 5-mol H2/H2O/CH4/He/NH3 system in JAX and assert
-    agreement with scipy fsolve to 1e-13. Tolerance for this mode was
-    pre-flagged to potentially relax to 1e-10; in practice the JAX
-    Newton matches scipy to machine precision (~1e-16) on solar-like
-    ratios."""
+    """JAX Newton on the 5-mol H2/H2O/CH4/He/NH3 system matches scipy
+    fsolve to 1e-13 (in practice ~1e-16 on solar-like ratios)."""
     import jax.numpy as jnp
     from scipy.optimize import fsolve
     from vulcan_jax.ini_abun import _abun_lowT_residual, _jax_newton
@@ -289,10 +263,7 @@ def test_const_lowT_matches_scipy(O_H, C_H, He_H, N_H):
 
 
 def test_charge_list_no_ions():
-    """HD189 has `use_ion=False`; `data_var.charge_list` must stay
-    empty (or unset) and the legacy attribute must not appear with
-    spurious entries.
-    """
+    """With `use_ion=False`, `data_var.charge_list` stays empty (or unset)."""
     from vulcan_jax.ini_abun import InitialAbun
     from vulcan_jax.config import default_config
 
@@ -308,11 +279,8 @@ def test_charge_list_no_ions():
 
 
 # ---------------------------------------------------------------------------
-# EQ-mode HD189 fork against VULCAN-master (bit-exact gate).
-#
-# This comparison mutates `sys.modules` and inserts `../VULCAN-master/`
-# at the head of `sys.path`, so the pytest wrapper below runs it in a
-# fresh Python process.
+# EQ-mode HD189 fork against VULCAN-master (bit-exact gate). Mutates
+# sys.modules/sys.path, so the pytest wrapper runs it in a fresh process.
 # ---------------------------------------------------------------------------
 
 
@@ -368,12 +336,10 @@ def main() -> int:
         )
         return 0
 
-    # Stay in VULCAN-master while building the master-side objects: store.Variables()
-    # reads sflux_file and Atm.load_TPK() reads the TP profile via paths RELATIVE to
-    # the master repo root, and ini_y() shells out to fastchem_vulcan/. Only chdir
-    # back to ROOT after every master-side file read is done (the comparison below
-    # is purely in-memory). Restoring CWD earlier raised
-    # FileNotFoundError: atm/stellar_flux/... and masked this EQ-vs-master gate.
+    # Stay in VULCAN-master while building the master-side objects: they read
+    # files via paths RELATIVE to the master root, and ini_y() shells out to
+    # fastchem_vulcan/. Only chdir back to ROOT after all master-side reads are
+    # done; restoring CWD earlier raised FileNotFoundError and masked this gate.
     data_var2 = st_v.Variables()
     data_atm2 = st_v.AtmData()
     make_atm2 = ba_v.Atm()
@@ -436,10 +402,8 @@ def main() -> int:
 
 @pytest.mark.master_serial
 def test_zzz_main_eq_vs_master():
-    """EQ-mode bit-exact gate against VULCAN-master.
-
-    The implementation intentionally swaps in VULCAN-master modules, so
-    run it in a fresh subprocess and assert the exit code.
+    """EQ-mode bit-exact gate against VULCAN-master, run as a fresh
+    subprocess because main() swaps in VULCAN-master modules.
     """
     if not VULCAN_MASTER.is_dir():
         pytest.skip(

@@ -5,19 +5,9 @@ Writes `adj_state_hd189.npz` (HD189, photo OFF, C-H-N-O network) and
 plus the operator inputs the reverse-mode adjoint tests replay, so the adjoint
 linear algebra can be iterated without re-converging a run.
 
-Ported into this repository 2026-08-03. These generators previously lived only
-in the UNPUBLISHED sibling `jax_paper/scripts/`, so a clean clone could not
-produce two of the four fixtures the suite requires -- and by then both had also
-rotted: each hardcoded `ROOT = /Users/imalsky/Desktop/Emulators/VULCAN_Project`,
-a path that no longer exists, and imported jax_paper's local `_cfg_compat` shim
-for the deleted `vulcan_cfg` module. Both are fixed here: paths derive from
-`__file__`, and the configs come from `vulcan_jax.config.load_config`.
-
-NETWORK IS IMPORT-LOCKED, so the two states cannot be built in one process: the
-HD189 state needs the C-H-N-O network and the W39b state needs SNCHO, and the
-network is frozen at the first `import vulcan_jax`. Each case therefore runs in
-its own process. `tests/gen_fixtures.py` handles that fan-out; running this
-module directly builds exactly one case.
+The network is import-locked, so the two states cannot be built in one
+process; each case runs in its own process (`tests/gen_fixtures.py` handles
+the fan-out; running this module directly builds exactly one case).
 
 Run from VULCAN-JAX/:
     python tests/_gen_adj_state.py hd189 [--out DIR]

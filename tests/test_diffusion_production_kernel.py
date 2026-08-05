@@ -1,24 +1,11 @@
-"""Validate the PRODUCTION JAX diffusion kernel against the NumPy reference.
-
-`tests/test_diffusion.py` and `tests/test_diffusion_variants.py` compare the
-NumPy reference (`diffusion_numpy_ref`) against VULCAN-master, but the actual
-hot-path kernel `jax_step._build_diff_coeffs_jax` / `_apply_diffusion_jax` is
-only exercised transitively through one coarse Ros2-step oracle. This test
-compares the production kernel directly against the same NumPy reference at
-machine precision, for the default ('gravity') transport mode.
-
-This also pins the diffusion-Jacobian self-consistency: the per-layer block
-diagonals the kernel feeds into block-Thomas (diag/sup/sub) must equal the
-analytical (frozen-ysum) block diagonals of the diffusion operator. JAX-only;
+"""Validate the PRODUCTION JAX diffusion kernel against the NumPy reference
+(`diffusion_numpy_ref`), which is itself master-validated elsewhere. JAX-only;
 no VULCAN-master oracle required.
 
-Validates:
-  1. Coefficient arrays (A_eddy/B_eddy/C_eddy, A_mol/B_mol/C_mol) match the
-     NumPy reference to ~machine precision.
-  2. The diffusion operator output (`_apply_diffusion_jax` vs `apply_diffusion`)
-     matches on significant cells.
-  3. The block-Jacobian diagonals (diag/sup/sub) assembled exactly as
-     `jax_ros2_step` does match the reference's `diffusion_block_diags`.
+Pins, for the default 'gravity' mode (and 'vm' mode below):
+  1. coefficient arrays (A/B/C eddy + mol) at ~machine precision,
+  2. the diffusion operator output on significant cells,
+  3. the block-Jacobian diagonals assembled exactly as jax_ros2_step does.
 """
 
 from __future__ import annotations
@@ -85,13 +72,10 @@ def main() -> int:
         denom = np.maximum(np.abs(ref), 1e-30 * max(np.abs(ref).max(), 1e-300))
         return float(np.max(np.abs(prod - ref) / denom))
 
-    # 1. Coefficient arrays — machine-precision parity vs the NumPy reference.
-    # C_mol mixes per-species molecular weights through the mean-molecular-weight
-    # gradient, so its JAX-vs-NumPy FP-ordering noise is composition-dependent and
-    # rides a few ULP higher than the rest (~2e-12 on some FastChem-EQ
-    # compositions). 1e-11 keeps this firmly at the machine-precision floor while
-    # absorbing that noise; the eddy coeffs still land at ~5e-16, so sensitivity to
-    # a real regression is not lost.
+    # 1. Coefficient arrays at machine precision. Tolerance 1e-11: C_mol's
+    # FP-ordering noise rides up to ~2e-12 on some compositions (mean-molecular-
+    # weight gradient); eddy coeffs still land at ~5e-16, so real regressions
+    # stay visible.
     for label, p, r in (
         ("A_eddy", A_eddy, coeffs.A_eddy),
         ("B_eddy", B_eddy, coeffs.B_eddy),
@@ -106,11 +90,9 @@ def main() -> int:
             print(f"FAIL: production {label} disagrees with NumPy reference")
             ok = False
 
-    # 2. Operator output on significant cells. The operator (A*y + B*y+ + C*y-)
-    # extracts a small residue from large cancellations (c0 ~ 1e10), so it rides
-    # at the documented diffusion FP-noise floor (~1e-5); the coefficient and
-    # block-diagonal checks above are the machine-precision ones. 1e-4 matches
-    # the operator tolerance in test_diffusion.py.
+    # 2. Operator output on significant cells. The operator extracts a small
+    # residue from large cancellations, so it rides at the diffusion FP-noise
+    # floor (~1e-5); 1e-4 matches the operator tolerance in test_diffusion.py.
     abs_tol = max(1e-12, 1e-12 * np.abs(diff_numpy).max())
     op_relerr = np.abs(diff_prod - diff_numpy) / np.maximum(np.abs(diff_numpy), abs_tol)
     print(f"operator max relerr (sig cells): {op_relerr.max():.3e}")
@@ -147,12 +129,9 @@ def test_main():
 
 
 def test_vm_mode_kernel_matches_reference():
-    """Production diffusion kernel reproduces the NumPy reference in the upwind
-    `use_vm_mol` mode, with a nonzero interface drift velocity vm (shape
-    (nz-1, ni)). The gravity-mode `main()` above leaves the vm branch
-    unexercised; this pins the hot-path discretization for the upwind scheme.
-    JAX-only -- no VULCAN-master oracle required.
-    """
+    """Pins the hot-path upwind (`use_vm_mol`) discretization against the
+    NumPy reference, with a nonzero mixed-sign interface drift vm
+    (shape (nz-1, ni)). JAX-only."""
     import types
 
     import jax.numpy as jnp

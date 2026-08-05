@@ -1,16 +1,14 @@
 """Vendored I/O classes from VULCAN-master/op.py.
 
-`ReadRate` is the network parser + rate-coef builder; it populates
-host-side metadata dicts (`var.Rf`, `var.pho_rate_index`, ...). Rate
-*values* are recomputed by `rates.build_rate_array` after this runs.
+`ReadRate` is the network parser + rate-coef builder, vendored with
+upstream structure intact (do not restyle it); it populates host-side
+metadata dicts (`var.Rf`, `var.pho_rate_index`, ...). Rate *values* are
+recomputed by `rates.build_rate_array` after this runs.
 
 `Output` writes the `.vul` pickle with the same public schema upstream
-plotting tools read. The photo cross-section dicts, per-reaction `var.k`
-dict, and RunState-backed parameter fields are synthesised at pickle time
-from typed JAX state.
-
-Most legacy class method bodies retain upstream structure. JAX-specific
-schema synthesis helpers are local adapters and should stay explicit.
+plotting tools read; photo cross-section dicts, the per-reaction `var.k`
+dict, and parameter fields are synthesised at pickle time from the typed
+`RunState`.
 """
 
 import copy
@@ -32,19 +30,14 @@ species = chem_funs.spec_list
 # ---------------------------------------------------------------------------
 # Rate-parse cache
 # ---------------------------------------------------------------------------
-# `ReadRate.read_rate` parses the whole reaction-network file on every call and
-# writes purely metadata onto `var` (the scratch temperature-dependent `k` dict
-# it builds is discarded — `rates.build_rate_array` recomputes the canonical
-# `var.k_arr`). The network is fixed for a whole dataset, so re-parsing it once
-# per profile is pure waste. Memoise the parsed metadata keyed by
-# `(resolved network path, use_ion)`; a cache hit restores deep copies onto the
-# fresh `var` so a later in-place mutation can't poison the cache. The cache is
-# per-process (module-global) — the GPU-batched emulator's spawn workers each
-# parse once and reuse for all their profiles. Disable with
-# $VULCAN_JAX_RATE_CACHE=0 (used by the parity test).
+# `ReadRate.read_rate` writes only metadata onto `var` (its scratch `k` dict
+# is discarded; `rates.build_rate_array` recomputes `var.k_arr`), so the parse
+# is memoised per process, keyed by (resolved network path, use_ion). A cache
+# hit restores DEEP COPIES onto the fresh `var` so later in-place mutation
+# cannot poison the cache. Disable with $VULCAN_JAX_RATE_CACHE=0.
 #
-# The exact set of `var` attributes `read_rate` writes (verified against the
-# function body). Everything else `read_rate` touches is local scratch.
+# The exact set of `var` attributes `read_rate` writes; everything else it
+# touches is local scratch.
 _RATE_PARSE_VAR_ATTRS = (
     "Rf",
     "Rindx",
@@ -124,17 +117,12 @@ def _warn_stale_reaction_ids(
 ) -> None:
     """Announce a network file whose written reaction ids are stale.
 
-    VULCAN's own ``make_chem_funs.py`` renumbers a network file in place the
-    first time it runs, so a file that has been run through upstream has
-    ``file_id == parser_position`` on every row. A file fetched from a remote,
-    hand-edited, or simply never run does not, and 6 of the 18 networks vendored
-    here are in that state.
-
-    The rate array is indexed positionally everywhere (``network.py`` builds it
-    from ``parser_i``; ``rates.apply_remove_list`` masks positionally), so the
-    parse is correct regardless. But ``cfg.remove_list`` is written by a human
-    reading the ids out of the file, and on a stale file those ids do not select
-    the reactions they appear to. Say so rather than let it pass silently.
+    Upstream's ``make_chem_funs.py`` renumbers a network file in place, so
+    ``file_id == parser_position`` only holds for files that have been run
+    through upstream; 6 of the 18 vendored networks are not in that state.
+    The rate array is indexed by POSITION everywhere, so the parse is correct
+    regardless, but a ``cfg.remove_list`` written from a stale file's id
+    column selects the wrong reactions. Say so rather than pass silently.
     """
     if not stale:
         return
@@ -807,11 +795,9 @@ class Output(object):
         """Set up the `.vul` writer for one run: create the output/plot dirs
         and warn if the target file already exists.
         """
-        # cfg defaults to the process default config so the CLI and legacy
-        # callers (which pass nothing) are unchanged. load_config() users pass
-        # their namespace so output paths, the .vul writer, and progress prints
-        # honor the same cfg as setup and the runner. Pair with
-        # OuterLoop(cfg=cfg); save_out(..., cfg=...) overrides per call.
+        # cfg defaults to the process default; load_config() users pass their
+        # namespace so output honors the same cfg as setup and the runner.
+        # Pair with OuterLoop(cfg=cfg); save_out(..., cfg=...) overrides.
         self._cfg = cfg if cfg is not None else default_config()
 
         output_dir, out_name, plot_dir = (
@@ -969,19 +955,16 @@ class Output(object):
         overrides) to `cfg_<out_name>.txt` under `dname/output_dir`, skipping
         private, callable, type, and module attributes so it re-reads as Python.
         """
-        # Create the target directory at the actual write location
-        # (dname/output_dir), not relative to the current working directory —
-        # save_cfg writes under dname, so a cwd != dname caller (the public API)
-        # would otherwise create cwd/output_dir and then fail to write under
-        # dname/output_dir.
+        # Create the directory at the actual write location (dname/output_dir),
+        # not relative to the cwd: a cwd != dname caller would otherwise create
+        # cwd/output_dir and then fail to write.
         output_dir, out_name = self._cfg.output_dir, self._cfg.out_name
         target_dir = os.path.join(dname, output_dir)
         os.makedirs(target_dir, exist_ok=True)
 
-        # Serialize the ACTIVE config (self._cfg) so the snapshot reflects the
-        # real run — including load_config() overrides. Values are repr'd so the
-        # file re-reads as Python; the machine-reproducible artifact is the
-        # resolved YAML the CLI writes via config.dump_config.
+        # Serialize the ACTIVE config (self._cfg), including load_config()
+        # overrides. Values are repr'd so the file re-reads as Python; the
+        # reproducible artifact is the resolved YAML from config.dump_config.
         lines = []
         for key in sorted(vars(self._cfg)):
             if key.startswith("_"):
@@ -1052,9 +1035,8 @@ class Output(object):
 
         var_save = {"species": species, "nr": nr}
 
-        # Build the photo-static pytree lazily from (var, atm) when not
-        # supplied by the caller; the cross-section dicts are then
-        # synthesised at pickle time.
+        # Build the photo-static pytree lazily from (var, atm) when absent;
+        # cross-section dicts are synthesised at pickle time.
         if photo_static is None and bool(getattr(self._cfg, "use_photo", False)):
             from . import photo_setup as _photo_setup
 

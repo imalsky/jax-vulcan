@@ -1,11 +1,7 @@
 """Validate VULCAN-JAX rates.py against VULCAN-master's ReadRate.read_rate.
 
-Runs VULCAN's startup pipeline up to the point where var.k is filled with
-forward rates, then compares to VULCAN-JAX's compute_forward_k for the same
-T/M atmosphere. Required for Task #5 validation.
-
-Run from VULCAN-JAX/:
-    python tests/test_rates.py
+Runs VULCAN's startup pipeline until var.k holds the forward rates, then
+compares VULCAN-JAX's compute_forward_k on the same T/M atmosphere.
 """
 
 from __future__ import annotations
@@ -25,12 +21,8 @@ os.chdir(ROOT)  # ensure relative paths in vulcan_cfg.py resolve
 # Oracle test: requires VULCAN-master sibling for the upstream `op` reference.
 # Skip cleanly when absent so VULCAN-JAX-only checkouts don't see a hard failure.
 def _oracle_dir():
-    """Configured upstream oracle checkout, or a non-existent sentinel path.
-
-    Returning a path that does not exist (rather than None) keeps every
-    `if not VULCAN_MASTER.is_dir(): skip` site below working unchanged, while
-    removing the silent sibling fallback.
-    """
+    """Configured upstream oracle checkout, or a non-existent sentinel path
+    (so the `is_dir()` skip sites work without a None branch)."""
     import os
     from pathlib import Path as _P
 
@@ -39,9 +31,7 @@ def _oracle_dir():
 
 
 # Oracle location comes from $VULCAN_MASTER_DIR, never from a sibling guess:
-# an auto-detected ../VULCAN-master pins nothing, and the copy on this project's
-# machine is not even a git checkout. `tests/oracle.py` resolves it and verifies
-# the pinned revision + a clean tree before any comparison runs.
+# an auto-detected ../VULCAN-master pins nothing. Do not restore the fallback.
 VULCAN_MASTER = _oracle_dir()
 if not VULCAN_MASTER.is_dir():
     pytest.skip(

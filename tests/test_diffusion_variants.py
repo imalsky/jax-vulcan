@@ -22,12 +22,8 @@ os.chdir(ROOT)
 # Oracle test: requires VULCAN-master sibling for the upstream op.diffdf_vm /
 # op.diffdf_settling reference. Skip cleanly when absent.
 def _oracle_dir():
-    """Configured upstream oracle checkout, or a non-existent sentinel path.
-
-    Returning a path that does not exist (rather than None) keeps every
-    `if not VULCAN_MASTER.is_dir(): skip` site below working unchanged, while
-    removing the silent sibling fallback.
-    """
+    """Configured upstream oracle checkout, or a non-existent sentinel path
+    (so the `is_dir()` skip sites work without a None branch)."""
     import os
     from pathlib import Path as _P
 
@@ -36,9 +32,7 @@ def _oracle_dir():
 
 
 # Oracle location comes from $VULCAN_MASTER_DIR, never from a sibling guess:
-# an auto-detected ../VULCAN-master pins nothing, and the copy on this project's
-# machine is not even a git checkout. `tests/oracle.py` resolves it and verifies
-# the pinned revision + a clean tree before any comparison runs.
+# an auto-detected ../VULCAN-master pins nothing. Do not restore the fallback.
 VULCAN_MASTER = _oracle_dir()
 if not VULCAN_MASTER.is_dir():
     pytest.skip(
@@ -73,11 +67,9 @@ def main() -> int:
     data_var, data_atm, _ = legacy_view(rs)
     nz, ni = data_var.y.shape
 
-    # Populate atm.vs and atm.vm with synthetic interface velocities so the
-    # upwind branches (sign-dependent) are actually exercised. HD189's default
-    # cfg has use_vm_mol=False, so setup leaves atm.vm all-zero; a nonzero
-    # synthetic vm (mixed sign, both shape (nz-1, ni)) makes diffdf_vm /
-    # diffdf_settling_vm a real comparison rather than a trivial vm==0 one.
+    # Synthetic mixed-sign interface velocities (shape (nz-1, ni)) so the
+    # sign-dependent upwind branches are actually exercised; setup leaves
+    # atm.vm all-zero with use_vm_mol=False.
     rng = np.random.default_rng(0)
     data_atm.vs = (rng.standard_normal((nz - 1, ni)) * 0.01).astype(np.float64)
     data_atm.vm = (rng.standard_normal((nz - 1, ni)) * 50.0).astype(np.float64)
@@ -128,16 +120,13 @@ def main() -> int:
     coeffs_setvm = diff_mod.build_diffusion_coeffs(data_var.y, data_atm, cfg_setvm)
     diff_setvm_jax = diff_mod.apply_diffusion(data_var.y, coeffs_setvm)
 
-    # KNOWN upstream self-inconsistency: op.diffdf_settling_vm OMITS the vm
-    # advective term at the bottom boundary (j=0) -- it keeps only vs there --
-    # even though op.diffdf_vm DOES include vm at j=0 (and so do the interior /
-    # top of diffdf_settling_vm itself). The canonical vm_branch carries the same
-    # quirk. VULCAN-JAX keeps vm consistent at j=0 across all modes, mirroring
-    # the documented op.lhs_jac_tot stance (we stay self-consistent rather than
-    # replicating an upstream boundary oversight). So in the doubly-non-default
-    # settling+vm combo the two agree everywhere except the j=0 row, and there
-    # they differ by *exactly* the omitted vm bottom-flux term. Verify rows 1..
-    # at the FP floor and pin the j=0 gap to that exact term.
+    # KNOWN upstream self-inconsistency (do not "fix" us to match): master's
+    # op.diffdf_settling_vm omits the vm advective term at j=0 while
+    # op.diffdf_vm keeps it (vm_branch carries the same quirk). VULCAN-JAX
+    # stays self-consistent at j=0 across all modes, so in the settling+vm
+    # combo the two agree everywhere except the j=0 row, which differs by
+    # exactly the omitted vm bottom-flux term. Verify rows 1.. at the FP
+    # floor and pin the j=0 gap to that exact term.
     abs_floor3 = 1e-12 * np.abs(diff_setvm_ref).max()
     pseudo_relerr_setvm = np.abs(diff_setvm_jax[1:] - diff_setvm_ref[1:]) / np.maximum(
         np.abs(diff_setvm_ref[1:]), abs_floor3

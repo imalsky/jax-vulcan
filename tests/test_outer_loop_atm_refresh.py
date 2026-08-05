@@ -1,37 +1,15 @@
-"""Validate that atm refresh + hydrostatic balance inside the JAX runner
-agree with the Python-side `op.Integration.update_mu_dz` /
-`update_phi_esc` + `var.y = n_0 * var.ymix` baseline.
+"""In-runner atm refresh + hydrostatic balance vs master's update_mu_dz /
+update_phi_esc + `var.y = n_0 * var.ymix` on HD189.
 
-Builds the HD189 reference state and runs the atm-refresh branch *both* ways:
+The two are NOT the same kernel: master computes g(z) from a STALE atm.zco
+while `update_mu_dz_jax` is self-consistent, a documented divergence (~1.8%
+at the top of atmosphere; positive pin in tests/test_atm_refresh_gravity.py).
+So the hydrostatic fields (g/Hp/dz/dzi/Hpi/zco) are held to REFRESH_RTOL
+(2e-2, asserted so a magnitude change surfaces), while mu and post-hydro
+var.y must match to <= 1e-13.
 
-  (A) via `op.Integration.update_mu_dz` / `update_phi_esc` writing into atm,
-      followed by Python `var.y = n_0 * var.ymix`.
-
-  (B) via the in-runner atm-refresh branch closed over by
-      `outer_loop._make_atm_refresh_branch`, with hydrostatic balance applied
-      inside `body_fn` of the JAX runner.
-
-Path A is master's NumPy `update_mu_dz`; path B is the JAX kernel. They are
-NOT the same kernel: master computes the hydrostatic gravity `g(z)` from a
-STALE `atm.zco` (the previous cycle's value), while `update_mu_dz_jax` is
-self-consistent (each layer's `g` uses the freshly-scanned `zco`). That is a
-real, documented divergence (~1.8% at the top of atmosphere for HD189; see
-README "Correctness fixes" and the positive pin in
-`tests/test_atm_refresh_gravity.py`). So the hydrostatic fields
-(g/Hp/dz/dzi/Hpi/zco) are only expected to agree to ~2% (`REFRESH_RTOL`),
-while quantities not sensitive to that gravity difference — `mu` and `var.y`
-after hydrostatic balance — match to float64 reduction-order precision.
-
-`top_flux` is intentionally NOT compared: HD189 has `diff_esc = []` and
-`use_topflux = False`, so it is physically inert, and the two harness paths
-seed its BC array differently (master keeps `atm.top_flux`; the JAX carry
-starts from `_pack_state`), which is a harness artifact, not a divergence.
-
-Validates:
-    1. atm.mu and var.y after hydrostatic balance match to ≤ 1e-13.
-    2. atm.{g, Hp, dz, dzi, Hpi, zco} agree to ≤ REFRESH_RTOL (the gravity
-       self-consistency divergence), NOT silently — the bound is asserted so a
-       regression that changed its magnitude would surface here.
+`top_flux` is intentionally not compared: physically inert on HD189, and the
+two harness paths seed its BC array differently (a harness artifact).
 """
 
 from __future__ import annotations
@@ -51,12 +29,8 @@ os.chdir(ROOT)
 # Oracle test: requires VULCAN-master sibling for the upstream
 # op.Integration.update_mu_dz / update_phi_esc reference. Skip when absent.
 def _oracle_dir():
-    """Configured upstream oracle checkout, or a non-existent sentinel path.
-
-    Returning a path that does not exist (rather than None) keeps every
-    `if not VULCAN_MASTER.is_dir(): skip` site below working unchanged, while
-    removing the silent sibling fallback.
-    """
+    """Configured upstream oracle checkout, or a non-existent sentinel path
+    (so the `is_dir()` skip sites work without a None branch)."""
     import os
     from pathlib import Path as _P
 
@@ -65,9 +39,7 @@ def _oracle_dir():
 
 
 # Oracle location comes from $VULCAN_MASTER_DIR, never from a sibling guess:
-# an auto-detected ../VULCAN-master pins nothing, and the copy on this project's
-# machine is not even a git checkout. `tests/oracle.py` resolves it and verifies
-# the pinned revision + a clean tree before any comparison runs.
+# an auto-detected ../VULCAN-master pins nothing. Do not restore the fallback.
 VULCAN_MASTER = _oracle_dir()
 if not VULCAN_MASTER.is_dir():
     pytest.skip(

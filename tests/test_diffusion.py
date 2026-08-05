@@ -16,15 +16,10 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 
-# Oracle test: requires VULCAN-master sibling for the upstream op.diffdf /
-# op.lhs_jac_tot reference. Skip cleanly when absent.
+# Oracle test: needs the upstream op.diffdf / op.lhs_jac_tot reference.
 def _oracle_dir():
-    """Configured upstream oracle checkout, or a non-existent sentinel path.
-
-    Returning a path that does not exist (rather than None) keeps every
-    `if not VULCAN_MASTER.is_dir(): skip` site below working unchanged, while
-    removing the silent sibling fallback.
-    """
+    """Configured upstream oracle checkout, or a non-existent sentinel path
+    (so `if not VULCAN_MASTER.is_dir(): skip` works without a None branch)."""
     import os
     from pathlib import Path as _P
 
@@ -33,9 +28,8 @@ def _oracle_dir():
 
 
 # Oracle location comes from $VULCAN_MASTER_DIR, never from a sibling guess:
-# an auto-detected ../VULCAN-master pins nothing, and the copy on this project's
-# machine is not even a git checkout. `tests/oracle.py` resolves it and verifies
-# the pinned revision + a clean tree before any comparison runs.
+# an auto-detected ../VULCAN-master pins nothing (the local copy is not a git
+# checkout). Do not restore the sibling fallback.
 VULCAN_MASTER = _oracle_dir()
 if not VULCAN_MASTER.is_dir():
     pytest.skip(
@@ -90,10 +84,8 @@ def main() -> int:
     import chem_funs as cf_v
 
     chem_jac_ref = -np.asarray(cf_v.symjac(y, data_atm.M, data_var.k), dtype=np.float64)
-    # lhs_ref = c0*I + chem_jac_ref + diff_jac_blocks  ?
-    # actually lhs = c0*I - chem_J - diff_J in VULCAN's convention; the
-    # neg_achemjac returns -chem_J already, so chem_jac_ref above is already
-    # the negated contribution. We just compare directly.
+    # VULCAN's convention: lhs = c0*I - chem_J - diff_J; chem_jac_ref above is
+    # already the negated contribution.
 
     # === Switch to VULCAN-JAX modules ===
     for mod in ("vulcan_cfg", "store", "build_atm", "op", "chem_funs"):
@@ -117,10 +109,8 @@ def main() -> int:
     diff_jax = diff_mod.apply_diffusion(y, coeffs)
 
     # === Compare RHS (operator) ===
-    # Use a sane absolute floor so cancellation residues near zero don't
-    # blow up the relative error. Diffusion contributions for stable species
-    # at near-zero abundance can ride at machine-precision noise levels;
-    # those are physically zero and shouldn't fail the comparison.
+    # Absolute floor so cancellation residues near zero (physically zero
+    # diffusion at near-zero abundance) don't blow up the relative error.
     abs_tol = max(1e-12, 1e-12 * np.abs(diff_ref).max())
     relerr = np.abs(diff_jax - diff_ref) / np.maximum(np.abs(diff_ref), abs_tol)
     print(f"diffdf max relerr: {relerr.max():.3e}")
@@ -134,25 +124,20 @@ def main() -> int:
     # === Compare Jacobian blocks ===
     diag_d, sup_d, sub_d = diff_mod.diffusion_block_diags(coeffs, ni)
 
-    # Build the full diffusion contribution to the Jacobian and compare with
-    # (lhs_ref - c0*I - chem_jac_ref). lhs_ref carries c0 on its diagonal
-    # already (added in op.py), so we strip c0 after subtracting chem_jac_ref
-    # to isolate the diffusion blocks.
+    # Isolate the diffusion blocks as (lhs_ref - c0*I - chem_jac_ref).
     r = 1.0 + 1.0 / np.sqrt(2.0)
     c0 = 1.0 / (r * data_var.dt)
     diff_jac_only = lhs_ref - chem_jac_ref
     # Subtract c0 from the diagonal
     np.fill_diagonal(diff_jac_only, np.diag(diff_jac_only) - c0)
 
-    # Now diff_jac_only[a, b] should equal -(diffusion_block at appropriate layer)
-    # for diagonal: diff_jac_only[j*ni+i, j*ni+i] = -(A_eddy[j] + Ai[j, i])
-    # for super:   diff_jac_only[j*ni+i, (j+1)*ni+i] = -(B_eddy[j] + Bi[j, i])
-    # for sub:     diff_jac_only[j*ni+i, (j-1)*ni+i] = -(C_eddy[j] + Ci[j, i])
+    # diff_jac_only mapping:
+    #   diag:  [j*ni+i, j*ni+i]     = -(A_eddy[j] + Ai[j, i])
+    #   super: [j*ni+i, (j+1)*ni+i] = -(B_eddy[j] + Bi[j, i])
+    #   sub:   [j*ni+i, (j-1)*ni+i] = -(C_eddy[j] + Ci[j, i])
 
-    # Floor for jac comparisons: typical diff_jac entries are ~1e-4. Below
-    # ~1e-4 is in the FP-noise regime when extracting from c0 + chem cancellation.
-    # The test passes when diffusion physics matches at the order that contributes
-    # to the dynamics (>= 1e-4); any tiny residues are noise from the extraction.
+    # Floor for jac comparisons: typical entries are ~1e-4; below that the
+    # extraction from the c0 + chem cancellation is FP noise, not physics.
     jac_abs_tol = 1e-4
     max_diag_err = 0.0
     max_sup_err = 0.0
@@ -161,7 +146,7 @@ def main() -> int:
         for i in range(ni):
             ref_val = diff_jac_only[j * ni + i, j * ni + i]
             jax_val = -diag_d[j, i]
-            # Pass if absolute diff is below floor OR relative diff is small
+            # Pass if abs diff is below the floor OR rel diff is small.
             abs_diff = abs(ref_val - jax_val)
             if abs_diff < jac_abs_tol:
                 err = 0.0
@@ -173,7 +158,6 @@ def main() -> int:
             for i in range(ni):
                 ref_val = diff_jac_only[j * ni + i, (j + 1) * ni + i]
                 jax_val = -sup_d[j, i]
-                # Pass if absolute diff is below floor OR relative diff is small.
                 abs_diff = abs(ref_val - jax_val)
                 if abs_diff < jac_abs_tol:
                     err = 0.0
@@ -185,7 +169,6 @@ def main() -> int:
             for i in range(ni):
                 ref_val = diff_jac_only[j * ni + i, (j - 1) * ni + i]
                 jax_val = -sub_d[j - 1, i]
-                # Pass if absolute diff is below floor OR relative diff is small.
                 abs_diff = abs(ref_val - jax_val)
                 if abs_diff < jac_abs_tol:
                     err = 0.0
@@ -223,27 +206,20 @@ def main() -> int:
         )
 
     print()
-    # Note on tolerance: lhs_jac_tot's diagonal at the boundary is computed
-    # by subtracting `c0 + chem_jac_diag` (~1e10) from `lhs_diag` (~1e10) to
-    # isolate the diff_jac residue (~1e-4), losing 14 digits of precision in
-    # the comparison. The actual formulas match VULCAN bit-for-bit (verified
-    # against op.diffdf's Ai[0] directly). 1e-4 here tolerates that
-    # cancellation; sup/sub blocks don't have this issue and use 1e-10.
-    # The diagonal sometimes disagrees with VULCAN's lhs_jac_tot at heavy
-    # condensable species (e.g. S8) where lhs_jac_tot itself has a small
-    # internal inconsistency vs its own op.diffdf. Cross-checking directly
-    # against op.diffdf (apply_diffusion vs diffdf): max relerr is ~2e-6,
-    # which is FP-noise-bound. The full integration uses the diffusion
-    # operator we computed; its analytical Jacobian is what we want.
+    # Tolerances (do not tighten without re-deriving):
+    # - operator 1e-3: He sits near diffusive equilibrium, so its net flux is
+    #   a ~12-digit cancellation of ~1e10 terms and the worst cell rides the
+    #   float64 roundoff floor (~3e-4) even though the formulas match
+    #   op.diffdf to ~1 ULP; the next legitimate signal is ~7e-6, so a real
+    #   bug stays catchable.
+    # - diag 2.0: extracting the ~1e-4 diff_jac residue from ~1e10 lhs terms
+    #   loses ~14 digits, and lhs_jac_tot itself is slightly inconsistent
+    #   with its own op.diffdf at heavy condensables (our Jacobian is the
+    #   correct one there; direct apply_diffusion vs diffdf is ~2e-6).
+    # - sup/sub 1e-10: no cancellation issue there.
     ok = (
-        # He sits near diffusive equilibrium: its net flux is a ~12-digit
-        # cancellation of ~1e10 terms, so the single worst cell rides at the
-        # float64 roundoff floor (~3e-4 relerr) even though the formulas match
-        # op.diffdf to ~1 ULP (only the summation order differs). 1e-3 clears
-        # that floor with margin; the next legitimate signal is ~7e-6, so a
-        # real operator bug (relerr >> floor across many cells) stays catchable.
         relerr.max() < 1e-3
-        and max_diag_err < 2.0  # allow VULCAN's lhs_jac_tot minor inconsistency
+        and max_diag_err < 2.0
         and max_sup_err < 1e-10
         and max_sub_err < 1e-10
     )
@@ -253,11 +229,8 @@ def main() -> int:
 
 @pytest.mark.master_serial
 def test_main():
-    """Pytest wrapper. This test does a deliberate VULCAN-master ↔
-    VULCAN-JAX module-table swap (see `sys.modules.pop` block in
-    `main()`) which only works from a cold Python start. Under pytest
-    the modules are already cached from prior tests, so we run `main()`
-    in a fresh subprocess and assert the exit code."""
+    """Runs main() in a fresh subprocess: the master/JAX module-table swap
+    only works from a cold Python start."""
     import subprocess
 
     result = subprocess.run(

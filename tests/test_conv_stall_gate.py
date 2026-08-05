@@ -1,22 +1,13 @@
 """The JAX-only stalled-convergence fallback: off means off, and the gates hold.
 
-`conv_stall_window` has no counterpart in VULCAN 2.0 `master` or in
-`shami-EEG/VULCAN` `vm_branch` (Shami asked what it was, email 2026-07-14), so a
-VULCAN 2 parity run must be able to switch it off. Before 2026-07-30 it could
-not be: the only knob was the lookback `conv_stall_window`, which
-`runtime_validation` requires to be >= 1, and which makes the fallback fire
-SOONER as it shrinks. `use_conv_stall` is the explicit off switch.
+The fallback has no counterpart in upstream master or vm_branch, so a VULCAN 2
+parity run must be able to switch it off. `use_conv_stall` is the explicit off
+switch; `conv_stall_window` is only the lookback (>= 1, smaller fires SOONER).
 
-The tests seed the runner carry directly into a stall-eligible state rather than
-integrating to one, so each case is a single `cond_fn` evaluation:
-
-  * every stall gate satisfied,
-  * `conv_normal` deliberately FALSE (longdydt is large), so the only way the
-    run can stop for a convergence reason is the stall fallback,
-  * no runtime/step-count exit available.
-
-Under those conditions the run terminates iff the fallback is enabled, which is
-what "disabled means disabled" means operationally.
+The tests seed the runner carry directly into a stall-eligible state (every
+stall gate satisfied, `conv_normal` deliberately false, no runtime/step-count
+exit), so each case is a single `cond_fn` evaluation and the run terminates
+iff the fallback is enabled.
 """
 
 from __future__ import annotations
@@ -32,12 +23,9 @@ ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
-# NO shipped config may enable the fallback. It has no VULCAN counterpart, and
-# as of 2026-07-30 no shipped case needs it: every one of them exits on the
-# normal convergence criterion or on a budget limit, never on the stall test.
-# It stays in the code as an opt-in, and its counters stay as diagnostics
-# (vulcan-forward and vulcan-retrieval read them), but nothing ships with a
-# convergence decision that VULCAN 2.0 could not also have made.
+# NO shipped config may enable the fallback: it has no VULCAN counterpart and
+# no shipped case needs it. It stays as an opt-in, and its counters stay as
+# diagnostics (vulcan-forward and vulcan-retrieval read them).
 _PARITY_CONFIGS = ("default", "HD189", "HD209", "W39b")
 _V3_CONFIGS = ("HD189_vulcan3",)
 
@@ -176,13 +164,9 @@ def test_parity_configs_ship_the_fallback_off():
 def test_no_shipped_config_enables_the_fallback():
     """Nothing shipped may decide convergence on a non-VULCAN criterion.
 
-    This used to assert the opposite for the VULCAN 3 preset. It was flipped on
-    2026-07-30 after measuring that no shipped case needs it: HD189_vulcan3
-    converges on the normal criterion at 2820 accepted steps
-    (termination_reason 1), so the fallback never fired even when enabled, and
-    every other consumer in the workspace was already disabling it by hand
-    (vulcan-jwst-tool and three jax_paper adjoint scripts set
-    conv_stall_window = 10**9). The mechanism stays available as an opt-in.
+    Do not flip this back for the VULCAN 3 preset: HD189_vulcan3 converges on
+    the normal criterion (2820 accepted steps, termination_reason 1), so the
+    fallback never fired even when enabled. It stays available as an opt-in.
     """
     import glob
 

@@ -1,20 +1,15 @@
 """End-to-end batched NH3-relaxation condensation: solo vs `run_batch` lanes.
 
-The NH3 cold-trap index (`nh3_conden_top = argmin(sat_mix['NH3'])`) used to be
-a host-side Python int baked into the runner closure, so `run_batch` rejected
-active NH3 relaxation (a vmapped batch would have shared lane 0's index). It
-now rides `ProfileVars` as a per-lane 0-d int32. This test builds two cold
-Jupiter-like profiles whose cold-trap indices genuinely differ, runs each solo
-on its own runner, then batches them on profile A's runner — every per-lane
-result must match its solo run for the abundant, well-conditioned species (a
-leak corrupts those; see the YMIX_FLOOR note below for why bitwise all-species
-agreement is impossible under vmap).
+Pins that the NH3 cold-trap index rides `ProfileVars` per lane (not the
+runner closure): two cold Jupiter-like profiles with genuinely different
+cold-trap indices are run solo and batched on profile A's runner, and each
+lane must match its solo run for the abundant species (see the YMIX_FLOOR
+note in the child for why bitwise all-species agreement is impossible under
+vmap).
 
-The default import-locked network has no `NH3_l_s`, so the child process
-selects the lowT Jupiter network via `$VULCAN_JAX_NETWORK` (same pattern as
-`test_condensation_runtime_subprocess.py`). Config values follow master's
-`cfg_examples/vulcan_cfg_Jupiter.py` (H2O+NH3 relax, r_p/rho_p) with an
-analytical Heng+14 T-P so no atm file is read.
+The default import-locked network has no `NH3_l_s`, so the child selects the
+lowT Jupiter network via `$VULCAN_JAX_NETWORK`; config values follow master's
+Jupiter example with an analytical Heng+14 T-P so no atm file is read.
 """
 
 from __future__ import annotations

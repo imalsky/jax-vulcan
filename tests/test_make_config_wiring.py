@@ -1,14 +1,6 @@
 """make_config() is a real public API: overrides reach setup AND the runner.
 
-Regression coverage for the config-isolation fix. Before it, make_config()
-returned a separate namespace whose overrides were silently ignored — setup
-read the global vulcan_cfg module and OuterLoop took no cfg at all, so the
-advertised `cfg = make_config(...); rs = with_pre_loop_setup(cfg)` flow built a
-default atmosphere and ran with default solver knobs. No prior test exercised a
-separate-namespace cfg (vmap / host-hook tests all pin cfg == the global
-module), so the regression was invisible.
-
-This file asserts, with a make_config() namespace distinct from the global:
+With a make_config() namespace distinct from the global, this file pins:
     1. grid overrides (nz / P_b / P_t) reach the pre-loop setup,
     2. runner overrides (count_max) reach OuterLoop's static config,
     3. nothing leaks onto the global vulcan_cfg module afterward,

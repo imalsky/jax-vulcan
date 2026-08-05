@@ -1,51 +1,40 @@
 """Standalone GPU throughput benchmark for VULCAN-JAX.
 
-This script integrates a batch of HD 189-like planets to steady state in ONE
-vmapped device call (`OuterLoop.run_batch`, the vmap-across-profiles path).
-Each planet is the vendored HD189 atmosphere (T-P + Kzz file) with its
-temperature profile scaled by a few percent, initialised from FastChem
-equilibrium, photochemistry off (the emulator data-generation regime this
-benchmark measures; `run_batch` also supports photo-on batches). That
-workload converges in ~600 accepted Ros2 steps (~50 s single-profile on a
-laptop CPU), so the default job is a few minutes, not an hour.
+Integrates a batch of HD 189-like planets to steady state in ONE vmapped
+device call (`OuterLoop.run_batch`). Each planet is the vendored HD189
+atmosphere (T-P + Kzz file) with its temperature profile scaled by a few
+percent, initialised from FastChem equilibrium, photochemistry off (the
+emulator data-generation regime; `run_batch` also supports photo-on batches).
+That workload converges in ~600 accepted Ros2 steps (~50 s single-profile on
+a laptop CPU), so the default job is a few minutes.
 
-Design (items 1-4 were problems in the first GH200 run; item 5 came from
-its batch-512 OOM analysis):
+Design rules (do not revert):
 
-1.  **Profiles actually converge.** The real HD189 EQ-init regime needs only
-    ~600 steps; the step cap defaults to 2500 (4x margin). The first GH200
-    run used a synthetic cold const_mix CH4+O2 column that needs ~4100 steps
-    to burn through the combustion transient, with a 2000-step cap — so
-    every lane terminated on the step cap (0/512 "converged").
-2.  **Parallel host setup.** RunStates are built on a spawn `ProcessPool`
-    pinned to CPU (the same pattern as the emulator's GPU-batched generation),
-    one task per planet, using every core PBS gives the job. Each worker gets
-    a private copy of the package's vendored FastChem tree via
-    `$VULCAN_JAX_FASTCHEM_DIR` so the cross-process flock never serialises
-    the pool.
-3.  **The GPU never waits for the CPU.** Builds for ALL batch sizes are
-    submitted up front; the GPU starts integrating the smallest batch as soon
-    as its planets are ready while the pool keeps building the rest.
-4.  **Live progress.** The batched integration is driven in chunks (default
-    250 accepted steps per device call) via the carry's `chunk_target` yield,
-    so a timestamped status line (lanes done, step counts, reason breakdown)
-    appears every chunk instead of one table after a long silence.
-5.  **Device-batch tiling.** The on-device batch is capped (default 128 via
+1.  Profiles must actually converge: the step cap defaults to 2500, a 4x
+    margin over the ~600 steps this regime needs. A cap below the real step
+    count makes every lane terminate on the cap (0 "converged").
+2.  Host setup runs on a spawn `ProcessPool` pinned to CPU, one task per
+    planet. Each worker gets a private copy of the vendored FastChem tree
+    via `$VULCAN_JAX_FASTCHEM_DIR` so the cross-process flock never
+    serialises the pool.
+3.  The GPU never waits for the CPU: builds for ALL batch sizes are
+    submitted up front; integration starts on the smallest batch while the
+    pool keeps building the rest.
+4.  Live progress: the batched integration is driven in chunks (default 250
+    accepted steps per device call) via the carry's `chunk_target` yield, so
+    a timestamped status line appears every chunk.
+5.  Device-batch tiling: the on-device batch is capped (default 128 via
     `--device-batch`); larger sweep batches run as sequential sub-tiles
     sharing one XLA compile. The vmapped Jacobian-assembly transient grows
-    linearly in the on-device batch and OOM'd an untiled batch 512 on a
-    96 GB GH200; per-planet throughput was already near-saturated by 128,
-    so 4x128 tiles recover essentially all of the 512-wide throughput.
+    linearly in the on-device batch and OOMs an untiled batch 512 on a
+    96 GB GH200; per-planet throughput is already near-saturated by 128.
     Per-lane results are unchanged (lanes never interact).
 
-It is standalone: it imports only `vulcan_jax`, the stdlib, NumPy, and JAX —
-no sibling repos, no `../VULCAN-master/`; the atmosphere file and the FastChem
-binary both ship inside the installed package.
+Standalone: imports only `vulcan_jax`, the stdlib, NumPy, and JAX -- no
+sibling repos; the atmosphere file and the FastChem source ship inside the
+installed package.
 
-------------------------------------------------------------------------------
-RUN IT
-------------------------------------------------------------------------------
-After `pip install vulcan-jax` (>= 0.1.13, nothing else):
+RUN IT, after `pip install vulcan-jax`:
 
     # Quick test: 2 HD189-like planets (CPU on a laptop, GPU if visible).
     python gpu_benchmark.py --batches 2
@@ -53,17 +42,15 @@ After `pip install vulcan-jax` (>= 0.1.13, nothing else):
     # Force the GPU backend (errors early if no GPU is visible to JAX):
     JAX_PLATFORM_NAME=gpu python gpu_benchmark.py
 
-On the GH200 / NAS (PBS):  qsub supercomputer_cmds/run_gpu_benchmark.pbs
-On the edge A100 (SLURM):  sbatch supercomputer_cmds/run_gpu_benchmark.sh
-Both stream this script's output to a tail-able log file; the .sh variant
-adds an untiled Fix-B memory probe after the tiled sweep. For the paper's
-throughput-vs-batch-size sweep:  qsub -v BATCHES="8 64 256 512" ... /
-sbatch --export=ALL,BATCHES="8 64 256 512" ...
+PBS:   qsub supercomputer_cmds/run_gpu_benchmark.pbs
+SLURM: sbatch supercomputer_cmds/run_gpu_benchmark.sh
+For a throughput-vs-batch-size sweep pass BATCHES="8 64 256 512" via
+qsub -v / sbatch --export=ALL.
 
-The "profiles/s" at the largest batch size is the number to watch: the GPU
-amortizes a fixed per-call overhead across the whole batch, so throughput
-should climb with batch size until the device saturates. On CPU it will be
-roughly flat (vmap lanes time-share a few cores).
+Watch "profiles/s" at the largest batch size: the GPU amortizes a fixed
+per-call overhead across the whole batch, so throughput should climb with
+batch size until the device saturates. On CPU it will be roughly flat
+(vmap lanes time-share a few cores).
 """
 
 from __future__ import annotations
@@ -118,9 +105,8 @@ def build_cfg(nz: int, count_max: int):
 
     return vulcan_jax.make_config(
         ini_mix="EQ",  # vendored-FastChem equilibrium, like the real HD189 config
-        # atm_type/atm_file/Kzz_prof stay at the package defaults ('file',
-        # the vendored HD189 atm, Kzz from the same file); each worker swaps
-        # in its own T-scaled copy of that file per planet.
+        # atm_type/atm_file/Kzz_prof stay at the package defaults; each worker
+        # swaps in its own T-scaled copy of the vendored HD189 atm file.
         use_photo=False,  # photo-off: the emulator data-generation regime
         use_ion=False,
         use_condense=False,
@@ -150,9 +136,8 @@ def make_tscales(n: int, spread: float, seed: int) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# Host-setup worker pool (spawn, CPU-pinned). Same pattern as the emulator's
-# GPU-batched generation: spawn (not fork) because the parent has CUDA
-# initialised; CPU-pinned so 70+ workers never touch the H100; each worker
+# Host-setup worker pool. Spawn (not fork) because the parent has CUDA
+# initialised; CPU-pinned so the workers never touch the GPU; each worker
 # gets a private FastChem tree so the package's cross-process fcntl.flock
 # never serialises the pool.
 # ---------------------------------------------------------------------------
@@ -164,7 +149,7 @@ _WORKER_ATM = None  # parsed (header_lines, P, T, Kzz) of the vendored HD189 atm
 def _seed_private_fastchem_tree(worker_root) -> None:
     """Point $VULCAN_JAX_FASTCHEM_DIR at a private copy of the package's
     fastchem_vulcan/ tree (binary + input data). Must run BEFORE the first
-    vulcan_jax import — the env var is read at import time (>= 0.1.10)."""
+    vulcan_jax import: the env var is read at import time."""
     import importlib.util
     import shutil
     from pathlib import Path
@@ -219,12 +204,11 @@ def _worker_build(task):
 
     Writes a private copy of the HD189 atm file with the temperature column
     scaled by `tscale` (Kzz and the pressure grid unchanged) and points the
-    cfg at it — an HD189-like planet, a few percent hotter or cooler.
+    cfg at it.
 
-    Stdout/stderr are silenced at the OS fd level so 512 repetitions of the
-    FastChem / init chatter don't drown the parent's progress log — the
-    FastChem binary is a subprocess that inherits the fds, so a Python-level
-    redirect_stdout would not catch it.
+    Stdout/stderr are silenced at the OS fd level, not with redirect_stdout:
+    the FastChem binary is a subprocess that inherits the fds, so a
+    Python-level redirect would not catch its chatter.
     """
     import copy
 
@@ -298,10 +282,10 @@ def _device_mem_stats():
     """Peak / current / limit device memory in GiB, or None when the backend
     has no allocator stats (CPU, some platforms).
 
-    `peak_bytes_in_use` is cumulative for the process — XLA's allocator has no
-    public reset — so within an ascending batch sweep the value after each
-    batch is that batch's peak. This is the number that verifies the chunked
-    Jacobian assembly actually bounds the vmap transient on device.
+    `peak_bytes_in_use` is cumulative for the process (XLA's allocator has no
+    public reset), so within an ASCENDING batch sweep the value after each
+    batch is that batch's peak. This is the number that verifies the tiling
+    actually bounds the vmap transient on device.
     """
     import jax
 
@@ -367,12 +351,11 @@ def _reason_breakdown(reasons: np.ndarray) -> str:
 def integrate_chunked(integ, states_b, atm_b, n, count_max, chunk, label):
     """Drive `run_batch` to per-lane termination in `chunk`-step device calls.
 
-    Each call returns when every live lane has either really terminated
-    (converged / runtime / step cap, recorded in `termination_reason`) or
-    advanced `chunk` accepted steps past its previous yield — the carry's
-    `chunk_target` mechanism. Finished lanes stay frozen, so the final state
-    of each lane is identical to one uninterrupted `run_batch` call; the
-    chunking only buys the host a place to log progress.
+    Each call returns when every live lane has either terminated (recorded in
+    `termination_reason`) or advanced `chunk` accepted steps past its previous
+    yield (the carry's `chunk_target` mechanism). Finished lanes stay frozen,
+    so the final state of each lane is identical to one uninterrupted
+    `run_batch` call; the chunking only buys the host a place to log progress.
 
     Returns (final_state, total_s, call_times).
     """
@@ -415,10 +398,8 @@ def benchmark_one(integ, run_states, count_max, chunk, label, device_batch):
     compile (same (nz, tile) shape); a final partial tile is padded with
     copies of planet 0 (padded lanes are integrated but excluded from the
     stats) so it reuses the same compile too. Per-lane results are identical
-    to the untiled call — lanes never interact — so tiling only bounds the
-    device's peak live memory, which is what OOM'd batch 512 on a 96 GB
-    GH200 (the vmapped Jacobian-assembly transient grows linearly in the
-    on-device batch).
+    to the untiled call (lanes never interact), so tiling only bounds the
+    device's peak live memory (see design rule 5 in the module docstring).
 
     Returns a result dict for the summary table.
     """

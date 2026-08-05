@@ -1,18 +1,9 @@
 """Unit tests for the entry points in `rates.py`.
 
-Covers:
-  - `apply_lowT_caps`: synthetic Tco that fires all three caps; check the
-    cap values match the Moses+2005 formulas hardcoded in
-    `legacy_io.ReadRate.lim_lowT_rates`.
-  - `apply_remove_list`: literal zero of the indices passed in, no auto-zero
-    of the paired forward/reverse partner.
-  - `build_rate_array` end-to-end vs the legacy
-    `read_rate -> rev_rate -> remove_rate` chain on the HD189 reference
-    state (uses `hd189_state` fixture; no VULCAN-master sibling required
-    because the legacy chain lives in vendored `legacy_io`).
-
-Run from VULCAN-JAX/:
-    pytest tests/test_read_rate.py
+Covers `apply_lowT_caps` (Moses+2005 cap formulas), `apply_remove_list`
+(literal indices only, no partner auto-zero), and `build_rate_array`
+end-to-end vs the vendored legacy read_rate -> rev_rate -> remove_rate
+chain on the HD189 fixture (no VULCAN-master sibling required).
 """
 
 from __future__ import annotations
@@ -44,14 +35,11 @@ def _find_rxn_idx(net, eq: str) -> int:
 
 
 def _load_nasa9_local(net):
-    """Load NASA-9 coefficients fresh.
+    """Load NASA-9 coefficients fresh via `gibbs.load_nasa9`.
 
-    We deliberately don't read `nasa9_coeffs` because the suite has a
-    known module-state ordering issue (see the conftest snapshot/restore
-    note): tests that pop `chem_funs` from `sys.modules` can re-resolve
-    it to upstream's SymPy-generated `chem_funs.py`, which doesn't expose
-    the JAX-side private attribute. Loading directly via
-    `gibbs.load_nasa9` avoids the question.
+    Deliberately avoids the module-level `nasa9_coeffs`: tests that pop
+    `chem_funs` from `sys.modules` can re-resolve it to upstream's SymPy
+    module, which lacks the JAX-side private attribute.
     """
     import vulcan_jax.gibbs as gibbs
     from vulcan_jax.config import default_config
@@ -202,14 +190,10 @@ def test_remove_list_none_or_empty_is_noop():
 
 
 def test_build_rate_array_matches_legacy_hd189(hd189_state):
-    """End-to-end: `build_rate_array` should match the legacy
-    `read_rate -> rev_rate -> remove_rate` chain bit-exactly on HD189
-    (HD189 has `use_lowT_limit_rates=False`, `remove_list=[]`).
+    """Pins `build_rate_array` == legacy chain to 1e-13 relerr on HD189.
 
-    The conftest fixture also runs `compute_J` which overwrites the photo
-    rate slots with computed J-rates -- those live in a separate code
-    path. Mask those (and ion / conden / radiative slots) from this
-    comparison; `build_rate_array` is the chemistry-rate half only.
+    Photo/ion/conden/radiative rows are masked: the fixture's compute_J
+    overwrites those slots and `build_rate_array` is the chemistry half only.
     """
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates as rates
@@ -223,16 +207,13 @@ def test_build_rate_array_matches_legacy_hd189(hd189_state):
 
     nr = int(net.nr)
     nz = int(hd189_state.atm.Tco.shape[0])
-    # `hd189_state.var.k_arr` carries the dense rate array; compare
-    # against that.
     k_legacy = np.asarray(hd189_state.var.k_arr, dtype=np.float64)
     if k_legacy.shape != (nr + 1, nz):
         raise AssertionError(
             f"hd189_state.var.k_arr shape {k_legacy.shape} != ({nr + 1}, {nz})"
         )
 
-    # Reactions whose rate row is set outside the read_rate -> rev_rate ->
-    # remove_rate chain (and therefore not in `build_rate_array`'s scope).
+    # Rows set outside the legacy chain, out of build_rate_array's scope.
     skip_mask = np.zeros(nr + 1, dtype=bool)
     for i in range(1, nr + 1):
         if net.is_photo[i] or net.is_ion[i] or net.is_conden[i] or net.is_radiative[i]:
@@ -262,11 +243,9 @@ def test_build_rate_array_matches_legacy_hd189(hd189_state):
 
 
 def test_build_rate_array_with_lowT_caps(hd189_state):
-    """`use_lowT_limit_rates=True` must be a no-op on HD189: the profile's
-    coolest layer (~860 K) is above every cap threshold, so the C2H4 cap row
-    comes out bit-identical to the uncapped build through the full
-    `build_rate_array` path. Cap-firing coverage (synthetic cold layers)
-    lives in `test_lowT_caps_fire_all_three`."""
+    """Pins that `use_lowT_limit_rates=True` is a no-op on HD189 (coolest
+    layer ~860 K is above every cap threshold). Cap-firing coverage lives in
+    `test_lowT_caps_fire_all_three`."""
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates as rates
     from vulcan_jax.config import default_config

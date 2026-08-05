@@ -1,13 +1,10 @@
-"""Fast always-on units for the adjoint scope machinery: the static findings
-half of `audit_adjoint_scope`, the `_guard_unmodeled_processes` fingerprints,
-and the `BodyTerms` plumbing. The scan/guard exist because the adjoint's body
-map deliberately contains only `ros2_step (+ renorm) (+ photo) (+ body_terms)`;
-these tests pin the classification of every dropped runner process (error =
-active and physically wrong, warning = leading-order-only, info =
-second-order) so a future body-map change that starts covering one of them
-must update the scan in the same pass. The empirical per-cell defect half
-needs a converged column and is exercised by the gated slow adjoint
-regression path plus the conden/T validation scripts.
+"""Units for the adjoint scope machinery: `audit_adjoint_scope` static
+findings, `_guard_unmodeled_processes` fingerprints, and `BodyTerms` plumbing.
+
+The adjoint body map covers only ros2_step (+ renorm) (+ photo) (+ body_terms).
+These tests pin the severity class of every dropped runner process (error =
+active and wrong, warning = leading-order-only, info = second-order); a
+body-map change that starts covering one must update the scan in the same pass.
 """
 
 from types import SimpleNamespace
@@ -54,8 +51,8 @@ def _codes(findings, severity=None):
 def test_default_photo_off_column_has_no_errors():
     findings = _adjoint_scope_findings(_cfg())
     assert _codes(findings, "error") == set()
-    # The atm-refresh feedback truncation is unconditional (always on in the
-    # runner, never in the body map) and must always be reported.
+    # Atm-refresh feedback is always on in the runner, never in the body map,
+    # so it must always be reported.
     assert "atm_refresh_feedback" in _codes(findings, "info")
 
 
@@ -77,20 +74,18 @@ def test_condensation_is_an_error_and_state_refines_fix_species():
     plain = _adjoint_scope_findings(_cfg(use_condense=True))
     assert "condensation" in _codes(plain, "error")
 
-    # Without a final state but with fix_species configured, the pin is
-    # flagged conservatively.
+    # No final state but fix_species configured: flagged conservatively.
     configured = _adjoint_scope_findings(_cfg(use_condense=True, fix_species=["H2O"]))
     assert "fix_species_pins" in _codes(configured, "error")
 
-    # A converged state with the pin tripped flags it as active...
+    # Pin tripped: active error.
     tripped = _adjoint_scope_findings(
         _cfg(use_condense=True, fix_species=["H2O"]),
         final_state=SimpleNamespace(fix_species_started=np.bool_(True)),
     )
     assert "fix_species_pins" in _codes(tripped, "error")
 
-    # ...and one with the pin not yet tripped drops the pin finding while
-    # keeping the condensation error itself.
+    # Pin not tripped: pin finding dropped, condensation error kept.
     untripped = _adjoint_scope_findings(
         _cfg(use_condense=True, fix_species=["H2O"]),
         final_state=SimpleNamespace(fix_species_started=np.bool_(False)),
@@ -284,13 +279,11 @@ def test_body_terms_require_renorm_map():
         _make_body_map(None, None, atm, None, 1e7, "bare", None, terms)
 
 
-# --- zero-clip dead cells (2026-07-22) --------------------------------------
-# The per-step clip is deliberately outside the body map ("identity-a.e." in
-# _make_body_map). Where it FIRES the runner zeroes the cell while the map
-# keeps the raw step, so the cell has no fixed point at all and its relative
-# defect measures the clip, not a dropped physical process -- and it grows
-# with body_dt, so no probe step can clear it. These pin that the mask mirrors
-# outer_loop._make_clip_fn term for term.
+# --- zero-clip dead cells ---------------------------------------------------
+# The per-step clip is deliberately outside the body map. Where it fires the
+# runner zeroes the cell while the map keeps the raw step, so the cell has no
+# fixed point and its defect measures the clip, not physics. These pin that
+# the mask mirrors outer_loop._make_clip_fn term for term.
 
 
 def _clip_cfg(**kw):
@@ -314,14 +307,9 @@ def test_clip_dead_mask_matches_the_runner_clip_terms():
 
 
 def test_clip_dead_mask_is_absolute_not_a_mixing_ratio():
-    """The reason min_ymix cannot do this job.
-
-    The clip window is absolute (cm^-3); min_ymix is a mixing ratio. The SAME
-    mixing ratio is clip-dead in a thin upper atmosphere and perfectly healthy
-    deep down, so a pressure-relative floor cannot separate them. Numbers are
-    the measured W39b tabulated-profile case: ymix 1e-16 is y ~ 1e-3 cm^-3 at
-    the cold top (M ~ 7.5e12) and ~1e3 cm^-3 in the deep column (M ~ 1e19).
-    """
+    """Pins that the clip window is absolute (cm^-3), not a mixing ratio:
+    the same ymix (1e-16) is clip-dead at the cold top and healthy deep down,
+    so min_ymix cannot do this job."""
     cfg = _clip_cfg()
     ymix = np.array([[1e-16, 1e-16]])
     G = np.array([[-7.5e-4, -1e3]])  # same ymix, different densities

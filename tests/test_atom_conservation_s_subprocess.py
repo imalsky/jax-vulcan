@@ -1,28 +1,15 @@
 """Lock sulfur atom-conservation projection on the SNCHO network, in a subprocess.
 
-`tests/test_atom_conservation_projection.py` exercises the reservoir projection on
-the default HD189 / NCHO network, where only H/O/C/N are tracked. The S-bearing
-SNCHO network adds sulfur, conserved through the H2S reservoir
-(`jax_step._ATOM_RESERVOIRS`). Because the reaction network *and* the projection
-tables are import-locked (built once at the first ``import vulcan_jax`` from
-``$VULCAN_JAX_NETWORK`` and ``vulcan_cfg.atom_list``), the S path can only be
-exercised in a fresh process that selects the SNCHO network and an
-``atom_list`` carrying S before that first import — hence a child process.
+Extends test_atom_conservation_projection.py (HD189/NCHO, H/O/C/N) to sulfur,
+conserved through the H2S reservoir. The network AND the projection tables are
+import-locked, so the S path needs a fresh child process that selects SNCHO
+and an S-bearing atom_list before the first import. Self-contained:
+isothermal TP + const_mix init, no atm file, no FastChem, no photo.
 
-Self-contained — no committed data artifact, no atm file, no FastChem, no photo:
-isothermal TP + const_mix init (the proven setup from
-`tests/test_condensation_runtime_subprocess.py`).
-
-Checks (SNCHO network, atom_list = H/O/C/N/S):
-  1. The projection is enabled and covers all five atoms, with reservoirs
-     exactly (H2, H2O, CO, N2, H2S); the 5x5 reservoir count matrix is
-     well-conditioned (single linear solve is stable).
-  2. Operator: injecting a conservation defect on a non-reservoir sulfur species
-     (SO2, which perturbs both S and O) drives the per-atom residual — the S
-     column included — to machine-zero, mutating ONLY reservoir-species rows.
-  3. The codegen RHS, evaluated on a real isothermal SNCHO pre-loop state, stays
-     conserving across all five atoms after projection, touching only reservoir
-     rows.
+Checks: (1) projection enabled for all five atoms with reservoirs exactly
+(H2, H2O, CO, N2, H2S) and a well-conditioned 5x5 count matrix; (2) an
+injected SO2 defect is driven to machine-zero, mutating only reservoir rows;
+(3) the real codegen RHS conserves all five atoms after projection.
 """
 
 from __future__ import annotations

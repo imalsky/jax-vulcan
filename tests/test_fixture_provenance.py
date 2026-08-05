@@ -2,21 +2,18 @@
 
 The four `tests/data/*.npz` fixtures are deliberately mandatory -- `conftest.py`
 fails collection when one is missing, because a skipped numerical oracle still
-reports a green suite. Until 2026-08-03 two of them could only be produced
-through the unpublished sibling `jax_paper/`, so a clean clone could not run its
-own default suite; and both of those generators had rotted, hardcoding a
-`/Users/.../Desktop/Emulators/VULCAN_Project` root that no longer exists. The
-fixtures were therefore unreproducible even WITH the sibling checked out.
+reports a green suite -- so their generators must live in-repo and take no
+path outside it (two once lived only in an unpublished sibling and hardcoded
+a dead absolute root).
 
-These tests are cheap and structural: they pin that the generators live here,
-take no path outside the repository, and that the manifest/verify machinery
-works. They do NOT run the generators (each converges a real model).
+These tests are cheap and structural: they pin the generator locations and
+the manifest/verify machinery. They do NOT run the generators (each converges
+a real model).
 """
 
 from __future__ import annotations
 
 import ast
-import json
 import subprocess
 import sys
 from pathlib import Path
@@ -68,13 +65,9 @@ def test_generators_are_inside_this_repository():
                                     "tests/_gen_photo_baseline.py",
                                     "tests/gen_fixtures.py"])
 def test_no_generator_hardcodes_an_absolute_user_path(script):
-    """The exact rot that made the old generators unrunnable.
-
-    Both jax_paper generators opened with
-    `ROOT = Path("/Users/imalsky/Desktop/Emulators/VULCAN_Project")`. Checks
-    string literals in the AST, so prose in a docstring describing the old bug
-    does not trip it.
-    """
+    """Pins that no generator hardcodes an absolute user path (the exact rot
+    that made the old generators unrunnable). Checks string literals in the
+    AST, so prose in a docstring does not trip it."""
     tree = ast.parse((ROOT / script).read_text(), script)
     bad = [
         n.value for n in ast.walk(tree)

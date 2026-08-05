@@ -45,19 +45,12 @@ jax.config.update("jax_enable_x64", True)
 _CFG = default_config()
 
 
-# Anchor FastChem paths to the source location (not cwd) so concurrent
-# workers invoked from different directories all flock on the same
-# sentinel and write to the same input/output files.
-#
-# $VULCAN_JAX_FASTCHEM_DIR overrides the working tree (mirrors the
-# $VULCAN_JAX_NETWORK hook): set it BEFORE importing vulcan_jax to point
-# FastChem at a private per-worker copy of `fastchem_vulcan/`. The GPU-batched
-# emulator driver sets it per host-setup worker so the cross-process flock
-# stays uncontended (a per-worker sentinel) instead of serialising the
-# expensive EQ subprocess across the whole pool. The override dir must already
-# contain the FastChem binary + input tree (the driver seeds it by copying the
-# installed package's `fastchem_vulcan/`). Read-only static data (the
-# solar-abundance file) stays anchored to `_ROOT`, which is fine to share.
+# Anchor FastChem paths to the source location (not cwd) so concurrent workers
+# from different directories flock on the same sentinel and share input/output
+# files. $VULCAN_JAX_FASTCHEM_DIR (set BEFORE the first import) points FastChem
+# at a private per-worker copy of `fastchem_vulcan/` (binary + input tree
+# included), making the flock per-worker and uncontended. Read-only static data
+# (the solar-abundance file) stays anchored to `_ROOT`, which is fine to share.
 _ROOT = Path(__file__).resolve().parent
 
 
@@ -187,14 +180,11 @@ def _run_fastchem_locked(data_atm) -> None:
         ele_list = list(_CFG.atom_list)
         ele_list.remove("H")
 
-        # Elements FastChem knows but the VULCAN network does not: their rows get
-        # rescaled by `fastchem_met_scale` instead of read from cfg.<X>_H below.
-        # Used ONLY for membership (`sp in fc_list`), so the order here is inert —
-        # the rewritten file preserves the row order of solar_element_abundances.dat.
-        # Row order in THAT file is load-bearing (FastChem hard-codes element slot
-        # indices); see runtime_validation._FASTCHEM_ELEMENT_ORDER and
-        # tests/test_fastchem_element_order.py. Kept in upstream's order for a
-        # zero-diff comparison against VULCAN-master/build_atm.py:ini_fc.
+        # Elements FastChem knows but the network does not: rescaled by
+        # `fastchem_met_scale` instead of read from cfg.<X>_H. Membership-only
+        # (`sp in fc_list`), so order here is inert; the ROW ORDER of
+        # solar_element_abundances.dat IS load-bearing (FastChem hard-codes
+        # slot indices; see runtime_validation._FASTCHEM_ELEMENT_ORDER).
         fc_list = [
             "C",
             "N",

@@ -1,30 +1,9 @@
-"""Breadth coverage of vulcan_cfg flags not exercised by the per-flag tests.
+"""Breadth coverage of config flags not exercised by the per-flag tests.
 
-Each case targets a single config flag (or a small group), runs the
-relevant pre-loop setup (or a short integration), and asserts something
-useful about the resulting state. Short integrations cap at <= 20 Ros2
-steps so the suite stays under the 30 s/test budget.
-
-Cases:
-  1. ``use_lowT_limit_rates=True`` — HD189 atmosphere, complement to
-     ``test_read_rate.py::test_build_rate_array_with_lowT_caps``.
-  2. ``T_cross_sp=['CO2','H2O','NH3']`` — HD189 atmosphere, finiteness
-     of the T-dep cross-section path; complements
-     ``test_photo_setup.py::test_photo_setup_matches_T_dep_fixture``.
-  3. ``use_vm_mol=True`` — molecular-diffusion advective velocity wired
-     into ``atm.vm``.
-  4. ``use_settling=True`` — Stokes settling velocity wired into
-     ``atm.vs`` for non-gas species.
-  5. ``use_topflux=True`` — top BC flux loaded from
-     ``cfg.top_BC_flux_file``.
-  6. ``use_botflux=True`` — bot BC flux loaded from
-     ``cfg.bot_BC_flux_file``.
-  7. ``fix_species`` non-empty — short HD189 smoke run with H2O/NH3
-     pinned via condense-aware fix_species machinery; complements
-     ``test_use_fix_H2He.py``.
-  8. ``use_fix_all_bot=True`` — complement to
-     ``test_solver_fix_all_bot.py``: confirms the bottom row stays at
-     chemical-EQ mixing ratios across a short integration.
+Each case targets one flag (or a small group), runs the relevant pre-loop
+setup or a short integration, and asserts something useful about the state.
+Short integrations cap at <= 20 Ros2 steps to stay under the 30 s/test
+budget. Per-case detail lives in each test's docstring.
 """
 
 from __future__ import annotations
@@ -73,14 +52,8 @@ def cfg_overrides(**kwargs):
 
 
 def _hd189_atm_minimal():
-    """HD189 pre-loop atmosphere: pico, Tco, M, n_0, ymix.
-
-    This is the minimum to exercise atm-only kernels. No photo, no rates.
-
-    Stays light by skipping the full `RunState.with_pre_loop_setup`
-    pipeline (no FastChem, no rate parser, no photo cross-sections);
-    uses the private `state._Variables` / `_AtmData` containers for
-    atm-only setup.
+    """Minimal HD189 pre-loop atmosphere (no photo, no rates, no FastChem);
+    uses the private `state._Variables` / `_AtmData` containers to stay light.
     """
     from vulcan_jax.atm_setup import Atm
     from vulcan_jax.state import _Variables, _AtmData
@@ -99,17 +72,12 @@ def _hd189_atm_minimal():
 
 
 def _setup_full_state(count_max: int = 5):
-    """Mirror the conftest `_hd189_pristine` build, with `count_max`
+    """Mirror the conftest `_hd189_pristine` build with `count_max`
     overridden for short smoke runs.
 
-    Caller is responsible for snapshot/restore of `count_max` /
-    `count_min` / `use_print_prog` via `cfg_overrides`. This helper does
-    NOT wrap those fields itself (they are set unconditionally to keep
-    the smoke-run shape predictable).
-
-    Builds the canonical pre-loop state via
-    `RunState.with_pre_loop_setup` and threads `rs.photo_static` onto the
-    solver — same pattern the conftest fixture uses.
+    Caller must snapshot/restore `count_max` / `count_min` /
+    `use_print_prog` via `cfg_overrides`; this helper sets them
+    unconditionally and does NOT wrap them itself.
     """
     from vulcan_jax.config import default_config
 
@@ -142,10 +110,9 @@ def _setup_full_state(count_max: int = 5):
 
 
 def test_lowT_limit_rates_noop_on_HD189():
-    """``use_lowT_limit_rates=True`` is a no-op on HD189: the profile's
-    coolest layer (~860 K) sits above every cap threshold (277.5/300/200 K),
-    so the three cap reactions must be bit-identical to the uncapped build.
-    Cap-firing coverage (synthetic cold layers) lives in
+    """``use_lowT_limit_rates=True`` is a no-op on HD189: the coolest layer
+    (~860 K) sits above every cap threshold (277.5/300/200 K), so the cap
+    reactions are bit-identical to the uncapped build. Cap-firing coverage:
     ``test_read_rate.py::test_lowT_caps_fire_all_three``.
     """
     import vulcan_jax.network as net_mod
@@ -195,9 +162,8 @@ def test_lowT_limit_rates_noop_on_HD189():
 
 
 def test_T_cross_sp_path_finite_positive():
-    """T-dependent absp cross-section path produces finite, non-negative
-    arrays for every (sp, layer) pair. Complements
-    ``test_photo_setup.py::test_photo_setup_matches_T_dep_fixture``.
+    """T-dependent absp cross-section path is finite and non-negative for
+    every (sp, layer) pair.
     """
     import vulcan_jax.photo_setup as photo_setup
     from vulcan_jax.config import default_config
@@ -231,8 +197,8 @@ def test_T_cross_sp_path_finite_positive():
 
 
 def test_use_vm_mol_populates_vm():
-    """``use_vm_mol=True`` writes the advective molecular-diffusion
-    velocity into ``atm.vm`` with finite, non-zero values.
+    """``use_vm_mol=True`` writes finite, non-zero advective velocity into
+    ``atm.vm``.
     """
     with cfg_overrides(use_vm_mol=True):
         _, data_atm, make_atm = _hd189_atm_minimal()
@@ -268,9 +234,8 @@ def test_use_vm_mol_populates_vm():
 
 
 def test_use_settling_populates_vs_for_non_gas():
-    """With ``use_settling=True`` and a tabulated condensable particle,
-    ``atm.vs`` carries non-zero (downward, negative) Stokes velocity for
-    the non-gas species and zero for everything else.
+    """``use_settling=True`` puts negative (downward) Stokes velocity in
+    ``atm.vs`` for the non-gas species and zero elsewhere.
     """
     import vulcan_jax.composition as composition
 
@@ -363,14 +328,13 @@ def test_bc_flux_loaded_from_file(flag, file_attr, file_path, target_sp):
 
 
 # ---------------------------------------------------------------------------
-# Case 7: fix_species runtime smoke — short HD189 run with H2O/NH3 pinned.
+# Case 7: fix_species runtime smoke.
 # ---------------------------------------------------------------------------
 
 
 def test_fix_species_runtime_smoke():
-    """Short HD189 integration with ``fix_species`` non-empty and
-    ``use_condense=True`` runs without exception and updates
-    ``data_para.fix_species_start``. Complements ``test_use_fix_H2He.py``.
+    """Short HD189 run with ``fix_species`` non-empty and
+    ``use_condense=True`` completes and updates ``para.fix_species_start``.
     """
     import vulcan_jax.composition as composition
 
@@ -425,10 +389,8 @@ def test_fix_species_runtime_smoke():
 
 
 def test_use_fix_all_bot_keeps_bottom_at_eq_mix():
-    """``use_fix_all_bot=True`` clamps the bottom layer to chemical-EQ
-    mixing ratios across a short integration. Complements
-    ``test_solver_fix_all_bot.py`` by additionally checking the mixing
-    ratio (not just absolute density) post-run.
+    """``use_fix_all_bot=True`` keeps the bottom layer at chemical-EQ mixing
+    ratios (not just absolute density) across a short integration.
     """
     with cfg_overrides(
         use_fix_all_bot=True,

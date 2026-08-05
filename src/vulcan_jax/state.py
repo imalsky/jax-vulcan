@@ -24,48 +24,48 @@ from ._paths import resolve_data_path
 class AtmInputs(NamedTuple):
     """Atmosphere structure. nz layers, ni species; (nz-1) arrays are interface-staggered."""
 
-    pco: jnp.ndarray  # (nz,)    — pressure on cells (dyne/cm^2)
-    pico: jnp.ndarray  # (nz+1,)  — pressure on interfaces
-    Tco: jnp.ndarray  # (nz,)    — temperature (K)
-    Kzz: jnp.ndarray  # (nz-1,)  — eddy diffusion (cm^2/s)
-    vz: jnp.ndarray  # (nz-1,)  — vertical advection (cm/s)
-    M: jnp.ndarray  # (nz,)    — third-body number density
-    n_0: jnp.ndarray  # (nz,)    — total number density
-    mu: jnp.ndarray  # (nz,)    — mean molecular weight
-    g: jnp.ndarray  # (nz,)    — local gravity
-    Hp: jnp.ndarray  # (nz,)    — pressure scale height
-    Hpi: jnp.ndarray  # (nz-1,)  — interface scale height
-    dz: jnp.ndarray  # (nz,)    — layer thickness
-    dzi: jnp.ndarray  # (nz-1,)  — interface thickness
-    zco: jnp.ndarray  # (nz+1,)  — height at interfaces
-    zmco: jnp.ndarray  # (nz,)    — height at cell centers
-    ms: jnp.ndarray  # (ni,)    — molecular weight per species
-    alpha: jnp.ndarray  # (ni,)    — thermal diffusion factor
-    Dzz: jnp.ndarray  # (nz-1, ni) — molecular diffusion (interface)
-    Dzz_cen: jnp.ndarray  # (nz, ni)   — molecular diffusion (cell)
-    vm: jnp.ndarray  # (nz-1, ni) — molecular-diffusion drift velocity (interface)
-    vs: jnp.ndarray  # (nz-1, ni) — settling velocity
-    top_flux: jnp.ndarray  # (ni,) — top BC flux (#/cm^2/s)
-    bot_flux: jnp.ndarray  # (ni,) — bottom BC flux
-    bot_vdep: jnp.ndarray  # (ni,) — bottom deposition velocity
-    bot_fix_sp: jnp.ndarray  # (ni,) — bottom fixed-mixing-ratio mask
+    pco: jnp.ndarray  # (nz,)    pressure on cells (dyne/cm^2)
+    pico: jnp.ndarray  # (nz+1,)  pressure on interfaces
+    Tco: jnp.ndarray  # (nz,)    temperature (K)
+    Kzz: jnp.ndarray  # (nz-1,)  eddy diffusion (cm^2/s)
+    vz: jnp.ndarray  # (nz-1,)  vertical advection (cm/s)
+    M: jnp.ndarray  # (nz,)    third-body number density
+    n_0: jnp.ndarray  # (nz,)    total number density
+    mu: jnp.ndarray  # (nz,)    mean molecular weight
+    g: jnp.ndarray  # (nz,)    local gravity
+    Hp: jnp.ndarray  # (nz,)    pressure scale height
+    Hpi: jnp.ndarray  # (nz-1,)  interface scale height
+    dz: jnp.ndarray  # (nz,)    layer thickness
+    dzi: jnp.ndarray  # (nz-1,)  interface thickness
+    zco: jnp.ndarray  # (nz+1,)  height at interfaces
+    zmco: jnp.ndarray  # (nz,)    height at cell centers
+    ms: jnp.ndarray  # (ni,)    molecular weight per species
+    alpha: jnp.ndarray  # (ni,)    thermal diffusion factor
+    Dzz: jnp.ndarray  # (nz-1, ni) molecular diffusion (interface)
+    Dzz_cen: jnp.ndarray  # (nz, ni)   molecular diffusion (cell)
+    vm: jnp.ndarray  # (nz-1, ni) molecular-diffusion drift velocity (interface)
+    vs: jnp.ndarray  # (nz-1, ni) settling velocity
+    top_flux: jnp.ndarray  # (ni,) top BC flux (#/cm^2/s)
+    bot_flux: jnp.ndarray  # (ni,) bottom BC flux
+    bot_vdep: jnp.ndarray  # (ni,) bottom deposition velocity
+    bot_fix_sp: jnp.ndarray  # (ni,) bottom fixed-mixing-ratio mask
 
 
 class RateInputs(NamedTuple):
-    """Rate constants. `k[0]` is unused — reactions are 1-based throughout VULCAN."""
+    """Rate constants. `k[0]` is unused: reactions are 1-based throughout VULCAN."""
 
-    k: jnp.ndarray  # (nr+1, nz) — forward rate constants
+    k: jnp.ndarray  # (nr+1, nz) forward rate constants
 
 
 class IniAbunOutputs(NamedTuple):
     """Initial-abundance solver output. nz layers, ni species, n_atoms elements."""
 
-    y: jnp.ndarray  # (nz, ni)    — number density
-    ymix: jnp.ndarray  # (nz, ni)    — mixing ratio
-    y_ini: jnp.ndarray  # (nz, ni)    — initial-state snapshot
-    atom_ini: jnp.ndarray  # (n_atoms,)  — sum of stoich * y per atom
-    atom_loss: jnp.ndarray  # (n_atoms,)  — zeros at init
-    atom_conden: jnp.ndarray  # (n_atoms,)  — zeros at init
+    y: jnp.ndarray  # (nz, ni)    number density
+    ymix: jnp.ndarray  # (nz, ni)    mixing ratio
+    y_ini: jnp.ndarray  # (nz, ni)    initial-state snapshot
+    atom_ini: jnp.ndarray  # (n_atoms,)  sum of stoich * y per atom
+    atom_loss: jnp.ndarray  # (n_atoms,)  zeros at init
+    atom_conden: jnp.ndarray  # (n_atoms,)  zeros at init
     charge_list: tuple[str, ...]  # charged species (empty when use_ion=False)
 
 
@@ -80,8 +80,8 @@ class PhotoInputs(NamedTuple):
 class PhotoStaticInputs(NamedTuple):
     """Dense photo cross-section pytree.
 
-    `absp_cross` carries a row for every species in `absp_sp ∪ absp_T_sp` —
-    T-dep species also keep their 1D room-T cross.
+    `absp_cross` carries a row for every species in `absp_sp` union
+    `absp_T_sp`; T-dep species also keep their 1D room-T cross.
     `din12_indx` is `-1` until the post-photo `read_sflux` write fires; use
     `with_din12_indx(idx)` to attach it.
     """
@@ -92,7 +92,7 @@ class PhotoStaticInputs(NamedTuple):
     dbin2: float
     din12_indx: int  # -1 sentinel pre-read_sflux
 
-    absp_sp: tuple  # (str, ...)  ordered absorbers (photo ∪ ion)
+    absp_sp: tuple  # (str, ...)  ordered absorbers (photo + ion)
     absp_T_sp: tuple  # (str, ...)  T-dep subset of absp_sp
     scat_sp: tuple  # (str, ...)  Rayleigh scatterers
     branch_keys: tuple  # ((sp, branch_idx), ...) non-T dissociation
@@ -142,12 +142,11 @@ class ParamInputs(NamedTuple):
     pic_count: int
     where_varies_most: jnp.ndarray  # shape: (nz, ni)
     fix_species_start: bool
-    # Why the integration stopped, at finer grain than `end_case` (which cannot
-    # tell a normal convergence from a stall convergence — both are 1):
-    # 0 still running, 1 converged, 2 runtime exceeded, 3 step-count exceeded,
-    # 4 stalled-convergence, 5 non-finite state. Codes match the runner's
-    # `JaxIntegState.termination_reason`. Defaulted so pre-existing callers
-    # that build a `ParamInputs` positionally keep working.
+    # Why the integration stopped, finer than `end_case` (which reports 1 for
+    # both normal and stall convergence): 0 running, 1 converged, 2 runtime,
+    # 3 step-count, 4 stall, 5 non-finite. Codes match the runner's
+    # `JaxIntegState.termination_reason`. Defaulted so positional callers
+    # keep working.
     termination_reason: int = 0
 
 
@@ -220,38 +219,26 @@ class RunState(NamedTuple):
     atoms: Optional[AtomInputs] = None
     photo_runtime: Optional[PhotoRuntimeInputs] = None
     fix_species: Optional[FixSpeciesInputs] = None
-    # Host-side static metadata + photo cross-section pytree.
-    # `metadata` defaults to None so legacy `runstate_from_store` callers
-    # (which only fill the runner-state slots) keep working; the canonical
-    # `with_pre_loop_setup(cfg)` builder populates both `metadata` and
-    # `photo_static` (the dense cross-section pytree built once per run).
+    # Host-side static metadata + photo cross-section pytree. `metadata`
+    # defaults to None so legacy `runstate_from_store` callers keep working;
+    # the canonical `with_pre_loop_setup(cfg)` builder populates both.
     metadata: Optional[RunMetadata] = None
     photo_static: Optional[PhotoStaticInputs] = None
 
-    # ------------------------------------------------------------------
-    # Constructors — canonical pre-loop entry points
-    # ------------------------------------------------------------------
     @classmethod
     def with_pre_loop_setup(cls, cfg, *, skip_chem_warmup: bool = False) -> "RunState":
-        """Build a fully-initialised `RunState` from `vulcan_cfg`.
+        """Build a fully-initialised `RunState` from a config.
 
-        Runs the same pre-loop pipeline `vulcan_jax.py` ran historically
-        (atmosphere structure, rate constants + low-T caps + reverse +
-        remove, initial abundance solver, photo cross-sections, photo
-        runtime arrays + remove pass), then snapshots the result into
-        the typed pytree.
+        Runs the full pre-loop pipeline (atmosphere structure, rate constants
+        + low-T caps + reverse + remove, initial abundance solver, photo cross
+        sections, photo runtime arrays + remove pass) and snapshots the result
+        into the typed pytree. The canonical pre-loop entry point:
+        ``rs = RunState.with_pre_loop_setup(cfg); rs = integ(rs)``.
 
-        This is the canonical pre-loop entry point — driver / tests /
-        examples / benchmarks all do
-            ``rs = RunState.with_pre_loop_setup(cfg); rs = integ(rs)``.
-
-        `skip_chem_warmup=True` skips the chem-RHS JIT warmup. That warmup's
-        result is discarded — it only forces XLA to compile the codegen
-        `chem_rhs` so the first runner step doesn't stall on compile. Callers
-        that build the RunState in one process but integrate in another (e.g.
-        the GPU-batched emulator's host-setup workers, which hand the RunState
-        to a separate device process) can skip it to avoid a wasted per-worker
-        CPU compile; the returned RunState is otherwise identical.
+        `skip_chem_warmup=True` skips the chem-RHS JIT warmup (its result is
+        discarded; it only pre-compiles the codegen `chem_rhs`). Callers that
+        build the RunState in one process but integrate in another can skip
+        it; the returned RunState is otherwise identical.
         """
         return _build_pre_loop_runstate(cfg, skip_chem_warmup=skip_chem_warmup)
 
@@ -669,11 +656,10 @@ def _network_path_for(cfg) -> Optional[str]:
 
 def _network_topology_signature(net) -> bytes:
     """Hash the reaction-topology arrays that fix the codegen RHS and rate
-    indexing — the same structural arrays ``make_chem_funs.chem_rhs_cache_key``
-    consumes, minus the path/mtime so a byte-identical vendored copy at a
-    different path compares equal. Two networks with the same signature produce
-    an identical codegen RHS and compatible ``k_arr`` ordering; any reordered or
-    edited reaction (even with the same species and reaction count) differs."""
+    indexing (the arrays ``make_chem_funs.chem_rhs_cache_key`` consumes, minus
+    path/mtime, so a byte-identical vendored copy elsewhere compares equal).
+    Same signature = identical codegen RHS and compatible ``k_arr`` ordering;
+    any reordered/edited reaction differs."""
     import hashlib
 
     h = hashlib.sha256()
@@ -694,20 +680,15 @@ def _network_topology_signature(net) -> bytes:
 def _assert_network_matches_import(cfg) -> None:
     """Fail fast if cfg requests a different network than the import-locked one.
 
-    The reaction network (``ni`` / ``nr`` / ``spec_list`` and the codegen RHS)
-    is parsed once at the first ``import vulcan_jax`` and cannot be changed by
-    passing a different ``cfg.network`` afterward. Without this guard the
-    mismatch only surfaces ~30 s into setup as a cryptic ``var.k_arr shape``
-    ValueError. To use a different network set ``$VULCAN_JAX_NETWORK`` before
-    the first import (or run the subprocess driver).
+    The network (``ni``/``nr``/``spec_list`` + codegen RHS) is parsed once at
+    the first ``import vulcan_jax``; without this guard a mismatch surfaces
+    ~30 s into setup as a cryptic ``var.k_arr shape`` ValueError. Use
+    ``$VULCAN_JAX_NETWORK`` before the first import (or the subprocess driver).
 
-    Compatibility is decided by reaction *topology*, not file path and not just
-    species + nr: the same network is vendored at more than one location (the
-    package copy plus the ``VULCAN-master`` sibling that oracle tests ``chdir``
-    into), so a byte-identical copy at a different path is fine — but a network
-    with the same species and reaction count yet reordered/edited reactions
-    would silently pair the import-time codegen RHS with mis-indexed rates, so
-    the full reaction topology must match.
+    Compatibility is decided by reaction TOPOLOGY, not file path and not just
+    species + nr: a byte-identical copy at another path is fine, but a network
+    with the same species/reaction count yet reordered/edited reactions would
+    silently pair the import-time codegen RHS with mis-indexed rates.
     """
     want_path = _network_path_for(cfg)
     if want_path is None:
@@ -717,15 +698,11 @@ def _assert_network_matches_import(cfg) -> None:
     if want_path == have_path:
         return  # identical file: fast path, no reparse on the common case
 
-    # Different path — reparse and compare the reaction TOPOLOGY (structure +
-    # order), which is what fixes the codegen RHS and k_arr indexing. Same
-    # species + nr is NOT sufficient: a reordered or edited reaction set passes
-    # that yet corrupts the RHS<->rate pairing. The SPECIES NAMES must also
-    # match: the numeric topology hash is index-based, so renaming a species
-    # (e.g. H->X at the same index) leaves the signature identical while the
-    # species/metadata side differs — so compare species identity too. If it
-    # can't be resolved/parsed here, defer to the pipeline (and the state.py
-    # k_arr backstop).
+    # Different path: reparse and compare reaction TOPOLOGY (fixes the codegen
+    # RHS + k_arr indexing; same species + nr is NOT sufficient) AND species
+    # names (the numeric hash is index-based, so a renamed species leaves it
+    # identical). If it can't be parsed here, defer to the pipeline and the
+    # k_arr backstop.
     from . import network as _net_mod
 
     try:
@@ -756,12 +733,10 @@ def _assert_network_matches_import(cfg) -> None:
 def _assert_com_file_matches_import(cfg) -> None:
     """Fail fast if cfg requests a different composition table than the locked one.
 
-    The per-species composition / mass table is read once into ``composition.py``
-    at the first ``import vulcan_jax`` (``ini_abun`` imports those arrays
-    directly), so a later ``make_config(com_file=...)`` cannot change it. Without
-    this guard a missing or different table is silently ignored in favour of the
-    already-loaded default. A same-content vendored copy at a different path is
-    accepted.
+    The composition/mass table is read once into ``composition.py`` at the
+    first ``import vulcan_jax``, so a later ``make_config(com_file=...)``
+    cannot change it; without this guard a missing or different table is
+    silently ignored. A same-content copy at a different path is accepted.
     """
     cfg_com = getattr(cfg, "com_file", None)
     if cfg_com is None:
@@ -782,8 +757,7 @@ def _assert_com_file_matches_import(cfg) -> None:
     except FileNotFoundError:
         pass  # requested table is missing -> definitely a mismatch
     except Exception as exc:
-        # CLAUDE.md: "a guard that cannot run its check must announce the skip
-        # (skipped != passed)". Returning silently here read as a pass.
+        # Announce the skip (skipped != passed); a silent return reads as a pass.
         warnings.warn(
             f"com_file import-lock guard could not compare tables "
             f"({type(exc).__name__}: {exc}); the check was SKIPPED, not passed. "
@@ -809,12 +783,10 @@ def _assert_com_file_matches_import(cfg) -> None:
 def _assert_atom_list_matches_import(cfg) -> None:
     """Fail fast if cfg requests a different atom_list than the import-locked one.
 
-    The reservoir-projection tables in ``jax_step`` are built once at the first
-    ``import vulcan_jax`` from ``atom_list`` and are module-level constants, so a
-    later ``make_config(atom_list=...)`` cannot change them — it would mix the
-    import-time H/O/C/N projection with cfg-time atom accounting. README
-    documents atom_list as import-frozen; this enforces it instead of silently
-    running the inconsistent mix.
+    The reservoir-projection tables in ``jax_step`` are built once at the
+    first ``import vulcan_jax``, so a later ``make_config(atom_list=...)``
+    would mix the import-time projection with cfg-time atom accounting; this
+    enforces the import-frozen contract instead of running the mix silently.
     """
     cfg_atoms = getattr(cfg, "atom_list", None)
     if cfg_atoms is None:
@@ -823,7 +795,7 @@ def _assert_atom_list_matches_import(cfg) -> None:
 
     have = getattr(_jax_step, "IMPORT_ATOM_LIST", None)
     if have is None:
-        # CLAUDE.md: a guard that cannot run its check must announce the skip.
+        # Announce the skip (skipped != passed).
         warnings.warn(
             "atom_list import-lock guard could not read jax_step.IMPORT_ATOM_LIST; "
             f"the check was SKIPPED, not passed (cfg.atom_list={list(cfg_atoms)!r}). "
@@ -849,15 +821,12 @@ def _assert_atom_list_matches_import(cfg) -> None:
 def _cfg_overlay(cfg):
     """Overlay cfg's public attributes onto the process default config for setup.
 
-    The pre-loop pipeline's scratch containers (``_Variables`` / ``_AtmData`` /
-    ``_Parameters``), the ``atm_setup`` / ``ini_abun`` facades, and
-    ``legacy_io.ReadRate`` read knobs off the process default config
-    (``config.default_config()``) rather than a threaded argument. When ``cfg``
-    IS that default (the CLI path) this is a no-op. When ``cfg`` is a separate
-    namespace (``load_config()``) we overlay its public attributes onto the
-    default for the duration of setup and restore the originals on exit, so
-    overrides take effect with zero leakage. Mirrors the snapshot/restore in
-    ``tests/conftest.py``; the runner-side counterpart is ``OuterLoop(cfg=...)``.
+    The pre-loop scratch containers, the ``atm_setup``/``ini_abun`` facades,
+    and ``legacy_io.ReadRate`` read knobs off ``config.default_config()``, not
+    a threaded argument. When ``cfg`` IS that default this is a no-op; when it
+    is a separate namespace, overlay its public attributes for the duration of
+    setup and restore on exit, so overrides take effect with zero leakage.
+    The runner-side counterpart is ``OuterLoop(cfg=...)``.
     """
     base = default_config()
 
@@ -877,10 +846,9 @@ def _cfg_overlay(cfg):
                 before[name] = getattr(base, name)
         else:
             added.append(name)
-        # Copy mutable containers rather than aliasing: setup writes some knobs
-        # in place through `base`, and a bare setattr would land those writes in
-        # the CALLER's cfg (18 of default.yaml's knobs are list/dict/set), so a
-        # second run with the same cfg would start from a mutated config.
+        # Copy mutable containers rather than aliasing: setup writes some
+        # knobs in place through `base`, and a bare setattr would land those
+        # writes in the CALLER's cfg, mutating it for a second run.
         if isinstance(val, (list, dict, set, bytearray)):
             try:
                 val = copy.deepcopy(val)
@@ -902,10 +870,9 @@ def _cfg_overlay(cfg):
 def _build_pre_loop_runstate(cfg, *, skip_chem_warmup: bool = False) -> RunState:
     """Run the full pre-loop pipeline and return a populated RunState.
 
-    Fails fast on a network mismatch (the network is import-locked), then runs
-    the pipeline with ``cfg`` overlaid onto the global ``vulcan_cfg`` so
-    ``make_config()`` overrides are honored with zero leakage. The runner reads
-    the same cfg via ``OuterLoop(cfg=...)``.
+    Fails fast on network/com_file/atom_list import-lock mismatches, then runs
+    the pipeline with ``cfg`` overlaid onto the process default so
+    ``make_config()`` overrides are honored with zero leakage.
     """
     _assert_network_matches_import(cfg)
     _assert_com_file_matches_import(cfg)
@@ -969,14 +936,10 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
             solver.compute_Jion(var, atm)
         _rates_mod.apply_photo_remove(cfg, var, network, atm)
 
-    # Warm up the codegen chem_rhs JIT so the first runner step doesn't
-    # stall on compile. `build_chem_rhs` is memoised; chem_funs already
-    # called it at import time, so this is a cache hit. The
-    # `block_until_ready()` call forces XLA to materialise the compile
-    # here (~3-8 s on cold disk cache, <100 ms when cached). The result is
-    # discarded — it is purely a warmup — so `skip_chem_warmup` callers that
-    # integrate in a different process can skip it without changing the
-    # returned RunState.
+    # Warm up the codegen chem_rhs JIT so the first runner step doesn't stall
+    # on compile (~3-8 s cold disk cache, <100 ms cached). Result discarded;
+    # `skip_chem_warmup` callers integrating in another process can skip it
+    # without changing the returned RunState.
     if not skip_chem_warmup:
         from . import make_chem_funs as _make_chem_funs
 
@@ -1001,16 +964,14 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
 def legacy_view(rs: RunState, cfg=None):
     """Return a `(var, atm, para)` SimpleNamespace shim built from `rs`.
 
-    Mutations to the shim do NOT round-trip back to `rs` — for that, use
+    Mutations to the shim do NOT round-trip back to `rs`; for that, use
     `runstate_to_store(rs, var, atm, para)` against real legacy containers.
 
-    `cfg` must be the run's config whenever one is available. This function
-    runs at INTEGRATION time, after `_cfg_overlay` has restored the process
-    default, so falling back to `default_config()` silently reads default
-    `use_photo` / `use_ion` / `T_cross_sp` and builds the wrong `var_save`
-    key list (an Earth run then writes a `.vul` missing `cross_T`, and a
-    photo-off run raises AttributeError in the writer). Callers that hold a
-    cfg — `OuterLoop` and the CLI — pass `self._cfg`.
+    `cfg` must be the run's config whenever one is available: this runs at
+    INTEGRATION time, after `_cfg_overlay` has restored the process default,
+    so falling back to `default_config()` silently reads default
+    `use_photo`/`use_ion`/`T_cross_sp` and builds the wrong `var_save` list.
+    Callers that hold a cfg (`OuterLoop`, the CLI) pass `self._cfg`.
     """
     import types
 

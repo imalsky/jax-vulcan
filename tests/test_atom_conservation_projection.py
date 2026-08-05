@@ -1,31 +1,16 @@
 """Lock the chemistry atom-conservation projection (`jax_step._project_chem_rhs`).
 
-XLA's FMA fusion breaks the exact stoichiometric nullspace of the generated
-chemistry RHS: the per-layer H/O/C/N production residual that should cancel to
-zero instead rides at a small but nonzero level. `jax_step._project_chem_rhs`
-distributes that residual across abundant reservoir species (H2, H2O, CO, N2)
-so each layer conserves H/O/C/N exactly after every RHS evaluation. This is a
-documented VULCAN-JAX correctness feature with no VULCAN-master analogue (see
-README "Correctness fixes").
+XLA's FMA fusion breaks the exact stoichiometric nullspace of the codegen RHS;
+the projection distributes the residual across the reservoir species
+(H2, H2O, CO, N2) so each layer conserves H/O/C/N exactly. A VULCAN-JAX
+correctness feature with no master analogue (README "Correctness fixes").
 
-The existing projection test (`test_chem_rhs_codegen.test_hd209_jit_rhs_projection_*`)
-exercises this only through a saved HD209 `.vul` fixture, which is absent in a
-fresh checkout, so it SKIPS. This test pins the same behavior on the always-
-available HD189 default pre-loop state so the guarantee is actually exercised.
-
-On the HD189 *initial* state the raw RHS already conserves to ~machine
-precision (the FMA defect only becomes large where production and loss nearly
-cancel at ~1e11 magnitude, as in a converged trajectory), so this test
-exercises the projection *operator* directly by injecting a known conservation
-defect — the mechanism the documented fix relies on — and separately confirms
-the real RHS stays exactly conserving after projection.
-
-Validates (HD189 default network):
-  1. Operator: injecting a nonzero atom residual on a non-reservoir species and
-     projecting drives the per-atom residual to ~machine-zero.
-  2. The projection mutates ONLY the reservoir-species rows (H2, H2O, CO, N2).
-  3. On the real codegen RHS, the post-projection residual is machine-zero and
-     again only reservoir rows are touched.
+Runs on the always-available HD189 pre-loop state (the HD209 fixture-based
+projection test skips on a fresh checkout). Pins:
+  1. injecting an atom residual on a non-reservoir species and projecting
+     drives the per-atom residual to ~machine-zero,
+  2. the projection mutates ONLY the reservoir rows,
+  3. the real codegen RHS is machine-zero conserving after projection.
 """
 
 from __future__ import annotations
@@ -121,12 +106,10 @@ def main() -> int:
     projected = np.asarray(jax_step._project_chem_rhs(jnp.asarray(raw_def)))
     proj_resid = projected @ atom_counts
 
-    # The codegen RHS spans ~29 orders of magnitude, so conservation must be
-    # judged in ABSOLUTE residual relative to the injected defect: a fixed
-    # per-cell relative floor would be dominated by the float64 cancellation
-    # noise (~1e14) left when summing 1e29-scale production/loss terms. The
-    # projection should reduce the max residual by ~the float64 mantissa
-    # (~15 orders) toward that cancellation floor.
+    # The RHS spans ~29 orders of magnitude, so judge conservation as the
+    # ABSOLUTE residual relative to the injected defect (a per-cell relative
+    # floor would drown in the ~1e14 float64 cancellation noise of 1e29-scale
+    # terms). The projection should cut the residual by ~15 orders.
     inj_max = float(np.max(np.abs(resid_def)))
     proj_max = float(np.max(np.abs(proj_resid)))
     reduction = proj_max / max(inj_max, 1e-300)

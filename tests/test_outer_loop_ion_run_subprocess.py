@@ -1,46 +1,15 @@
 """End-to-end activation of the ion / photoionization machinery, in a subprocess.
 
-`tests/test_photo_ion.py` locks the `compute_Jion` wavelength-integral kernel in
-isolation against a hand-built NumPy reference on synthetic `SimpleNamespace`
-inputs. It does not drive a *real* `use_ion=True` network through
-setup and the runner, because none of the shipped networks carries an
-`# ionisation` section and every shipped config has `use_ion=False`. The public
-upstream `VULCAN` is the same: the ion machinery and the atomic photoionisation
-cross sections ship, but no released network turns them on.
+No shipped network carries an `# ionisation` section (upstream is the same),
+so this test synthesizes one at runtime: shipped NCHO + H2/H photoionisation,
+using only vendored data (ion cross-section columns, ion branch files, NASA9
+for H2_p/H_p/e, all_compose charge rows). The network is import-locked, so the
+activated network needs a fresh child process ($VULCAN_JAX_NETWORK).
 
-So this test closes the only gap that matters for the "ported but inactive"
-framing: it shows the machinery is *functional*, not merely present. It
-synthesizes a genuine ion network at runtime — the shipped
-`thermo/NCHO_photo_network.txt` with an appended `# ionisation` section for
-atomic-hydrogen and molecular-hydrogen photoionisation
-
-    H2 -> H2_p + e          (threshold 120 nm, cross from H2_cross.csv ion col)
-    H  -> H_p  + e          (threshold  91 nm, cross from  H_cross.csv ion col)
-
-— using only data that already ships: the 4-column `{sp}_cross.csv`
-(photoionisation column), `{sp}_ion_branch.csv` branch ratios, the NASA9 thermo
-for `H2_p`/`H_p`/`e`, and their `all_compose.txt` charge rows. The stellar flux
-(`sflux-HD189_Moses11.txt`, 2-800 nm) covers the EUV ionizing range, so the
-photoionisation rates are non-zero on the real bin grid.
-
-Because the reaction network is import-locked (parsed once at the first
-`import vulcan_jax` from `$VULCAN_JAX_NETWORK`), the activated network can only
-be selected in a fresh process — hence a child. Self-contained: isothermal TP +
-`const_mix` init, no atm file, no FastChem.
-
-Checks (NCHO + H2/H photoionisation, `use_ion=True`, `use_photo=True`):
-  A. Setup wired the ion path: `ion_sp == {H2, H}`, both `ion_rate_index`
-     branches present, `charge_list` carries the cations (`H2_p`, `H_p`) but not
-     `e`, and the dense `PhotoStaticInputs.cross_Jion` is non-zero (the ion cross
-     sections were actually read and binned).
-  B. The runner produced ions: starting from zero ion density, both cations
-     reach a positive density — only possible if `compute_Jion_jax` fired inside
-     the `lax.while_loop` and fed the chemistry RHS.
-  C. Charge neutrality holds at the final state: per layer, the electron density
-     equals the summed cation density to ~machine precision (the post-step
-     charge-balance clamp ran every accepted step).
-  D. The integration stayed finite and advanced in time (the ion source did not
-     destabilize the solve).
+Checks: (A) setup wired the ion path (ion_sp, ion_rate_index, charge_list
+without `e`, non-zero cross_Jion); (B) both cations grow from zero, so
+compute_Jion_jax fired inside the loop; (C) per-layer charge neutrality to
+~1e-8 rel; (D) the run stays finite and advances in time.
 """
 
 from __future__ import annotations
@@ -55,12 +24,9 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 BASE_NETWORK = ROOT / "src" / "vulcan_jax" / "thermo" / "NCHO_photo_network.txt"
 
-# Appended verbatim after the shipped NCHO photo section. The parser keys ion
-# branches off `(species, branch_index)` in the trailing columns and pulls the
-# cross section from `{species}_cross.csv` (ion column) x `{species}_ion_branch.csv`.
-# Reaction ids continue the network's odd-id photo sequence; the products
-# introduce `H2_p`, `H_p`, and `e` as tracked species (all in all_compose.txt /
-# NASA9). Spacing is free-form — the parser strips + splits.
+# Appended after the shipped NCHO photo section. The parser keys ion branches
+# off (species, branch_index) and pulls cross sections from {sp}_cross.csv
+# (ion column) x {sp}_ion_branch.csv; products introduce H2_p/H_p/e.
 ION_SECTION = """
 # ionisation
 879  [ H2 -> H2_p + e                     ]             H2      1

@@ -12,18 +12,16 @@ This example runs both the default `solver_map="renorm"` and the legacy
 `solver_map="bare"`: the default linearizes the hydrostatic-renormalized map the
 runner actually iterates, so `y_star` is a tight fixed point of it and the CH4
 rows are sub-percent vs the finite-difference anchors, whereas the raw-step
-`"bare"` map is ~6-7% off (2026-07-03). On photochemistry-on columns pass
+`"bare"` map is ~6-7% off. On photochemistry-on columns pass
 `photo_recompute_k` (see `make_photo_recompute_k`) to also include the dJ/dy
 feedback and reach percent level on photo-coupled rows (e.g. WASP-39b OH+H2,
-~11% -> ~0.2%); it is the standard companion to the renorm default there. The
-function returns `k`-only directional-row sensitivities; for a physical
-detailed-balance perturbation of a reversible thermal reaction, sum the forward
-and reverse rows. Forward-mode (`grad_jvp_example.py`) is exact and stays the
-route for any single hard row. See the `steady_state_reaction_sensitivity`
-docstring and `scan_body_dt_reaction_sensitivity` for more.
+~11% -> ~0.2%). The function returns `k`-only directional-row sensitivities;
+for a physical detailed-balance perturbation of a reversible thermal reaction,
+sum the forward and reverse rows. Forward-mode (`grad_jvp_example.py`) is exact
+and stays the route for any single hard row.
 
 This script loads a saved converged HD189 (photo-off) state
-(`tests/data/adj_state_hd189.npz`, a local artifact — `*.npz` is gitignored) so
+(`tests/data/adj_state_hd189.npz`, a local artifact; `*.npz` is gitignored) so
 it does not re-converge the forward model. To produce that dump, converge
 the runner and polish `y_star` to a tight fixed point of the renormalized body
 map (see `jax_paper/scripts/adj_save_state.py`); to run it on WASP-39b SO2, set

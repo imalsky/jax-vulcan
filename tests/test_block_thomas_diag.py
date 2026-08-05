@@ -7,8 +7,7 @@ elementwise multiply. This test confirms agreement to machine precision
 on (a) random well-conditioned blocks and (b) the actual VULCAN-JAX-shape
 problem (nz=120, ni=93) with realistic magnitudes.
 
-Also confirms `jax.grad` works through the new function (it must — Phase
-4.2 uses it for the implicit-VJP solve).
+Also confirms `jax.grad` works through the function.
 """
 
 from __future__ import annotations

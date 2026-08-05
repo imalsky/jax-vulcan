@@ -60,8 +60,7 @@ def _setup_runstate():
     from vulcan_jax.config import default_config
     from vulcan_jax.state import RunState
 
-    # The old `import vulcan_jax.vulcan_cfg` module was deleted in the YAML-only
-    # migration; `default_config()` is the process default it used to be.
+    # default_config() is the process-wide default Config namespace.
     vulcan_cfg = default_config()
 
     t0 = time.time()
@@ -181,9 +180,8 @@ def _bench_outer_loop(rs, n_steps: int) -> tuple[float, float, int, int]:
     from vulcan_jax.config import default_config
     from vulcan_jax.state import RunState
 
-    # See _setup_runstate: the vulcan_cfg module is gone; this is its successor.
-    # Mutating it is still correct — default_config() returns the process-wide
-    # Config object the setup facades read, and the saved/restore below undoes it.
+    # Mutating default_config() is correct here: it returns the process-wide
+    # Config object the setup facades read, and the save/restore below undoes it.
     vulcan_cfg = default_config()
 
     saved = {
@@ -208,7 +206,7 @@ def _bench_outer_loop(rs, n_steps: int) -> tuple[float, float, int, int]:
         first_count = int(rs1.params.count)
 
         # Second call from a fresh RunState clone, kernel cached. Do
-        # NOT call integ.reset() between calls — that drops the JIT'd
+        # NOT call integ.reset() between calls: that drops the JIT'd
         # runner closure and forces recompilation on the next call,
         # which is the opposite of what we want to measure.
         rs2_init = RunState.with_pre_loop_setup(vulcan_cfg)

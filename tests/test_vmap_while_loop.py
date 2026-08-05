@@ -1,21 +1,14 @@
-"""vmap-the-whole-integration tests for `OuterLoop.run_batch`.
+"""Full-integration vmap tests for `OuterLoop.run_batch` (per-step vmap is
+covered by test_vmap_step.py). Pins:
 
-The per-step kernel was already vmap-tested (`test_vmap_step.py`); these
-exercise the full adaptive `lax.while_loop` under `jax.vmap` with the
-freeze-on-done machinery, on CPU (vmap is backend-agnostic, so this is the
-pre-GPU gate). Three properties:
-
-  1. HOMOGENEOUS EQUIVALENCE — a batch of identical profiles reproduces the
-     single-profile `runner` result to ~1e-12 (the CLAUDE.md vmap bar).
-  2. HETEROGENEOUS FREEZE-ON-DONE — lanes that terminate at *different*
-     iterations each match their solo run. Driven by per-lane starting
-     `accept_count` offsets so lanes hit `count_max` at different absolute
-     steps; the early finishers must freeze (not drift) while stragglers run.
-  3. NON-FINITE ISOLATION — a lane seeded to go non-finite is flagged
-     (`termination_reason == 5`) and frozen, and its batch-neighbours are
-     numerically identical to their solo runs (vmap lanes are independent).
-
-Fast: one pre-loop setup, small `count_max`, replicated init states.
+  1. Homogeneous equivalence: identical lanes reproduce the single-profile
+     runner result.
+  2. Heterogeneous freeze-on-done: lanes that finish at different iterations
+     each match their solo run (early finishers freeze, stragglers run).
+  3. Non-finite isolation: a poisoned lane gets termination_reason 5 and its
+     neighbours match their solo runs.
+  4. Genuinely different profiles: per-profile fields ride the carry, not the
+     runner closure.
 """
 
 from __future__ import annotations
@@ -213,13 +206,10 @@ def main() -> int:
     )
 
     # --- 4. Genuinely different profiles --------------------------------
-    # Build a SECOND atmosphere with different surface gravity + planet
-    # radius. Gravity feeds the analytical T-P, so n_0 / Tco / geometry / Kzz
-    # all differ from profile A. Run B solo on its OWN runner (closure baked
-    # from B) and as lane 1 of a batch whose runner is baked from A. If any
-    # per-profile field were left in the closure instead of the ProfileVars
-    # carry, lane 1 would silently use A's value while soloB uses B's →
-    # divergence. Agreement proves every per-profile field is carried.
+    # Profile B differs in gravity + radius, so n_0 / Tco / geometry / Kzz all
+    # differ from A. Run B solo on its own runner and as lane 1 of a batch
+    # whose runner closure is baked from A: any per-profile field left in the
+    # closure (instead of the ProfileVars carry) would make lane 1 diverge.
     rsB = _build_rs(vulcan_cfg, Tiso=1600.0, gs=gs0 * 1.6, Rp=Rp0 * 0.8)
     integB = _build_integ()
     initB, atmB = integB.prepare_runstate(rsB)

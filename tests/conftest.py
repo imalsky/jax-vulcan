@@ -1,20 +1,11 @@
 """Shared pytest setup for VULCAN-JAX tests.
 
-Each `tests/test_*.py` retains its existing `def main()` script entry
-point and adds a thin `def test_main(): assert main() == 0` wrapper so
-`pytest tests/` collects and runs them.
-
-VULCAN-master sibling: VULCAN-JAX is standalone; the upstream repo
-serves as an *optional* validation oracle. If `../VULCAN-master/` is
-present, oracle tests run their master comparisons in fresh subprocesses
-and add the sibling path only inside those subprocesses. If absent, those
-tests skip cleanly -- the rest of the suite is unaffected.
-
-The `hd189_state` fixture provides a per-test deep copy of the HD189
-pre-loop state (Variables, AtmData, Parameters) built once per session
-via `_hd189_pristine`. Tests that just need a clean reference state can
-request it instead of re-running the rate parser / FastChem / photo
-cross-section read every time.
+Script-style test files keep a `main()` entry plus a thin
+`test_main(): assert main() == 0` wrapper so pytest collects them.
+The upstream oracle is optional: oracle tests run master comparisons in
+fresh subprocesses and skip cleanly when it is absent. The `hd189_state`
+fixture hands out a per-test deep copy of the session-built HD189
+pre-loop state so tests avoid re-running rates / FastChem / photo setup.
 """
 
 from __future__ import annotations
@@ -33,31 +24,26 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Oracle location comes from $VULCAN_MASTER_DIR, never from a sibling guess.
-# An auto-detected ../VULCAN-master pins no revision, and the copy on this
-# project's machine is not a git checkout at all (it was found in 2026-07 to
-# contain VULCAN-JAX's own code, which had then been cited as upstream
-# evidence). `tests/oracle.py` resolves the path and verifies the pinned commit
-# and a clean worktree before any comparison runs. This constant exists only so
-# the import-leak cleanup below can strip the path from sys.path.
+# Oracle location comes from $VULCAN_MASTER_DIR only, never a sibling guess:
+# an auto-detected ../VULCAN-master pins no revision. `tests/oracle.py`
+# verifies the pinned commit and a clean worktree before any comparison runs.
+# This constant exists only so the import-leak cleanup below can strip the
+# path from sys.path.
 _master_env = os.environ.get("VULCAN_MASTER_DIR")
 VULCAN_MASTER = (Path(_master_env).expanduser().resolve() if _master_env
                  else Path("/nonexistent/VULCAN-oracle-unset"))
 VULCAN_MASTER_STR = str(VULCAN_MASTER)
 
-# Many tests assume cwd == ROOT for relative paths in vulcan_cfg.py.
+# Many tests assume cwd == ROOT for relative data paths.
 os.chdir(ROOT)
 
 warnings.filterwarnings("ignore")
 
 
 def _assert_testing_repo_checkout() -> None:
-    """Fail collection loudly if `import vulcan_jax` resolves outside this repo.
-
-    The package uses a src layout, so the suite imports the *installed*
-    `vulcan_jax`. A non-editable install (e.g. `pip install .` from a release)
-    shadows the checkout and the suite silently tests stale code — branch
-    changes appear to fail (or pass) for reasons unrelated to the working tree.
+    """Fail collection loudly if `import vulcan_jax` resolves outside this
+    repo: a non-editable install shadows the checkout and the suite silently
+    tests stale code.
     """
     import vulcan_jax
 
@@ -156,13 +142,9 @@ def _snapshot_cfg_attrs(cfg_module) -> dict:
 
 @pytest.fixture(scope="session", autouse=True)
 def _cfg_snapshot_session():
-    """Capture the process default config (`config.default_config()`) + a
-    deep-copy of every public attribute, plus canonical VULCAN-JAX modules.
-
-    The default config is a single process-wide `Config` object that
-    `state._cfg_overlay` mutates in place during setup; snapshotting its
-    attributes lets `_cfg_guard` restore it after any test that overlays or
-    mutates it directly."""
+    """Snapshot the process default config (a single object that
+    `state._cfg_overlay` mutates in place) plus canonical VULCAN-JAX modules,
+    so `_cfg_guard` can restore them after every test."""
     _restore_import_state()
     from vulcan_jax.config import default_config
 
@@ -311,17 +293,10 @@ def hd189_state(_hd189_pristine: HD189State) -> HD189State:
 
 
 # --- numerical-oracle fixture guard -----------------------------------------
-# These .npz oracles stay OUT of git on purpose (~36 MB of binaries, all
-# regenerable). A blanket `*.npz` gitignore rule once left them untracked, so on
-# a fresh clone the tests comparing against them SKIPPED and the suite still
-# went green.
-#
-# Every one is now reproducible FROM THIS REPOSITORY with a single command --
-# `python tests/gen_fixtures.py --all` -- with no sibling checkout. Until
-# 2026-08-03 the two adjoint states could only be built through the unpublished
-# `jax_paper/` sibling, and those generators had themselves rotted (a hardcoded
-# `/Users/.../Desktop/...` root that no longer exists), so the default suite
-# could not run from the published source at all.
+# These .npz oracles stay OUT of git on purpose (~36 MB, all regenerable with
+# `python tests/gen_fixtures.py --all`, no sibling checkout needed). When one
+# is missing the tests comparing against it would SKIP and the suite would
+# still go green, so collection must fail loudly instead (skipped != passed).
 #
 # path -> the generator that writes it.
 _EXPECTED_FIXTURES = {

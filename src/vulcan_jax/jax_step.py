@@ -26,17 +26,15 @@ from .config import default_config
 jax.config.update("jax_enable_x64", True)
 
 _CFG = default_config()
+# Pure numerical floor for ysum denominators; not a tuning knob.
 _UNDERFLOW_DENOM = 1e-300
 
-# Ordered (atom, reservoir-species) pairs for the chemistry atom-conservation
-# projection. Each atom the active network tracks is driven to exact
-# conservation by distributing its per-layer production residual onto the paired
-# abundant "reservoir" carrier of that atom. The projection is built over
-# whichever pairs the network actually supports, so the C--H--N--O networks
-# conserve H/O/C/N (reservoirs H2, H2O, CO, N2) and the S-bearing SNCHO network
-# additionally conserves S via H2S. Pairing one reservoir per atom keeps the
-# reservoir count matrix square, so a single linear solve zeros every atom
-# residual simultaneously -- including the H that H2S also carries.
+# (atom, reservoir) pairs for the atom-conservation projection: each atom's
+# per-layer production residual is distributed onto its abundant reservoir
+# carrier. Only pairs the active network supports are used (C-H-N-O networks
+# conserve H/O/C/N; SNCHO adds S via H2S). One reservoir per atom keeps the
+# reservoir count matrix square, so one linear solve zeros every atom residual
+# at once, including the H that H2S also carries.
 _ATOM_RESERVOIRS = (
     ("H", "H2"),
     ("O", "H2O"),
@@ -51,15 +49,11 @@ def _build_chem_projection_tables() -> tuple[
 ]:
     """Build static reservoir-projection tables for chemistry conservation.
 
-    The projection conserves every atom in ``vulcan_cfg.atom_list`` for which the
-    composition table carries the atom column and the paired reservoir species is
-    a tracked species. Selecting the pairs from the active network (rather than a
-    fixed H/O/C/N set) lets the S-bearing SNCHO network conserve sulfur through
-    H2S while leaving the C--H--N--O networks bit-for-bit unchanged. One
-    reservoir per atom keeps ``reservoir_counts`` square; it is invertible for
-    every subset of these atoms because the C, N and S columns each have a single
-    nonzero entry (their own reservoir), so the solve always reduces to the
-    invertible H/O block.
+    Conserves every atom in ``cfg.atom_list`` that has a composition column and
+    a tracked reservoir species, so SNCHO conserves S while the C-H-N-O
+    networks stay bit-for-bit unchanged. ``reservoir_counts`` is invertible for
+    every atom subset: the C, N and S columns each have a single nonzero entry,
+    so the solve always reduces to the invertible H/O block.
     """
     compo_names = _composition.compo.dtype.names
     cfg_atoms = getattr(_CFG, "atom_list", ())
@@ -108,11 +102,9 @@ def _build_chem_projection_tables() -> tuple[
     _CHEM_INV_RESERVOIR_COUNTS,
 ) = _build_chem_projection_tables()
 
-# atom_list value baked into the reservoir-projection tables above at import.
-# It is import-frozen (the tables are module-level constants), so
-# state._assert_atom_list_matches_import fails fast if a later make_config
-# passes a different atom_list rather than silently mixing import-time
-# projection with cfg-time atom accounting.
+# atom_list baked into the projection tables above; import-frozen (the tables
+# are module constants). state._assert_atom_list_matches_import fails fast if
+# a later make_config passes a different atom_list.
 IMPORT_ATOM_LIST = tuple(getattr(_CFG, "atom_list", ()))
 
 
@@ -163,13 +155,13 @@ class AtmStatic(NamedTuple):
     ms: jnp.ndarray  # (ni,)
     alpha: jnp.ndarray  # (ni,)
     M: jnp.ndarray  # (nz,)
-    vm: jnp.ndarray  # (nz-1, ni) — interface molecular-diffusion drift velocity
+    vm: jnp.ndarray  # (nz-1, ni) interface molecular-diffusion drift velocity
     vs: jnp.ndarray  # (nz-1, ni)
     top_flux: jnp.ndarray  # (ni,)
     bot_flux: jnp.ndarray  # (ni,)
     bot_vdep: jnp.ndarray  # (ni,)
     gas_indx_mask: jnp.ndarray  # (ni,) bool
-    diff_esc_mask: jnp.ndarray  # (ni,) bool — species in cfg.diff_esc
+    diff_esc_mask: jnp.ndarray  # (ni,) bool, species in cfg.diff_esc
     use_vm_mol: bool
     use_settling: bool
     use_topflux: bool
@@ -501,10 +493,9 @@ def _apply_diffusion_jax(
     return diff
 
 
-# Ros2 free parameter gamma = 1 + 1/sqrt(2) (Verwer et al. 1997, the L-stable
-# 2nd-order Rosenbrock). The stage-2 RHS factor 2/(gamma*dt) and the solution
-# weights 3/(2*gamma), 1/(2*gamma) below all derive from it; matches
-# VULCAN-master op.py:2931/2969/2973.
+# Ros2 free parameter gamma = 1 + 1/sqrt(2) (Verwer et al. 1997, L-stable
+# 2nd-order Rosenbrock). The stage-2 factor 2/(gamma*dt) and solution weights
+# 3/(2*gamma), 1/(2*gamma) below derive from it; matches VULCAN-master op.py.
 _ROS2_GAMMA = 1.0 + 2.0**-0.5
 
 
@@ -532,12 +523,12 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
         y, A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, atm
     )
     rhs_y = _projected_chem_rhs(y, M, k_arr) + diff_at_y
-    # Analytical Jacobian: ≤1e-13 vs the AD path and ~3-5× faster because it
-    # skips materialising the structurally-zero entries.
+    # Analytical Jacobian: <=1e-13 vs the AD path and ~3-5x faster (skips the
+    # structurally-zero entries AD would materialize).
     chem_J = _project_chem_jac(chem_jac_analytical(y, M, k_arr, net))
 
-    # Diffusion blocks are diagonal-in-species → pass off-diagonals as (nz-1, ni)
-    # vectors to skip the O(ni^3) C @ invA_B matmul in forward elim.
+    # Diffusion blocks are diagonal-in-species: pass off-diagonals as (nz-1, ni)
+    # vectors to skip the O(ni^3) C @ invA_B matmul in forward elimination.
     diag_d = A_eddy[:, None] + A_mol
     sup_d = B_eddy[:-1, None] + B_mol[:-1]
     sub_d = C_eddy[1:, None] + C_mol[1:]
@@ -547,14 +538,12 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
         jnp.zeros_like(atm.bot_vdep),
     )
     diag_d = diag_d.at[0].add(bot_vdep_term)
-    # Diffusion-limited escape at TOA. master adds this to the top-layer
-    # diagonal in all three live lhs_jac_* variants (op.py:2144-2148,
-    # 2264-2268, 2468-2472), gated on a non-empty `diff_esc` list — NOT on
-    # `use_topflux`. The escape flux already enters the RHS via
-    # `_apply_diffusion_jax`, so omitting it here left the Jacobian
-    # inconsistent with the residual it linearizes. master guards
-    # `if y[-1,sp] > 0`; the inner `where` reproduces that and keeps the
-    # division safe (and the derivative finite) when y is zero.
+    # Diffusion-limited escape at TOA: master adds this to the top-layer
+    # diagonal in all live lhs_jac_* variants, gated on a non-empty `diff_esc`
+    # list, NOT on `use_topflux`. The escape flux already enters the RHS, so
+    # omitting it here would leave the Jacobian inconsistent with the residual.
+    # The inner `where` mirrors master's `y > 0` guard and keeps the division
+    # and its derivative finite at y = 0.
     y_top_pos = y[-1] > 0.0
     diff_lim = jnp.where(
         atm.diff_esc_mask & y_top_pos,
@@ -603,9 +592,9 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
 def make_atm_static(atm, ni: int, nz: int, cfg=None) -> AtmStatic:
     """Build an AtmStatic from a legacy AtmData container.
 
-    `cfg` defaults to the process default config; OuterLoop passes its own
-    `self._cfg` so the transport toggles below honor a load_config() cfg (this
-    runs at integration time, after state._cfg_overlay has restored the default).
+    `cfg` defaults to the process default; OuterLoop passes its own cfg so the
+    transport toggles honor a load_config() cfg (this runs at integration
+    time, after state._cfg_overlay has restored the default).
     """
     if cfg is None:
         cfg = default_config()
@@ -619,9 +608,9 @@ def make_atm_static(atm, ni: int, nz: int, cfg=None) -> AtmStatic:
     use_botflux = bool(getattr(cfg, "use_botflux", False))
     gas_mask = jnp.zeros((ni,), dtype=jnp.bool_)
     gas_mask = gas_mask.at[jnp.asarray(atm.gas_indx, dtype=jnp.int32)].set(True)
-    # Independent of the toggles above — see the diff_esc note at the Jacobian
-    # assembly site. Species not in the network are a config error caught by
-    # runtime_validation, so the index lookup is safe here.
+    # Independent of the toggles above (see the diff_esc note at the Jacobian
+    # assembly). Species not in the network are caught by runtime_validation,
+    # so the index lookup is safe here.
     diff_esc_np = np.zeros((ni,), dtype=bool)
     for _sp in getattr(cfg, "diff_esc", []) or []:
         diff_esc_np[_SPEC_LIST.index(_sp)] = True

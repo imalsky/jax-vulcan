@@ -1,19 +1,9 @@
 """`use_fix_all_bot` post-step bottom clamp inside the runner.
 
-`OuterLoop` clamps the bottom layer to chemical-EQ mixing ratios
-(captured at init from `var.ymix[0]`) on every accepted step when
-`vulcan_cfg.use_fix_all_bot=True`. Mirrors
-`op.Ros2.solver_fix_all_bot`'s `sol[0] = bottom*atm.n_0[0]`
-(`op.py:3050-3051`).
-
-This test forces `use_fix_all_bot=True`, runs a 10-step HD189
-integration, and confirms the bottom row of `var.y` equals the captured
-`bottom_ymix * n_0[0]` to machine precision after the run. It also
-confirms that `use_fix_all_bot=False` leaves the bottom free (matches
-the unclamped baseline).
-
-The pre-Phase-10.6 version of this test only checked that
-`naming_solver` raised `NotImplementedError`. That deferral is gone now.
+With `use_fix_all_bot=True`, OuterLoop clamps the bottom layer to the
+init-captured `ymix[0] * n_0[0]` on every accepted step (mirrors
+`op.Ros2.solver_fix_all_bot`). A 10-step HD189 run must leave the bottom
+row equal to that target to machine precision.
 """
 
 from __future__ import annotations
@@ -85,8 +75,7 @@ def main() -> int:
 
 
 def test_main():
-    """Pytest wrapper. `main()` returns 0 on success; convert to an
-    assertion so `pytest tests/` collects and runs this script."""
+    """Pytest wrapper around main()."""
     assert main() == 0
 
 

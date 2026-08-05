@@ -23,8 +23,8 @@ from vulcan_jax.config import Config, default_config, load_config
 # g = G*Mp/Rp^2. default reproduces the historical HD189 Mp=1.118 m_jup value.
 _EXPECTED_GS = {
     # default.yaml is HD189-flavored and must reproduce the adopted 2140
-    # (the pre-2026-07-21 pin 2139.770515 enshrined a raw-literature-Mp slip
-    # that shifted photolysis J up to ~7%; see docs/validation.md).
+    # (an earlier 2139.770515 pin enshrined a raw-literature-Mp slip that
+    # shifted photolysis J up to ~7%; see docs/validation.md).
     "default": 2140.0,
     "HD189": 2140.0,
     "HD209": 936.0,

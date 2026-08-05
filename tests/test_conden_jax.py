@@ -1,30 +1,13 @@
-"""Validate the JAX conden kernels against direct NumPy reference math.
+"""Formula correctness of the three pure-JAX conden kernels in `conden.py`,
+fed synthetic but physically-shaped inputs:
 
-The HD189 default config sets `use_condense=False`, so an end-to-end
-integration test of condensation is out of scope for this sub-milestone
-(that needs the Earth cfg). What's validated here is the
-*formula correctness* of the three pure-JAX conden kernels in
-`conden.py`, fed with synthetic but physically-shaped inputs:
+    1. `update_conden_rates` vs the `op.conden` loop body (op.py:1135-1151).
+    2. `apply_h2o_relax_jax` vs `op.h2o_conden_evap_relax` (op.py:1334-1370).
+    3. `apply_nh3_relax_jax` vs `op.nh3_conden_evap_relax`, including the
+       `i <= conden_top` clamp and the NH3_l_s >= 0 clip.
 
-    1. `update_conden_rates` against the per-formula reference
-
-           rate[r, z]  = Dg[r, z] * coeff[r] * (y[z, sp[r]] - sat_n[r, z])
-           k_arr[re]   = max( rate, 0)
-           k_arr[re+1] = max(-rate, 0)
-
-       — same algebra as `op.conden`'s for-loop body
-       (`VULCAN-master/op.py:1135-1151`), packed as a vectorised
-       gather/multiply/scatter.
-
-    2. `apply_h2o_relax_jax` against the implicit-Euler relaxation in
-       `op.h2o_conden_evap_relax` (`op.py:1334-1370`).
-
-    3. `apply_nh3_relax_jax` against the same shape with the
-       `i <= conden_top` clamp (`op.py:1389`) plus the post-update
-       `ymix[NH3_l_s] = max(ymix[NH3_l_s], 0)` clip (`op.py:1420`).
-
-All three are pure JAX so the comparison hits float64 precision modulo
-reduction order; we check `≤ 1e-13`.
+All three are pure JAX, so agreement is checked at <= 1e-13. End-to-end
+condensation integration is out of scope here (HD189 has use_condense=False).
 """
 
 from __future__ import annotations
@@ -37,9 +20,9 @@ from pathlib import Path
 import numpy as np
 import jax
 
-# Enable float64 BEFORE importing jax.numpy or anything that touches JAX —
+# Enable float64 BEFORE importing jax.numpy or anything that touches JAX;
 # otherwise the kernels run in float32 and the agreement bound silently
-# loosens to ~1e-7. See `outer_loop.py` for the production import path.
+# loosens to ~1e-7.
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 
@@ -122,8 +105,8 @@ def _relerr(ref, ours):
 
 
 def test_update_conden_rates():
-    """Two condensation reactions over (nz=5, ni=4) — verify scatter,
-    sign split, and the use_relax short-circuit (coeff=0 → all-zero rate).
+    """Scatter, sign split, and the use_relax short-circuit (coeff=0 gives
+    an all-zero rate) over two condensation reactions.
     """
     import vulcan_jax.conden as _conden_mod
 
@@ -250,8 +233,8 @@ def test_apply_h2o_relax_jax():
 
 
 def test_apply_nh3_relax_jax():
-    """Verify against a per-cell numpy implementation of op.nh3_conden_evap_relax,
-    including the conden_top clamp and the NH3_l_s >= 0 clip."""
+    """Match a per-cell numpy port of op.nh3_conden_evap_relax, including
+    the conden_top clamp and the NH3_l_s >= 0 clip."""
     import vulcan_jax.conden as _conden_mod
 
     rng = np.random.default_rng(11)
@@ -331,8 +314,7 @@ def test_apply_nh3_relax_jax():
 
 def test_nh3_conden_top_traced_scalar_bitwise():
     """A 0-d int32 `nh3_conden_top` (the batched ProfileVars form) must be
-    BITWISE identical to the Python-int closure form under jit — the mask
-    comparison against jnp.arange is exact integer arithmetic."""
+    BITWISE identical to the Python-int closure form under jit."""
     import jax
     import vulcan_jax.conden as _conden_mod
 
@@ -399,8 +381,7 @@ def test_nh3_conden_top_traced_scalar_bitwise():
 
 def test_nh3_conden_top_vmap_per_lane():
     """vmap over a batch where ONLY `nh3_conden_top` differs per lane must
-    match per-lane single calls — the mechanism run_batch relies on after
-    threading the cold-trap index through ProfileVars."""
+    match per-lane single calls (the mechanism run_batch relies on)."""
     import jax
     import vulcan_jax.conden as _conden_mod
 

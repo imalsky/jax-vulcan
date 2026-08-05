@@ -1,14 +1,9 @@
 """The upstream oracle must be revision-pinned, verified, and never mutated.
 
-Acceptance for change 1 of the 2026-08 handoff:
-
-  * the audit passes against the manifest revision, and fails BEFORE any
-    calculation against a one-commit-newer or a dirty checkout;
-  * a test records the oracle hash/status before and after and proves it did
-    not change;
-  * current public master fails with a clear "unsupported oracle revision"
-    message, not a cascade of rate-index failures;
-  * no newer chemistry network is copied into this repository.
+Pins: the audit fails BEFORE any calculation on a one-commit-newer or dirty
+checkout; the oracle hash/status is proven unchanged across a test; a wrong
+revision gives one clear "unsupported oracle revision" message, not a cascade
+of rate-index failures; no newer chemistry network is copied into this repo.
 
 These run without any oracle present: the revision machinery is exercised on
 throwaway git repositories built in tmp_path.
@@ -145,12 +140,8 @@ def test_wrong_revision_fails_with_expected_and_actual(fake_oracle, monkeypatch)
 
 
 def test_one_commit_newer_still_fails(fake_oracle, monkeypatch):
-    """Pinning is exact: 'nearly right' is not right.
-
-    The real instance: current public master is one relevant commit past the
-    pinned revision (39f1906 removed NH3 + CH), which shifts every reaction
-    index after it.
-    """
+    """Pinning is exact: current public master is one relevant commit past
+    the pin (NH3 + CH removal), which shifts every later reaction index."""
     monkeypatch.setenv(orc.ENV_DIR, str(fake_oracle))
     monkeypatch.setenv(orc.ENV_REQUIRE, "1")
     (fake_oracle / "thermo" / "NCHO_photo_network.txt").write_text("# v2\n")

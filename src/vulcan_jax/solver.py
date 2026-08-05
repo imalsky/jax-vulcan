@@ -39,38 +39,14 @@ class BlockThomasDiagFactors(NamedTuple):
 def factor_block_thomas_diag_offdiag(diag, sup_d, sub_d):
     """Factor a diagonal-offdiag block-tridiagonal system once for reuse.
 
-    DO NOT replace the LU carry with an explicit inverse carry. REJECTED on
-    accuracy 2026-07-27 after measuring it on real LHS blocks.
-
-    The idea is tempting: carrying ``G = inv(A'_j)`` instead of the LU factors
-    benchmarks 2.0x faster under ``jvp`` (0.51x; 0.93x on the primal path),
-    because ``lu_factor``'s tangent rule is far costlier than ``inv``'s
-    ``-G A_dot G`` and this sweep is ~85% of the jvp linear-algebra cost.
-
-    It fails on conditioning. The matrix actually factorized is
-    ``I/(gamma*dt) - J``, and on a converged HD189 state its blocks reach
-    cond ~1.4e18 at dt=3.8e4 (where a converged run sits) and ~6.7e23 at the
-    dt_max=1e11 that vulcan-retrieval configures. Measured max relative
-    residual, production LU vs inverse carry:
-
-        dt=1e2    1.25e-06  vs 1.25e-06    1.0x
-        dt=3.8e4  5.34e-03  vs 2.60e-02    4.9x worse
-        dt=1e6    1.82e+02  vs 4.67e+02    2.6x worse
-        dt=1e11   5.53e+03  vs 3.15e+06    569x worse
-
-    An earlier benchmark that reported "no worse residual, stable across
-    conditioning" used synthetic diagonally-dominant blocks topping out at
-    cond ~4e2 -- 21 orders of magnitude short of production. Benchmark this
-    solver on real blocks or not at all.
-
-    Why the LU carry is not redundant even though line ~51 forms an inverse:
-    the result is immediately re-factorized WITH PARTIAL PIVOTING, which is
-    backward-stable and stops error compounding across the nz-layer sweep.
-    Carrying G propagates an unpivoted inverse through all 150 layers.
-
-    The 85%-of-jvp-cost finding still stands and is worth attacking -- but via
-    a custom JVP rule for the sweep (closed form, keeps pivoted LU in the
-    primal), not by dropping pivoting.
+    DO NOT replace the LU carry with an explicit inverse carry (rejected on
+    accuracy). It is 2.0x faster under jvp, but on real ``I/(gamma*dt) - J``
+    blocks (cond ~6.7e23 at dt_max=1e11) its residual is 569x worse; the
+    per-layer re-factorization WITH PARTIAL PIVOTING is what stops error
+    compounding across the sweep. Benchmark this solver on real blocks only
+    (synthetic ones top out ~21 orders of conditioning short). If attacking
+    the jvp cost (~85% of jvp linear algebra), write a custom JVP rule that
+    keeps pivoted LU in the primal. Full record: docs/vulcan_jax_notes.md.
     """
     ni = diag.shape[1]
 

@@ -17,11 +17,8 @@ import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 def _oracle_dir():
-    """Configured upstream oracle checkout, or a non-existent sentinel path.
-
-    Returning a path that does not exist (rather than None) keeps every
-    `if not VULCAN_MASTER.is_dir(): skip` site below working unchanged, while
-    removing the silent sibling fallback.
+    """Oracle checkout from $VULCAN_MASTER_DIR, else a non-existent sentinel
+    path so every `if not VULCAN_MASTER.is_dir(): skip` site works unchanged.
     """
     import os
     from pathlib import Path as _P
@@ -30,10 +27,9 @@ def _oracle_dir():
     return _P(raw).expanduser().resolve() if raw else _P("/nonexistent/VULCAN-oracle-unset")
 
 
-# Oracle location comes from $VULCAN_MASTER_DIR, never from a sibling guess:
-# an auto-detected ../VULCAN-master pins nothing, and the copy on this project's
-# machine is not even a git checkout. `tests/oracle.py` resolves it and verifies
-# the pinned revision + a clean tree before any comparison runs.
+# Oracle location comes from $VULCAN_MASTER_DIR only, never a sibling guess:
+# an auto-detected ../VULCAN-master pins nothing. `tests/oracle.py` verifies
+# the pinned revision and a clean tree before any comparison runs.
 VULCAN_MASTER = _oracle_dir()
 
 from vulcan_jax._paths import PACKAGE_ROOT
@@ -406,14 +402,9 @@ def _atom_dict(data: np.lib.npyio.NpzFile) -> dict[str, float]:
 
 @pytest.mark.master_serial
 def test_audit_refuses_a_contaminated_oracle() -> None:
-    """The audit must refuse a checkout carrying VULCAN-JAX's own code.
-
-    Regression test for the 2026-07-30 failure: the sibling `../VULCAN-master/`
-    copy had VULCAN-JAX's stall detector, `conv_stall_window`, `wall_clock_max`
-    and 13-species `conver_ignore` back-ported into it, and was then cited as
-    "master parity" evidence for a config change. Auditing against that is
-    circular. `_check_oracle_is_pristine` exists to make it impossible to do
-    silently, so assert it actually fires on such a tree.
+    """The audit must refuse an oracle checkout carrying VULCAN-JAX's own code
+    (auditing against such a tree is circular); `_check_oracle_is_pristine`
+    must fire on it. Do not weaken this guard.
     """
     from tools.audit_master_parity import _check_oracle_is_pristine
 
@@ -433,10 +424,8 @@ def test_audit_refuses_a_contaminated_oracle() -> None:
 @pytest.mark.master_serial
 def test_audit_master_parity_with_staged_stock_fastchem() -> None:
     """Audit is clean when master is temporarily staged with stock FastChem.
-
-    SKIPPED, not passed, when the sibling checkout is not pristine upstream:
-    a parity verdict measured against a tree containing VULCAN-JAX's own code
-    would be meaningless. See `_check_oracle_is_pristine`.
+    SKIPPED (not passed) when the checkout is not pristine upstream: a parity
+    verdict against a contaminated tree would be circular.
     """
     if not VULCAN_MASTER.is_dir():
         pytest.skip(f"VULCAN-master absent at {VULCAN_MASTER}")
@@ -522,9 +511,9 @@ def test_default_hd189_preloop_and_matched_steps_match_master() -> None:
 
         assert list(jax["species"]) == list(master["species"])
         assert int(jax["nr"]) == int(master["nr"])
-        # Exact equality holds because the master side stages the JAX-compiled
-        # FastChem binary (see _MASTER_SCRIPT): same binary + same staged
-        # inputs -> bit-identical vulcan_EQ.dat on both sides.
+        # Exact equality holds because _MASTER_SCRIPT stages the JAX-compiled
+        # FastChem binary: same binary + same inputs -> bit-identical
+        # vulcan_EQ.dat on both sides.
         np.testing.assert_array_equal(jax["y_ini"], master["y_ini"])
         np.testing.assert_array_equal(jax["pco"], master["pco"])
         np.testing.assert_array_equal(jax["Tco"], master["Tco"])

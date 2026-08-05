@@ -41,39 +41,29 @@ def _now() -> float:
 jax.config.update("jax_enable_x64", True)
 
 
-# Underflow guard for `x / max(|denom|, ·)` patterns used in delta /
-# longdy / aflux-difference normalizations. Not a tuning knob — it
-# exists to keep the divisor strictly positive in cells where the
-# physical quantity is exactly zero. float64 underflow tail is ~5e-324,
-# so 1e-300 is well clear of denormals while never colliding with any
-# physically meaningful value.
+# Underflow floor for `x / max(|denom|, .)` normalizations. Not a tuning
+# knob: 1e-300 is well above the float64 denormal tail (~5e-324) and below
+# any physical value, so it only keeps exact-zero divisors positive.
 _UNDERFLOW_DENOM = 1e-300
 
 
-# Parsed once at module import — no code-generation step is needed when the
-# network changes.  Scripts (python vulcan_jax.py) always get a fresh parse.
-# Interactive / REPL use: restart Python (or reload this module) after editing
-# the config `network` so the new network is picked up here.
+# Network parsed once at module import. After editing the config `network`,
+# restart Python (or reload this module) to pick it up.
 _CFG = default_config()
 _NETWORK = _net_mod.parse_network(str(resolve_data_path(_CFG.network)))
 _NET_JAX = _chem_mod.to_jax(_NETWORK)
 
 
 class ProfileVars(NamedTuple):
-    """Per-profile constants the integration needs but that vary between
-    atmospheres (T-P, abundances, Kzz, gravity, planet radius, saturation,
-    molecular diffusion).
+    """Per-profile constants (T-P, abundances, Kzz, gravity, radius,
+    saturation, molecular diffusion) threaded through the carry.
 
-    These used to live in the runner closures (`_Statics`, `AtmRefreshStatic`,
-    `CondenStatic`, `_PhotoStatic`). `jax.vmap` does NOT batch closure
-    constants, so a batched run would share lane-0's atmosphere across every
-    lane. Threading them through the `JaxIntegState` carry instead makes vmap
-    batch them per lane.
-    They are constant during a run — the body never mutates them — so for the
-    single-profile path the carried values equal the old closure constants and
-    behaviour is unchanged. `pref_indx` stays a closure constant (it sizes a
-    `jnp.arange`, so it cannot be a tracer) and must therefore be identical
-    across a batch; the emulator buckets accordingly.
+    `jax.vmap` does NOT batch closure constants, so per-profile arrays must
+    ride this carry, never a runner closure (a closure would share lane-0's
+    atmosphere across the batch). Constant during a run; the single-profile
+    path seeds the same values the closures bake. `pref_indx` stays a closure
+    constant (it sizes a `jnp.arange`) and must be batch-constant; the
+    emulator buckets accordingly.
     """
 
     # from _Statics
@@ -97,11 +87,9 @@ class ProfileVars(NamedTuple):
     c_nh3_Dg: jnp.ndarray  # (nz,)
     c_nh3_sat: jnp.ndarray  # (nz,)
     c_nh3_conden_top: jnp.ndarray  # () int32 — argmin(sat_mix['NH3'])
-    # from _PhotoStatic — the only T-P-dependent photo statics (cross sections
-    # interpolated onto this profile's Tco at setup). Everything else in
-    # _PhotoStatic is fixed by star + network + wavelength grid + cfg and must
-    # be batch-constant (prepare_runstate guards the star/grid identity).
-    # Placeholder shape (0, 1, 1) when use_photo=False.
+    # from _PhotoStatic: the only T-P-dependent photo statics; the rest is
+    # star/network/grid-fixed and must be batch-constant (prepare_runstate
+    # guards this). Placeholder shape (0, 1, 1) when use_photo=False.
     p_absp_T_cross: jnp.ndarray  # (n_absp_T, nz, nbin)
     p_cross_J_T: jnp.ndarray  # (n_br_T, nz, nbin)
 
@@ -120,11 +108,9 @@ class JaxIntegState(NamedTuple):
     dt: jnp.ndarray  # ()              step size to use for the next attempt
     t: jnp.ndarray  # ()              elapsed integration time
     delta: jnp.ndarray  # ()              truncation-error proxy of last attempt
-    delta_prev: jnp.ndarray  # ()          previous kept step's effective delta for
-    #                                      the PI controller; -1.0 sentinel = no
-    #                                      valid history (entry / after a reject).
-    #                                      Inert pass-through when use_pi_controller
-    #                                      is off.
+    delta_prev: jnp.ndarray  # ()          previous kept step's effective delta
+    #                                      (PI controller); -1.0 = no history.
+    #                                      Inert when use_pi_controller is off.
     accept_count: jnp.ndarray  # ()  int32       accepted steps in this batch
     retry_count: jnp.ndarray  # ()  int32       retries on the in-flight step
     atom_loss: jnp.ndarray  # (n_atoms,)
@@ -149,11 +135,9 @@ class JaxIntegState(NamedTuple):
     J_br_T: jnp.ndarray  # (n_br_T, nz)   per-branch J-rate (T-dep)
     Jion_br: jnp.ndarray  # (n_ion_br, nz) per-branch J-rate (ion)
 
-    # Atmosphere geometry — refreshed at the END of an accepted iteration
-    # (after conden, before hydrostatic balance) every `update_frq` steps,
-    # matching `op.py:904-906`. The next iteration's `body_fn` splices
-    # `g`, `dzi`, `Hpi`, `top_flux`, `vs` into the static `AtmStatic` so
-    # `jax_ros2_step` sees the refreshed diffusion coefficients.
+    # Atmosphere geometry, refreshed at the END of an accepted iteration every
+    # `update_frq` steps (op.py:904-906); the next body_fn splices g/dzi/Hpi/
+    # top_flux/vs into AtmStatic so jax_ros2_step sees refreshed diffusion.
     g: jnp.ndarray  # (nz,)          gravity
     mu: jnp.ndarray  # (nz,)          mean molar mass (g/mol)
     Hp: jnp.ndarray  # (nz,)          pressure scale height
@@ -208,45 +192,33 @@ class JaxIntegState(NamedTuple):
     # sentinel (2**30, well above any count_max) so the cap never trips.
     chunk_target: jnp.ndarray  # ()  int32
 
-    # Per-profile termination state for the vmapped batched runner
-    # (`run_batch`). Unused by the single-profile path: seeded to
-    # (False, 0) and never read by `cond_fn` / `body_fn`. The batched
-    # runner sets `is_done` once a lane really terminates (converged /
-    # runtime / step-count / non-finite) so `cond_fn_batch` can stop it
-    # and `body_fn_batch` can freeze it while stragglers finish.
-    # `termination_reason`: 0 running, 1 converged, 2 runtime exceeded,
-    # 3 step-count exceeded, 4 stalled-convergence, 5 non-finite state.
+    # Batched-runner termination state (unused by the single-profile path).
+    # `is_done` freezes a finished lane while stragglers finish.
+    # `termination_reason`: 0 running, 1 converged, 2 runtime, 3 step-count,
+    # 4 stalled-convergence, 5 non-finite.
     is_done: jnp.ndarray  # ()  bool
     termination_reason: jnp.ndarray  # ()  int32
 
-    # Hybrid molecular-diffusion phase (use_hybrid_vm_mol). Blend factor for
-    # the vm/central-difference diffusion in jax_ros2_step: 1.0 = upwind
-    # (phase 0), 0.0 = central-difference (phase 1). Seeded to 1.0 when
-    # use_vm_mol is on, else 0.0. When hybrid is enabled the body flips it
-    # 1.0 -> 0.0 the first time phase 0 ends — by convergence, runtime, OR
-    # step-count — so a run that stops via `_real_terminate` is in the
-    # central-difference PHASE. That is a fixed point only if phase 1 also
-    # converged (end_case 1). Non-hybrid runs never flip it (constant
-    # 1.0 for pure-vm, 0.0 for central), so their trace is bit-identical.
+    # Hybrid vm_mol phase blend for jax_ros2_step: 1.0 = upwind (phase 0),
+    # 0.0 = central difference (phase 1). Hybrid runs flip 1.0 -> 0.0 the
+    # first time phase 0 ends (convergence, runtime, OR step-count), so a run
+    # stopping via `_real_terminate` is in phase 1 -- a fixed point only if
+    # phase 1 also converged. Non-hybrid runs never flip (bit-identical trace).
     hybrid_use_vm: jnp.ndarray  # ()  float64
 
-    # Live termination budget. Seeded to the static count_min/count_max/runtime
-    # and used by the termination test in place of the closure constants. Only
-    # the hybrid phase flip mutates them: when phase 0 ends (converged /
-    # runtime / step-count) the run switches to central-difference (phase 1)
-    # and RESETS the budget the way vm_branch op.py stop() does — count_min =
-    # count+100, count_max = count+2000 (convergence) or count+1000 (budget),
-    # runtime *= 1.1 (runtime). Non-hybrid runs never touch them, so their
-    # termination is bit-identical to the static path.
+    # Live termination budget (seeded from the static caps; the termination
+    # test reads these, not the closure constants). Only the hybrid phase flip
+    # mutates them, extending the budget the vm_branch op.py stop() way:
+    # count_min = count+100, count_max = count+2000 (convergence) or
+    # count+1000 (budget), runtime *= 1.1 (runtime). Non-hybrid runs never
+    # touch them.
     count_min_dyn: jnp.ndarray  # ()  int32
     count_max_dyn: jnp.ndarray  # ()  int32
     runtime_dyn: jnp.ndarray  # ()  float64
 
-    # Per-profile constants (see ProfileVars). Constant during a run; rides
-    # in the carry so jax.vmap batches them per lane. The single-profile path
-    # seeds this from the same builders the closure used, so it is a no-op
-    # there. The body splices these into AtmRefreshStatic / CondenStatic and
-    # reads n_0 / Kzz / atom_ini directly.
+    # Per-profile constants (see ProfileVars): must ride the carry so
+    # jax.vmap batches them per lane; the body splices them into the
+    # closure-baked statics.
     pv: ProfileVars
 
 
@@ -309,22 +281,18 @@ def _step_size(
     pi_alpha: float = 0.7,
     pi_beta: float = 0.4,
 ) -> jnp.ndarray:
-    """Adaptive Ros2 dt update.
+    """Adaptive Ros2 dt update. Returns the next dt (scalar, seconds).
 
     I-control (default, master-faithful):
     `h_factor = clip(safety * (rtol/delta)^0.5, dt_var_min, dt_var_max)`,
-    `h_new = clip(dt * h_factor, dt_min, dt_max)`. `delta == 0` uses
-    `zero_delta_frac * rtol` to avoid div-by-zero and give a moderate
-    growth factor. Production callers pass `safety` and `zero_delta_frac`
-    from `vulcan_cfg.step_size_safety` / `step_size_zero_delta_frac`;
-    the defaults here are kept for direct callers (tests / standalone use).
+    `h_new = clip(dt * h_factor, dt_min, dt_max)`; `delta == 0` substitutes
+    `zero_delta_frac * rtol`. Production passes `safety`/`zero_delta_frac`
+    from cfg; the defaults serve direct callers (tests / standalone).
 
-    When `delta_prev` is given, the Gustafsson (1991) PI controller
+    With `delta_prev`, the Gustafsson (1991) PI controller
     `h_factor = safety * (rtol/delta)^(pi_alpha/2) * (delta_prev/delta)^(pi_beta/2)`
-    (exponents divided by the Ros2 error order p=2) applies wherever
-    `delta_prev > 0`; the -1.0 no-history sentinel (first step / after a
-    rejection) falls back to I-control, matching neoVULCAN's
-    `ode_solver.step_size`.
+    (exponents divided by the Ros2 error order p=2) applies where
+    `delta_prev > 0`; the -1.0 no-history sentinel falls back to I-control.
     """
     delta_eff = jnp.where(delta < _UNDERFLOW_DENOM, zero_delta_frac * rtol, delta)
     h_i = safety * (rtol / delta_eff) ** 0.5
@@ -368,24 +336,20 @@ def _make_clip_fn(
                 jnp.where((y_in > nega_cut) & (y_in <= 0), jnp.abs(y_in), 0.0)
             )
             y_clip = jnp.where((y_in < pos_cut) & (y_in >= nega_cut), 0.0, y_in)
-            # master's second rule (op.py:2503) tests the POST-SOLVE mixing
-            # ratio: `Ros2.solver` writes `var.ymix` from the new solution
-            # (op.py:3031-3034) *before* `one_step` calls `clip` (op.py:3139).
-            # Any cell with y<0 has post-solve ymix<0<mtol, so master's rule
-            # reduces exactly to "zero every negative". Testing `ymix_old`
-            # (pre-step, positive) instead never fires the branch, leaves
-            # negative number densities in the carried state, and makes the
-            # `all_nonneg` accept gate reject steps master accepts.
+            # master's second rule (op.py:2503) tests the POST-SOLVE ymix
+            # (written at op.py:3031-3034, before clip), which is < mtol for
+            # any y<0 cell -- so it reduces to "zero every negative". Testing
+            # the pre-step ymix instead would leave negative densities and
+            # make the all_nonneg gate reject steps master accepts.
             y_clip = jnp.where(y_clip < 0, 0.0, y_clip)
             ysum = jnp.sum(
                 jnp.where(gas_mask_2d[None, :], y_clip, 0.0), axis=1, keepdims=True
             )
-            # Guard the normalization: a layer whose gas species all clip to
-            # zero gives ysum==0. master (op.py:2488-2508) divides unguarded
-            # and emits inf/NaN; we return 0 mixing for that empty layer. A
-            # nonzero condensate numerator over a 1e-300 floor would still
-            # overflow, so use `where`, not `maximum`. Normal layers have
-            # ysum ~ n_0 >> 0, so this is bit-identical there.
+            # Normalization guard: an all-clipped gas layer gives ysum==0
+            # (master divides unguarded -> inf/NaN); return 0 mixing there.
+            # A condensate numerator over a 1e-300 floor would overflow, so
+            # `where`, not `maximum`. Bit-identical for normal layers
+            # (ysum ~ n_0 >> 0).
             ymix_new = jnp.where(ysum > 0, y_clip / ysum, 0.0)
             return y_clip, ymix_new, small_y_inc, nega_y_inc
     else:
@@ -398,14 +362,11 @@ def _make_clip_fn(
                 jnp.where((y_in > nega_cut) & (y_in <= 0), jnp.abs(y_in), 0.0)
             )
             y_clip = jnp.where((y_in < pos_cut) & (y_in >= nega_cut), 0.0, y_in)
-            # See the non_gas_present variant above: master's rule reads the
-            # POST-SOLVE ymix (op.py:2503 after op.py:3031-3034), which for any
-            # y<0 cell is < mtol, so it reduces to "zero every negative".
+            # As above: master's post-solve-ymix rule reduces to "zero every
+            # negative".
             y_clip = jnp.where(y_clip < 0, 0.0, y_clip)
-            # Guard the normalization against an all-zero layer (ysum==0 →
-            # 0/0). Mirrors the _UNDERFLOW_DENOM floor at jax_step.py:305-306;
-            # master (op.py) divides unguarded. ysum ~ n_0 >> 1e-300 normally,
-            # so the floor is a no-op on the physical path.
+            # Floor an all-zero layer's ysum (0/0 guard); no-op on the
+            # physical path where ysum ~ n_0 >> 1e-300.
             ysum = jnp.sum(y_clip, axis=1, keepdims=True)
             ysum = jnp.maximum(ysum, _UNDERFLOW_DENOM)
             return y_clip, y_clip / ysum, small_y_inc, nega_y_inc
@@ -469,11 +430,9 @@ def _make_photo_branch(photo_static: _PhotoStatic):
     ag0_is_zero = photo_static.ag0_is_zero
 
     def photo_branch(s: JaxIntegState) -> JaxIntegState:
-        # Splice this lane's T-dependent cross sections (interpolated onto its
-        # own Tco at setup) from the carry into the closure-baked photo data,
-        # mirroring the conden splice: a vmapped batch then uses each lane's
-        # atmosphere, not lane 0's. Single-profile pv is seeded with the same
-        # arrays the closure baked, so this is a value-level no-op there.
+        # Splice this lane's T-dependent cross sections from the carry into
+        # the closure-baked photo data so a vmapped batch uses each lane's
+        # atmosphere, not lane 0's (value-level no-op single-profile).
         pd = photo_data._replace(absp_T_cross=s.pv.p_absp_T_cross)
 
         # Optical depth (mirrors op.compute_tau via op_jax.Ros2JAX.compute_tau).
@@ -557,12 +516,9 @@ def _make_photo_branch(photo_static: _PhotoStatic):
 
 
 def _make_atm_refresh_branch(refresh_static: _atm_refresh_mod.AtmRefreshStatic):
-    """Standalone atm-refresh closure for unit tests.
-
-    Production wiring inlines these calls inside `body_fn` after conden,
-    using the post-conden ymix/y. This helper exists so
-    `tests/test_outer_loop_atm_refresh.py` can exercise the kernels on a
-    packed `JaxIntegState` in isolation.
+    """Standalone atm-refresh closure used only by
+    `tests/test_outer_loop_atm_refresh.py`; production inlines these calls
+    in `body_fn` after conden.
     """
 
     def atm_refresh(s: JaxIntegState) -> JaxIntegState:
@@ -599,13 +555,10 @@ def _make_conden_branch(conden_static: _conden_mod.CondenStatic):
     """
 
     def conden_branch(s: JaxIntegState) -> JaxIntegState:
-        # Splice this lane's per-profile conden values (T-P-dependent diffusion,
-        # saturation, and the NH3 cold-trap index) from the carry into the
-        # closure-baked static so a vmapped batch uses each lane's own
-        # atmosphere, not lane 0's. The config/network-level fields (indices,
-        # coeffs, masks, bools) stay baked and must be batch-constant.
-        # nh3_conden_top arrives as a 0-d int32; the kernel only compares it
-        # against jnp.arange, so the traced scalar is exact.
+        # Splice this lane's per-profile conden arrays from the carry into the
+        # closure-baked static (vmap batches the carry, not closures); the
+        # config/network-level fields stay baked and must be batch-constant.
+        # nh3_conden_top is a 0-d int32 only compared against jnp.arange.
         st = conden_static._replace(
             Dg_per_re=s.pv.c_Dg_per_re,
             sat_n_per_re=s.pv.c_sat_n_per_re,
@@ -650,7 +603,7 @@ class _Statics(NamedTuple):
     count_min: int
     count_max: int
     use_conv_stall: bool  # enable the JAX-only stalled-convergence fallback
-    conv_stall_window: int  # accepted steps without longdy improvement before declaring stalled-convergence
+    conv_stall_window: int  # accepted steps without longdy improvement -> stalled
     runtime: float
     trun_min: float
     st_factor: float
@@ -686,13 +639,11 @@ class _Statics(NamedTuple):
     photo_switch_longdydt_thresh: float
     hycean_pin_time: float
 
-    # Adaptive Ros2 step-size safety factor and zero-delta fallback fraction
-    # (`outer_loop._step_size`). Both come from `vulcan_cfg`.
+    # _step_size knobs (from cfg).
     step_size_safety: float
     step_size_zero_delta_frac: float
 
-    # Gustafsson PI step-size controller (`outer_loop._step_size`). Off by
-    # default; when off the runner traces the exact pre-PI I-control graph.
+    # Gustafsson PI controller; off (default) = master-faithful I-control graph.
     use_pi_controller: bool
     pi_controller_alpha: float
     pi_controller_beta: float
@@ -783,10 +734,9 @@ def _make_runner(
     batch_max_retries = statics.batch_max_retries
     compo_arr = statics.compo_arr
     conv_step = statics.conv_step
-    # count_min / count_max / runtime seed the carry's live budget in
-    # _pack_state_from_runstate; the termination test reads the carry
-    # (s.count_min_dyn / s.count_max_dyn / s.runtime_dyn) so the hybrid phase
-    # flip can extend it. They are intentionally not bound as closure locals.
+    # count_min/count_max/runtime seed the carry's live budget; the
+    # termination test reads the carry (*_dyn fields) so the hybrid flip can
+    # extend it -- intentionally not bound as closure locals.
     use_conv_stall = statics.use_conv_stall
     conv_stall_window = statics.conv_stall_window
     trun_min = statics.trun_min
@@ -909,16 +859,10 @@ def _make_runner(
             s.ymix > 0, longdy_arr / jnp.maximum(s.ymix, _UNDERFLOW_DENOM), 0.0
         )
         longdy_new = jnp.max(ratio)
-        # A non-finite cell must never be able to *improve* the convergence
-        # score. Every mask above is a `<`/`>` comparison, and those are all
-        # False for NaN, so without this guard a poisoned cell is silently
-        # dropped from the max: an all-NaN state reads longdy == 0.0, i.e.
-        # perfectly converged, and `end_case` reports success. master cannot
-        # do this — `np.amax(longdy[ymix>0]/ymix[ymix>0])` (op.py:1053)
-        # reduces an empty selection and raises. Forcing +inf reproduces
-        # master's "can never converge" semantics inside a jittable reduction;
-        # the run then exits via the count_max / runtime ladder instead of
-        # claiming convergence.
+        # NaN guard: the masks above are all False for NaN, so an all-NaN
+        # state would read longdy == 0.0 ("converged"). Force +inf so a
+        # poisoned run can never converge and exits via the count/runtime
+        # ladder, matching master's raise on an empty amax (op.py:1053).
         state_is_bad = ~jnp.all(jnp.isfinite(s.y)) | ~jnp.all(jnp.isfinite(s.ymix))
         longdy_new = jnp.where(state_is_bad, jnp.inf, longdy_new)
         dt_lookback = jnp.maximum(s.t - s.t_time_ring[indx], _UNDERFLOW_DENOM)
@@ -943,18 +887,12 @@ def _make_runner(
         ) | ((s.longdy < jnp.float64(yconv_min)) & (s.longdydt < slope_min))
         conv_normal = conv_normal & (s.aflux_change < jnp.float64(flux_cri))
 
-        # Stall fallback: longdy_seen_min already crossed the loose-branch
-        # threshold AND current longdy is back near it AND no significant
-        # (>=5%) improvement for conv_stall_window accepted steps. Requires
-        # both the historical and current longdy to be below yconv_min so we
-        # don't terminate while a new species is actively evolving — only
-        # when the chem_rhs ULP-floor oscillation around the converged state
-        # has been going on long enough.
-        #
-        # This has NO counterpart in VULCAN 2.0 or vm_branch, so a VULCAN 2
-        # parity run must set `use_conv_stall: false`. The gate is a static
-        # Python bool, so when off the predicate is folded away at trace time
-        # and the run is bit-identical to one built without the feature.
+        # Stall fallback: no >=5% longdy improvement for conv_stall_window
+        # accepted steps while both the historical minimum and the current
+        # longdy sit below yconv_min (ULP-floor oscillation, not evolution).
+        # JAX-only -- no VULCAN 2.0 / vm_branch counterpart; NO SHIPPED CONFIG
+        # enables it and none ever should. Static gate: when off the predicate
+        # folds away at trace time (bit-identical run).
         if use_conv_stall:
             is_stalled = (
                 (s.count_since_new_min > jnp.int32(conv_stall_window))
@@ -969,14 +907,10 @@ def _make_runner(
     def _real_terminate(s: JaxIntegState):
         """Real (non-chunk) termination predicate + reason code.
 
-        Mirrors `cond_fn`'s terminate logic minus the chunk-cap yield, and
-        also returns a reason code so the batched runner can report why each
-        lane stopped. Reason priority matches VULCAN-master's `stop()`
-        (op.py:1072-1118) and the single-profile `end_case` ladder in
-        `_call_runstate`: converged over runtime over step-count, so a step
-        that is simultaneously converged and at count_max reports success.
-        0 running, 1 converged, 2 runtime exceeded, 3 step-count exceeded,
-        4 stalled-convergence.
+        Reason priority matches master's stop() (op.py:1072-1118): converged
+        over runtime over step-count, so a step that is both converged and at
+        a cap reports success. Codes: 0 running, 1 converged, 2 runtime
+        exceeded, 3 step-count exceeded, 4 stalled-convergence.
         """
         # Live budget (equals the static count_max/runtime for non-hybrid runs;
         # the hybrid phase flip resets it for phase 1).
@@ -989,20 +923,13 @@ def _make_runner(
         conv_term = ready & is_converged
         real_term = too_long | too_many | conv_term
         if hybrid_vm_static:
-            # Phase 0 (upwind, hybrid_use_vm≈1) NEVER terminates here — the body
-            # flips to central-difference (phase 1) and extends the budget
-            # instead, mirroring vm_branch op.py stop(). Only phase 1
-            # (hybrid_use_vm≈0) terminates here, so a run that stops through
-            # THIS predicate is in the central-difference phase. It is a
-            # central-difference fixed point only when phase 1 converged
-            # (reason 1/4); phase 1 can also exit on runtime/step-count. Exits
-            # that bypass this predicate entirely (the host-side wall-clock
-            # bail-out in `_run_chunked`, the batched non-finite freeze) can
-            # return while still in phase 0.
+            # Phase 0 (upwind) NEVER terminates here: the body flips to phase 1
+            # (central difference) and extends the budget instead (vm_branch
+            # stop()). A run stopping through this predicate is in phase 1 --
+            # a central-difference fixed point only if phase 1 converged
+            # (reason 1/4). Bypass exits (host wall-clock bail-out, batched
+            # non-finite freeze) can still return in phase 0.
             real_term = real_term & (s.hybrid_use_vm < jnp.float64(0.5))
-        # Convergence wins over runtime wins over step-count, matching master's
-        # stop() (op.py:1072-1118): a step that is both converged and at
-        # count_max/runtime reports success (1/4), not exceeded (2/3).
         reason = jnp.where(
             conv_term & conv_normal,
             jnp.int32(1),
@@ -1038,25 +965,19 @@ def _make_runner(
             )
             s = jax.lax.cond(photo_due, photo_branch, lambda ss: ss, s)
 
-        # Splice the carry's geometry (refreshed at the END of the previous
-        # accepted iteration that satisfied `count % update_frq == 0`, per
-        # op.py:904-906) into AtmStatic for this step.
+        # Splice the carry's refreshed geometry (op.py:904-906) into AtmStatic
+        # for this step.
         atm_step = atm_static_._replace(
             g=s.g, dzi=s.dzi, Hpi=s.Hpi, top_flux=s.top_flux, vs=s.vs
         )
-        # Hybrid molecular diffusion: drive the vm/central blend from the
-        # carry phase (1.0 upwind → 0.0 central) instead of the static flag.
-        # jax_ros2_step reads atm.use_vm_mol as a float multiplier, so a
-        # traced 0/1 selects the scheme per step. Non-hybrid runs seed
-        # hybrid_use_vm to the static value and never flip it, so the value
-        # passed here is identical to atm_static_.use_vm_mol (bit-for-bit).
+        # Hybrid vm_mol: drive the vm/central blend from the carry phase
+        # (jax_ros2_step reads use_vm_mol as a float multiplier). Non-hybrid
+        # runs never flip it, so this equals atm_static_.use_vm_mol bit-for-bit.
         atm_step = atm_step._replace(use_vm_mol=s.hybrid_use_vm)
-        # Upwind molecular diffusion: vm depends on the mean molecular weight
-        # (through Hpi) and on g, so it must be refreshed with the rest of the
-        # geometry — VULCAN's op.update_mu_dz recomputes it every update_frq
-        # steps. Freezing it at setup biases a mol-diff-dominated upper
-        # atmosphere. Inputs change only at refresh cadence, so recomputing
-        # each step reproduces upstream's cadence. Static-gated to the vm path.
+        # vm depends on mu (via Hpi) and g, so it must be refreshed in-loop
+        # with the geometry (op.update_mu_dz); freezing it at setup biases a
+        # mol-diff-dominated upper atmosphere. Its inputs change only at
+        # refresh cadence, so per-step recompute reproduces upstream's cadence.
         if use_vm_mol_static and refresh_static is not None:
             atm_step = atm_step._replace(
                 vm=_atm_refresh_mod.recompute_vm_jax(
@@ -1072,14 +993,12 @@ def _make_runner(
                 )
             )
 
-        # Master pins the electron rows inside BOTH Ros2 stages when use_ion
-        # (op.py:2949-2952, 2966-2967): df[e]=0 + LHS rows zeroed with
-        # diag=1/(r*h), so k1[e]=k2[e]=0, sol[e]=y[e], delta[e]=0 within the
-        # step; 'e' is then recomputed by the post-step charge balance below.
-        # The fix_mask plumbing in jax_ros2_step implements exactly that
-        # row-pin, so OR in a constant e-column mask. Unlike fix_species,
-        # the e column must NOT be overwritten with fix_y afterwards —
-        # the pinned step already returns sol[e] == y[e].
+        # use_ion: master pins the electron rows inside BOTH Ros2 stages
+        # (op.py:2949-2952, 2966-2967) so sol[e]=y[e], delta[e]=0; 'e' is then
+        # recomputed by the post-step charge balance below. The fix_mask
+        # row-pin implements exactly that; unlike fix_species, the e column
+        # must NOT be overwritten with fix_y (the pinned step already returns
+        # sol[e] == y[e]).
         if use_ion_static:
             e_mask = jnp.zeros_like(s.fix_mask).at[:, e_idx_static].set(True)
             step_mask = (s.fix_mask | e_mask) if use_fix_species_static else e_mask
@@ -1100,10 +1019,9 @@ def _make_runner(
 
         sol_clip, ymix_new, small_y_inc, nega_y_inc = clip_fn(sol, s.ymix)
         atom_loss_new = _compute_atom_loss(sol_clip, compo_arr, s.pv.atom_ini)
-        # Master computes para.delta inside Ros2.solver before the post-step
-        # clip() call. Using sol_clip here can erase the large truncation
-        # error from cells that are about to be clipped to zero and would let
-        # overly aggressive steps through (HD209 exercises this path).
+        # delta uses the PRE-clip sol (master computes it before clip):
+        # sol_clip would erase the truncation error of cells about to clip to
+        # zero and let overly aggressive steps through (HD209 exercises this).
         delta = agg_delta_fn(sol, delta_arr, s.ymix)
 
         # Use dynamic s.rtol so adaptive-rtol updates take effect immediately.
@@ -1119,12 +1037,10 @@ def _make_runner(
         force_accept = (dt_underflow | retry_exhausted) & ~accept
         do_accept = accept | force_accept
 
-        # Exactly one of (delta_count, nega_count, loss_count) increments per
-        # FAILED attempt — classified on `~accept`, not `~do_accept`, so a step
-        # that fails but is force-accepted (dt underflow / retry budget spent)
-        # still bumps its counter. Master increments a reject counter inside
-        # step_reject before the dt<dt_min force-accept clamp (op.py:2536-2563);
-        # gating on do_accept would silently drop those.
+        # Exactly one counter increments per FAILED attempt, classified on
+        # `~accept` (not `~do_accept`) so a force-accepted failure still
+        # counts -- master bumps its reject counter before the dt<dt_min
+        # force-accept clamp (op.py:2536-2563).
         delta_too_big = delta > s.rtol
         any_neg = jnp.any(sol_clip < 0)
         attempt_failed = ~accept
@@ -1136,10 +1052,9 @@ def _make_runner(
         dt_used_for_t = jnp.where(force_accept, jnp.float64(dt_min), s.dt)
         t_next = jnp.where(do_accept, s.t + dt_used_for_t, s.t)
 
-        # Master step_reject() resets only var.y before giving up at dt_min;
-        # var.ymix and var.atom_loss remain from the rejected clipped solve.
-        # Downstream conden/refresh/hydrostatic work must therefore see
-        # y_prev for y but the new clipped ymix on the force-accept path.
+        # Master's step_reject resets only var.y at dt_min; ymix/atom_loss
+        # keep the rejected clipped solve. So the force-accept path must feed
+        # downstream work y_prev for y but the new clipped ymix.
         y_prev_clipped = jnp.where(s.y_prev < 0, 0.0, s.y_prev)
         y_post_clip = jnp.where(force_accept, y_prev_clipped, sol_clip)
 
@@ -1194,23 +1109,18 @@ def _make_runner(
             vs_next = s.vs
             trigger_fix = jnp.bool_(False)
 
-        # Atm refresh (op.py:904-906): runs after conden, before hydrostatic
-        # balance. Uses the post-conden ymix/y. Gated on `do_accept` so
-        # rejected attempts don't fire it; cadence matches master's
-        # `count % update_frq == 0` because `s.accept_count` here is the
-        # pre-increment count (master refreshes before save_step bumps count).
+        # Atm refresh (op.py:904-906): after conden, before hydrostatic
+        # balance, on accepted steps only. `s.accept_count` is pre-increment,
+        # matching master's `count % update_frq == 0` cadence.
         if refresh_static is not None:
             refresh_due = (
                 do_accept
                 & (jnp.mod(s.accept_count, jnp.int32(update_frq)) == jnp.int32(0))
                 & jnp.bool_(use_atm_refresh_static)
             )
-            # Splice this lane's per-profile atmosphere (T-P, top diffusion,
-            # gravity, radius, reference-layer height) from the carry into the
-            # closure-baked refresh static so a vmapped batch refreshes each
-            # lane against its own atmosphere. `pref_indx` stays baked (it
-            # sizes a jnp.arange) and must be batch-constant — guaranteed by
-            # bucketing.
+            # Splice this lane's per-profile atmosphere from the carry into
+            # the closure-baked refresh static (vmap batches the carry, not
+            # closures). `pref_indx` stays baked and must be batch-constant.
             refresh_lane = refresh_static._replace(
                 Tco=s.pv.r_Tco,
                 pico=s.pv.r_pico,
@@ -1286,13 +1196,9 @@ def _make_runner(
                 fix_sp_bot_mix_static * s.pv.n_0[0]
             )
 
-        # Hycean H2/He bottom-pin (op.py:2937-2944): master fires the
-        # snapshot inside `Ros2.solver` BEFORE the accept/reject decision,
-        # so any iteration with `var.t > hycean_pin_time` and `H2 not in
-        # use_fix_sp_bot` triggers the snapshot — including iterations that
-        # ultimately reject. We mirror by dropping the accept gate; the
-        # snapshot value (`s.ymix[0]`) is identical to master's `var.ymix[0]`
-        # because `s.ymix` doesn't change between rejected retries.
+        # Hycean H2/He bottom-pin (op.py:2937-2944): master snapshots BEFORE
+        # the accept/reject decision, so no accept gate here; `s.ymix[0]` is
+        # unchanged between rejected retries, so the snapshot matches master.
         if use_fix_H2He_static:
             trip = (~s.h2he_pinned) & (s.t > jnp.float64(hycean_pin_time))
             h2_mix_snap = jnp.where(trip, s.ymix[0, h2_idx_static], s.h2he_mix[0])
@@ -1317,10 +1223,8 @@ def _make_runner(
         ymix_next = ymix_new
         atom_loss_next = atom_loss_new
 
-        # On accept, the new "y_prev" — the revert target for the next
-        # in-flight retry sequence — is the fresh accepted state. On
-        # reject we keep the carry's y_prev (revert target for the
-        # ongoing retry of THIS step).
+        # y_prev is the revert target: on accept, the fresh state; on reject,
+        # keep the carry's (still retrying THIS step).
         y_prev_next = jnp.where(do_accept, y_next, s.y_prev)
         atom_loss_prev_next = jnp.where(do_accept, atom_loss_next, s.atom_loss_prev)
 
@@ -1331,10 +1235,8 @@ def _make_runner(
             do_accept, jnp.int32(0), s.retry_count + jnp.int32(1)
         )
 
-        # Ring-buffer append (op.save_step, op.py:1090-1106): write the
-        # post-accept (y, t) into ring slot `(accept_count_next - 1) %
-        # conv_step`. On reject this rewrites the same slot with the
-        # unchanged y_prev / s.t — idempotent.
+        # Ring append (op.save_step): slot (accept_count_next - 1) % conv_step.
+        # On reject this rewrites the same slot with unchanged values.
         ring_idx = jnp.mod(
             jnp.maximum(accept_count_next - jnp.int32(1), jnp.int32(0)),
             jnp.int32(conv_step),
@@ -1342,14 +1244,10 @@ def _make_runner(
         y_time_ring_new = s.y_time_ring.at[ring_idx].set(y_next)
         t_time_ring_new = s.t_time_ring.at[ring_idx].set(t_next)
 
-        # save_evolution per-step capture. Master appends (y, t) every
-        # accepted step in `save_step` and post-slices `[::save_evo_frq]`
-        # at write time, so the kept indices are `0, K, 2K, ...` which
-        # in 1-based accept_count terms correspond to accepted steps
-        # `1, K+1, 2K+1, ...`. Gate on `(accept_count_next - 1) % K == 0`
-        # so the very first accepted step is always captured (master's
-        # first y_time entry is post-step-1). When save_evolution=False
-        # the closure-time gate is False and the branch compiles out.
+        # save_evolution capture. Master appends every accepted step and
+        # post-slices [::save_evo_frq], keeping accepted steps 1, K+1, 2K+1...
+        # Gating on `(accept_count_next - 1) % K == 0` reproduces that (first
+        # accepted step always captured). Compiles out when off.
         if save_evolution_static:
             do_evo_append = (
                 do_accept
@@ -1406,16 +1304,10 @@ def _make_runner(
             where_varies_most_new,
             s.where_varies_most,
         )
-        # Stall-detector bookkeeping. We want the counter to fire when longdy
-        # is creeping along the chem_rhs ULP floor — strict less-than would let
-        # any sub-percent micro-improvement reset the counter and the stall
-        # never fires. Require a 5% relative drop to count as a new minimum.
-        # master only touches these counters INSIDE its ready gate
-        # (`if var.t > trun_min and para.count > count_min:`, op.py:1072), so the
-        # early transient never accumulates toward the stall window. Ours
-        # counted from step 1, which let a run that spent its first
-        # conv_stall_window accepted steps in the transient arrive at the stall
-        # branch with a pre-charged counter. Gate it the same way.
+        # Stall bookkeeping: require a >=5% relative drop to count as a new
+        # minimum (strict less-than would let ULP-floor jitter reset the
+        # counter forever). Gate on master's ready predicate (op.py:1072) so
+        # the early transient never charges the stall window.
         stall_ready = (s.t > jnp.float64(trun_min)) & (
             accept_count_next > s.count_min_dyn
         )
@@ -1437,18 +1329,13 @@ def _make_runner(
             ),
         )
 
-        # Hybrid molecular-diffusion phase flip (use_hybrid_vm_mol). When phase
-        # 0 (upwind) ends — by convergence, runtime, or step-count — switch the
-        # diffusion blend to central-difference (hybrid_use_vm 1.0 -> 0.0),
-        # reset the convergence trackers (longdy back to +inf, stall counter to
-        # 0), and RESET the termination budget the way vm_branch op.py stop()
-        # does so phase 1 gets its own step/time allowance:
+        # Hybrid vm_mol phase flip: when phase 0 (upwind) ends -- convergence,
+        # runtime, or step-count -- switch to central difference, reset the
+        # convergence trackers, and extend the budget the vm_branch stop() way:
         #   convergence -> count_min=count+100, count_max=count+2000
         #   runtime     -> count_min=count+100, count_max=count+1000, runtime*=1.1
         #   step-count  -> count_min=count+100, count_max=count+1000
-        # This mirrors "Upwind diffusion integration successful ... Now starts
-        # central diff molecular diffusion...". A no-op for non-hybrid runs
-        # (the whole branch is dropped at trace time).
+        # Dropped at trace time for non-hybrid runs.
         hybrid_use_vm_next = s.hybrid_use_vm
         count_min_dyn_next = s.count_min_dyn
         count_max_dyn_next = s.count_max_dyn
@@ -1500,10 +1387,9 @@ def _make_runner(
                 do_flip, jnp.int32(0), count_since_new_min_next
             )
 
-        # Adaptive rtol fires only on accepted steps. Decrease cadence is
-        # `accept_count % adapt_rtol_dec_period == 0` and triggers when
-        # |atom_loss| stays at/above s.loss_criteria; increase cadence is
-        # likewise periodic but gated by a lower atom-loss threshold.
+        # Adaptive rtol (accepted steps only): periodic decrease while
+        # |atom_loss| >= loss_criteria; periodic increase below a lower
+        # atom-loss threshold.
         max_atom_loss = jnp.max(jnp.abs(atom_loss_new))
         do_dec = (
             jnp.bool_(use_adapt_rtol)
@@ -1586,11 +1472,9 @@ def _make_runner(
             jnp.where(accept, dt_after_normal, next_dt_if_reject),
         )
 
-        # PI-controller error history: any kept step (accept or force-accept —
-        # master runs step_size after both) stores the effective
-        # zero-substituted delta; a plain reject stores the -1.0 no-history
-        # sentinel (master's step_reject), so the next accepted step falls
-        # back to I-control. Inert pass-through when the controller is off.
+        # PI error history: any kept step stores the zero-substituted delta;
+        # a plain reject stores the -1.0 sentinel (master's step_reject) so
+        # the next accepted step falls back to I-control.
         if use_pi_controller_static:
             delta_eff_hist = jnp.where(
                 delta < _UNDERFLOW_DENOM,
@@ -1665,61 +1549,46 @@ def _make_runner(
             y_evo=y_evo_new,
             t_evo=t_evo_new,
             evo_idx=evo_idx_new,
-            # chunk_target is set by the driver before each chunk and
-            # never mutated inside the body — pass through unchanged.
+            # chunk_target: driver-set, never mutated in the body.
             chunk_target=s.chunk_target,
         )
 
     @jax.jit
     def runner(state: JaxIntegState, atm_static: AtmStatic):
-        # One-shot run. The carry's counters accumulate across the entire
-        # integration; cond_fn checks count_max / runtime / convergence.
+        # One-shot run to convergence / count_max / runtime.
         final = jax.lax.while_loop(
             cond_fn,
             lambda s: body_fn(s, atm_static),
             state,
         )
-        # Record WHY the loop stopped. `cond_fn` already evaluates this every
-        # iteration but discards the code; re-evaluating once on the terminal
-        # state is O(1) per run and is the only way the single-profile path can
-        # distinguish a normal convergence (1) from a stall convergence (4).
-        # A chunked exit leaves `real_term` false and reports 0 (still running).
+        # Re-evaluate the reason once on the terminal state -- the only way
+        # the single-profile path can tell normal (1) from stall (4)
+        # convergence. A chunked exit reports 0 (still running).
         _real_term, reason = _real_terminate(final)
         return final._replace(termination_reason=reason)
 
     def cond_fn_batch(s: JaxIntegState):
-        # Per-lane stop predicate for the vmapped runner. Gates ONLY on flags
-        # already on the carry (`is_done`, set by the body the moment a lane
-        # really terminates or goes non-finite, plus the `chunk_target`
-        # yield). It must NOT re-derive `real_term` here: the loop exits when
-        # cond is False, so if cond tripped on `real_term` directly the body
-        # would never run on the terminal state to record `is_done` /
-        # `termination_reason`. Letting the body run one more (frozen, no-op)
-        # iteration to flip `is_done` costs nothing — the carry value is
-        # unchanged — and keeps the flags correct. `jax.vmap` reduces these
-        # per-lane bools across the batch (loop runs while ANY lane is live).
+        # Per-lane stop predicate: gates ONLY on carry flags, never re-derives
+        # `real_term` -- the body must run one final (frozen, no-op) iteration
+        # on the terminal state to record is_done / termination_reason.
+        # Under vmap the loop runs while ANY lane is live.
         chunk_reached = s.accept_count >= s.chunk_target
         return jnp.logical_not(s.is_done | chunk_reached)
 
     def body_fn_batch(s: JaxIntegState, atm_static_):
-        # `jax.vmap(lax.while_loop)` applies the body to EVERY lane each
-        # iteration, including lanes whose `cond_fn_batch` already went
-        # False, until the slowest lane finishes. So finished lanes must be
-        # frozen: advance all lanes, then keep the pre-step carry `s` for any
-        # lane that is already done / really terminates now / hit its chunk
-        # yield / just went non-finite. Freezing on `s` (not the advanced
-        # state) makes each lane's frozen result identical to running that
-        # profile alone — it stops at the first state satisfying the
-        # termination predicate, exactly like the single-profile loop.
+        # vmap applies the body to EVERY lane each iteration until the slowest
+        # finishes, so finished lanes must be frozen: advance all lanes, then
+        # keep the pre-step carry `s` for lanes that are done / terminate now /
+        # hit their chunk yield / went non-finite. Freezing on `s` makes each
+        # lane bit-identical to its solo run.
         real_term, reason = _real_terminate(s)
         chunk_reached = s.accept_count >= s.chunk_target
         s_adv = body_fn(s, atm_static_)
         nan_now = jnp.logical_not(jnp.all(jnp.isfinite(s_adv.y)))
 
         already_done = s.is_done
-        # A lane that goes non-finite while still advancing is frozen at its
-        # last good carry `s` and flagged (reason 5); the bad `s_adv` is
-        # discarded so it cannot leak into the result.
+        # Non-finite lanes freeze at the last good carry `s` (reason 5); the
+        # bad `s_adv` is discarded.
         became_nan = nan_now & ~already_done & ~real_term & ~chunk_reached
         keep_old = already_done | real_term | chunk_reached | became_nan
         frozen = jax.tree_util.tree_map(
@@ -1738,10 +1607,8 @@ def _make_runner(
         return frozen._replace(is_done=is_done_next, termination_reason=reason_next)
 
     def runner_batch(state: JaxIntegState, atm_static: AtmStatic):
-        # Single-profile while_loop with freeze-on-done semantics. NOT
-        # jitted here — `OuterLoop.run_batch` wraps it in jax.vmap+jax.jit
-        # with the right `in_axes` so a whole batch of profiles integrates
-        # in one device call.
+        # Freeze-on-done while_loop; NOT jitted here -- run_batch wraps it in
+        # jax.vmap + jax.jit with the right in_axes.
         return jax.lax.while_loop(
             cond_fn_batch,
             lambda s: body_fn_batch(s, atm_static),
@@ -1751,11 +1618,10 @@ def _make_runner(
     return runner, runner_batch
 
 
-# in_axes prefix for `jax.vmap`-ing the batched runner over `AtmStatic`:
-# every per-profile array leaf is batched on axis 0; the four toggle flags
-# are broadcast (None) because they are identical within a (nz, toggle-combo)
-# batch and are consumed only as traced values (jnp.asarray / jnp.where) in
-# `jax_step`, never in a Python `if`.
+# in_axes for vmapping the batched runner over AtmStatic: array leaves batch
+# on axis 0; the four toggle flags broadcast (None) -- identical within a
+# (nz, toggle-combo) batch and consumed only as traced values, never in a
+# Python `if`.
 _ATM_STATIC_BATCH_AXES = AtmStatic(
     Kzz=0,
     Dzz=0,
@@ -1845,14 +1711,11 @@ class OuterLoop:
     conden updates, ring-buffered convergence, and adaptive rtol."""
 
     def __init__(self, odesolver, output, cfg=None):
-        # cfg defaults to the process default config so the CLI and legacy
-        # callers (which pass nothing) are unchanged. load_config() users pass
-        # their own namespace, so every runtime knob read below comes from the
-        # same cfg the RunState was built with. The setup-side counterpart is
-        # state._cfg_overlay; together they make load_config() honored
-        # end-to-end. The import-locked network (module-level _NETWORK) is the
-        # one knob cfg cannot change here — state._build_pre_loop_runstate
-        # fails fast on a network mismatch.
+        # cfg defaults to the process default (CLI / legacy callers);
+        # load_config() users pass their own namespace so every runtime knob
+        # reads from the cfg the RunState was built with (setup counterpart:
+        # state._cfg_overlay). The import-locked network is the one knob cfg
+        # cannot change here.
         self._cfg = cfg if cfg is not None else default_config()
         self.mtol = float(self._cfg.mtol)
         self.atol = float(self._cfg.atol)
@@ -1931,8 +1794,7 @@ class OuterLoop:
             dtype=np.float64,
         )
 
-        # conver_ignore: species names listed in vulcan_cfg.conver_ignore
-        # that the longdy reduction at op.py:1049 zeroes out.
+        # conver_ignore species are zeroed in the longdy reduction (op.py:1049).
         conver_ignore_np = np.zeros(ni, dtype=bool)
         for sp in getattr(self._cfg, "conver_ignore", []):
             if sp in _NETWORK.species_idx:
@@ -1947,9 +1809,8 @@ class OuterLoop:
                 if sp in _NETWORK.species_idx:
                     cond_zero_conv_np[:, _NETWORK.species_idx[sp]] = True
 
-        # Ion charge balance + fix-all-bot. Both static masks are degenerate
-        # (zeros) when their cfg flag is off; the body's Python
-        # `if use_*_static:` skips them at trace time.
+        # Ion / fix-all-bot masks are zeros when their flag is off; the body's
+        # Python `if use_*_static:` skips them at trace time.
         use_ion = bool(self._cfg.use_ion)
         if use_ion:
             charge_list = list(getattr(var, "charge_list", []))
@@ -1960,10 +1821,8 @@ class OuterLoop:
                         _NETWORK.species_idx[sp]
                     ]
             e_idx = _NETWORK.species_idx["e"] if "e" in _NETWORK.species_idx else 0
-            # `e` itself must contribute 0 to the dot so the formula
-            # `e[:] = -dot(y, charge_arr)` is consistent (op.py:3004 zeros
-            # `e` first; we get the same effect by excluding e from the
-            # charge column).
+            # Exclude 'e' from the charge column so `e[:] = -dot(y, charge_arr)`
+            # is consistent (op.py:3004 zeros e first).
             charge_np[e_idx] = 0.0
         else:
             charge_np = np.zeros(ni, dtype=np.float64)
@@ -2039,10 +1898,8 @@ class OuterLoop:
             conv_step=int(self._cfg.conv_step),
             count_min=int(self._cfg.count_min),
             count_max=int(self._cfg.count_max),
-            # Default FALSE. The fallback has no VULCAN counterpart and no
-            # shipped case needs it (measured 2026-07-30), so a config that
-            # omits the key must not silently get a convergence criterion
-            # VULCAN 2.0 lacks. Opting in has to be deliberate.
+            # Default FALSE: the stall fallback has no VULCAN counterpart and
+            # no shipped config enables it; opting in must be deliberate.
             use_conv_stall=bool(getattr(self._cfg, "use_conv_stall", False)),
             conv_stall_window=int(getattr(self._cfg, "conv_stall_window", 200)),
             runtime=float(self._cfg.runtime),
@@ -2154,9 +2011,8 @@ class OuterLoop:
             gas_mask_np[:] = True
         gas_mask_jnp = jnp.asarray(gas_mask_np)
 
-        # condense_zero_mask (nz, ni) — True where delta should be zeroed.
-        # Only fires when `use_condense=True` (via condense_sp + non_gas_sp);
-        # default HD189 has both empty so the mask is all False.
+        # condense_zero_mask (nz, ni) -- True where delta is zeroed; all False
+        # unless use_condense (condense_sp + non_gas_sp).
         cond_mask_np = np.zeros((nz, ni), dtype=bool)
         if self._cfg.use_condense:
             for sp in self._cfg.condense_sp + self._cfg.non_gas_sp:
@@ -2193,10 +2049,8 @@ class OuterLoop:
         if not self._cfg.use_photo:
             return None
 
-        # Derive everything from the dense `PhotoStaticInputs` pytree. If the
-        # solver doesn't have one yet (test sites that construct `Ros2JAX()`
-        # without wiring), use the same lazy builder Ros2JAX itself uses so
-        # the static is built once and cached.
+        # Derive everything from the PhotoStaticInputs pytree; lazily build it
+        # via Ros2JAX's own builder for unwired test sites.
         odesolver = self.odesolver
         photo_static = getattr(odesolver, "_photo_static", None)
         if photo_static is None and hasattr(odesolver, "_ensure_photo_static"):
@@ -2239,9 +2093,8 @@ class OuterLoop:
         dbin2 = float(photo_static.dbin2)
 
         ag0 = float(_phy_const.ag0)
-        # Record the baked star's TOA flux for the prepare_runstate same-star
-        # guard. Set here (not only in prepare_runstate) so a runner pre-built
-        # by a single-profile run still rejects a later different-star batch.
+        # Record the baked star's TOA flux here (not only in prepare_runstate)
+        # so a pre-built runner still rejects a later different-star batch.
         if self._sflux_top_ref is None:
             self._sflux_top_ref = np.asarray(var.sflux_top, dtype=np.float64)
         return _PhotoStatic(
@@ -2313,29 +2166,21 @@ class OuterLoop:
     def _build_conden_static(
         self, var, atm, gas_mask_jnp
     ) -> Optional[_conden_mod.CondenStatic]:
-        """Pack the conden tables into a `CondenStatic`, or None.
+        """Pack the conden tables into a `CondenStatic`, or None when
+        `use_condense=False` (the runner then omits the conden branch).
 
-        Returns None when `use_condense=False` (HD189 path) — the runner
-        omits the conden branch entirely. Otherwise enumerates
-        `var.conden_re_list` and looks up each reaction's gas-phase
-        species + saturation profile + diffusion coefficient + per-particle
-        mass / radius / density. H2O/NH3 reactions whose species is in
-        `vulcan_cfg.use_relax` get `coeff_per_re = 0` so
-        `update_conden_rates` writes zero rates for them (matches the
-        `var.k[re] = 0` short-circuits at op.py:1124-1126 and 1156-1158).
-
-        H2O / NH3 relax blocks are populated only when the corresponding
-        species appears in `vulcan_cfg.use_relax`; otherwise the static
-        is degenerate and `apply_h2o_relax_jax` / `apply_nh3_relax_jax`
-        short-circuit at trace time via the `*_active` Python bool.
+        Reactions whose species is in `use_relax` get `coeff_per_re = 0`
+        (matches the `var.k[re] = 0` short-circuits at op.py:1124-1126,
+        1156-1158); the H2O/NH3 relax blocks are degenerate unless the
+        species is in `use_relax` (the `*_active` bools short-circuit at
+        trace time).
         """
         if not self._cfg.use_condense:
             return None
 
-        # Single-source construction: the static metadata (species identity,
-        # particle coefficients, relax flags) comes from make_conden_spec, and
-        # every T/structure-dependent array from the same pure-JAX
-        # build_conden_profile the on-graph per-proposal rebuild uses.
+        # Single-source: static metadata from make_conden_spec; every
+        # T/structure-dependent array from the same build_conden_profile the
+        # on-graph rebuild uses.
         spec = _conden_mod.make_conden_spec(self._cfg, var, atm, _NETWORK.species_idx)
         prof = _conden_mod.build_conden_profile(
             spec,
@@ -2495,19 +2340,15 @@ class OuterLoop:
             c_nh3_sat = zz
             c_nh3_top = jnp.int32(0)
         if self._cfg.use_photo and rs.photo_static is not None:
-            # The two T-P-dependent photo statics, exactly the arrays
-            # _build_photo_static would bake for this profile (both pass
-            # through PhotoStaticInputs verbatim — see photo_data_from_static
-            # and photo_J_data_from_static).
+            # The two T-P-dependent photo statics, exactly what
+            # _build_photo_static would bake for this profile.
             p_absp_T_cross = jnp.asarray(
                 rs.photo_static.absp_T_cross, dtype=jnp.float64
             )
             p_cross_J_T = jnp.asarray(rs.photo_static.cross_J_T, dtype=jnp.float64)
         elif self._cfg.use_photo and self._photo_static is not None:
-            # Legacy (var, atm, para) entry: the synthesized RunState has no
-            # photo_static slot. That path is single-profile only, so the
-            # closure-baked arrays ARE this profile's arrays — seed pv with
-            # them (value-identical to the pre-ProfileVars closure behavior).
+            # Legacy entry (no photo_static slot) is single-profile only, so
+            # the closure-baked arrays ARE this profile's; seed pv with them.
             p_absp_T_cross = jnp.asarray(
                 self._photo_static.photo_data.absp_T_cross, dtype=jnp.float64
             )
@@ -2582,8 +2423,7 @@ class OuterLoop:
             dt=jnp.asarray(float(rs.step.dt), dtype=jnp.float64),
             t=jnp.asarray(float(rs.step.t), dtype=jnp.float64),
             delta=jnp.asarray(float(rs.params.delta), dtype=jnp.float64),
-            # PI-controller history sentinel: no valid previous-step error at
-            # entry (mirrors neoVULCAN seeding delta_prev = -1.0 in __init__).
+            # PI history sentinel: no valid previous-step error at entry.
             delta_prev=jnp.float64(-1.0),
             accept_count=jnp.int32(int(rs.params.count)),
             retry_count=jnp.int32(0),
@@ -2616,28 +2456,22 @@ class OuterLoop:
                 dtype=jnp.float64,
             ),
             evo_idx=jnp.int32(0),
-            # chunk_target seed = a large sentinel (2**30, well above any
-            # count_max) disables the chunk cap, so single-shot __call__ runs
-            # without an early chunk return. The chunked driver mutates this
-            # between chunks; the seed is only used when the driver doesn't run.
+            # chunk_target sentinel (2**30 >> any count_max) disables the
+            # chunk cap for single-shot runs; the chunked driver overwrites it.
             chunk_target=jnp.int32(2**30),
-            # Batched-runner termination flags. The single-profile path
-            # never reads these; the vmapped `run_batch` flips `is_done`
-            # and records `termination_reason` per lane.
+            # Batched-runner flags; the single-profile path never reads them.
             is_done=jnp.bool_(False),
             termination_reason=jnp.int32(0),
-            # Hybrid molecular-diffusion phase: start in upwind (1.0) whenever
-            # use_vm_mol is on, else pure central-difference (0.0). The body
-            # flips it to 0.0 at phase-0 convergence only when hybrid is on.
+            # Phase seed: upwind (1.0) when use_vm_mol, else central (0.0);
+            # only hybrid runs ever flip it.
             hybrid_use_vm=jnp.float64(1.0 if bool(self._statics.use_vm_mol) else 0.0),
             # Live termination budget, seeded to the static caps. Only the
             # hybrid phase flip mutates these (extends phase 1's allowance).
             count_min_dyn=jnp.int32(int(self._statics.count_min)),
             count_max_dyn=jnp.int32(int(self._statics.count_max)),
             runtime_dyn=jnp.float64(float(self._statics.runtime)),
-            # Per-profile constants threaded through the carry so jax.vmap
-            # batches them per lane (closure-baked constants would be shared).
-            # No-op for the single-profile path (matches the closure values).
+            # Per-profile constants MUST ride the carry (vmap does not batch
+            # closures); value-identical to the closures single-profile.
             pv=self._profile_vars_from_runstate(rs),
         )
 
@@ -2789,9 +2623,8 @@ class OuterLoop:
         rs_out = self._unpack_state_to_runstate(state, rs_entry)
         _state_mod.runstate_to_store(rs_out, var, atm, para)
 
-        # Hycean H2/He pin diagnostic (op.py:2938-2944). Mirror master's
-        # vulcan_cfg mutation so any downstream tooling that reads
-        # vulcan_cfg.use_fix_sp_bot post-run sees the pinned values.
+        # Hycean pin diagnostic (op.py:2938-2944): mirror master's cfg
+        # mutation so post-run readers of use_fix_sp_bot see the pinned values.
         if self._statics.use_fix_H2He and bool(state.h2he_pinned):
             h2he_mix_arr = np.asarray(state.h2he_mix, dtype=np.float64)
             existing = dict(getattr(self._cfg, "use_fix_sp_bot", {}) or {})
@@ -2816,16 +2649,14 @@ class OuterLoop:
             var.y_time = y_evo_arr
             var.t_time = t_evo_arr
 
-        # Photo dict-view synthesis (only when use_photo=True).
-        # var.tau/aflux/sflux/dflux_*/prev_aflux/aflux_change/k_arr already
-        # written by `runstate_to_store(rs_out, ...)`; J_sp is rebuilt from
-        # the J_br arrays here because it lives outside the typed slice.
+        # Photo dict-view synthesis: J_sp is rebuilt here because it lives
+        # outside the typed slice; the array fields were already written by
+        # runstate_to_store.
         if self._photo_static is not None:
             self._unpack_J_sp(state, var)
             self._unpack_k(state, var)
 
-        # Conden k unpack — same as photo: write the conden-updated rate
-        # rows from the carry's k_arr.
+        # Conden k unpack: same full-array overwrite as photo.
         if self._conden_static is not None:
             self._unpack_conden_k(state, var)
 
@@ -2867,12 +2698,9 @@ class OuterLoop:
                 var.Jion_sp[(sp, 0)] = var.Jion_sp[(sp, 0)] + Jion_br_np[i]
 
     def _unpack_k(self, state: JaxIntegState, var) -> None:
-        """Snapshot photo-updated rate rows from `state.k_arr` into
-        `var.k_arr`. A full-array snapshot replaces per-row dict writes; rows
-        that weren't touched inside the runner are equal to the initial
-        `var.k_arr` so the overwrite is idempotent for them and authoritative
-        for the rows the photo branch updated. The legacy `{i: array(nz)}`
-        dict view is synthesized at `.vul` write time by
+        """Snapshot the full photo-updated `state.k_arr` into `var.k_arr`
+        (idempotent for rows the runner didn't touch). The legacy
+        `{i: array(nz)}` dict view is synthesized at `.vul` write time by
         `legacy_io.Output.save_out`.
         """
         var.k_arr = np.asarray(state.k_arr, dtype=np.float64)
@@ -2886,12 +2714,9 @@ class OuterLoop:
         is `slots[(accept_count - L + i) % conv_step for i in 0..L-1]`,
         where L = min(accept_count, conv_step).
 
-        Trade-off: var.y_time only contains the LAST conv_step entries
-        instead of the full per-step trajectory. This is the single-shot
-        runner's cost — keeping the full history would require an
-        io_callback per step, defeating the purpose. Users who need full
-        trajectory output can downsample at the analysis stage or
-        increase conv_step.
+        Trade-off: var.y_time holds only the LAST conv_step entries (full
+        history would need an io_callback per step); increase conv_step or
+        use save_evolution for more.
         """
         accept_count = int(state.accept_count)
         conv_step = int(self._statics.conv_step)
@@ -2910,25 +2735,17 @@ class OuterLoop:
         order = [(start + i) % conv_step for i in range(L)]
         var.y_time = [ring_y[i] for i in order]
         var.t_time = [ring_t[i] for i in order]
-        # atom_loss_time is per-step diagnostic; we only have the FINAL
-        # atom_loss in the carry (the runner doesn't ring it). Use the
-        # final value padded over L entries so plot scripts that index
-        # into the list don't index-error.
+        # Only the FINAL atom_loss is in the carry; pad it over L entries so
+        # plot scripts indexing the list don't error.
         final_atom_loss = list(np.asarray(state.atom_loss).tolist())
         var.atom_loss_time = [final_atom_loss for _ in range(L)]
 
     def _unpack_conden_k(self, state: JaxIntegState, var) -> None:
-        """Snapshot conden-updated rate rows from `state.k_arr` into
-        `var.k_arr`. Full-array overwrite; conden rows updated inside the
-        runner are reflected verbatim, others retain their pre-runner
-        values. The legacy `{i: array(nz)}` dict view is synthesized at
-        `.vul` write time by `legacy_io.Output.save_out`.
+        """Snapshot the full conden-updated `state.k_arr` into `var.k_arr`
+        (rows the runner didn't touch keep their pre-runner values).
         """
         var.k_arr = np.asarray(state.k_arr, dtype=np.float64)
 
-    # -----------------------------------------------------------------
-    # f_dy — inlined from op.Integration.f_dy (op.py:1003-1015)
-    # -----------------------------------------------------------------
     def _f_dy(self, var, para):
         """Compute dy / dydt diagnostics from var.y vs var.y_prev.
 
@@ -2955,14 +2772,11 @@ class OuterLoop:
     def _classify_end_case(self, state: JaxIntegState, wall_clock_hit=False):
         """Classify end-of-run (op.py:1075-1087) from the carry's live budget.
 
-        Reads `count_max_dyn`/`runtime_dyn`, not the static cfg caps: the
-        hybrid vm_mol phase flip extends the budget in-loop, so a phase-1
-        convergence past the static count_max must still read as
-        end_case=1, not "step-count exceeded". Identical to the static
-        caps for non-hybrid runs (the carry seeds them from cfg).
-        Wall-clock-budget exit (end_case=4) is sticky over the carry's
-        count/runtime predicates because the JIT'd loop has not actually
-        terminated — only the host bailed out.
+        Reads `count_max_dyn`/`runtime_dyn`, not the static caps: the hybrid
+        phase flip extends the budget in-loop, so a phase-1 convergence past
+        the static count_max must still read end_case=1. Wall-clock exit
+        (end_case=4) is sticky -- the JIT'd loop has not actually terminated,
+        only the host bailed out.
         """
         if wall_clock_hit:
             return 4
@@ -2972,27 +2786,17 @@ class OuterLoop:
             return 2
         return 1
 
-    # -----------------------------------------------------------------
-    # Chunked driver — interleaves the JIT'd runner with host-side
-    # progress, live-plot, live-flux, and movie hooks.
-    # -----------------------------------------------------------------
     def _run_chunked(self, init_state, atm_static, var, para, atm):
-        """Run the integration in chunked steps so the host can fire the
-        `print_prog` and live-UI hooks between chunks.
+        """Run the integration in chunks so the host can fire `print_prog`
+        and live-UI hooks between chunks.
 
-        Chunk size is `vulcan_cfg.live_plot_frq` when any live-output
-        flag is set (so cadence matches master's `para.count %
-        live_plot_frq == 0` predicate exactly), otherwise
-        `vulcan_cfg.print_prog_num`. Termination has the same semantics
-        as the single-shot path (count_max / runtime / converged); the
-        chunk cap exists only to give the host a place to fire hooks.
-        Bit-equivalence to the single-shot path is asserted by
+        Chunk size: `live_plot_frq` when any live flag is on (master's
+        cadence), else `print_prog_num`. Termination semantics equal the
+        single-shot path; bit-equivalence is asserted by
         `tests/test_chunked_runner.py`.
 
-        Returns ``(state, wall_clock_hit)``. ``wall_clock_hit`` is True
-        only when ``vulcan_cfg.wall_clock_max`` was set and the host-side
-        elapsed wall-clock exceeded it between chunks; the caller treats
-        that as ``end_case = 4``.
+        Returns ``(state, wall_clock_hit)``; wall_clock_hit=True means the
+        host wall-clock budget expired between chunks (end_case=4).
         """
         from .live_ui import any_live_flag_on, LiveUI
 
@@ -3017,11 +2821,9 @@ class OuterLoop:
         state = init_state
         while True:
             target = int(state.accept_count) + chunk_size
-            # Cap the chunk at count_max + 1 so the chunk_done predicate
-            # never fires before count_max would. Read the live budget off
-            # the carry each chunk: the hybrid phase flip extends
-            # count_max_dyn/runtime_dyn in-loop, so the static caps would
-            # truncate a phase-1 extension mid-run.
+            # Cap the chunk at count_max + 1 so chunk_done never fires before
+            # count_max would. Read the LIVE budget off the carry: the hybrid
+            # flip extends it in-loop and static caps would truncate phase 1.
             target = min(target, int(state.count_max_dyn) + 1)
             state = state._replace(chunk_target=jnp.int32(target))
             state = self._runner(state, atm_static)
@@ -3057,22 +2859,12 @@ class OuterLoop:
                 )
                 return state, True
 
-    # -----------------------------------------------------------------
-    # Outer Python orchestration compatible with op.Integration.__call__
-    # -----------------------------------------------------------------
     def __call__(self, *args):
         """Run the integration to convergence / runtime / count cap.
 
-        `__call__` is polymorphic — it accepts either a typed
-        `state.RunState` or the legacy `(var, atm, para, make_atm)` triple.
-        The RunState path is the canonical entry point: `integ(rs)` runs
-        the full integration, returns a fresh `RunState`, and reads every
-        static metadata field off `rs.metadata`. The legacy `(var, atm,
-        para)` arguments are no longer required for the RunState path but
-        are still accepted for back-compat with hybrid oracle tests.
-
-        Both paths produce identical numerics; only the entry/exit
-        boundary differs.
+        Polymorphic: accepts a typed `state.RunState` (canonical; returns a
+        fresh RunState) or the legacy `(var, atm, para, make_atm)` tuple
+        (kept for hybrid oracle tests). Identical numerics either way.
         """
         if args and isinstance(args[0], _state_mod.RunState):
             rs = args[0]
@@ -3086,19 +2878,10 @@ class OuterLoop:
     def _call_legacy(self, var, atm, para, make_atm):
         """Legacy entry point: integrate while mutating `(var, atm, para)`.
 
-        A single JIT'd JAX runner call replaces the Python
-        `while not stop(): one_step()` loop. Termination, photo-frequency
-        switching, adaptive rtol, ring-buffered convergence, condensation,
-        atmosphere refresh, ion charge balance, and fix-all-bot post-step
-        clamping all happen inside the runner; this method only handles
-        pre-loop setup, the device call(s), and post-run unpacking +
-        final-state diagnostics.
-
-        When `use_chunked_runner=True`, or when any live-output flag is on,
-        the integration runs in chunks so the host can call `print_prog` and
-        dispatch live plot / live flux / movie hooks between chunks.
-        Otherwise it is single-shot. Both paths are bit-equivalent on the
-        final state.
+        Everything happens inside the JIT'd runner; this method handles
+        setup, the device call(s), and post-run unpacking + diagnostics.
+        Runs chunked when `use_chunked_runner` or any live flag is on, else
+        single-shot; both paths are bit-equivalent on the final state.
         """
         del make_atm  # captured into _refresh_static at OuterLoop init
         validate_runtime_config(self._cfg)
@@ -3112,11 +2895,8 @@ class OuterLoop:
         atm_static = make_atm_static(atm, ni, nz, cfg=self._cfg)
         init_state = self._pack_state(var, para, atm)
 
-        # Chunked execution is opt-in via the explicit `use_chunked_runner`
-        # cfg flag, or implicit when any live-output flag is on (the
-        # host needs to read state between chunks to drive the live UI),
-        # or when `wall_clock_max` is set (the host check fires between
-        # chunks). Off (default), the runner is single-shot.
+        # Chunked when use_chunked_runner, any live flag, or wall_clock_max
+        # is set (host hooks fire between chunks); default is single-shot.
         from .live_ui import any_live_flag_on
 
         wall_clock_max = getattr(self._cfg, "wall_clock_max", None)
@@ -3132,13 +2912,10 @@ class OuterLoop:
                 init_state, atm_static, var, para, atm
             )
         else:
-            # Single JAX runner call.
             final_state = self._runner(init_state, atm_static)
         self._unpack_state(final_state, var, para, atm)
 
-        # f_dy needs y_prev (carry-supplied via _unpack_state) and the
-        # final y to compute the dy / dydt diagnostics used by the
-        # final-state print (and any downstream Python diagnostics).
+        # dy/dydt diagnostics for the final-state print.
         var = self._f_dy(var, para)
 
         # Determine end_case (op.py:1075-1087) for the final print.
@@ -3167,20 +2944,14 @@ class OuterLoop:
             )
 
         if self._cfg.use_print_prog:
-            # `print_prog` reads `para.where_varies_most`, which the
-            # legacy `op.conv` populated but we don't (the in-runner
-            # conv reduces directly to scalar longdy). Set a sentinel
-            # so the read doesn't crash; downstream diagnostics that
-            # need the per-(z, sp) breakdown should compute it from
-            # var.y / var.y_prev directly.
+            # print_prog reads para.where_varies_most; set a sentinel so the
+            # read doesn't crash when unset.
             if not hasattr(para, "where_varies_most") or para.where_varies_most is None:
                 para.where_varies_most = np.zeros_like(var.y)
             self.output.print_prog(var, para)
 
-        # End-of-run summary (mirrors op.stop, op.py:1068-1088).
-        # Master calls print_end_msg for end_case=1 only; print_unconverged_msg
-        # is defined upstream but never invoked. We call it here for
-        # end_case in (2, 3) so the summary lands for non-converged exits too.
+        # End-of-run summary (op.stop). Master only calls print_end_msg
+        # (end_case=1); we also call print_unconverged_msg for 2/3/4.
         if para.end_case == 1:
             self.output.print_end_msg(var, para)
         elif para.end_case in (2, 3, 4):
@@ -3201,20 +2972,16 @@ class OuterLoop:
         validate_runtime_config(self._cfg)
         self.loss_criteria = float(getattr(self._cfg, "loss_criteria", 0.0005))
 
-        # When called as `integ(rs)`, derive a legacy-shaped shim from the
-        # RunState so the existing `_build_*_static` helpers and
-        # `make_atm_static` keep working without explicit var/atm/para
-        # references.
+        # Derive a legacy-shaped shim from the RunState for the
+        # _build_*_static helpers and make_atm_static.
         if var is None or atm is None:
             var, atm, _shim_para = _state_mod.legacy_view(rs, cfg=self._cfg)
             if para is None:
                 para = _shim_para
 
-        # If the runstate carries a pre-built `PhotoStaticInputs` pytree
-        # (produced by `with_pre_loop_setup`), wire it onto the solver so
-        # `_build_photo_static` doesn't try to rebuild from the
-        # `legacy_view`'s var.cross* dict surface (which the shim no
-        # longer carries).
+        # Wire a pre-built PhotoStaticInputs onto the solver so
+        # _build_photo_static doesn't rebuild from the legacy_view shim
+        # (which no longer carries the var.cross* dict surface).
         if (
             rs.photo_static is not None
             and getattr(self.odesolver, "_photo_static", None) is None
@@ -3238,11 +3005,9 @@ class OuterLoop:
         )
         wall_clock_hit = False
         if use_chunked:
-            # Chunked driver still needs legacy `(var, para, atm)` for
-            # the per-chunk hooks. Reuse the caller's `para` (it
-            # carries `start_time`) and let the chunked driver mutate
-            # it in place; the final RunState is rebuilt on return so
-            # the caller gets a typed result regardless.
+            # The chunked driver needs legacy (var, para, atm) for its hooks;
+            # reuse the caller's para (carries start_time). The final RunState
+            # is rebuilt on return regardless.
             final_state, wall_clock_hit = self._run_chunked(
                 init_state, atm_static, var, para, atm
             )
@@ -3255,17 +3020,13 @@ class OuterLoop:
                 params=rs_out.params._replace(pic_count=int(self._live_ui.pic_count))
             )
 
-        # End-of-run printing — same predicates as the legacy path,
-        # reading from the synthesised RunState rather than mutating
-        # the legacy containers. Wall-clock-budget exit (end_case=4)
-        # is sticky over the JAX state's count/runtime predicates
-        # because the JIT'd loop has not actually terminated.
+        # End-of-run printing, same predicates as the legacy path;
+        # wall-clock exit (end_case=4) is sticky (the loop never terminated).
         count = int(rs_out.params.count)
         end_case = self._classify_end_case(final_state, wall_clock_hit)
-        # Persist the authoritative end_case into the returned RunState (and
-        # thus the .vul 'parameter' dict). _unpack_state_to_runstate cannot
-        # see a wall-clock bail (count<count_max, t<runtime) and would
-        # otherwise mislabel a truncated run as converged (end_case=1).
+        # Persist the authoritative end_case: _unpack_state_to_runstate cannot
+        # see a wall-clock bail and would mislabel a truncated run as
+        # converged (end_case=1).
         reason = int(final_state.termination_reason)
         if rs_out.params is not None:
             rs_out = rs_out._replace(
@@ -3284,9 +3045,8 @@ class OuterLoop:
                 f"exceeded ({self._cfg.runtime} sec)!"
             )
         elif end_case != 4:
-            # reason 4 is the JAX-only stall fallback, which shares end_case=1
-            # with a normal convergence. Say so, so a stalled exit is never
-            # read as having met VULCAN's convergence criterion.
+            # Reason 4 (JAX-only stall fallback) shares end_case=1 with a real
+            # convergence; say so in the message.
             how = (
                 "via the stall fallback (JAX-only; no VULCAN 2.0 counterpart)"
                 if reason == 4
@@ -3300,11 +3060,9 @@ class OuterLoop:
                 f"{(rs_out.photo_runtime.aflux_change if rs_out.photo_runtime is not None else 0.0):.2E}"
             )
 
-        # The summary printers expect a legacy `(var, para)` pair —
-        # build a thin shim from the RunState. They only read counters
-        # and atom_loss, plus var.t / var.longdy / var.longdydt /
-        # var.dt. `start_time` flows from the legacy `para` reference
-        # passed in (a static field; not part of the RunState schema).
+        # The summary printers expect a legacy (var, para) pair; build a thin
+        # shim. start_time flows from the caller's para (not in the RunState
+        # schema).
         var_shim, para_shim = self._summary_shim(rs_out)
         para_shim.start_time = (
             float(getattr(para, "start_time", _now())) if para is not None else _now()
@@ -3346,10 +3104,9 @@ class OuterLoop:
         ):
             self.odesolver._photo_static = rs.photo_static
         elif rs.photo_static is not None:
-            # The runner closure bakes the first profile's star + wavelength
-            # grid; only the T-dependent cross sections ride per lane (via
-            # ProfileVars). Reject a profile whose photo statics differ in
-            # anything else, instead of silently using lane 0's star.
+            # The closure bakes the first profile's star + wavelength grid;
+            # only T-dependent cross sections ride per lane (ProfileVars).
+            # Reject any other difference instead of using lane 0's star.
             baked = self.odesolver._photo_static
             ps = rs.photo_static
             same = (

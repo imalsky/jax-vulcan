@@ -1,40 +1,23 @@
 """NumPy reference diffusion operator (test-only).
 
-This file lives in `tests/` because it is no longer on the VULCAN-JAX hot
-path; the production diffusion is the JAX implementation inside
-`jax_step._build_diff_coeffs_jax` / `_apply_diffusion_jax`. Tests import this
-module to validate the JAX path (and op.diffdf) against an explicit NumPy
-reference.
-
+Tests validate the production JAX path (`jax_step._build_diff_coeffs_jax` /
+`_apply_diffusion_jax`) and op.diffdf against this explicit NumPy reference.
 Mirrors `op.py:diffdf` (lines 1499-1600) and `op.py:lhs_jac_tot` (1976-2045).
 
-The discretized diffusion operator at layer j has the form
+The discretized operator at layer j is
     diff[j, :] = A_eff[j]*y[j] + B_eff[j]*y[j+1] + C_eff[j]*y[j-1]
-where A_eff, B_eff, C_eff combine eddy (Kzz, scalar per layer) and molecular
-(Dzz, per-species per-layer) diffusion plus thermal-diffusion / gravitational
-sedimentation terms.
+where A/B/C combine eddy (Kzz, scalar per layer) and molecular (Dzz,
+per-species) diffusion plus thermal-diffusion / sedimentation terms. The
+Jacobian is block-tridiagonal with off-diagonal blocks diagonal in species,
+so they are represented as ni-vectors.
 
-The Jacobian d(diff)/d(y) is block-tridiagonal: per-layer diagonal block has
-chem_jac (dense [ni, ni]) + diag(diff_diag) (the ni-vector eddy+mol coeff at
-layer j); off-diagonal blocks are diagonal in species (no inter-species
-coupling from diffusion alone), so we represent them as ni-vectors that get
-broadcast onto the dense blocks consumed by block_thomas.
+VULCAN's lhs_jac_tot treats `ysum` as constant when differentiating;
+VULCAN-JAX matches this convention exactly.
 
-VULCAN's lhs_jac_tot treats `ysum` as constant when differentiating (it shows
-up only via mole-fraction conversion, and the cross-species coupling is
-small for stiff chemistry). VULCAN-JAX matches this convention exactly.
-
-Optional features supported (gated by vulcan_cfg flags):
-    use_moldiff      molecular-diffusion contribution (Ai, Bi, Ci)
-    use_topflux     fixed flux at TOA (top_flux array)
-    use_botflux     deposition velocity at surface (bot_vdep, bot_flux)
-    use_vz          vertical advection (with upwind switching on sign of vz)
-    non_gas_sp      exclude condensed species from ysum (uses gas_indx)
-
-Variants supported via the `mode` argument to build_diffusion_coeffs:
-    'gravity'       diffdf:           central scheme using Hpi/ms*g/alpha terms
+Variants via the `mode` argument to build_diffusion_coeffs:
+    'gravity'       diffdf:           central scheme (Hpi/ms*g/alpha terms)
     'vm'            diffdf_vm:        upwind scheme using atm.vm
-    'settling'      diffdf_settling:  diffdf + atm.vs settling velocity (upwind)
+    'settling'      diffdf_settling:  diffdf + atm.vs settling (upwind)
     'settling_vm'   diffdf_settling_vm: diffdf_vm + atm.vs settling
 """
 
@@ -49,21 +32,12 @@ from vulcan_jax.phy_const import Navo, kb
 
 @dataclass
 class DiffusionCoeffs:
-    """Per-layer eddy (scalar) + molecular (per-species) diffusion coefficients
-    for the operator form  diff[j] = A*y[j] + B*y[j+1] + C*y[j-1].
+    """Per-layer eddy (scalar, shape (nz,)) + molecular (per-species, shape
+    (nz, ni)) coefficients for  diff[j] = A*y[j] + B*y[j+1] + C*y[j-1].
 
-    Boundary handling:  C[0] = 0,  B[nz-1] = 0   (zero-flux unless overridden
-    by use_topflux / use_botflux).
-
-    Eddy (scalar per layer):
-        A_eddy: shape (nz,)
-        B_eddy: shape (nz,)
-        C_eddy: shape (nz,)
-    Molecular (per species per layer):
-        A_mol: shape (nz, ni)
-        B_mol: shape (nz, ni)
-        C_mol: shape (nz, ni)
-    Net per-layer coefficient applied to y[j, i] is A_eddy[j] + A_mol[j, i].
+    Boundary handling: C[0] = 0, B[nz-1] = 0 (zero-flux unless overridden by
+    use_topflux / use_botflux). Net coefficient on y[j, i] is
+    A_eddy[j] + A_mol[j, i].
     """
 
     A_eddy: np.ndarray
@@ -84,21 +58,17 @@ class DiffusionCoeffs:
 def build_diffusion_coeffs(
     y: np.ndarray, atm, cfg, mode: str = "auto"
 ) -> DiffusionCoeffs:
-    """Build A, B, C coefficients given the current state and atmosphere.
+    """Build A, B, C coefficients for the current state and atmosphere.
 
     Args:
-        y: number densities, shape (nz, ni). Used to compute `ysum` per layer.
-        atm: VULCAN-style AtmData object with .Kzz, .Dzz, .vz, .alpha, .Tco,
-             .ms, .Hp, .Hpi, .Ti, .g, .dzi, .top_flux, .bot_flux, .bot_vdep,
-             .gas_indx attributes. For non-default modes also needs .vm and .vs.
-        cfg: vulcan_cfg module (or any namespace with use_moldiff, use_vz,
-             use_topflux, use_botflux, use_vm_mol, use_settling, non_gas_sp,
-             use_condense flags).
-        mode: one of 'auto', 'gravity', 'vm', 'settling', 'settling_vm'.
-              'auto' picks based on cfg.use_vm_mol and cfg.use_settling flags.
+        y: number densities, shape (nz, ni); used to compute `ysum` per layer.
+        atm: VULCAN-style AtmData (needs .vm / .vs for non-default modes).
+        cfg: config namespace with the diffusion/BC flags.
+        mode: 'auto' | 'gravity' | 'vm' | 'settling' | 'settling_vm';
+              'auto' picks from cfg.use_vm_mol / cfg.use_settling.
 
     Returns:
-        DiffusionCoeffs ready for `apply_diffusion` and `diffusion_block_diags`.
+        DiffusionCoeffs for `apply_diffusion` and `diffusion_block_diags`.
     """
     # Resolve mode from cfg if 'auto'
     if mode == "auto":
@@ -411,22 +381,15 @@ def apply_diffusion(y: np.ndarray, coeffs: DiffusionCoeffs) -> np.ndarray:
 
 
 def diffusion_block_diags(coeffs: DiffusionCoeffs, ni: int):
-    """Return the per-layer block-Jacobian DIAGONALS for the diffusion operator.
+    """Return per-layer block-Jacobian DIAGONALS for the diffusion operator.
 
-    The diffusion contribution to the Jacobian d(diff[j])/d(y[j', i]) is
-    DIAGONAL in species (no inter-species coupling from diffusion alone), so
-    each "block" can be represented as an ni-vector instead of an ni x ni
-    dense matrix. Callers convert these into dense diagonal blocks when
-    assembling the full LHS for block_thomas.
+    Diffusion is diagonal in species, so each block is an ni-vector:
+        diag_d : (nz, ni)   self-block diagonal
+        sup_d  : (nz-1, ni) super-diagonal block (layer j -> j+1)
+        sub_d  : (nz-1, ni) sub-diagonal block (layer j -> j-1)
 
-    Returns three arrays:
-        diag_d  : shape (nz, ni)   -- diagonal entries of self-block
-        sup_d   : shape (nz-1, ni) -- diagonal entries of super-diagonal block (layer j -> j+1)
-        sub_d   : shape (nz-1, ni) -- diagonal entries of sub-diagonal block (layer j -> j-1)
-
-    Sign convention: these match VULCAN's `lhs_jac_tot`. To build the LHS of
-    the Rosenbrock implicit step `[c0*I - dF/dy]`, subtract these from
-    chem_jac and add c0 to the diagonal:
+    Sign convention matches VULCAN's `lhs_jac_tot`; for the Rosenbrock LHS
+    `[c0*I - dF/dy]` subtract these from chem_jac and add c0 to the diagonal:
         LHS_diag[j]  = c0*I  -  chem_jac[j]  -  diag(diag_d[j])
         LHS_sup[j]   =                       -  diag(sup_d[j])
         LHS_sub[j]   =                       -  diag(sub_d[j])

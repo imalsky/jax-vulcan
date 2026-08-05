@@ -19,12 +19,8 @@ os.chdir(ROOT)
 # Oracle test: requires VULCAN-master sibling for the upstream chemdf/symjac
 # and op references. Skip cleanly when absent.
 def _oracle_dir():
-    """Configured upstream oracle checkout, or a non-existent sentinel path.
-
-    Returning a path that does not exist (rather than None) keeps every
-    `if not VULCAN_MASTER.is_dir(): skip` site below working unchanged, while
-    removing the silent sibling fallback.
-    """
+    """Configured upstream oracle checkout, or a non-existent sentinel path
+    (so the `is_dir()` skip sites work without a None branch)."""
     import os
     from pathlib import Path as _P
 
@@ -33,9 +29,7 @@ def _oracle_dir():
 
 
 # Oracle location comes from $VULCAN_MASTER_DIR, never from a sibling guess:
-# an auto-detected ../VULCAN-master pins nothing, and the copy on this project's
-# machine is not even a git checkout. `tests/oracle.py` resolves it and verifies
-# the pinned revision + a clean tree before any comparison runs.
+# an auto-detected ../VULCAN-master pins nothing. Do not restore the fallback.
 VULCAN_MASTER = _oracle_dir()
 if not VULCAN_MASTER.is_dir():
     pytest.skip(
@@ -131,11 +125,9 @@ def main() -> int:
 
     print(f"dydt_ref shape: {dydt_ref.shape}, dydt_jax shape: {dydt_jax.shape}")
 
-    # Per-cell mask: skip cells where |dydt| is below 1e-6 of the species's
-    # peak |dydt|. These are cancellation residues at near-zero — XLA fuses
-    # the multiply chain into FMA differently from master's NumPy `*`, so
-    # the residue differs in absolute terms but both are within ULP of zero
-    # at the species's natural scale.
+    # Skip cells below 1e-6 of the species's peak |dydt|: cancellation
+    # residues near zero, where XLA's FMA fusion differs from NumPy but both
+    # are within ULP of zero at the species's natural scale.
     per_species_peak = np.abs(dydt_ref).max(axis=0)
     cell_floor = 1e-6 * np.maximum(per_species_peak[None, :], 1e-30)
     significant = np.abs(dydt_ref) > cell_floor
@@ -183,10 +175,8 @@ def main() -> int:
             max_jac_idx = j
     print(f"chem_jac max relerr: {max_jac_relerr:.3e} at layer {max_jac_idx}")
 
-    # Bulk-species pass criterion: H2O/CO2/SO/SO2/H2/CO/S/H2S — the W39b
-    # benchmark species. At ~1e-7 relative agreement this is 4 orders
-    # tighter than the original chem_rhs floor (~1e-4) that produced the
-    # 0.25-0.49 dex drift on the converged state.
+    # Bulk-species criterion: the W39b benchmark species must agree tightly
+    # (a looser ~1e-4 floor once produced 0.25-0.49 dex converged-state drift).
     bulk_relerr = 0.0
     for sp in ("H2O", "CO2", "SO", "SO2", "H2", "CO", "S", "H2S"):
         if sp in net.species_idx:
@@ -207,13 +197,8 @@ def main() -> int:
 
 @pytest.mark.master_serial
 def test_main():
-    """Pytest wrapper. This test does a deliberate VULCAN-master ↔
-    VULCAN-JAX module-table swap (see `sys.modules.pop` block in
-    `main()`) which only works from a cold Python start. Under pytest
-    the modules are already cached from prior tests, and the pop forks
-    a fresh `vulcan_cfg` object that poisons later tests' captured
-    references. Run `main()` in a fresh subprocess and assert the exit
-    code — same pattern as `test_diffusion` / `test_ros2_step`."""
+    """Runs main() in a fresh subprocess: the master/JAX module-table swap
+    only works from a cold Python start."""
     import subprocess
 
     result = subprocess.run(

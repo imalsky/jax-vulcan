@@ -1,15 +1,14 @@
 """W39b (SNCHO photo-on, nr=1150) reverse-mode adjoint regression.
 
 Runs in a subprocess because the SNCHO network must be import-locked via
-`$VULCAN_JAX_NETWORK` before the first `import vulcan_jax` (the pytest worker
-already holds the default network). Skips unless `VULCAN_JAX_RUN_SLOW=1` and
-the local fixture `tests/data/adj_state_w39b.npz` exists (npz artifacts are
-gitignored; produce it with `jax_paper/scripts/adj_save_state_w39b.py`).
+`$VULCAN_JAX_NETWORK` before the first `import vulcan_jax`. Skips unless
+`VULCAN_JAX_RUN_SLOW=1` and `tests/data/adj_state_w39b.npz` exists (npz
+artifacts are gitignored; regenerate with `python tests/gen_fixtures.py --all`).
 
-Pins the 2026-07-02 hardening-battery results: the OH+H2 <-> H2O+H pair leads
-the SO2 ranking with g1 = -0.682 (dt-insensitive to <1% across body_dt
-3e6..1e8 on this column), twin spread ~6e-4, residuals <= 0.05, exact-null
-conservation directions (null_quality ~1e-10), and healthy pair antisymmetry.
+Pins the hardening-battery results: the OH+H2 <-> H2O+H pair leads the SO2
+ranking with g1 = -0.682 (dt-insensitive to <1% across body_dt 3e6..1e8),
+twin spread ~6e-4, residuals <= 0.05, exact-null conservation directions
+(null_quality ~1e-10), and healthy pair antisymmetry.
 """
 
 from __future__ import annotations
@@ -110,7 +109,7 @@ def test_w39b_reaction_sensitivity_regression():
     # Ranking: the OH+H2 <-> H2O+H pair leads; SO+OH -> SO2+H in the top 4.
     assert set(r["top4"][:2]) == {1, 2}, r["top4"]
     assert 691 in r["top4"], r["top4"]
-    # Values (2026-07-02 battery: g1 = -0.68209, dt-insensitive <1%).
+    # Values (battery: g1 = -0.68209, dt-insensitive <1%).
     assert r["g1"] < 0 and r["g2"] > 0 and r["g691"] > 0
     assert abs(r["g1"] + 0.682) / 0.682 < 0.05, r["g1"]
     # Diagnostics (measured: resids <= 0.016 at the default budget, spread

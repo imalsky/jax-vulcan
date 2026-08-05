@@ -21,15 +21,13 @@ WHY THIS BENCHMARK. VULCAN-JAX carries two discretizations of the molecular
 drift term D f (1/H_i - 1/H_atm), and each has one failure mode:
   * central "gravity" scheme (use_vm_mol=False) -- 2nd-order ACCURATE (matches
     Eq. 1), but UNSTABLE: for cell Peclet number |vm| dz / D > 2 it develops a
-    spurious sign-alternating mode and the steady state goes negative (the TVD
-    violation of the standard scheme);
+    spurious sign-alternating mode and the steady state goes negative;
   * 1st-order upwind "vm" scheme (use_vm_mol=True) -- unconditionally STABLE but
     dissipative (numerical diffusion ~ |vm| dz / 2, so it under-separates).
-Both target the SAME continuous flux (vm = -D (1/H_i - 1/H_atm), so upwind
-advection of vm*n and the central gravity term are the same PDE). VULCAN's
-production scheme is the HYBRID: converge under upwind (stable), then finish in
-central (accurate). A completed hybrid run ends in the central phase, so its
-converged state is the accurate central curve -- with none of the instability.
+Both target the same continuous flux (vm = -D (1/H_i - 1/H_atm)), so they are
+the same PDE. VULCAN's production scheme is the HYBRID: converge under upwind
+(stable), then finish in central (accurate). A completed hybrid run ends in
+the central phase, so its converged state is the accurate central curve.
 
 This script drives the production VULCAN-JAX diffusion kernels
 (`jax_step.compute_diff_grav` + `_build_diff_coeffs_jax`) on a synthetic
@@ -72,10 +70,9 @@ from vulcan_jax.jax_step import (
 )
 from vulcan_jax.phy_const import Navo, kb
 
-# The upstream VULCAN operator ("VULCAN 2.0": op.diffdf central / op.diffdf_vm
-# upwind) is reproduced by tests/diffusion_numpy_ref.py, an FP-faithful NumPy
-# transcription validated against the actual VULCAN-master operator to <1e-5 in
-# tests/test_diffusion_variants.py. Import it here as the upstream reference.
+# Upstream reference: tests/diffusion_numpy_ref.py is an FP-faithful NumPy
+# transcription of op.diffdf (central) / op.diffdf_vm (upwind), validated
+# against VULCAN-master to <1e-5 in tests/test_diffusion_variants.py.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 import diffusion_numpy_ref as diffref  # noqa: E402
 

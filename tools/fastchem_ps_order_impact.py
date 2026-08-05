@@ -1,19 +1,19 @@
 """Measure the impact of upstream VULCAN's FastChem P/S element-slot swap.
 
-Background (full record: ``docs/validation.md`` C12). FastChem
-builds its element vector in **abundance-file row order** — ``readElementAbundances``
-calls ``addAtom(symbol)`` once per line and ``addAtom`` does ``elements.push_back``
-with ``index = elements.size()-1``. But ``mass_action_constant.cpp`` subtracts the
-per-element NASA-9 reference polynomial by *hard-coded slot index*, with
+Background (full record: ``docs/validation.md``). FastChem builds its element
+vector in abundance-file row order (``readElementAbundances`` calls
+``addAtom`` once per line), but ``mass_action_constant.cpp`` subtracts the
+per-element NASA-9 reference polynomial by hard-coded slot index, with
 ``index_P = 5`` and ``index_S = 6``. Upstream's shipped
-``solar_element_abundances.dat`` lists ``... O, S, P ...``, the exact transpose, so
-every S-bearing molecule's ``log_K`` is built with phosphorus's reference
-polynomial and vice versa. VULCAN-JAX ships the canonical order.
+``solar_element_abundances.dat`` lists ``... O, S, P ...``, the exact
+transpose, so every S-bearing molecule's ``log_K`` is built with phosphorus's
+reference polynomial and vice versa. VULCAN-JAX ships the canonical order.
 
-This tool runs the vendored FastChem twice on the shipped W39b column — identical
-binary, identical element-to-value map, **row order the only difference** — and
-reports the per-species disagreement in dex. It writes nothing outside a temporary
-directory and never touches the package's own FastChem tree.
+This tool runs the vendored FastChem twice on the shipped W39b column --
+identical binary, identical element-to-value map, row order the only
+difference -- and reports the per-species disagreement in dex. It writes
+nothing outside a temporary directory and never touches the package's own
+FastChem tree.
 
 Usage:
     python tools/fastchem_ps_order_impact.py
@@ -52,7 +52,7 @@ CORRECT_ORDER = [
     "Fe",
     "e-",
 ]
-# Upstream exoclime/VULCAN HEAD: S and P transposed (introduced by shami `604ca6e`).
+# Upstream exoclime/VULCAN HEAD: S and P transposed.
 UPSTREAM_ORDER = [
     "C",
     "H",

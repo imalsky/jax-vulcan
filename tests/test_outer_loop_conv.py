@@ -43,13 +43,9 @@ warnings.filterwarnings("ignore")
 
 
 def main() -> int:
-    # Sync vulcan_cfg references. test_chem pops `vulcan_cfg` from
-    # sys.modules mid-run; a plain `import vulcan_cfg` here would create a
-    # fresh module object distinct from the one outer_loop / legacy_io
-    # captured at their module-import time, and our `count_max = 50` would
-    # land on the detached copy while the runner reads count_max from
-    # outer_loop's still-stale reference. Pin everything to legacy_io's
-    # reference instead so the runner and the printer see what we set.
+    # Pin cfg to legacy_io's reference: tests that pop `vulcan_cfg` from
+    # sys.modules fork fresh module objects, and a detached copy would not be
+    # the one the runner reads count_max from.
     import vulcan_jax.outer_loop as outer_loop
     import vulcan_jax.legacy_io as op
 
@@ -146,8 +142,7 @@ def main() -> int:
 
 
 def test_main():
-    """Pytest wrapper. `main()` returns 0 on success; convert to an
-    assertion so `pytest tests/` collects and runs this script."""
+    """Pytest wrapper around main()."""
     assert main() == 0
 
 

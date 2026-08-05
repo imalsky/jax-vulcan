@@ -1,10 +1,9 @@
 """Audit VULCAN-JAX HD189 parity against a VULCAN-master checkout.
 
 The JAX side is loaded from its YAML config (``configs/HD189.yaml`` via
-``config.load_config``) — the ``vulcan_cfg.py`` / ``cfg_examples/`` Python
-configs were removed in the 2026-07 migration. The master side keeps its
-``cfg_examples/vulcan_cfg_HD189.py``. The acceptance target is *scientific
-parity*, not byte-for-byte config parity: JAX's own solver tuning and the
+``config.load_config``); the master side keeps its
+``cfg_examples/vulcan_cfg_HD189.py``. The acceptance target is scientific
+parity, not byte-for-byte config parity: JAX's own solver tuning and the
 vm_branch defaults are expected to differ (see ``INTENTIONAL_JAX_DELTAS``), so
 the audit reports only unintended drift on the remaining physics keys, the
 Mp/Rp-derived gravity, and the vendored runtime data.
@@ -31,11 +30,10 @@ JAX_ONLY_DEFAULTS: dict[str, Any] = {
     "use_sat_surfaceH2O": False,
     "rtol_min": 0.0,
     "rtol_max": 1.0,
-    # These must match the shipped PARITY YAMLs (default/HD189/HD209/W39b), not
-    # the code fallbacks. They carried the code fallbacks (1000 / 0.75) until
-    # 2026-07-30, so the audit was comparing against values no config uses.
-    # The parity configs carry Shami's 2026-07-14 email values and leave the
-    # controller OFF; HD189_vulcan3 carries vm_branch's 1000 / 0.5 / 1.25.
+    # These must match the shipped PARITY YAMLs (default/HD189/HD209/W39b),
+    # NOT the code fallbacks (1000 / 0.75), which no config uses. The parity
+    # configs leave the adapt-rtol controller OFF; HD189_vulcan3 carries
+    # vm_branch's 1000 / 0.5 / 1.25.
     "adapt_rtol_dec_period": 10,
     "adapt_rtol_inc_period": 500,
     "adapt_rtol_dec": 0.5,
@@ -62,20 +60,20 @@ JAX_ONLY_DEFAULTS: dict[str, Any] = {
 #                   preset, off in the VULCAN 2 parity configs (which match
 #                   fetched exoclime master).
 #   conver_ignore-- the parity configs ship upstream master's `[]`; the VULCAN 3
-#                   preset ships vm_branch's `['HC3N']`. Measured 2026-07-30:
-#                   the two are behaviourally identical on HD189/HD209 (same
-#                   step count, same longdy, same controlling cell).
+#                   preset ships vm_branch's `['HC3N']`. Measured behaviourally
+#                   identical on HD189/HD209 (same step count, same longdy,
+#                   same controlling cell).
 INTENTIONAL_JAX_DELTAS = {
     "use_vm_mol",
     "conver_ignore",
 }
 
 # Vendored network files where JAX intentionally diverges from master by a known,
-# documented set of reactions. The sulfur networks carry master's own 10.2025
-# CH2CN typo fix (correct k0 = 1.00E-29, k_inf = 1.00E-10) that master applied
-# to NCHO but left unapplied to its sulfur files: the oracle's base SNCHO and
-# C3 files ship k0 = 1.00E-20 and its DMS Tsai2024 file ships k0/k_inf swapped.
-# JAX corrects all three (validation.md, C1). Any OTHER differing line is real
+# documented set of reactions. The sulfur networks carry master's own CH2CN
+# typo fix (correct k0 = 1.00E-29, k_inf = 1.00E-10) that master applied to
+# NCHO but left unapplied to its sulfur files: the oracle's base SNCHO and C3
+# files ship k0 = 1.00E-20 and its DMS Tsai2024 file ships k0/k_inf swapped.
+# JAX corrects all three (docs/validation.md). Any OTHER differing line is real
 # drift and fails.
 KNOWN_THERMO_DIVERGENCES: dict[str, tuple[str, ...]] = {
     "SNCHO_photo_network.txt": ("CH2CN + H + M -> CH3CN + M",),
@@ -87,24 +85,23 @@ KNOWN_THERMO_DIVERGENCES: dict[str, tuple[str, ...]] = {
 # uniform flux rescale. Master's builder (atm/make_spectra_in_nm.py) multiplied
 # by R_star where the surface-flux conversion divides, so the shipped eps Eri
 # spectrum is low by exactly R_star^4 = 0.735^4; JAX ships the corrected file
-# (validation.md, C4). Wavelength columns must stay identical
-# and every flux ratio must sit at the documented factor (2-sig-fig rounding
-# tolerance); any other difference is real drift and fails.
+# (docs/validation.md). Wavelength columns must stay identical and every flux
+# ratio must sit at the documented factor (2-sig-fig rounding tolerance); any
+# other difference is real drift and fails.
 KNOWN_SFLUX_RESCALES: dict[str, float] = {
     "sflux-epseri.txt": 0.735**-4,
 }
 
-# Runtime inputs VULCAN-JAX ships that master has no counterpart for -- planet cases
-# added here with their own configs. This audit exists to catch DRIFT in the files
-# shared with master, not to stop this repo carrying an extra case, but each extra
-# must be named here so a stray or accidentally-copied file still fails. Asymmetric
-# on purpose: a file present only in MASTER is always an error (that is a vendored
-# input we dropped), and an unlisted jax-only file is too.
+# Runtime inputs VULCAN-JAX ships that master has no counterpart for -- planet
+# cases added here with their own configs. Each extra must be named here so a
+# stray or accidentally-copied file still fails. Asymmetric on purpose: a file
+# present only in MASTER is always an error (a vendored input we dropped), and
+# an unlisted jax-only file is too.
 JAX_ONLY_RUNTIME_FILES: frozenset[str] = frozenset(
     {
-        # Input for the withdrawn configs/K2-18b.yaml (removed 2026-07-30: it
-        # converged in neither code). The T-P file stays vendored so the case can
-        # be re-run; it has no master counterpart either way.
+        # Input for the withdrawn configs/K2-18b.yaml (removed: it converged in
+        # neither code). The T-P file stays vendored so the case can be re-run;
+        # it has no master counterpart either way.
         "atm_K2-18b-Nep100X-apo-H2Oclouds.txt",
     }
 )
@@ -296,8 +293,8 @@ def _compare_cfgs(master_cfg: Path) -> list[str]:
                 f"cfg mismatch {key}: master={master[key]!r}, jax={jax[key]!r}"
             )
 
-    # Gravity migration: JAX derives gs from Mp/Rp; verify it reproduces master's
-    # explicit gs (authored to sub-ULP, hence a relative tolerance).
+    # JAX derives gs from Mp/Rp; verify it reproduces master's explicit gs
+    # (authored to sub-ULP, hence a relative tolerance).
     if "gs" in master:
         try:
             jax_gs = surface_gravity(jax_cfg)
@@ -429,21 +426,18 @@ def _compare_runtime_data(master_root: Path, jax_root: Path) -> list[str]:
     """Compare the SUPPORTED vendored runtime files against the oracle.
 
     Scope is the curated `supported_inputs` list in
-    ``tests/science_sources.yaml`` -- the files this port actually promises to
-    carry -- NOT whole-tree equality. Whole-tree equality was the previous rule
-    and it cannot succeed against any real upstream: current public master ships
-    CRAHCNO_V3 / HNC / NCCN files this release deliberately does not carry, and
-    the cited Shami base carries many unrelated historical files, so the audit
-    failed on "file set mismatch" before comparing anything meaningful. That is
-    not a definition of supported VULCAN 3 parity.
+    ``tests/science_sources.yaml`` -- the files this port promises to carry --
+    NOT whole-tree equality. Do not revert to whole-tree equality: no real
+    upstream can satisfy it (upstream ships network files this release
+    deliberately does not carry), so the audit would fail on file-set noise
+    before comparing anything meaningful.
 
-    Files listed in ``KNOWN_THERMO_DIVERGENCES`` are allowed to differ on their
-    documented reaction lines only; files in ``KNOWN_SFLUX_RESCALES`` must differ
-    by exactly their documented flux rescale; any other difference still fails.
-    A supported file that the ORACLE lacks is reported (this port claims to
-    carry it faithfully, so an oracle without it cannot confirm that), but a
-    file present only in the oracle is NOT an error -- that is upstream being
-    newer or broader than this release, which `not_in_this_release` records.
+    Files in ``KNOWN_THERMO_DIVERGENCES`` may differ on their documented
+    reaction lines only; files in ``KNOWN_SFLUX_RESCALES`` must differ by
+    exactly their documented flux rescale; any other difference still fails.
+    A supported file the ORACLE lacks is reported (parity cannot be confirmed
+    without it), but a file present only in the oracle is NOT an error --
+    that is upstream being newer or broader than this release.
     """
     errors: list[str] = []
     supported = _load_supported_inputs()
@@ -512,13 +506,11 @@ def _compare_runtime_data(master_root: Path, jax_root: Path) -> list[str]:
 # VULCAN-JAX-only identifiers. If any of these appear in the checkout being used
 # as the oracle, that checkout is NOT pristine upstream VULCAN: someone has
 # back-ported VULCAN-JAX code into it, and every comparison below becomes
-# circular (the audit would be checking VULCAN-JAX against itself).
-#
-# This is not hypothetical. On 2026-07-30 the sibling `../VULCAN-master/` copy was
-# found to contain VULCAN-JAX's stall detector (store.py, op.py), its
-# `conv_stall_window` knob (vulcan_cfg.py, cfg_examples/), its `wall_clock_max`
-# end_case=4 exit, and its 13-species `conver_ignore` list -- and that copy had
-# been cited as "master parity" evidence for a config change.
+# circular (the audit would be checking VULCAN-JAX against itself). This has
+# happened: the sibling `../VULCAN-master/` copy was found carrying VULCAN-JAX's
+# stall detector, `conv_stall_window` knob, `wall_clock_max` exit, and
+# 13-species `conver_ignore` list, and was cited as "master parity" evidence.
+# Keep this guard.
 _JAX_ONLY_MARKERS = (
     "conv_stall_window",
     "longdy_seen_min",
@@ -587,24 +579,15 @@ def audit(master_root: Path, jax_root: Path) -> list[str]:
     # check on OUR tree and is always meaningful.
     errors.extend(_check_stock_fastchem(jax_root / STOCK_FASTCHEM, "JAX FastChem"))
 
-    # The upstream side is NOT checked against our rocky-suppressed file, and
-    # the two are NOT required to match.
-    #
-    # Doing either was a contradiction introduced on 2026-07-30: this tool now
-    # refuses a checkout carrying VULCAN-JAX-only identifiers (see
-    # _check_oracle_is_pristine), yet the old checks demanded that same
-    # checkout carry VULCAN-JAX's rocky-suppressed abundance file. A pristine
-    # upstream tree ships full-solar Lodders 2009, so no checkout could satisfy
-    # both. The tool could only ever pass against a hand-patched oracle, which
-    # is exactly what the pristine guard exists to reject.
-    #
-    # Composition parity is a SCIENCE-INPUT question, not a provenance one, and
-    # it is answered by selecting a preset rather than by editing a checkout:
-    # point `fastchem_solar_abundance_file` at
+    # The upstream side is NOT checked against our rocky-suppressed abundance
+    # file, and the two are NOT required to match. Do not add such a check: a
+    # pristine upstream tree ships full-solar Lodders 2009, so requiring our
+    # file could only ever pass against a hand-patched oracle -- exactly what
+    # the pristine guard rejects. Composition parity is a science-input CONFIG
+    # choice: point `fastchem_solar_abundance_file` at
     # solar_element_abundances_lodders2009.dat to reproduce upstream's
-    # composition. See docs/validation.md, "Elemental abundances are a config
-    # choice". This audit reports the upstream file's identity so a reader can
-    # see which composition the oracle would use, and says nothing further.
+    # composition (docs/validation.md, "Elemental abundances are a config
+    # choice"). This audit only reports which composition the oracle would use.
     errors.extend(
         _report_master_fastchem_preset(master_root / STOCK_FASTCHEM),
     )
@@ -616,10 +599,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     repo_root = Path(__file__).resolve().parent.parent  # VULCAN-JAX/
     # Runtime data (atm/, thermo/, fastchem_vulcan/) lives under the installed
-    # package, not the repo root, after the flat->package restructuring; the JAX
-    # config is loaded by name from configs/*.yaml. Default to the package dir so
-    # the documented invocation `python tools/audit_master_parity.py --master
-    # ../VULCAN-master` works without an explicit --jax-root.
+    # package, not the repo root; the JAX config is loaded by name from
+    # configs/*.yaml. Default to the package dir so the documented invocation
+    # `python tools/audit_master_parity.py --master ../VULCAN-master` works
+    # without an explicit --jax-root.
     from vulcan_jax._paths import PACKAGE_ROOT
 
     parser.add_argument(

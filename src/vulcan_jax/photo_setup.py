@@ -552,16 +552,11 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
             bins,
         )
 
-    # Canonical iteration order consumers (photo runtime kernels + .vul writer) rely on.
-    #
-    # `photo_sp` and `ion_sp` are SETS (`legacy_io.ReadRate.read_rate` does
-    # `var.photo_sp = set(photo_sp)`), and iterating a set of strings gives a
-    # different order in every process because Python randomizes string hashing.
-    # These rows are baked into the runner's closure as constants, so an
-    # unsorted order made the compiled program differ run to run: the persistent
-    # compilation cache then missed every time, writing a fresh entry and
-    # re-paying the whole compile. Sort for the same reason `absp_sp_list` above
-    # is a sorted union.
+    # Canonical iteration order for the photo kernels + .vul writer. MUST stay
+    # sorted: `photo_sp`/`ion_sp` are sets, and set-of-string order varies per
+    # process (hash randomization). These rows bake into the runner's closure,
+    # so an unsorted order changes the compiled program every run and defeats
+    # the persistent compile cache (see docs/vulcan_jax_notes.md).
     absp_sp_ordered = tuple(absp_sp_list)
     absp_T_sp_ordered = tuple(sp for sp in absp_sp_list if sp in T_cross_sp)
     scat_sp_ordered = tuple(scat_sp_list)

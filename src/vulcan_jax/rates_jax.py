@@ -33,16 +33,11 @@ CORR = kb / _P0
 _SPECIAL_OH_CH3 = "OH + CH3 + M -> CH3OH + M"
 
 # Upper bound on the Gibbs exponent (reac - prod) before exp() in K_eq_array.
-# float64 exp overflows at ~709; on cold columns (upper atmospheres of cool
-# planets, ~100-160 K) a strongly forward-favored reaction's exponent can exceed
-# it, sending K_eq -> +inf. The primal is unaffected (k_rev = k_fwd / inf -> 0,
-# which is physically correct for an effectively-irreversible cold reaction), but
-# the forward-mode jvp of k_fwd/K then evaluates finite*(inf/inf) = NaN, silently
-# poisoning d(k)/dT for the whole column. Clipping the *upper* side only keeps K
-# huge-but-finite (so k_rev stays ~0 to float precision, matching the unclamped
-# primal) while making the tangent finite. The lower side needs no clip: exp
-# underflow gives K -> 0, and fill_reverse_k's `where(K > 0, ...)` already returns
-# a tangent-safe 0 there.
+# float64 exp overflows at ~709; cold columns (~100-160 K) can exceed that,
+# giving K_eq = +inf. The primal is fine (k_rev -> 0) but the forward-mode jvp
+# of k_fwd/K becomes inf/inf = NaN, poisoning d(k)/dT for the column. Clip the
+# UPPER side only: K stays huge-but-finite (k_rev ~0 as before), tangent finite.
+# Underflow needs no clip -- fill_reverse_k's `where(K > 0, ...)` is tangent-safe.
 _EXP_ARG_MAX = 500.0
 
 # Three Moses+2005 low-T rate caps (mirror rates.py), applied to the forward

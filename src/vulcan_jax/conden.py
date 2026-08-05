@@ -9,19 +9,14 @@ each conden reaction:
 cold-trap relaxation toward saturation. NH3 additionally clamps the
 condensation region to layers at or below the `conden_top` index.
 
-`make_conden_spec` (host, once per config) + `build_conden_profile`
-(pure JAX, per T-P realization) split the condensation state into the
-temperature-INdependent metadata (`CondenSpec`: species identity,
-particle mass/radius/density coefficients, relax/fix flags) and the
-temperature/structure-DEPENDENT arrays (`CondenProfile`: saturation
-number densities, growth/diffusion terms, the NH3 cold-trap index, and
-the fix-species saturation mixing ratios). `build_conden_profile` is
-jit/vmap/jvp-compatible, so a caller that evaluates a live T(P) on the
-JAX graph (the retrieval's per-proposal rebuild) can regenerate every
-frozen `ProfileVars c_*` quantity from the same live temperature and
-splice it into the runner carry. `OuterLoop._build_conden_static`
-delegates here too, so the host setup path and the on-graph path share
-one implementation.
+Static/dynamic split contract (do not merge): `make_conden_spec` (host,
+once per config) extracts the T-INdependent metadata (`CondenSpec`);
+`build_conden_profile` (pure JAX, jit/vmap/jvp) rebuilds every
+T/structure-DEPENDENT array (`CondenProfile`) per T-P realization, so an
+on-graph caller with a live T(P) can regenerate the frozen `ProfileVars
+c_*` quantities and splice them into the runner carry.
+`OuterLoop._build_conden_static` delegates here, so the host and
+on-graph paths share one implementation.
 """
 
 from __future__ import annotations
@@ -36,13 +31,9 @@ from .phy_const import Navo, kb
 # named constant in outer_loop.py). Not a tuning knob — just below-which-is-zero.
 _UNDERFLOW_DENOM = 1e-300
 
-# Gas-phase condensates with a fully-ported runtime kinetics path — exactly
-# VULCAN-master's op.conden branch set. `atm_setup._SUPPORTED_CONDENSABLES`
-# additionally lists H2S, which has saturation data only (capping/cold-trap),
-# no conden kinetics — in master too (master silently leaves an unknown
-# condensate's rate at zero; VULCAN-JAX raises instead). runtime_validation
-# checks condense_sp against these sets upfront; _build_conden_static keeps
-# its NotImplementedError as defense-in-depth.
+# Gas-phase condensates with a full runtime kinetics path (exactly master's
+# op.conden branch set). H2S has saturation data only (atm_setup), no kinetics;
+# an unknown condensate raises here where master silently leaves its rate 0.
 SUPPORTED_CONDEN_KINETICS: tuple[str, ...] = (
     "H2O",
     "NH3",
@@ -53,13 +44,10 @@ SUPPORTED_CONDEN_KINETICS: tuple[str, ...] = (
     "C",
 )
 
-# Per-formula physical constants, baked from op.conden (op.py:1128-1291).
-# CORRECTION (vs upstream): op.py hardcodes S2=45.019 and S8=360.152 g/mol, which
-# are a propagated copy-paste error (45.019 is ~the HCS mass and 360.152 = 8 x
-# 45.019). Disulfur/octasulfur masses are 64.12 and 256.48 (2x/8x the atomic S
-# mass 32.06 in thermo/all_compose.txt); the condensation rate is proportional to
-# this mass, so the upstream literals biased the S2 rate by 0.702x and S8 by
-# 1.404x. We use the composition-table values. See docs/validation.md.
+# Molar masses (g/mol) from op.conden (op.py:1128-1291). Deliberate correction:
+# upstream hardcodes S2=45.019 / S8=360.152 (copy-paste error, biasing those
+# rates 0.702x / 1.404x); we use the composition-table 64.12 / 256.48
+# (2x / 8x atomic S = 32.06). Do not revert. See docs/validation.md.
 GAS_MASS_G_PER_MOL: dict[str, float] = {
     "H2O": 18.0,
     "NH3": 17.0,

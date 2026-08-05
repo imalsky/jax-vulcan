@@ -1,21 +1,14 @@
 """Tests for the production reverse-mode steady-state reaction sensitivity.
 
 Two layers:
+* Fast unit tests of the load-bearing algebra (zero mask, null-space
+  deflation, projector, `dL/d(ln k)` chain rule); no converged column needed.
+* A slow HD189 fixture regression running the full adjoint against the
+  documented finite-difference anchors; pays a ~10-20 min cold compile, so
+  it is skipped unless `VULCAN_JAX_RUN_SLOW=1`.
 
-* Fast unit tests of the load-bearing algebra — the log-abundance zero mask,
-  the conserved-mass null-space deflation, the projector, and the
-  `dL/d(ln k)` chain-rule assembly. These need no converged column and run in
-  milliseconds (they are where a wrong `dz`/`compo` slice or a sign error would
-  show up).
-* A slow HD189 fixture regression that runs the full adjoint on a real, closed
-  column and reproduces the documented finite-difference anchors. It pays the
-  step-VJP cold compile (~10-20 min), so it is skipped unless
-  `VULCAN_JAX_RUN_SLOW=1`.
-
-End-to-end correctness on production columns (HD189, WASP-39b SO2) is what the
-slow test and `jax_paper/scripts/adj_solvermap_gmres.py` cover; the fast tests
-cannot, because `jax_step.jax_ros2_step` uses import-baked atom-projection
-tables sized for the active network, not an arbitrary synthetic one.
+The fast tests cannot cover end-to-end correctness: `jax_ros2_step` uses
+import-baked atom-projection tables sized for the active network.
 """
 
 from __future__ import annotations
@@ -41,9 +34,9 @@ DATA = Path(__file__).resolve().parent / "data"
 HD189_FIXTURE = DATA / "adj_state_hd189.npz"
 _RUN_SLOW = os.environ.get("VULCAN_JAX_RUN_SLOW") == "1"
 
-# Centered-finite-difference truth for the HD189 photo-off CH4 loss, copied from
-# jax_paper/scripts/adj_solvermap_gmres.py (the validated reference run). The
-# 13/14 and 115/116 pairs are a forward/reverse rate pair each.
+# Centered-FD truth for the HD189 photo-off CH4 loss, from the validated
+# jax_paper/scripts/adj_solvermap_gmres.py run. 13/14 and 115/116 are each a
+# forward/reverse rate pair.
 HD189_FD_ANCHORS = {13: -5.651e-01, 14: +5.651e-01, 115: -1.919e-05, 116: +2.712e-05}
 
 
@@ -62,10 +55,9 @@ def test_safe_inv_y_masks_exact_zeros():
 
 
 def test_conserved_null_basis_annihilates_atom_vectors():
-    """The deflation projector kills the analytic atom-count vectors.
-
-    This is the single most load-bearing correctness property: a wrong `dz`,
-    a mis-sliced `compo`, or a wrong log-space scaling all break it.
+    """The deflation projector kills the analytic atom-count vectors. The
+    most load-bearing property: a wrong `dz`, a mis-sliced `compo`, or a
+    wrong log-space scaling all break it.
     """
     rng = np.random.default_rng(0)
     nz, ni, n_atoms = 6, 4, 3
@@ -235,18 +227,13 @@ def test_solver_map_invalid_rejected():
     reason="slow reverse-mode HD189 regression; set VULCAN_JAX_RUN_SLOW=1 to run",
 )
 def test_hd189_reaction_sensitivity_regression():
-    """Reproduce the documented HD189 CH4 finite-difference anchors at percent level.
+    """Reproduce the HD189 CH4 finite-difference anchors at percent level.
 
-    Runs the full solver-map adjoint (defaults: solver_map="renorm",
-    body_dt=1e7, n_solves=3 ensemble) on the saved converged HD189 (photo-off)
-    state and checks the ensemble-mean CH4 sensitivity against the centered
-    finite-difference truth from `adj_solvermap_gmres.py`. With the default
-    renormalized map the converged state is a tight fixed point (fp_err ~1e-9)
-    and the dominant CH4 rows land at percent level (~0.7% measured
-    2026-07-03), so the anchor tolerance is 3%. A `solver_map="bare"`
-    cross-check then confirms the legacy raw-step map is looser on this fixture
-    (fp_err ~1e-4, ~6-8% vs FD), documenting why "renorm" is now the default.
-    Sign and top-6 ranking remain the strongest assertions.
+    Full solver-map adjoint (defaults: renorm, body_dt=1e7, n_solves=3) on
+    the saved converged photo-off state. Renorm lands ~0.7% vs FD, so the
+    anchor tolerance is 3%; a `solver_map="bare"` cross-check must come out
+    looser (fp_err ~1e-4, ~6-8% vs FD), which is why renorm is the default.
+    Sign and top-6 ranking are the strongest assertions.
     """
     import vulcan_jax.chem_funs as chem_funs
     from vulcan_jax.jax_step import AtmStatic
@@ -291,17 +278,13 @@ def test_hd189_reaction_sensitivity_regression():
     assert info["fp_err"] < 1e-6, (
         f"renorm y* is not a tight fixed point: {info['fp_err']:.2e}"
     )
-    # null_quality is max_e ||A_eta^T q_e|| relative to the operator's action
-    # on a random unit direction. The renorm map conserves atoms only
-    # approximately near the fixed point, so its atom-count vectors are only
-    # approximately null (larger than the bare map's ~3e-5); a genuinely
-    # non-null deflated direction (broken conservation) still reads O(1).
+    # null_quality: the renorm map conserves atoms only approximately near the
+    # fixed point, so its atom-count vectors are only approximately null
+    # (larger than bare's ~3e-5); broken conservation still reads O(1).
     assert info["null_quality"] < 1e-2
-    # Solver-regime guards, calibrated 2026-07-01 (measured per-twin residuals
-    # {0.29, 0.05, 0.10}, spread 0.047): the ensemble MEDIAN residual must stay
-    # out of the stagnation regime (one wandering twin is tolerated — the
-    # best-iterate safeguard bounds it and the mean absorbs it), and the twins
-    # must agree on the top-10 reactions.
+    # Solver-regime guards (calibrated per-twin residuals {0.29, 0.05, 0.10},
+    # spread 0.047): the ensemble MEDIAN residual must stay out of the
+    # stagnation regime; one wandering twin is tolerated.
     assert float(np.median(info["resids"])) < 0.2, (
         f"median resid {np.median(info['resids']):.2e} — stagnation regime"
     )
@@ -309,11 +292,10 @@ def test_hd189_reaction_sensitivity_regression():
     assert info["ensemble_spread"] < 0.15, (
         f"ensemble spread {info['ensemble_spread']:.2e} — twins disagree"
     )
-    # pair_antisym is a bare-map-calibrated diagnostic; the renormalized default
-    # redistributes reverse-row sensitivity so it can read O(1) even when the
-    # directional rows are FD-accurate (see the module docstring "Pair sums"
-    # note), so it is NOT a strict gate here. The FD-agreement checks below are
-    # the real validation. We only assert it stays finite/bounded.
+    # pair_antisym is a bare-map-calibrated diagnostic; the renorm default can
+    # read O(1) even when the rows are FD-accurate, so it is NOT a strict gate
+    # here. Only assert it stays finite/bounded; FD agreement below is the
+    # real validation.
     assert 0.0 <= info["pair_antisym"] <= 1.1, info["pair_antisym"]
     assert np.all(np.isfinite(dLdlnk))
 
@@ -322,8 +304,8 @@ def test_hd189_reaction_sensitivity_regression():
     top = np.argsort(np.abs(dLdlnk[: net.nr + 1]))[::-1][:6]
     assert 13 in top or 14 in top, f"dominant CH4 reaction missing from top-6: {top}"
 
-    # Percent-level finite-difference agreement with the DEFAULT renorm map
-    # (measured ~0.7% on this fixture, 2026-07-03; 3% gives headroom).
+    # Percent-level FD agreement with the DEFAULT renorm map (measured ~0.7%
+    # on this fixture; 3% gives headroom).
     for r in (13, 14):
         rel = abs(dLdlnk[r] - HD189_FD_ANCHORS[r]) / abs(HD189_FD_ANCHORS[r])
         assert rel < 0.03, (
@@ -331,10 +313,10 @@ def test_hd189_reaction_sensitivity_regression():
             "— renorm default should be percent level"
         )
 
-    # Cross-check the legacy solver_map="bare": on this (renorm-polished) fixture
-    # y* is only a ~1e-4 fixed point of the raw step, so bare is strictly looser
-    # than the renorm default — the mechanism that motivated flipping the default
-    # (2026-07-03: bare ~6.6% vs renorm ~0.7% here).
+    # Cross-check legacy solver_map="bare": on this renorm-polished fixture y*
+    # is only a ~1e-4 fixed point of the raw step, so bare must be strictly
+    # looser than renorm (bare ~6.6% vs renorm ~0.7% here) - the reason renorm
+    # is the default.
     dLdlnk_b, info_b = steady_state_reaction_sensitivity(
         loss,
         y_star,

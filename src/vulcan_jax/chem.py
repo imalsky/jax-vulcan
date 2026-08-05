@@ -33,16 +33,12 @@ from .network import Network
 
 jax.config.update("jax_enable_x64", True)
 
-# Reaction-axis chunk size for the analytical-Jacobian scatter. The
-# per-reaction contribution tensor is (chunk, 2*max_terms, max_terms) per
-# layer; under vmap (nz layers x batch lanes) the un-chunked (nr+1, 6, 3)
-# form peaked at ~60 GiB for batch 512 x nz 150 on the SNCHO network
-# (878 reactions) and OOM'd a 96 GB GH200. lax.scan over 128-reaction
-# blocks bounds the transient at ~chunk/nr of that (~7x smaller) while
-# the carried accumulator is only (ni+1)^2 floats. Not a tuning knob:
-# changing it permutes float summation order (~1e-16 per cell), which is
-# within the documented step-level reproducibility envelope but would
-# still churn step counts, so it stays a code constant.
+# Reaction-axis chunk size for the analytical-Jacobian scatter. Un-chunked,
+# the (nr+1, 6, 3) per-layer contribution tensor peaked at ~60 GiB under vmap
+# (batch 512 x nz 150, SNCHO's 878 reactions) and OOM'd a 96 GB GH200;
+# lax.scan over 128-reaction blocks bounds the transient ~7x smaller. Not a
+# tuning knob: changing it permutes float summation order (~1e-16 per cell)
+# and churns step counts, so it stays a code constant.
 _JAC_CHUNK_REACTIONS = 128
 
 
@@ -208,14 +204,11 @@ def chem_jac_analytical_per_layer(
         leave_out_cols.append(jnp.prod(f_excl, axis=1))
     leave_out = jnp.stack(leave_out_cols, axis=1)
 
-    # The y^(stoich-1) form sidesteps the (stoich/y)*rate divide when y == 0.
-    # Forward-mode AD safety: a stoich-1 reactant gives exponent 0, and the
-    # outer `where` *selects* that branch, so `y_r ** 0` (primal 1.0) leaks a
-    # NaN jvp at y_r == 0 (d/dy y^0 = 0 * y^-1 = 0*inf). Clipped cells make
-    # y_r == 0 routine mid-run, so never raise to the 0 power: stoich==1 is a
-    # constant 1, stoich>=2 a real power with exponent >= 1 (finite jvp at 0).
-    # Primal is bit-identical to y_r**(stoich-1); masks fold at trace time
-    # (reactant_stoich is static), so there is no runtime cost.
+    # AD-safe power rule: NEVER raise to the 0 power. `y_r ** 0` has primal 1.0
+    # but a NaN jvp at y_r == 0 (0 * y^-1), and clipped cells make y_r == 0
+    # routine mid-run -- end-to-end forward-mode AD depends on this. stoich==1
+    # contributes a constant 1; stoich>=2 a real power with exponent >= 1.
+    # Primal is bit-identical to y_r**(stoich-1); masks fold at trace time.
     safe_exp = jnp.where(net.reactant_stoich > 1, net.reactant_stoich - 1, 1)
     pow_minus_one = jnp.where(
         net.reactant_stoich >= 2,

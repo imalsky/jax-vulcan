@@ -8,14 +8,11 @@ from pathlib import Path
 from . import chem_funs
 
 
-# Canonical FastChem element abundances (Lodders 2019 / Wogan & Tsai 2023).
-# Rocky elements are pinned to -3.0 because no shipped network contains
-# Mg / Si / Fe / Ti / V / Cl / K / Na / F / Ca / P species — leaving them at
-# solar dex would silently sequester ~19% of O into MgO / SiO2 / FeO that
-# `_load_eq_y` cannot read back. S is kept at solar (matched to master) because
-# the SNCHO network for W39b includes S species. The NCHO networks (HD189 /
-# HD209 / Earth) accept the resulting ~1% S→O sequestration as a known small
-# bias matching master.
+# Default FastChem abundances (Lodders 2019 / Wogan & Tsai 2023). Rocky
+# elements are pinned to -3.0: no shipped network has Mg/Si/Fe/... species,
+# and leaving them at solar silently sequesters ~19% of O into oxides that
+# `_load_eq_y` cannot read back. S stays at solar (matches master); the ~1%
+# S->O sequestration in the NCHO networks is a known small bias.
 _CANONICAL_FASTCHEM_ABUNDANCES = {
     "H": 12.00,
     "He": 10.9232,
@@ -36,12 +33,11 @@ _CANONICAL_FASTCHEM_ABUNDANCES = {
     "Fe": -3.0,
 }
 
-# Upstream VULCAN's own file: Lodders (2009), every element at solar. Selectable
-# via `fastchem_solar_abundance_file` so a cross-code comparison can be run on
-# matched inputs — the single most common way to get a wrong VULCAN-JAX vs
-# VULCAN 2.0 number is to leave the two codes on different composition files
-# (~20% median on HD 189733 b; 3.8e-06 once matched). Values are upstream's
-# verbatim; only the P/S row ORDER is corrected (see C12).
+# Upstream VULCAN's own file: Lodders (2009), every element at solar. Select
+# via `fastchem_solar_abundance_file` for matched cross-code runs; unmatched
+# composition files are the top source of wrong cross-code numbers (~20%
+# median on HD189, 3.8e-06 once matched). Values are upstream's verbatim;
+# only the P/S row ORDER is corrected.
 _UPSTREAM_LODDERS2009_ABUNDANCES = {
     "H": 12.00,
     "He": 10.9864,
@@ -62,9 +58,8 @@ _UPSTREAM_LODDERS2009_ABUNDANCES = {
     "Fe": 7.5151,
 }
 
-# The abundance presets a config may select. Anything else is rejected: the
-# failure mode is silent (plausible output from a composition nobody chose), so
-# an unrecognised file must not pass.
+# The only selectable presets. Anything else is rejected: a hand-edited file
+# fails silently (plausible output from a composition nobody chose).
 _FASTCHEM_ABUNDANCE_PRESETS = {
     "rocky-suppressed Lodders 2019 (VULCAN-JAX default)": (
         _CANONICAL_FASTCHEM_ABUNDANCES
@@ -73,15 +68,12 @@ _FASTCHEM_ABUNDANCE_PRESETS = {
 }
 
 
-# Element row order REQUIRED by the vendored FastChem. Its
-# fastchem_src/mass_action_constant.cpp subtracts per-element NASA9 reference
-# polynomials by HARD-CODED slot index (index_C=0, index_H=1, index_He=2,
-# index_N=3, index_O=4, index_P=5, index_S=6, index_Si=7, index_Ti=8,
-# index_V=9, index_Cl=10, index_Km=11 [=K], index_Na=12, index_Mg=13,
-# index_F=14, index_Ca=15, index_Fe=16, index_e=17). The element vector is built
-# in abundance-file row order, so the file MUST list elements in exactly this
-# order. A reorder (e.g. H,He,C,...) makes carbon take helium's reference and CO
-# never forms — silent, no crash. `tests/test_fastchem_element_order.py` parses
+# Element row order REQUIRED by the vendored FastChem: its
+# mass_action_constant.cpp subtracts per-element NASA9 reference polynomials
+# by HARD-CODED slot index (C=0, H=1, He=2, ..., e-=17), and the element
+# vector is built in abundance-file row order, so the file MUST list elements
+# in exactly this order. A reorder makes carbon take helium's reference and CO
+# never forms; silent, no crash. `tests/test_fastchem_element_order.py` parses
 # the C++ and asserts this list still matches the hard-coded indices.
 _FASTCHEM_ELEMENT_ORDER = [
     "C",
@@ -108,26 +100,18 @@ _FASTCHEM_ELEMENT_ORDER = [
 def _validate_fastchem_input_vs_network(cfg, root: Path) -> list[str]:
     """Pin `fastchem_solar_abundance_file` content AND element row order.
 
-    Two independent failure modes, both silent (no crash, plausible-looking
-    output):
+    Two independent failure modes, both silent (no crash, plausible output):
 
-    1. Values: the file has been hand-edited into something that is neither
-       shipped preset. Both presets are legitimate — rocky-suppressed
-       Lodders 2019 (the default) and full-solar Lodders 2009 (upstream's, for
-       matched cross-code runs) — but an arbitrary edit is not. Leaving
-       Mg / Si / Fe at solar dex sequesters ~19% of O into silicate /
-       metal-oxide species the NCHO / SNCHO networks cannot represent, biasing
-       initial conditions against `_load_eq_y`; that is a deliberate trade when
-       you pick the upstream preset on purpose and a silent bug otherwise.
-    2. Order: someone reorders the rows (e.g. H,He,C,... instead of
-       C,H,He,...). FastChem's mass_action_constant.cpp subtracts per-element
-       NASA9 references by hard-coded slot, so a reorder makes carbon take
-       helium's reference -> CO/CH4/CO2 never form, all carbon stays atomic.
-       See `_FASTCHEM_ELEMENT_ORDER`.
+    1. Values: the file matches neither shipped preset (rocky-suppressed
+       Lodders 2019 default, or upstream's full-solar Lodders 2009). A hand
+       edit that leaves Mg/Si/Fe at solar sequesters ~19% of O into species
+       the networks cannot represent.
+    2. Order: FastChem reads NASA9 references by hard-coded row slot, so a
+       reorder makes carbon take helium's reference and CO/CH4/CO2 never
+       form. See `_FASTCHEM_ELEMENT_ORDER`.
 
-    Both checks are content-based (parsed values / parsed symbol order), not a
-    byte hash, so whitespace / EOL / decimal-format differences don't trip
-    false positives.
+    Both checks are content-based (parsed values / symbol order), not byte
+    hashes, so whitespace or formatting differences don't trip them.
     """
     errors: list[str] = []
     if getattr(cfg, "ini_mix", None) != "EQ":
@@ -158,11 +142,9 @@ def _validate_fastchem_input_vs_network(cfg, root: Path) -> list[str]:
                 continue
             order.append(parts[0])
 
-    # Element row order is load-bearing (FastChem hard-codes element slots) AND
-    # must be COMPLETE. A truncated file (missing trailing rows) would satisfy a
-    # prefix check yet leave later C++ slots (P, S, the rocky elements) pointing
-    # at the wrong reference polynomial. Require the exact canonical order; the
-    # trailing electron row is optional (absent when use_ion is False).
+    # Order must match AND be complete: a truncated file would pass a prefix
+    # check yet leave later C++ slots (P, S, rocky) on the wrong reference
+    # polynomial. The trailing electron row is optional (absent w/o use_ion).
     if order not in (_FASTCHEM_ELEMENT_ORDER, _FASTCHEM_ELEMENT_ORDER[:-1]):
         errors.append(
             f"FastChem input {abun_rel!r} element ROW ORDER is wrong: got "
@@ -174,9 +156,8 @@ def _validate_fastchem_input_vs_network(cfg, root: Path) -> list[str]:
             "full."
         )
 
-    # The file must be one of the two shipped presets exactly. Both are valid
-    # science; a file that is neither is almost always an accidental edit, and
-    # its failure mode is silent, so it is rejected rather than warned about.
+    # Must match one shipped preset exactly. A file that is neither is almost
+    # always an accidental edit with a silent failure mode: reject, not warn.
     per_preset: dict[str, list[str]] = {}
     for preset_name, table in _FASTCHEM_ABUNDANCE_PRESETS.items():
         mismatches: list[str] = []
@@ -398,11 +379,9 @@ def _validate_numerical_bounds(cfg) -> list[str]:
             errors.append(f"high_temp_cut_P={htc_P} must be > 0 (dyne/cm^2).")
 
     # --- numerical core -----------------------------------------------------
-    # These are the knobs a typo makes silently wrong rather than loudly broken.
-    # Before this block they were bound-checked by nothing: `nz=1` and an
-    # inverted P_b/P_t both ran to completion, the latter producing a
-    # negative-thickness atmosphere. Sign/ordering only — no opinion about what
-    # a *good* value is, just what cannot be physical.
+    # Knobs a typo makes silently wrong rather than loudly broken (nz=1 and an
+    # inverted P_b/P_t both ran to completion). Sign/ordering checks only; no
+    # opinion about what a good value is.
     nz = int(getattr(cfg, "nz", 150))
     if nz < 3:
         errors.append(
@@ -484,12 +463,9 @@ def _validate_numerical_bounds(cfg) -> list[str]:
         v = int(getattr(cfg, key))
         if v < 1:
             errors.append(f"{key}={v} must be >= 1.")
-    # NO count_min-vs-count_max ordering check. `count_min = count_max + 1` is a
-    # deliberate, documented idiom for "never satisfy the convergence floor, just
-    # run exactly count_max steps" — used by the master-parity harness
-    # (tests/test_default_master_parity.py:94,263) and benchmarks/bench_step.py
-    # ("deliberately set out of reach so the run terminates on count_max"). An
-    # ordering constraint here would reject the repo's own step-matched runs.
+    # NO count_min-vs-count_max ordering check: `count_min = count_max + 1` is
+    # a deliberate idiom ("run exactly count_max steps") used by the parity
+    # harness and benchmarks; an ordering constraint would reject those runs.
 
     # Wavelength bins for the photolysis grid
     for key in ("dbin1", "dbin2"):
@@ -505,15 +481,12 @@ def _validate_numerical_bounds(cfg) -> list[str]:
 def _validate_condensation(cfg) -> list[str]:
     """Return errors for an unsupported or silently-inert condensation config.
 
-    Forward-run validation only. These checks were previously only in the
-    vulcan-retrieval forward wrapper; lifting them here means a bare VULCAN-JAX
-    run (or any consumer) is guarded identically instead of silently producing a
-    zero-rate or mid-window-captured state.
+    Forward-run validation only, applied to every consumer identically.
 
-    NOTE: the completed *pinned* condensation state is not differentiable-through
-    (transient snapshot, discrete phase switches). That contract is enforced at
-    the autodiff entry points in `steady_state_grad.py`, not here, and is
-    documented in `../../docs/differentiability.md`.
+    NOTE: the completed *pinned* condensation state is not
+    differentiable-through (transient snapshot, discrete phase switches); that
+    contract is enforced at the autodiff entry points in
+    `steady_state_grad.py`, not here (see `../../docs/differentiability.md`).
     """
     if not bool(getattr(cfg, "use_condense", False)):
         return []
@@ -531,10 +504,9 @@ def _validate_condensation(cfg) -> list[str]:
             "use_condense=False."
         )
 
-    # The condensation growth coefficient Dg IS the species' molecular-diffusion
-    # coefficient (Dzz), which atm setup zeros when use_moldiff=False
-    # (atm_setup.compute_mol_diff / atm_jax.build_atm_static), so every
-    # condensation rate would silently be zero. Refuse rather than run inert.
+    # The condensation growth coefficient Dg IS the molecular-diffusion Dzz,
+    # which setup zeros when use_moldiff=False, so every condensation rate
+    # would silently be zero. Refuse rather than run inert.
     if not bool(getattr(cfg, "use_moldiff", True)):
         errors.append(
             "use_condense=True requires use_moldiff=True: the condensation "
@@ -601,9 +573,8 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
             "fix_species is set but use_condense=False; this configuration is inconsistent."
         )
     if fix_sp:
-        # Without this, an entry absent from the import-locked network reaches
-        # state.py's condensation setup and dies on a bare `.index()` ValueError
-        # that names neither the offending species nor the remedy.
+        # Otherwise an entry absent from the import-locked network dies later
+        # on a bare `.index()` ValueError naming neither species nor remedy.
         net_species = list(getattr(chem_funs, "spec_list", []))
         if net_species:
             missing = [sp for sp in fix_sp if sp not in net_species]

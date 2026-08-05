@@ -1,20 +1,11 @@
-"""Per-cfg parametrized coverage of `atm_setup` JAX kernels.
+"""Per-cfg parametrized coverage of the `atm_setup` JAX kernels.
 
-Standalone coverage of every cfg branch that HD189 alone misses:
-
-  - `atm_type ∈ {isothermal, analytical, file}` (vulcan_ini / table
-    require a prior .vul / synthetic table; covered by the
-    `test_ini_abun.py` matrix).
-  - `atm_base ∈ {H2, N2, O2, CO2}` exercising `compute_mol_diff`.
-  - `Kzz_prof ∈ {const, JM16, Pfunc, file}`.
-  - `vz_prof ∈ {const, file}` with `use_vz=True`.
-  - `use_topflux=True`, `use_botflux=True`, `use_fix_sp_bot` ∈ dict.
-  - `compute_sat_p` for every supported condensable.
-
-Each case runs a pure NumPy reference inline and asserts the JAX
-result agrees to machine precision. The reference reproduces the
-master `Atm.*` body verbatim — when the JAX path drifts, the diff
-narrows down to the offending function immediately.
+Covers the cfg branches HD189 alone misses: atm_type (isothermal /
+analytical / file), atm_base (H2 / N2 / O2 / CO2), Kzz_prof, vz_prof,
+BC-flux modes, and `compute_sat_p` per condensable. Each case runs a pure
+NumPy reference inline (a verbatim port of the master `Atm.*` body) and
+asserts the JAX result agrees to machine precision, so a drift narrows to
+one function.
 """
 
 from __future__ import annotations
@@ -35,7 +26,7 @@ warnings.filterwarnings("ignore")
 
 
 # ---------------------------------------------------------------------------
-# Atm type matrix — Tco, Kzz, vz, M, n_0
+# Atm type matrix: Tco, Kzz, vz, M, n_0
 # ---------------------------------------------------------------------------
 
 
@@ -86,8 +77,7 @@ def _hd189_atm_file_path() -> str:
     ],
 )
 def test_load_TPK_atm_types(atm_type, P_b, P_t, nz, gs):
-    """`atm_setup.load_TPK` agrees with a direct numpy reference for
-    each `atm_type` we support standalone (file / isothermal / analytical)."""
+    """`load_TPK` matches a direct numpy reference for each standalone atm_type."""
     from vulcan_jax.phy_const import kb
     from vulcan_jax.atm_setup import compute_pico, load_TPK
 
@@ -220,7 +210,7 @@ def test_load_TPK_use_kzz_off_zeroes_kzz():
 
 
 # ---------------------------------------------------------------------------
-# atm_base × mol_diff matrix
+# atm_base x mol_diff matrix
 # ---------------------------------------------------------------------------
 
 
@@ -241,8 +231,7 @@ def _ref_Dzz(atm_base, T, n_tot, mi):
 
 @pytest.mark.parametrize("atm_base", ["H2", "N2", "O2", "CO2"])
 def test_compute_mol_diff_atm_base(atm_base):
-    """compute_mol_diff matches a direct numpy `Dzz_gen` reference for
-    every supported atm_base."""
+    """compute_mol_diff matches a direct numpy `Dzz_gen` reference per atm_base."""
     from vulcan_jax.atm_setup import compute_mol_diff, _alpha_array_for_base
 
     nz = 30
@@ -392,8 +381,7 @@ def test_read_bc_flux_use_botflux(tmp_path):
     ],
 )
 def test_compute_sat_p_each_species(sp, T_K):
-    """compute_sat_p returns finite, positive saturation pressures
-    for each supported condensable at a representative T."""
+    """compute_sat_p is finite and positive per condensable at a typical T."""
     from vulcan_jax.atm_setup import compute_sat_p
 
     Tco = np.array([T_K, T_K + 50.0, T_K + 100.0])
@@ -418,8 +406,8 @@ def test_compute_sat_p_unknown_species_raises():
 
 
 def test_compute_pico_matches_master_formula():
-    """`compute_pico` matches a direct numpy port of `Atm.f_pico`
-    (geometric mean interior + log extrapolation at edges)."""
+    """`compute_pico` matches the `Atm.f_pico` formula (geometric-mean
+    interior, log extrapolation at edges)."""
     from vulcan_jax.atm_setup import compute_pico
 
     pco = np.logspace(9, -2, 50)
@@ -432,7 +420,7 @@ def test_compute_pico_matches_master_formula():
 
 
 # ---------------------------------------------------------------------------
-# f_mu_dz — height integration upward + downward
+# f_mu_dz: height integration upward + downward
 # ---------------------------------------------------------------------------
 
 
@@ -467,7 +455,7 @@ def test_compute_mu_dz_g_rocky_anchor_at_surface():
 
 
 def test_compute_mu_dz_g_gas_giant_anchor_at_1bar():
-    """rocky=False & P_b≥1bar → pref_indx is the layer closest to 1 bar."""
+    """rocky=False with P_b >= 1 bar anchors pref_indx at the layer nearest 1 bar."""
     from vulcan_jax.atm_setup import compute_pico, compute_mu_dz_g, surface_gravity
 
     nz = 60
@@ -543,14 +531,14 @@ def test_compute_settling_velocity_h2so4_negative():
 
 def test_TP_H14_matches_scipy_reference():
     """JAX `analytical_TP_H14` matches the scipy.special.expn reference
-    to machine precision (the only thing in either is `expn`+arithmetic)."""
+    to machine precision."""
     from vulcan_jax.atm_setup import analytical_TP_H14
 
     pco = np.logspace(9, -2, 100)
     params = [120.0, 1500.0, 0.1, 0.02, 1.0, 1.0]
     gs, Pb = 2140.0, 1e9
     T_jax = np.asarray(analytical_TP_H14(pco, params, gs=gs, Pb=Pb))
-    # Re-build params each call — _ref_TP_H14 mutates T_irr in place.
+    # Re-build params each call: _ref_TP_H14 mutates T_irr in place.
     T_ref = _ref_TP_H14(pco, list(params), gs=gs, Pb=Pb)
     assert T_jax.shape == T_ref.shape
     assert np.allclose(T_jax, T_ref, rtol=1e-13, atol=0.0)
