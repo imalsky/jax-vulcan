@@ -3,12 +3,20 @@
 
 import os
 
+# Pin OpenMP to one thread BEFORE anything imports NumPy/JAX (the runtimes read
+# this at load and ignore later changes). The hot path is one XLA program, so
+# BLAS threads only add oversubscription, and a single-threaded baseline is what
+# the master-comparison timings assume.
 os.environ["OMP_NUM_THREADS"] = "1"
 
 import time
 
 import jax as _jax
 
+# Persistent XLA compile cache: the codegen RHS and the whole-loop while_loop
+# take seconds to compile cold and are reused verbatim across runs. The two
+# thresholds below disable JAX's default "only cache big, slow compiles" gate so
+# every step kernel lands in the cache, not just the runner.
 _jax.config.update(
     "jax_compilation_cache_dir",
     os.environ.get(

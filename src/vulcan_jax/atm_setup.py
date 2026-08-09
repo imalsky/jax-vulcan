@@ -244,7 +244,7 @@ def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray
         T_file = table["Temp"]
         if max(p_file) < pco[0] or min(p_file) > pco[-1]:
             print(
-                "Warning: P_b and P_t assgined in vulcan.cfg are out of range "
+                "Warning: P_b and P_t assigned in the config are out of range "
                 "of the input.\nConstant extension is used."
             )
         Tco = _interp_descending_or_ascending(

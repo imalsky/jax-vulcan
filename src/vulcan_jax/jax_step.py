@@ -1,8 +1,9 @@
 """Vmap-compatible JAX Ros2 step.
 
-`jax_ros2_step` operates on a static atmosphere snapshot (Kzz, Dzz, Hpi, ...);
-ysum(y) is handled inside the step. For batch parallelism over multiple
-atmospheres, vmap over the leading axis of (y, M, k, atm).
+`jax_ros2_step(y, k_arr, dt, atm, net)` operates on a static atmosphere
+snapshot (Kzz, Dzz, Hpi, ... plus the third-body density `atm.M`); ysum(y) is
+handled inside the step. For batch parallelism over multiple atmospheres, vmap
+over the leading axis of (y, k_arr, atm).
 """
 
 from __future__ import annotations
@@ -162,7 +163,11 @@ class AtmStatic(NamedTuple):
     bot_vdep: jnp.ndarray  # (ni,)
     gas_indx_mask: jnp.ndarray  # (ni,) bool
     diff_esc_mask: jnp.ndarray  # (ni,) bool, species in cfg.diff_esc
-    use_vm_mol: bool
+    # Read as a FLOAT blend weight, not a plain bool: 1.0 = upwind molecular
+    # diffusion, 0.0 = central difference. `make_atm_static` seeds a Python
+    # bool, but the hybrid runner splices the carry's `hybrid_use_vm` (float64)
+    # in here mid-run, so anything consuming it must accept either.
+    use_vm_mol: bool | float | jnp.ndarray
     use_settling: bool
     use_topflux: bool
     use_botflux: bool
@@ -523,8 +528,9 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
         y, A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, atm
     )
     rhs_y = _projected_chem_rhs(y, M, k_arr) + diff_at_y
-    # Analytical Jacobian: <=1e-13 vs the AD path and ~3-5x faster (skips the
-    # structurally-zero entries AD would materialize).
+    # Analytical Jacobian: <=1e-13 vs the AD (jacrev) path, and 16x faster
+    # measured on HD189 (92.1 -> 5.66 ms; docs/vulcan_jax_notes.md 2026-07-24).
+    # It skips the structurally-zero entries AD would materialize.
     chem_J = _project_chem_jac(chem_jac_analytical(y, M, k_arr, net))
 
     # Diffusion blocks are diagonal-in-species: pass off-diagonals as (nz-1, ni)

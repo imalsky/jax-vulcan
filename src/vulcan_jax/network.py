@@ -74,7 +74,7 @@ class Network:
     is_ion: np.ndarray  # bool: photoionization
 
     # Section delimiters (parser-i values; 1-based)
-    stop_rev_indx: int  # reverses computed for i=2..stop_rev_indx-2
+    stop_rev_indx: int  # reverse slots filled for even i in 2..stop_rev_indx-1
     conden_indx: int  # parser-i of first condensation reaction
     radiative_indx: int  # parser-i of first radiative reaction
     photo_indx: int  # parser-i of first photo reaction

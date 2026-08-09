@@ -97,9 +97,9 @@ class ProfileVars(NamedTuple):
 class JaxIntegState(NamedTuple):
     """Carry state for the JIT'd accept/reject loop.
 
-    Shapes for HD189 reference: nz=120, ni=93, n_atoms=6, nbin~2000,
-    n_br~30. Scalars are float64 unless noted; counts are int32. Photo
-    fields use placeholder shape (1, 1) when use_photo=False.
+    Shapes for the HD189 reference config: nz=150, ni=69, n_atoms=4,
+    nbin~2000, n_br~30. Scalars are float64 unless noted; counts are
+    int32. Photo fields use placeholder shape (1, 1) when use_photo=False.
     """
 
     y: jnp.ndarray  # (nz, ni)        current proposed state
@@ -516,9 +516,9 @@ def _make_photo_branch(photo_static: _PhotoStatic):
 
 
 def _make_atm_refresh_branch(refresh_static: _atm_refresh_mod.AtmRefreshStatic):
-    """Standalone atm-refresh closure used only by
-    `tests/test_outer_loop_atm_refresh.py`; production inlines these calls
-    in `body_fn` after conden.
+    """Standalone atm-refresh closure used only by the tests
+    (`tests/test_outer_loop_atm_refresh.py`, `tests/test_atm_refresh_gravity.py`);
+    production inlines these calls in `body_fn` after conden.
     """
 
     def atm_refresh(s: JaxIntegState) -> JaxIntegState:
@@ -599,7 +599,7 @@ class _Statics(NamedTuple):
     batch_max_retries: int  # safety cap on inner retries per accepted step
 
     # Convergence + termination
-    conv_step: int  # ring buffer length (vulcan_cfg.conv_step)
+    conv_step: int  # ring buffer length (cfg.conv_step)
     count_min: int
     count_max: int
     use_conv_stall: bool  # enable the JAX-only stalled-convergence fallback
@@ -1486,7 +1486,7 @@ def _make_runner(
             delta_prev_next = s.delta_prev
 
         # Photo-frequency ini→final switch when longdy / longdydt drop
-        # below their respective vulcan_cfg.photo_switch_* thresholds.
+        # below their respective cfg.photo_switch_* thresholds.
         switch_to_final = (
             jnp.bool_(use_photo_static)
             & ~s.is_final_photo_frq
@@ -1774,7 +1774,7 @@ class OuterLoop:
 
     def reset(self) -> None:
         """Drop the cached JIT'd runner so the next call re-traces against
-        a possibly-mutated `vulcan_cfg` (notebooks, parameter sweeps).
+        a possibly-mutated `self._cfg` (notebooks, parameter sweeps).
         Without this, the runner closure pins the original config."""
         self._runner = None
         self._runner_batch = None
@@ -2043,8 +2043,9 @@ class OuterLoop:
 
         Returns None if `use_photo=False` (the runner skips the photo branch
         entirely in that case). Reuses the photo data caches from the
-        odesolver when available (those got populated by the pre-loop
-        `solver.compute_tau` call in `vulcan_jax.py`).
+        odesolver when available (populated by the pre-loop
+        `op_jax.Ros2JAX.compute_tau` call in
+        `state._build_pre_loop_runstate_impl`).
         """
         if not self._cfg.use_photo:
             return None
@@ -2617,7 +2618,7 @@ class OuterLoop:
         objects. Routes through a synthesized `RunState` and
         `runstate_to_store`; the var/cfg side effects that don't fit the
         typed pytree (var.J_sp dict, var.y_time/t_time list, conden
-        k_arr, vulcan_cfg.use_fix_sp_bot/rtol mutation) follow.
+        k_arr, cfg.use_fix_sp_bot/rtol mutation) follow.
         """
         rs_entry = _state_mod.runstate_from_store(var, atm, para)
         rs_out = self._unpack_state_to_runstate(state, rs_entry)
@@ -2791,9 +2792,12 @@ class OuterLoop:
         and live-UI hooks between chunks.
 
         Chunk size: `live_plot_frq` when any live flag is on (master's
-        cadence), else `print_prog_num`. Termination semantics equal the
-        single-shot path; bit-equivalence is asserted by
-        `tests/test_chunked_runner.py`.
+        cadence), else `print_prog_num`. Termination semantics are meant to
+        equal the single-shot path: the chunk cap is the only extra exit and
+        it is clamped to `count_max_dyn + 1`, so it cannot fire before a real
+        termination would. NOT COVERED BY A TEST — nothing in `tests/`
+        exercises `use_chunked_runner` / `_run_chunked`, so chunked-vs-single
+        bit-equivalence is an argument, not a measured result.
 
         Returns ``(state, wall_clock_hit)``; wall_clock_hit=True means the
         host wall-clock budget expired between chunks (end_case=4).
@@ -3166,7 +3170,7 @@ class OuterLoop:
         `print_end_msg` / `print_unconverged_msg` / `print_prog` only
         read counters and atom_loss, plus var.t / var.dt / var.longdy /
         var.longdydt. Compose a SimpleNamespace-style shim from the
-        RunState slot rather than synthesising a full `store.Variables`.
+        RunState slot rather than synthesising a full `state._Variables`.
         """
         import types
 

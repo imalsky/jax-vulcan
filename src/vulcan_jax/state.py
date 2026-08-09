@@ -153,7 +153,7 @@ class ParamInputs(NamedTuple):
 class AtomInputs(NamedTuple):
     """Atom-conservation diagnostics. `atom_order` is the static ordering for the four arrays."""
 
-    atom_order: tuple  # static ordering, e.g. ('H', 'O', 'C', 'N', 'S', 'He')
+    atom_order: tuple  # cfg.atom_list minus cfg.loss_ex, e.g. ('H','O','C','N')
     atom_ini: jnp.ndarray  # (n_atoms,)
     atom_loss: jnp.ndarray  # (n_atoms,)
     atom_loss_prev: jnp.ndarray  # (n_atoms,)
@@ -194,7 +194,7 @@ class RunMetadata(NamedTuple):
     charge_list: tuple  # ion species (with non-zero charge)
     conden_re_list: tuple  # 1-based reaction ids that condense
     start_time: float  # wall-clock start (for end-of-run print)
-    Ti: jnp.ndarray  # (nz,) initial T profile (atm refresh)
+    Ti: jnp.ndarray  # (nz-1,) interface temperature, 0.5*(Tco[:-1]+Tco[1:])
     gas_indx: tuple  # gas-only species indices
     pref_indx: int  # reference-layer index (height integ)
     gs: float  # surface gravity (cm/s^2)

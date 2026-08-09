@@ -9,6 +9,8 @@ import numpy as np
 from .network import Network
 from .phy_const import kb
 
+# Standard-state pressure, 1 bar in cgs (dyne/cm^2). `CORR * T` is the
+# (kB T / P0) factor K_eq carries per unit change in mole number.
 _P0 = 1.0e6
 CORR = kb / _P0
 
@@ -138,10 +140,11 @@ def fill_reverse_k(
 ) -> np.ndarray:
     """Fill reverse rate slots from forward rates and K_eq.
 
-    For each forward/reverse pair below stop_rev_indx, sets the reverse rate
-    k[i] = k[i_fwd] / K_eq[i_fwd] (0 where K_eq <= 0). Reactions whose forward
-    or reverse index appears in `remove_list` have both rates zeroed. Slots
-    beyond stop_rev_indx are zeroed (photo/conden have no reverse).
+    For each even (reverse) slot i in 2..stop_rev_indx-1, sets
+    k[i] = k[i-1] / K_eq[i-1] (0 where K_eq <= 0). Reactions whose forward
+    or reverse index appears in `remove_list` have both rates zeroed. The
+    REVERSE slots beyond stop_rev_indx are zeroed (photo/conden/ion/radiative
+    have no thermal reverse); their forward slots are left untouched.
     """
     k = np.asarray(k, dtype=np.float64).copy()
     remove = set(remove_list or [])

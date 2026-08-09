@@ -35,7 +35,8 @@ jax.config.update("jax_enable_x64", True)
 
 # Reaction-axis chunk size for the analytical-Jacobian scatter. Un-chunked,
 # the (nr+1, 6, 3) per-layer contribution tensor peaked at ~60 GiB under vmap
-# (batch 512 x nz 150, SNCHO's 878 reactions) and OOM'd a 96 GB GH200;
+# (batch 512 x nz 150, the NCHO network's 878 reaction slots) and OOM'd a
+# 96 GB GH200;
 # lax.scan over 128-reaction blocks bounds the transient ~7x smaller. Not a
 # tuning knob: changing it permutes float summation order (~1e-16 per cell)
 # and churns step counts, so it stays a code constant.
@@ -168,7 +169,8 @@ chem_rhs_segment_sum = jax.vmap(
 
 # jacrev beats jacfwd here ("scatter at the end" pattern). Kept as the test
 # oracle for `chem_jac_analytical`; production uses the analytical form
-# (~36× faster on the SNCHO network). Bound to the segment_sum reference
+# (16x faster measured on HD189: 92.1 -> 5.66 ms, docs/vulcan_jax_notes.md
+# 2026-07-24). Bound to the segment_sum reference
 # kernel — the Jacobian has no cancellation amplifier so the floor that
 # motivated the codegen RHS does not apply here.
 chem_jac_per_layer = jax.jacrev(chem_rhs_per_layer_segment_sum, argnums=0)

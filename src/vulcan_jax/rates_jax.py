@@ -28,8 +28,16 @@ import jax.numpy as jnp
 from .network import Network
 from .phy_const import kb
 
+# Standard-state pressure, 1 bar in cgs (dyne/cm^2). `CORR * T` is the
+# (kB T / P0) factor K_eq carries per unit change in mole number.
 _P0 = 1.0e6
 CORR = kb / _P0
+
+# NASA-9 low/high-T polynomial breakpoint (NASA/TP-2002-211556). Must equal
+# `gibbs._NASA9_BRANCH_T`: this module is the differentiable twin of that NumPy
+# path and the two are compared at ~5e-14.
+_NASA9_BRANCH_T = 1000.0
+
 _SPECIAL_OH_CH3 = "OH + CH3 + M -> CH3OH + M"
 
 # Upper bound on the Gibbs exponent (reac - prod) before exp() in K_eq_array.
@@ -202,7 +210,7 @@ def gibbs_sp_vector(coeffs, T: jnp.ndarray) -> jnp.ndarray:
             + a[:, 9:10]
         )
 
-    mask_low = (jnp.asarray(T) < 1000.0)[None, :]
+    mask_low = (jnp.asarray(T) < _NASA9_BRANCH_T)[None, :]
     return jnp.where(mask_low, _g(a_low), _g(a_high))
 
 

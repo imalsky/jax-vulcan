@@ -25,6 +25,13 @@ _CFG = default_config()
 # log10 stand-in for log10(0) = -inf in T-axis log-space interpolation.
 _LOWT_SENTINEL = -100.0
 
+# Nominal temperature (K) of the room-temperature cross-section file, i.e. the
+# plain `{sp}_cross.csv` that `_build_photo_static_dense` registers alongside
+# the `{sp}_cross_{T}K.csv` samples. When it is also the lowest (or highest)
+# sample, a layer outside the tabulated range falls back to that same file, so
+# `_bin_T_dependent` can reuse the already-binned arrays instead of re-reading.
+_ROOM_T_SAMPLE_K = 300
+
 
 def _cross_folder() -> str:
     """Return `_CFG.cross_folder` as a string (path to per-species CSVs)."""
@@ -327,7 +334,7 @@ def _bin_T_dependent(
 
         elif below.size == 0:
             # Tz below the lowest tabulated T sample.
-            if min_T_sp == 300:
+            if min_T_sp == _ROOM_T_SAMPLE_K:
                 cross_T[lev] = cross_at_bins
                 for i in range(1, n_branch + 1):
                     cross_J_T[i][lev] = cross_J_at_bins[i]
@@ -360,7 +367,7 @@ def _bin_T_dependent(
 
         else:
             # Tz above the highest tabulated T sample.
-            if max_T_sp == 300:
+            if max_T_sp == _ROOM_T_SAMPLE_K:
                 cross_T[lev] = cross_at_bins
                 for i in range(1, n_branch + 1):
                     cross_J_T[i][lev] = cross_J_at_bins[i]
@@ -435,8 +442,8 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
             cross_T_sp_list_local[sp] = T_list
             for tt in T_list:
                 cross_T_raw[(sp, tt)] = _load_T_cross_csv(sp, tt, use_ion)
-            cross_T_raw[(sp, 300)] = cross_raw[sp]
-            cross_T_sp_list_local[sp].append(300)
+            cross_T_raw[(sp, _ROOM_T_SAMPLE_K)] = cross_raw[sp]
+            cross_T_sp_list_local[sp].append(_ROOM_T_SAMPLE_K)
 
         if cross_raw[sp]["cross"][0] == 0 or cross_raw[sp]["cross"][-1] == 0:
             raise IOError("\n Please remove the zeros in the cross file of " + sp)

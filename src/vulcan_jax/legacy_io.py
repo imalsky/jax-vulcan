@@ -735,7 +735,7 @@ def _synthesize_save_dicts(runstate, cfg, photo_static=None):
         atm_save["fix_sp_indx"] = dict(md.fix_sp_indx)
     atm_save["conden_min_lev"] = {}
 
-    # 3. Parameter dict — mirrors `vars(data_para)` from store.Parameters.
+    # 3. Parameter dict — mirrors `vars(data_para)` from state._Parameters.
     para_save = {}
     if runstate.params is not None:
         p = runstate.params

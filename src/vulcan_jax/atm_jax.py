@@ -117,7 +117,7 @@ class AtmSpec(NamedTuple):
 def pco_from_endpoints(P_b, P_t, nz: int) -> jnp.ndarray:
     """Log-spaced pressure grid from the boundary pressures (dyne/cm^2).
 
-    Mirrors `state.AtmData.pco = np.logspace(log10(P_b), log10(P_t), nz)` on
+    Mirrors `state._AtmData.pco = np.logspace(log10(P_b), log10(P_t), nz)` on
     the graph, so dL/dP_b and dL/dP_t compose through :func:`build_atm_static`.
     """
     P_b = jnp.asarray(P_b, dtype=jnp.float64)

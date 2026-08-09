@@ -33,7 +33,7 @@ class AtmRefreshStatic(NamedTuple):
     Rp: float  # planetary radius (cm)
     kb: float
     Navo: float
-    max_flux: float  # cap on |top_flux| (vulcan_cfg.max_flux)
+    max_flux: float  # cap on |top_flux| (cfg.max_flux)
     nz: int  # static
     ni: int  # static
 

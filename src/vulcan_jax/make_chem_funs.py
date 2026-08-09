@@ -177,6 +177,15 @@ def build_chem_rhs(net: Network) -> Callable:
     raw_fn = ns["chem_rhs_codegen"]
 
     def chem_rhs_codegen_barriered(y: Any, M: Any, k: Any) -> Any:
+        """Fence the RHS output so XLA cannot reassociate it into its caller.
+
+        The emitted source is master-faithful only as written: the multiply
+        chains and the per-species accumulator order are the whole point. Once
+        this result is consumed by the diffusion add and the Ros2 assembly, XLA
+        is free to fuse across the boundary and re-order those sums, which
+        reintroduces the ~1 ULP drift per term the codegen exists to remove.
+        The barrier is a no-op numerically and costs nothing at runtime.
+        """
         return jax.lax.optimization_barrier(raw_fn(y, M, k))
 
     fn = jax.jit(chem_rhs_codegen_barriered)

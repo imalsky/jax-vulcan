@@ -314,15 +314,20 @@ class BodyTerms(NamedTuple):
 def _clip_dead_mask(G, ymix_old, cfg) -> np.ndarray:
     """Cells where the runner's per-step zero-clip would NOT be the identity.
 
-    Mirrors `outer_loop._make_clip_fn` on a candidate post-step state `G`
-    (number density, cm^-3) with the pre-step mixing ratio `ymix_old`:
+    Applied to a candidate post-step state `G` (number density, cm^-3) with the
+    pre-step mixing ratio `ymix_old`:
 
         y < pos_cut and y >= nega_cut          -> 0     (small/negative cut)
         ymix_old < mtol and y < 0              -> 0     (trace-negative cut)
 
-    The clip is deliberately outside the body map, so where it fires the cell
-    has no fixed point and its relative defect measures the clip. Returns
-    all-False when `cfg` is None (conservative: those cells stay in the scan).
+    DELIBERATELY NARROWER than `outer_loop._make_clip_fn`, whose second rule
+    zeroes EVERY negative cell regardless of `ymix_old`. Widening this to match
+    would exclude more cells from the audit's defect scan; under-reporting is
+    the safe direction, since an excluded cell is one the audit stops checking.
+
+    The clip is outside the body map, so where it fires the cell has no fixed
+    point and its relative defect measures the clip. Returns all-False when
+    `cfg` is None (conservative: those cells stay in the scan).
     """
     G = np.asarray(G)
     if cfg is None:
@@ -1212,7 +1217,7 @@ def steady_state_input_sensitivity(
                 "reservoir is held fixed, so the parameter's effect on what "
                 "condensed is entirely absent. The pinned-species tangent "
                 "disagrees with re-converged finite differences at O(1) (0.91 "
-                "relative; tests/test_condensation_live_tp.py) -- the same reason "
+                "relative; tests/test_condensation_guards.py) -- the same reason "
                 "Fisher / retrieval-inference through condensation is refused "
                 "project-wide (docs/differentiability.md). Use "
                 "forward-mode jvp on a single switch-free direction and validate "

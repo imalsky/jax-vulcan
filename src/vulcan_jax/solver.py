@@ -145,8 +145,12 @@ def block_thomas_diag_offdiag(diag, sup_d, sub_d, rhs):
 def block_thomas(diag, sup, sub, rhs):
     """Generic dense block-tridiagonal Thomas solve.
 
-    Use `block_thomas_diag_offdiag` instead when the off-diagonal blocks
-    are diagonal-in-species (the hot path) — it is ~2× cheaper per layer.
+    Use `block_thomas_diag_offdiag` instead when the off-diagonal blocks are
+    diagonal-in-species (the hot path). Measured 2026-07-24, the two effects
+    split: 1.10x from the rank update itself (the flop saving does not convert
+    at ni~69, which is memory/latency-bound) and 2.10x from reusing one
+    factorization across both Ros2 stages, which only the split
+    factor/solve entry points above expose.
 
     Shapes: diag (nz, ni, ni), sup/sub (nz-1, ni, ni), rhs (nz, ni) → (nz, ni).
     """

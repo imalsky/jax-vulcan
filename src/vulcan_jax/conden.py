@@ -221,8 +221,9 @@ def build_conden_profile(
       sat_mix = min(1, sat_p(T)/p)     (× humidity for H2O, after the clip)
       NH3 cold trap = argmin(sat_n_NH3 / n_0)
     """
-    # Import here (not module top) to avoid a cycle: atm_setup imports
-    # vulcan_cfg at module load, which must stay independent of conden.
+    # Imported here, not at module top: atm_setup reads default_config() and
+    # builds its data tables at module load, so a top-level import would make
+    # every conden import pay that setup cost.
     from .atm_setup import sat_p_jax
 
     Tco = jnp.asarray(Tco, dtype=jnp.float64)
@@ -298,7 +299,7 @@ class CondenStatic(NamedTuple):
     `conden_re_idx[r]` is the k_arr row of the forward (condensation)
     reaction; the reverse (evaporation) sits at `conden_re_idx[r] + 1`.
     `coeff_per_re[r] = m / (rho_p * r_p**2)`; reactions short-circuited
-    via `vulcan_cfg.use_relax` get coeff=0 so the kernel writes zeros.
+    via `cfg.use_relax` get coeff=0 so the kernel writes zeros.
     """
 
     conden_re_idx: jnp.ndarray  # (n_conden_re,)        int32
@@ -308,7 +309,7 @@ class CondenStatic(NamedTuple):
     coeff_per_re: jnp.ndarray  # (n_conden_re,)        float64
 
     # `h2o_active` / `nh3_active` are Python bools selected statically from
-    # vulcan_cfg.use_relax; when False, the *_relax_jax helpers no-op.
+    # cfg.use_relax; when False, the *_relax_jax helpers no-op.
     h2o_active: bool
     h2o_idx: int  # species index of 'H2O'
     h2o_l_s_idx: int  # species index of 'H2O_l_s'
@@ -423,10 +424,12 @@ def apply_nh3_relax_jax(
     ice_loss = (y[:, nh3] - st.nh3_sat) * dt / tau
     ice_loss = jnp.minimum(y[:, nh3_l_s], ice_loss)
 
-    # Condensation clamped to layers <= conden_top; evap is unclamped.
+    # Condensation clamped to layer index <= conden_top (index 0 is the
+    # deepest layer, so this is everything at or BELOW the cold-trap level);
+    # evaporation is unclamped.
     layer_idx = jnp.arange(nz, dtype=jnp.int32)
-    above_top_mask = layer_idx <= jnp.int32(st.nh3_conden_top)
-    conden_mask = (tau > 0) & above_top_mask
+    at_or_below_top = layer_idx <= jnp.int32(st.nh3_conden_top)
+    conden_mask = (tau > 0) & at_or_below_top
     evap_mask = tau < 0
 
     delta_nh3_conden = jnp.where(conden_mask, ymix[:, nh3] - y_conden, 0.0)
