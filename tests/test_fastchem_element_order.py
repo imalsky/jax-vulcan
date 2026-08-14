@@ -158,12 +158,10 @@ def test_abundance_file_matches_canonical_order(repo_root: Path, fname: str):
         pytest.skip(f"{path} absent (generated at runtime / clean checkout)")
     order = _parse_abundance_order(path)
     if repo_root != PACKAGE_ROOT:
-        # UPSTREAM is expected to be WRONG here: it lists S on row 6 and P on
-        # row 7 while its own mass_action_constant.cpp hard-codes index_P=5,
-        # index_S=6. That is correction C12, and swapping the two rows back is
-        # the one deliberate change in our copy of upstream's file. Pin the
-        # defect rather than asserting upstream is correct, so this fails
-        # loudly if upstream ever fixes it (then C12 can be retired).
+        # UPSTREAM is expected to be WRONG here (correction C12): it lists S on
+        # row 6 and P on row 7 while its own mass_action_constant.cpp hard-codes
+        # index_P=5, index_S=6. Pin the defect so this fails if upstream ever
+        # fixes it and C12 can be retired.
         upstream = list(_FASTCHEM_ELEMENT_ORDER)
         p, s = upstream.index("P"), upstream.index("S")
         upstream[p], upstream[s] = upstream[s], upstream[p]
@@ -267,22 +265,15 @@ _SHIPPED_PRESETS = (
 # --------------------------------------------------------------------------- #
 @pytest.mark.parametrize("fname", _SHIPPED_PRESETS)
 def test_shipped_abundance_file_starts_with_a_header_line(fname: str):
-    """`readElementAbundances()` discards the first line UNCONDITIONALLY.
+    """`readElementAbundances()` discards line 1 unconditionally.
 
-    It has no comment handling at all: `init_read_files.cpp` does one bare
-    `std::getline` labelled `//header` and then parses every remaining line as
-    `symbol >> abundance`. So the first row of the file is always thrown away,
-    whatever it is. If it is `C 8.4434`, carbon never enters the element vector
-    and FastChem silently drops all 89 carbon-bearing species — `_load_eq_y`
-    then leaves their columns at ZERO and only prints `CO not included in
-    fastchem.`, so a whole run proceeds on a carbon-free initial condition.
-
-    Comment rows AFTER the first are harmless: `addAtom` refuses an unknown
-    symbol without appending, so the element ORDER is unaffected.
-
-    The parse-order and preset-value checks above both skip `#` lines, so
-    neither of them can see this. This test is the only thing standing between
-    a tidy-looking header removal and a silently wrong release.
+    `init_read_files.cpp` does one bare `std::getline` labelled `//header`,
+    then parses every remaining line as `symbol >> abundance` — no comment
+    handling. A file starting `C 8.4434` therefore loses carbon and all 89
+    carbon-bearing species, and `_load_eq_y` leaves their columns at ZERO with
+    only a print. Later comment rows are harmless (`addAtom` drops unknown
+    symbols without appending, so the order is safe). The order and value
+    checks above skip `#` lines, so only this test can see it.
     """
     path = _fastchem_tree(PACKAGE_ROOT) / "input" / fname
     first = path.read_text().splitlines()[0].strip()
@@ -310,12 +301,10 @@ def test_fastchem_eq_forms_co_not_atomic_carbon(tmp_path: Path, fname: str):
     it catches ANY future corruption (order, thermo, or binary), not just a
     reorder. Skips cleanly if the prebuilt binary is unavailable.
 
-    Runs once per SHIPPED preset, each staged into the generated
-    `element_abundances_vulcan.dat` the way `ini_abun._run_fastchem_locked`
-    stages it (`use_solar=True` copies the selected file verbatim). Reading the
-    generated file as it happened to be left on disk would test a git-ignored
-    leftover instead of the tracked preset -- which is exactly how a broken
-    preset survived: the stale artifact was still the good one.
+    Runs once per SHIPPED preset, staged into the generated
+    `element_abundances_vulcan.dat` the way `_run_fastchem_locked` does.
+    Reading that generated file as found on disk would test a git-ignored
+    leftover -- which is how a broken preset once survived.
     """
     src = _fastchem_tree(PACKAGE_ROOT)
     binary = src / "fastchem"

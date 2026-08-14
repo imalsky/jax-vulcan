@@ -158,12 +158,9 @@ supported_inputs:
     diverges: [C12_fastchem_ps_order, C15_lodders2019_rocky_suppressed]
     note: >-
       DEFAULT preset: Lodders 2019 with rocky elements suppressed to -3.0.
-      The leading comment block is REQUIRED, not decoration: FastChem's
-      readElementAbundances() discards the first line unconditionally as a
-      header, so the first row must never be an element. Stripping the header
-      silently drops carbon and every carbon-bearing species. Comment rows past
-      the first are neglected harmlessly. Guarded by
-      tests/test_fastchem_element_order.py.
+      The leading comment block is REQUIRED: FastChem discards line 1 as a
+      header, so an element on the first row is silently dropped along with
+      every species containing it. Guarded by test_fastchem_element_order.py.
       ALWAYS match this file before quoting any cross-code number -- unmatched,
       HD189 disagrees with upstream by ~20% median; matched, 3.8e-06.
 
