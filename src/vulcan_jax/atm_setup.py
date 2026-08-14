@@ -890,7 +890,7 @@ def sat_p_jax(sp: str, T: jnp.ndarray) -> jnp.ndarray:
         # Murray formulae: ice for T < 0 C, liquid water for T >= 0 C.
         # CORRECTION vs upstream: op.sp_sat's `(T<0)*ice + (T>0)*water` is
         # exactly 0 at T = 273.0 K (artificial cold trap); the single `where`
-        # is continuous through 0 C. See docs/validation.md.
+        # is continuous through 0 C. See README.md (Parity & bug guide).
         ice = c0 * jnp.exp((c1 * T_C + T_C**2 / c2) / (T_C + c3))
         liquid = w0 * jnp.exp((w1 * T_C + T_C**2 / w2) / (T_C + w3))
         return jnp.where(T_C < 0, ice, liquid)

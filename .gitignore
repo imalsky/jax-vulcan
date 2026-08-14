@@ -4,12 +4,11 @@
 *$py.class
 *.so
 
-# Internal working documents. docs/ is tracked and is the published reference
-# set (differentiability, validation, benchmarks, corrections, file index).
-# These are narrative development logs: useful locally, not consumer content.
+# Internal working documents (3-doc policy: README.md is the tracked
+# consumer-facing reference; notes.md and CLAUDE.md are local-only).
+# notes.md is the narrative dev log: useful locally, not consumer content.
 CLAUDE.md
-docs/vulcan_jax_notes.md
-docs/photo_off_convergence_investigation.md
+notes.md
 
 # Distribution / packaging
 build/

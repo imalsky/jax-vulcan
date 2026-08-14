@@ -25,6 +25,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from oracle import require_oracle
 from vulcan_jax._paths import PACKAGE_ROOT
 from vulcan_jax.runtime_validation import (
     _FASTCHEM_ELEMENT_ORDER,
@@ -32,19 +33,20 @@ from vulcan_jax.runtime_validation import (
 )
 
 ROOT = Path(__file__).resolve().parent.parent
-def _oracle_dir():
-    """Configured upstream oracle checkout, or a non-existent sentinel path
-    (so the `is_dir()` skip sites work without a None branch)."""
-    import os
-    from pathlib import Path as _P
 
-    raw = os.environ.get("VULCAN_MASTER_DIR")
-    return _P(raw).expanduser().resolve() if raw else _P("/nonexistent/VULCAN-oracle-unset")
+# The upstream side runs against the manifest's pinned commit, resolved at call
+# time by `require_oracle` (checkout present, exact revision, clean tree). A
+# hand-patched ../VULCAN-master carries VULCAN-JAX's own corrected row order, so
+# an unverified checkout would report "upstream fixed C12" when nothing did.
+_MASTER = "master-oracle"
+_MASTER_FAMILY = "vulcan2_fastchem_ps_order"
 
 
-# Oracle location comes from $VULCAN_MASTER_DIR, never from a sibling guess:
-# an auto-detected ../VULCAN-master pins nothing. Do not restore the fallback.
-VULCAN_MASTER = _oracle_dir()
+def _resolve(repo_root):
+    """PACKAGE_ROOT unchanged; the master sentinel through the pinned gate."""
+    if repo_root == _MASTER:
+        return require_oracle(_MASTER_FAMILY)
+    return repo_root
 
 # C++ symbol token -> element symbol (Km is potassium; e is the electron).
 _CPP_NAME_TO_ELEMENT = {
@@ -107,17 +109,11 @@ def _parse_abundance_order(path: Path) -> list[str]:
     "repo_root",
     [
         pytest.param(PACKAGE_ROOT, id="jax"),
-        pytest.param(
-            VULCAN_MASTER,
-            id="master",
-            marks=pytest.mark.skipif(
-                not (VULCAN_MASTER / "fastchem_vulcan").is_dir(),
-                reason="VULCAN-master sibling absent",
-            ),
-        ),
+        pytest.param(_MASTER, id="master"),
     ],
 )
-def test_cpp_indices_match_canonical_order(repo_root: Path):
+def test_cpp_indices_match_canonical_order(repo_root):
+    repo_root = _resolve(repo_root)
     cpp = _fastchem_tree(repo_root) / "fastchem_src" / "mass_action_constant.cpp"
     index_map = _parse_cpp_index_map(cpp)
     # Rebuild the order implied by the C++ slots and compare to the constant.
@@ -136,20 +132,14 @@ def test_cpp_indices_match_canonical_order(repo_root: Path):
     "repo_root",
     [
         pytest.param(PACKAGE_ROOT, id="jax"),
-        pytest.param(
-            VULCAN_MASTER,
-            id="master",
-            marks=pytest.mark.skipif(
-                not (VULCAN_MASTER / "fastchem_vulcan").is_dir(),
-                reason="VULCAN-master sibling absent",
-            ),
-        ),
+        pytest.param(_MASTER, id="master"),
     ],
 )
 @pytest.mark.parametrize(
     "fname", ["solar_element_abundances.dat", "element_abundances_vulcan.dat"]
 )
-def test_abundance_file_matches_canonical_order(repo_root: Path, fname: str):
+def test_abundance_file_matches_canonical_order(repo_root, fname: str):
+    repo_root = _resolve(repo_root)
     path = _fastchem_tree(repo_root) / "input" / fname
     if not path.exists():
         # element_abundances_vulcan.dat is generated at runtime and git-ignored,

@@ -10,7 +10,7 @@ the guards that enforce that contract:
 * the input-sensitivity refusal (`steady_state_input_sensitivity` raises on a
   condensation-active state, both in-window and post-pin).
 
-Full scope: ../docs/differentiability.md.
+Full scope: ../README.md (Differentiability).
 """
 
 from __future__ import annotations

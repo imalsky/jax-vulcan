@@ -529,7 +529,7 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
     )
     rhs_y = _projected_chem_rhs(y, M, k_arr) + diff_at_y
     # Analytical Jacobian: <=1e-13 vs the AD (jacrev) path, and 16x faster
-    # measured on HD189 (92.1 -> 5.66 ms; docs/vulcan_jax_notes.md 2026-07-24).
+    # measured on HD189 (92.1 -> 5.66 ms; notes.md dev log, 2026-07-24).
     # It skips the structurally-zero entries AD would materialize.
     chem_J = _project_chem_jac(chem_jac_analytical(y, M, k_arr, net))
 

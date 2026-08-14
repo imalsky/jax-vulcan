@@ -6,7 +6,7 @@
 # throttled machine, and the 16.8x speedup derived from it had to be retracted. So this script
 # records user+sys beside real and refuses to print a speedup unless VULCAN 2.0's cpu/wall is
 # near 1.0; step counts are load-independent and are still reported when the guard rejects.
-# Background: docs/validation.md, "Two measurement rules".
+# Background: README.md (Benchmarks), "Two measurement rules".
 #
 # Usage:  tools/bench_table1.sh [HD189|HD209|W39b] ...     (default: all three)
 

@@ -79,9 +79,9 @@ Do not re-walk the failed routes: direct adjoints of the residual
 `f = chem_rhs + diffusion` (frozen-coefficient block-Thomas with defect
 correction, matrix-free LSQR) and a raw Neumann iteration on the body map all
 diverged or stagnated -- `df/dy` is both singular and severely
-ill-conditioned on closed columns (see docs/vulcan_jax_notes.md).
+ill-conditioned on closed columns (see the dev log, notes.md).
 
-Scope, accuracy, and the `body_dt` regime map: `docs/differentiability.md`
+Scope, accuracy, and the `body_dt` regime map: README.md (Differentiability)
 ("Reverse mode: the steady-state adjoint"). Worked recipe:
 `examples/grad_reverse_example.py`.
 """
@@ -242,9 +242,10 @@ def _warn_poor_convergence(resid: float, fp_err: float, spread: float = 0.0) -> 
             f"exceeds {_ADJOINT_RESID_WARN:.0e}: the solve is in the stagnation "
             "regime observed on closed columns (dominant-reaction magnitudes "
             "bounce ~+/-25% around FD there; sign and ranking remain robust — "
-            "docs/differentiability.md). Treat magnitudes as ranking weights only. More "
-            "cycles do not reliably reduce the residual; scan body_dt for a "
-            "lower-residual regime (see BODY_MAP_DT) and check null_quality.",
+            "README.md, Differentiability). Treat magnitudes as "
+            "ranking weights only. More cycles do not reliably reduce the "
+            "residual; scan body_dt for a lower-residual regime (see "
+            "BODY_MAP_DT) and check null_quality.",
             stacklevel=3,
         )
     if spread > _SPREAD_WARN:
@@ -1005,7 +1006,7 @@ def steady_state_reaction_sensitivity(
     # map holds the captured reservoir / saturation tables fixed, so this is
     # dL/d ln k AT the frozen reservoir, excluding how the rate set it. Rates
     # do not move the saturation curve directly, so label it, do not forbid
-    # it. See docs/differentiability.md (F2).
+    # it. See README.md (Differentiability, F2).
     _conden_pinned = body_terms is not None and body_terms.fix_mask is not None
     _conden_in_window = body_terms is not None and body_terms.conden_static is not None
     if _conden_pinned or _conden_in_window:
@@ -1020,7 +1021,7 @@ def steady_state_reaction_sensitivity(
             + "; it does not include how the rate changes what condenses. It is "
             "a valid conditional ranking, not the total rate sensitivity "
             "(info['conditional_on_fixed_reservoir']). See "
-            "docs/differentiability.md.",
+            "README.md (Differentiability).",
             stacklevel=2,
         )
 
@@ -1189,7 +1190,7 @@ def steady_state_input_sensitivity(
       dG/dp and, post-pin, the captured reservoir is held fixed, so the result
       is O(1)-unreliable vs FD (0.91 relative). Opt in with
       `allow_frozen_condensation_input_grad=True` only for the known
-      leading-order number. See docs/differentiability.md.
+      leading-order number. See README.md (Differentiability).
     * Also frozen by design (p-derivative omitted): the photolysis
       T-cross-section interpolation and the atm-refresh geometry cascade
       (dz/Hp/g, second-order; rebuild what you need on-graph in `atm_p`).
@@ -1202,7 +1203,7 @@ def steady_state_input_sensitivity(
     # tables frozen (d(sat)/dT dropped) and, post-pin, the captured reservoir
     # held fixed; the pinned-species tangent disagrees with re-converged FD at
     # O(1) (0.91 relative). Refuse by default -- the same contract Fisher /
-    # retrieval follow project-wide. See docs/differentiability.md (F1).
+    # retrieval follow project-wide. See README.md (Differentiability, F1).
     _conden_in_window = body_terms is not None and body_terms.conden_static is not None
     _conden_pinned = body_terms is not None and body_terms.fix_mask is not None
     if _conden_in_window or _conden_pinned:
@@ -1219,7 +1220,7 @@ def steady_state_input_sensitivity(
                 "disagrees with re-converged finite differences at O(1) (0.91 "
                 "relative; tests/test_condensation_guards.py) -- the same reason "
                 "Fisher / retrieval-inference through condensation is refused "
-                "project-wide (docs/differentiability.md). Use "
+                "project-wide (README.md, Differentiability). Use "
                 "forward-mode jvp on a single switch-free direction and validate "
                 "it against FD, or disable condensation. Set "
                 "allow_frozen_condensation_input_grad=True ONLY to obtain the "

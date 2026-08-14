@@ -46,7 +46,7 @@ def factor_block_thomas_diag_offdiag(diag, sup_d, sub_d):
     compounding across the sweep. Benchmark this solver on real blocks only
     (synthetic ones top out ~21 orders of conditioning short). If attacking
     the jvp cost (~85% of jvp linear algebra), write a custom JVP rule that
-    keeps pivoted LU in the primal. Full record: docs/vulcan_jax_notes.md.
+    keeps pivoted LU in the primal. Full record: notes.md (dev log).
     """
     ni = diag.shape[1]
 

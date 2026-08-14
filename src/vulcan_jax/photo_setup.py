@@ -563,7 +563,7 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
     # sorted: `photo_sp`/`ion_sp` are sets, and set-of-string order varies per
     # process (hash randomization). These rows bake into the runner's closure,
     # so an unsorted order changes the compiled program every run and defeats
-    # the persistent compile cache (see docs/vulcan_jax_notes.md).
+    # the persistent compile cache (see notes.md, dev log).
     absp_sp_ordered = tuple(absp_sp_list)
     absp_T_sp_ordered = tuple(sp for sp in absp_sp_list if sp in T_cross_sp)
     scat_sp_ordered = tuple(scat_sp_list)

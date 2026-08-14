@@ -47,7 +47,7 @@ SUPPORTED_CONDEN_KINETICS: tuple[str, ...] = (
 # Molar masses (g/mol) from op.conden (op.py:1128-1291). Deliberate correction:
 # upstream hardcodes S2=45.019 / S8=360.152 (copy-paste error, biasing those
 # rates 0.702x / 1.404x); we use the composition-table 64.12 / 256.48
-# (2x / 8x atomic S = 32.06). Do not revert. See docs/validation.md.
+# (2x / 8x atomic S = 32.06). Do not revert. See README.md (Parity & bug guide).
 GAS_MASS_G_PER_MOL: dict[str, float] = {
     "H2O": 18.0,
     "NH3": 17.0,

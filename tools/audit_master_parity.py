@@ -73,8 +73,8 @@ INTENTIONAL_JAX_DELTAS = {
 # typo fix (correct k0 = 1.00E-29, k_inf = 1.00E-10) that master applied to
 # NCHO but left unapplied to its sulfur files: the oracle's base SNCHO and C3
 # files ship k0 = 1.00E-20 and its DMS Tsai2024 file ships k0/k_inf swapped.
-# JAX corrects all three (docs/validation.md). Any OTHER differing line is real
-# drift and fails.
+# JAX corrects all three (README.md, Parity & bug guide). Any OTHER differing
+# line is real drift and fails.
 KNOWN_THERMO_DIVERGENCES: dict[str, tuple[str, ...]] = {
     # Upstream lists NH3 condensate as 16.023 g/mol; the corrected value is
     # 17.031 g/mol. Only that species row may differ in all_compose.txt.
@@ -88,8 +88,8 @@ KNOWN_THERMO_DIVERGENCES: dict[str, tuple[str, ...]] = {
 # uniform flux rescale. Master's builder (atm/make_spectra_in_nm.py) multiplied
 # by R_star where the surface-flux conversion divides, so the shipped eps Eri
 # spectrum is low by exactly R_star^4 = 0.735^4; JAX ships the corrected file
-# (docs/validation.md). Wavelength columns must stay identical and every flux
-# ratio must sit at the documented factor (2-sig-fig rounding tolerance); any
+# (README.md, Parity & bug guide). Wavelength columns must stay identical and
+# every flux ratio must sit at the documented factor (2-sig-fig tolerance); any
 # other difference is real drift and fails.
 KNOWN_SFLUX_RESCALES: dict[str, float] = {
     "sflux-epseri.txt": 0.735**-4,
@@ -606,7 +606,7 @@ def audit(
     # the pristine guard rejects. Composition parity is a science-input CONFIG
     # choice: point `fastchem_solar_abundance_file` at
     # solar_element_abundances_lodders2009.dat to reproduce upstream's
-    # composition (docs/validation.md, "Elemental abundances are a config
+    # composition (README.md, Validation, "Elemental abundances are a config
     # choice"). This audit only reports which composition the oracle would use.
     errors.extend(
         _report_master_fastchem_preset(master_root / STOCK_FASTCHEM),

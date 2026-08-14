@@ -169,7 +169,7 @@ chem_rhs_segment_sum = jax.vmap(
 
 # jacrev beats jacfwd here ("scatter at the end" pattern). Kept as the test
 # oracle for `chem_jac_analytical`; production uses the analytical form
-# (16x faster measured on HD189: 92.1 -> 5.66 ms, docs/vulcan_jax_notes.md
+# (16x faster measured on HD189: 92.1 -> 5.66 ms, notes.md dev log
 # 2026-07-24). Bound to the segment_sum reference
 # kernel — the Jacobian has no cancellation amplifier so the floor that
 # motivated the codegen RHS does not apply here.
