@@ -6,7 +6,6 @@ changed config/FastChem files before returning.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 import sys
 import tempfile
