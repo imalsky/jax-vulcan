@@ -267,10 +267,11 @@ def test_hd209_jit_rhs_projection_removes_atom_residual() -> None:
     raw_residual = out_jit @ atom_counts  # shape: (nz, n_atoms)
     nojit_residual = out_nojit @ atom_counts
     # State-robust floor for the raw JIT FMA drift: its magnitude varies with
-    # the converged HD209 state. Require a two-order-of-magnitude separation
-    # from the <1e4 corrected invariant instead of pinning an old artifact's
-    # exact residual.
-    assert abs(float(raw_residual[0, c_idx])) > 1.0e6
+    # the captured HD209 state, so assert it sits far above the < 1e4 corrected
+    # value instead of pinning an exact number. Measured 2026-08-14 on both
+    # shipped fixtures: 7.7e9 (jax_paper/data/jax_HD209.vul) and 1.4e9
+    # (output/HD209.vul), so 1e8 keeps a >10x margin on the lower one.
+    assert abs(float(raw_residual[0, c_idx])) > 1.0e8
     assert abs(float(nojit_residual[0, c_idx])) < 1.0e4
 
     projected = np.asarray(jax_step._project_chem_rhs(jnp.asarray(out_jit)))

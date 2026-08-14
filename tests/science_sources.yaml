@@ -153,23 +153,29 @@ supported_inputs:
     oracle: vulcan3_vm_branch
 
   fastchem_vulcan/input/solar_element_abundances.dat:
-    sha256: 4388e7a56064826a7844da1c678d0d4e8829fe2e8a421046a7ebfe4760d7c873
+    sha256: 77448a1956937a233e6bf6c03c7713389dd93143b07958da5ced51bb9ec9e329
     oracle: vulcan2_fastchem_ps_order
     diverges: [C12_fastchem_ps_order, C15_lodders2019_rocky_suppressed]
     note: >-
       DEFAULT preset: Lodders 2019 with rocky elements suppressed to -3.0.
-      The machine-readable file contains data rows only because the vendored
-      FastChem parser treats comment lines as invalid element records.
+      The leading comment block is REQUIRED, not decoration: FastChem's
+      readElementAbundances() discards the first line unconditionally as a
+      header, so the first row must never be an element. Stripping the header
+      silently drops carbon and every carbon-bearing species. Comment rows past
+      the first are neglected harmlessly. Guarded by
+      tests/test_fastchem_element_order.py.
       ALWAYS match this file before quoting any cross-code number -- unmatched,
       HD189 disagrees with upstream by ~20% median; matched, 3.8e-06.
 
   fastchem_vulcan/input/solar_element_abundances_lodders2009.dat:
-    sha256: 9de7551bc8b8e03dd76ca67dd0dcfd1ac91ef8fca6a0ad5dc0ee3b3fe763ca6a
+    sha256: 9a83f9b8cc51380b5adcc3c764cec54f0b2f2bfbc0b8b34313d6da2873af95fd
     oracle: vulcan2_fastchem_ps_order
     diverges: [C12_fastchem_ps_order]
     note: >-
       The upstream composition (Lodders 2009 at solar), with only the P/S ROW
-      order corrected. Select it to reproduce upstream numbers.
+      order corrected. Select it to reproduce upstream numbers. Its leading
+      comment block is load-bearing for the same reason as the default preset:
+      FastChem eats line 1.
 
 # ---------------------------------------------------------------------------
 # Intentional divergences from upstream.

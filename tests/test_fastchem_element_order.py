@@ -240,14 +240,67 @@ def test_validator_rejects_reordered_abundance_file(tmp_path: Path):
     ), "validator failed to flag a truncated abundance file"
 
 
+_SHIPPED_PRESETS = (
+    "solar_element_abundances.dat",
+    "solar_element_abundances_lodders2009.dat",
+)
+
+
+# --------------------------------------------------------------------------- #
+# 3b. FastChem eats line 1, so line 1 must never be an element row.            #
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize("fname", _SHIPPED_PRESETS)
+def test_shipped_abundance_file_starts_with_a_header_line(fname: str):
+    """`readElementAbundances()` discards the first line UNCONDITIONALLY.
+
+    It has no comment handling at all: `init_read_files.cpp` does one bare
+    `std::getline` labelled `//header` and then parses every remaining line as
+    `symbol >> abundance`. So the first row of the file is always thrown away,
+    whatever it is. If it is `C 8.4434`, carbon never enters the element vector
+    and FastChem silently drops all 89 carbon-bearing species — `_load_eq_y`
+    then leaves their columns at ZERO and only prints `CO not included in
+    fastchem.`, so a whole run proceeds on a carbon-free initial condition.
+
+    Comment rows AFTER the first are harmless: `addAtom` refuses an unknown
+    symbol without appending, so the element ORDER is unaffected.
+
+    The parse-order and preset-value checks above both skip `#` lines, so
+    neither of them can see this. This test is the only thing standing between
+    a tidy-looking header removal and a silently wrong release.
+    """
+    path = _fastchem_tree(PACKAGE_ROOT) / "input" / fname
+    first = path.read_text().splitlines()[0].strip()
+    parts = first.split()
+    is_element_row = len(parts) >= 2 and parts[0] in _FASTCHEM_ELEMENT_ORDER
+    if is_element_row:
+        try:
+            float(parts[1])
+        except ValueError:
+            is_element_row = False
+    assert not is_element_row, (
+        f"{path} starts with the element row {first!r}. FastChem discards the "
+        "first line as a header, so that element is silently dropped along with "
+        "every species containing it. Restore a leading comment line."
+    )
+
+
 # --------------------------------------------------------------------------- #
 # 4. End-to-end: the binary must put carbon in CO, not atomic C.              #
 # --------------------------------------------------------------------------- #
-def test_fastchem_eq_forms_co_not_atomic_carbon(tmp_path: Path):
+@pytest.mark.parametrize("fname", _SHIPPED_PRESETS)
+def test_fastchem_eq_forms_co_not_atomic_carbon(tmp_path: Path, fname: str):
     """Solar / 2000 K / 1 bar equilibrium must have carbon in CO (~5e-4), not
     frozen as atomic C. This is the physical invariant the order bug violated;
     it catches ANY future corruption (order, thermo, or binary), not just a
-    reorder. Skips cleanly if the prebuilt binary is unavailable."""
+    reorder. Skips cleanly if the prebuilt binary is unavailable.
+
+    Runs once per SHIPPED preset, each staged into the generated
+    `element_abundances_vulcan.dat` the way `ini_abun._run_fastchem_locked`
+    stages it (`use_solar=True` copies the selected file verbatim). Reading the
+    generated file as it happened to be left on disk would test a git-ignored
+    leftover instead of the tracked preset -- which is exactly how a broken
+    preset survived: the stale artifact was still the good one.
+    """
     src = _fastchem_tree(PACKAGE_ROOT)
     binary = src / "fastchem"
     if not binary.exists():
@@ -255,6 +308,10 @@ def test_fastchem_eq_forms_co_not_atomic_carbon(tmp_path: Path):
 
     tree = tmp_path / "fastchem_vulcan"
     shutil.copytree(src, tree)
+    # Stage the TRACKED preset as the file FastChem is configured to read.
+    shutil.copy2(
+        src / "input" / fname, tree / "input" / "element_abundances_vulcan.dat"
+    )
     # Force a known single point and the no-ion parameter set.
     (tree / "input" / "vulcan_TP" / "vulcan_TP.dat").write_text(
         "#p (bar)\tT (K)\n1.000e+00\t2000.0"
