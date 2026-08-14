@@ -9,6 +9,7 @@ network file (run `python VULCAN-master/make_chem_funs.py` once).
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
@@ -137,7 +138,7 @@ def main() -> int:
 def test_main():
     """Run the master comparison in a fresh Python process."""
     import subprocess
-    from tests.oracle import oracle_worktree
+    from oracle import oracle_worktree
 
     with oracle_worktree("vulcan2_ncho", "cfg_examples/vulcan_cfg_HD189.py") as master:
         env = os.environ.copy()

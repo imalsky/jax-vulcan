@@ -157,6 +157,22 @@ def test_abundance_file_matches_canonical_order(repo_root: Path, fname: str):
         # real source of truth (the generated file inherits its row order).
         pytest.skip(f"{path} absent (generated at runtime / clean checkout)")
     order = _parse_abundance_order(path)
+    if repo_root != PACKAGE_ROOT:
+        # UPSTREAM is expected to be WRONG here: it lists S on row 6 and P on
+        # row 7 while its own mass_action_constant.cpp hard-codes index_P=5,
+        # index_S=6. That is correction C12, and swapping the two rows back is
+        # the one deliberate change in our copy of upstream's file. Pin the
+        # defect rather than asserting upstream is correct, so this fails
+        # loudly if upstream ever fixes it (then C12 can be retired).
+        upstream = list(_FASTCHEM_ELEMENT_ORDER)
+        p, s = upstream.index("P"), upstream.index("S")
+        upstream[p], upstream[s] = upstream[s], upstream[p]
+        assert order in (upstream, upstream[:-1]), (
+            f"{path} row order {order} is neither the canonical order nor the "
+            f"known C12 P/S-swapped upstream order {upstream}. Upstream may "
+            "have changed its element list; re-check C12 before trusting any "
+            "cross-code composition number.")
+        return
     # Exact, COMPLETE order (electron row optional) — not a truncation-permissive
     # prefix, which would let a file missing trailing elements pass.
     assert order in (_FASTCHEM_ELEMENT_ORDER, _FASTCHEM_ELEMENT_ORDER[:-1]), (

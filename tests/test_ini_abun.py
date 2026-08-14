@@ -412,7 +412,7 @@ def test_zzz_main_eq_vs_master():
             "this comparison test requires the upstream sibling repo."
         )
     import subprocess
-    from tests.oracle import oracle_worktree
+    from oracle import oracle_worktree
 
     with oracle_worktree(
         "vulcan2_ncho",

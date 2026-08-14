@@ -176,23 +176,29 @@ def oracle_worktree(
                 raise FileNotFoundError(
                     f"oracle config does not exist: {config_source}")
             shutil.copy2(config_source, dst / "vulcan_cfg.py")
-        if fastchem_abundance is not None:
-            jax_fastchem = ROOT / "src" / "vulcan_jax" / "fastchem_vulcan"
+        jax_fastchem = ROOT / "src" / "vulcan_jax" / "fastchem_vulcan"
+        oracle_fastchem = dst / "fastchem_vulcan"
+        # Upstream ships FastChem SOURCE, never a binary, so any oracle test
+        # reaching ini_mix='EQ' dies with exit 127. Stage our built one: the
+        # C++ source, model_main and makefile are byte-identical between the
+        # two trees (verified), so it is the same program.
+        if oracle_fastchem.is_dir() and not (oracle_fastchem / "fastchem").exists():
             binary = jax_fastchem / "fastchem"
-            abundance = jax_fastchem / "input" / fastchem_abundance
-            if not binary.is_file() or not abundance.is_file():
+            if not binary.is_file():
                 raise FileNotFoundError(
-                    "the staged FastChem comparison needs the built JAX "
-                    f"binary and abundance file ({binary}, {abundance})")
-            shutil.copy2(binary, dst / "fastchem_vulcan" / "fastchem")
+                    f"oracle FastChem needs the built JAX binary at {binary}; "
+                    "run any ini_mix='EQ' config once to compile it")
+            shutil.copy2(binary, oracle_fastchem / "fastchem")
+        if fastchem_abundance is not None:
+            abundance = jax_fastchem / "input" / fastchem_abundance
+            if not abundance.is_file():
+                raise FileNotFoundError(f"no such abundance preset: {abundance}")
             shutil.copy2(
                 jax_fastchem / "input" / "nasa9_logK_SNCHOPTi.dat",
-                dst / "fastchem_vulcan" / "input" / "nasa9_logK_SNCHOPTi.dat",
-            )
+                oracle_fastchem / "input" / "nasa9_logK_SNCHOPTi.dat")
             shutil.copy2(
                 abundance,
-                dst / "fastchem_vulcan" / "input" / "solar_element_abundances.dat",
-            )
+                oracle_fastchem / "input" / "solar_element_abundances.dat")
         try:
             yield dst
         finally:

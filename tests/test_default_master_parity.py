@@ -425,7 +425,7 @@ def test_audit_refuses_a_contaminated_oracle() -> None:
 @pytest.mark.master_serial
 def test_audit_master_parity_against_pinned_oracle() -> None:
     """The static HD189 audit is clean against its exact, pristine oracle."""
-    from tests.oracle import require_oracle
+    from oracle import require_oracle
     from tools.audit_master_parity import audit
 
     master = require_oracle("vulcan2_ncho")
@@ -436,7 +436,7 @@ def test_audit_master_parity_against_pinned_oracle() -> None:
 @pytest.mark.master_serial
 def test_default_hd189_preloop_and_matched_steps_match_master() -> None:
     """Default HD189 initial state and 20 matched Ros2 steps match master."""
-    from tests.oracle import oracle_worktree
+    from oracle import oracle_worktree
 
     with tempfile.TemporaryDirectory(prefix="default_parity_") as tmp, \
             oracle_worktree("vulcan2_ncho") as master_root:

@@ -371,7 +371,7 @@ def test_codegen_matches_master_chemdf():
     Runs in a subprocess; skips cleanly when the oracle is absent.
     """
     import subprocess
-    from tests.oracle import oracle_worktree
+    from oracle import oracle_worktree
 
     with oracle_worktree("vulcan2_ncho") as master_copy:
         env = os.environ.copy()

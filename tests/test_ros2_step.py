@@ -167,7 +167,7 @@ def test_main():
     """Runs main() in a fresh subprocess: the master/JAX module-table swap
     only works from a cold Python start."""
     import subprocess
-    from tests.oracle import oracle_worktree
+    from oracle import oracle_worktree
 
     with oracle_worktree("vulcan2_ncho", "cfg_examples/vulcan_cfg_HD189.py") as master:
         env = os.environ.copy()

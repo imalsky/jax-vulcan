@@ -290,10 +290,18 @@ def _stage_master_inputs(master_root: Path, scratch: Path) -> Path:
 @pytest.mark.master_serial
 def test_w39b_fastchem_initial_state_matches_master():
     """W39b FastChem EQ init must match master before integration starts."""
-    from tests.oracle import oracle_worktree
+    from oracle import oracle_worktree
 
     with tempfile.TemporaryDirectory() as tmp, \
-            oracle_worktree("vulcan2_ncho") as master_root:
+            oracle_worktree(
+                "vulcan2_ncho",
+                # W39b.yaml selects the DEFAULT preset, so the oracle must use
+                # it too. Left on upstream's own file this compares two
+                # different atmospheres: the P/S row swap alone moves atomic S
+                # by ~3 dex, which is exactly the 1.3e3 max relative error this
+                # test reported before the file was matched.
+                fastchem_abundance="solar_element_abundances.dat",
+            ) as master_root:
         tmp_path = Path(tmp)
         jax_npz = tmp_path / "jax_w39b_init.npz"
         master_npz = tmp_path / "master_w39b_init.npz"
