@@ -50,7 +50,6 @@ def _cfg_overrides(**kwargs):
     from vulcan_jax.config import default_config
 
     vulcan_cfg = default_config()
-
     saved = {}
     sentinel = object()
     for k in kwargs:
@@ -130,25 +129,18 @@ def test_const_mix_matches_reference():
 # ---------------------------------------------------------------------------
 
 
-def test_vulcan_ini_roundtrip():
+def test_vulcan_ini_roundtrip(tmp_path):
     """`vulcan_ini` mode restores each species column from the `.vul` exactly."""
     from vulcan_jax.ini_abun import InitialAbun
     import vulcan_jax.composition as composition
 
-    vul_path = ROOT / "output" / "HD189.vul"
-    if not vul_path.is_file():
-        pytest.skip(f"{vul_path} not present; run `python vulcan_jax.py` to generate.")
-
-    with open(vul_path, "rb") as f:
-        prev = pickle.load(f)
-    prev_species = prev["variable"]["species"]
-    prev_y = np.asarray(prev["variable"]["y"])
-
     data_var, data_atm, _ = _build_hd189_atm()
-    if prev_y.shape[0] != len(data_atm.pco):
-        pytest.skip(
-            f"`HD189.vul` has nz={prev_y.shape[0]} but cfg nz={len(data_atm.pco)}"
-        )
+    prev_species = list(composition.species)
+    shape = (len(data_atm.pco), len(prev_species))
+    prev_y = np.arange(1, np.prod(shape) + 1, dtype=float).reshape(shape)
+    vul_path = tmp_path / "roundtrip.vul"
+    with vul_path.open("wb") as handle:
+        pickle.dump({"variable": {"species": prev_species, "y": prev_y}}, handle)
 
     with _cfg_overrides(ini_mix="vulcan_ini", vul_ini=str(vul_path)):
         ini = InitialAbun()
@@ -291,6 +283,13 @@ def main() -> int:
     from vulcan_jax.config import default_config
 
     vulcan_cfg = default_config()
+    # Match upstream's full-solar Lodders 2009 composition. The production
+    # default is deliberately rocky-suppressed Lodders 2019, so comparing the
+    # defaults would test different scientific inputs rather than two
+    # implementations of the same equilibrium calculation.
+    vulcan_cfg.fastchem_solar_abundance_file = (
+        "fastchem_vulcan/input/solar_element_abundances_lodders2009.dat"
+    )
     import vulcan_jax.chem_funs as cf_jax
 
     print(
@@ -413,12 +412,18 @@ def test_zzz_main_eq_vs_master():
             "this comparison test requires the upstream sibling repo."
         )
     import subprocess
+    from tests.oracle import oracle_worktree
 
-    result = subprocess.run(
-        [sys.executable, str(Path(__file__).resolve())],
-        capture_output=True,
-        text=True,
-    )
+    with oracle_worktree(
+        "vulcan2_ncho",
+        "cfg_examples/vulcan_cfg_HD189.py",
+        fastchem_abundance="solar_element_abundances_lodders2009.dat",
+    ) as master:
+        env = os.environ.copy()
+        env["VULCAN_MASTER_DIR"] = str(master)
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve())],
+            capture_output=True, text=True, env=env)
     assert result.returncode == 0, (
         f"subprocess exited {result.returncode}\n"
         f"--- stdout ---\n{result.stdout}\n"

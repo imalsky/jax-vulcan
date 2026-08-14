@@ -152,7 +152,11 @@ def tree_fingerprint(path: Path) -> str:
 
 
 @contextmanager
-def oracle_worktree(family: str):
+def oracle_worktree(
+    family: str,
+    config_rel: str | None = None,
+    fastchem_abundance: str | None = None,
+):
     """Yield a temporary COPY of the oracle; the original must not be touched.
 
     Upstream data-generation code mutates its own checkout, so every test that
@@ -166,6 +170,29 @@ def oracle_worktree(family: str):
         # copy2 preserves mtimes; skip .git (large, and the copy is disposable)
         shutil.copytree(src, dst, symlinks=True,
                         ignore=shutil.ignore_patterns(".git", "__pycache__"))
+        if config_rel is not None:
+            config_source = dst / config_rel
+            if not config_source.is_file():
+                raise FileNotFoundError(
+                    f"oracle config does not exist: {config_source}")
+            shutil.copy2(config_source, dst / "vulcan_cfg.py")
+        if fastchem_abundance is not None:
+            jax_fastchem = ROOT / "src" / "vulcan_jax" / "fastchem_vulcan"
+            binary = jax_fastchem / "fastchem"
+            abundance = jax_fastchem / "input" / fastchem_abundance
+            if not binary.is_file() or not abundance.is_file():
+                raise FileNotFoundError(
+                    "the staged FastChem comparison needs the built JAX "
+                    f"binary and abundance file ({binary}, {abundance})")
+            shutil.copy2(binary, dst / "fastchem_vulcan" / "fastchem")
+            shutil.copy2(
+                jax_fastchem / "input" / "nasa9_logK_SNCHOPTi.dat",
+                dst / "fastchem_vulcan" / "input" / "nasa9_logK_SNCHOPTi.dat",
+            )
+            shutil.copy2(
+                abundance,
+                dst / "fastchem_vulcan" / "input" / "solar_element_abundances.dat",
+            )
         try:
             yield dst
         finally:

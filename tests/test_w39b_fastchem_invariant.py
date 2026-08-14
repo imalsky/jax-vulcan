@@ -5,6 +5,7 @@ This catches hidden FastChem input drift before any long W39b integration.
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -28,8 +29,6 @@ def _oracle_dir():
 # an auto-detected ../VULCAN-master pins nothing. Do not restore the fallback.
 VULCAN_MASTER = _oracle_dir()
 from vulcan_jax._paths import PACKAGE_ROOT
-
-MASTER_CFG = VULCAN_MASTER / "cfg_examples" / "vulcan_cfg_W39b.py"
 
 EXPECTED_FREE_O = 5.37e-3 - 2.95e-3
 REL_TOL = 1e-10
@@ -145,6 +144,9 @@ try:
         jax_fc_dir / "input/nasa9_logK_SNCHOPTi.dat",
         root / "fastchem_vulcan/input/nasa9_logK_SNCHOPTi.dat",
     )
+    # A failed generator must not be mistaken for success by importing the
+    # oracle checkout's stale, pre-generated NCHO module.
+    (root / "chem_funs.py").unlink(missing_ok=True)
     res = subprocess.run(
         [sys.executable, "make_chem_funs.py"],
         cwd=str(root),
@@ -247,15 +249,51 @@ def _max_relerr(a: np.ndarray, b: np.ndarray, floor: float = 1e-30) -> float:
     return float(np.max(np.abs(a - b) / denom))
 
 
+def _stage_master_inputs(master_root: Path, scratch: Path) -> Path:
+    """Stage the resolved W39 config and its pinned inputs into the oracle.
+
+    Upstream has never shipped ``cfg_examples/vulcan_cfg_W39b.py``.  The old
+    test named that nonexistent file and therefore skipped before performing
+    a comparison.  Generate the legacy Python config from the shipped YAML and
+    copy only the inputs identified in ``science_sources.yaml``.
+    """
+    from vulcan_jax.config import load_config
+
+    cfg = load_config("W39b")
+    cfg_path = scratch / "vulcan_cfg_W39b_resolved.py"
+    lines = []
+    for key in sorted(vars(cfg)):
+        if not key.startswith("_"):
+            lines.append(f"{key} = {getattr(cfg, key)!r}")
+    # Start from the oracle's own complete legacy surface: JAX deliberately
+    # removed a few derived knobs (for example ``gs``), but old VULCAN modules
+    # still import them directly.  Appended resolved assignments override only
+    # the W39 science inputs and shared runtime knobs.
+    legacy = (master_root / "vulcan_cfg.py").read_text()
+    gs = 6.67430e-8 * float(cfg.Mp) / float(cfg.Rp) ** 2
+    lines.append(f"gs = {gs!r}")
+    cfg_path.write_text(legacy + "\n# resolved W39 overrides\n" +
+                        "\n".join(lines) + "\n")
+
+    for rel in (
+        "thermo/SNCHO_photo_network.txt",
+        "atm/atm_W39b_evening_TP_Kzz.txt",
+        "atm/stellar_flux/sflux-W39b_Tsai2023.txt",
+    ):
+        source = PACKAGE_ROOT / rel
+        target = master_root / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+    return cfg_path
+
+
 @pytest.mark.master_serial
 def test_w39b_fastchem_initial_state_matches_master():
     """W39b FastChem EQ init must match master before integration starts."""
-    if not VULCAN_MASTER.is_dir():
-        pytest.skip(
-            f"VULCAN-master oracle absent at {VULCAN_MASTER}; W39b invariant skipped."
-        )
+    from tests.oracle import oracle_worktree
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory() as tmp, \
+            oracle_worktree("vulcan2_ncho") as master_root:
         tmp_path = Path(tmp)
         jax_npz = tmp_path / "jax_w39b_init.npz"
         master_npz = tmp_path / "master_w39b_init.npz"
@@ -267,15 +305,16 @@ def test_w39b_fastchem_initial_state_matches_master():
 
             _ensure_fastchem_binary()
 
+        master_cfg = _stage_master_inputs(master_root, tmp_path)
+
         _run_probe(_JAX_SCRIPT, PACKAGE_ROOT, jax_npz)
         _run_probe(
             _MASTER_SCRIPT,
-            VULCAN_MASTER,
+            master_root,
             master_npz,
-            MASTER_CFG,
+            master_cfg,
             master_backup,
             jax_fc_dir,
-            skip_on_failure=True,
         )
 
         jax = np.load(jax_npz, allow_pickle=True)

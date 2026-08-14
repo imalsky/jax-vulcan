@@ -76,6 +76,9 @@ INTENTIONAL_JAX_DELTAS = {
 # JAX corrects all three (docs/validation.md). Any OTHER differing line is real
 # drift and fails.
 KNOWN_THERMO_DIVERGENCES: dict[str, tuple[str, ...]] = {
+    # Upstream lists NH3 condensate as 16.023 g/mol; the corrected value is
+    # 17.031 g/mol. Only that species row may differ in all_compose.txt.
+    "all_compose.txt": ("NH3_l_s",),
     "SNCHO_photo_network.txt": ("CH2CN + H + M -> CH3CN + M",),
     "SNCHO_photo_network_C3.txt": ("CH2CN + H + M -> CH3CN + M",),
     "SNCHO_DMS_photo_network_Tsai2024.txt": ("CH2CN + H + M -> CH3CN + M",),
@@ -422,7 +425,11 @@ def _check_supported_inputs(jax_root: Path) -> list[str]:
     return errors
 
 
-def _compare_runtime_data(master_root: Path, jax_root: Path) -> list[str]:
+def _compare_runtime_data(
+    master_root: Path,
+    jax_root: Path,
+    oracle_family: str = "vulcan2_ncho",
+) -> list[str]:
     """Compare the SUPPORTED vendored runtime files against the oracle.
 
     Scope is the curated `supported_inputs` list in
@@ -440,7 +447,11 @@ def _compare_runtime_data(master_root: Path, jax_root: Path) -> list[str]:
     that is upstream being newer or broader than this release.
     """
     errors: list[str] = []
-    supported = _load_supported_inputs()
+    supported = {
+        rel: spec
+        for rel, spec in _load_supported_inputs().items()
+        if spec.get("oracle") == oracle_family
+    }
     if supported:
         by_dir: dict[str, set[Path]] = {}
         for rel in supported:
@@ -556,8 +567,17 @@ def _check_oracle_is_pristine(master_root: Path) -> list[str]:
     return errors
 
 
-def audit(master_root: Path, jax_root: Path) -> list[str]:
-    """Return all HD189 parity audit errors (JAX side loaded from YAML)."""
+def audit(
+    master_root: Path,
+    jax_root: Path,
+    oracle_family: str = "vulcan2_ncho",
+) -> list[str]:
+    """Return all HD189 parity errors for one pinned oracle family.
+
+    The manifest deliberately assigns different inputs to different upstream
+    commits. Comparing every supported file with one checkout would mix
+    incompatible oracles and report valid files as missing.
+    """
     # Our OWN vendored inputs must match the manifest first. This half needs no
     # oracle and is always meaningful: it states what the port promises to
     # carry, so a silent edit to a network or abundance file is caught even
@@ -574,7 +594,7 @@ def audit(master_root: Path, jax_root: Path) -> list[str]:
         return errors + [f"missing master HD189 cfg: {master_cfg}"]
 
     errors.extend(_compare_cfgs(master_cfg))
-    errors.extend(_compare_runtime_data(master_root, jax_root))
+    errors.extend(_compare_runtime_data(master_root, jax_root, oracle_family))
     # VULCAN-JAX's own file must be one of the two shipped presets. This is a
     # check on OUR tree and is always meaningful.
     errors.extend(_check_stock_fastchem(jax_root / STOCK_FASTCHEM, "JAX FastChem"))
@@ -612,6 +632,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Path to the VULCAN-master checkout.",
     )
     parser.add_argument(
+        "--oracle-family",
+        default="vulcan2_ncho",
+        choices=("vulcan2_ncho",),
+        help="Pinned oracle family used for the HD189/runtime comparison.",
+    )
+    parser.add_argument(
         "--jax-root",
         type=Path,
         default=PACKAGE_ROOT,
@@ -619,7 +645,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    errors = audit(args.master.resolve(), args.jax_root.resolve())
+    errors = audit(
+        args.master.resolve(),
+        args.jax_root.resolve(),
+        args.oracle_family,
+    )
     if errors:
         print("FAIL: HD189 parity audit found drift:")
         for error in errors:

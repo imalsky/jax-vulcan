@@ -206,14 +206,19 @@ def _hd209_repeated_final_layer_fixture() -> tuple[
 
     saved = PROJECT_ROOT / "jax_paper" / "data" / "jax_HD209.vul"
     if not saved.exists():
-        pytest.skip(f"HD209 saved output absent at {saved}")
+        saved = ROOT / "output" / "HD209.vul"
+    if not saved.exists():
+        pytest.fail(
+            "HD209 steady-state oracle absent; run "
+            "`python -m vulcan_jax.vulcan_jax_cli --config HD209`"
+        )
 
     with saved.open("rb") as handle:
         state = pickle.load(handle)
 
     net = net_mod.parse_network(vulcan_cfg.network)
     if list(state["variable"]["species"]) != list(net.species):
-        pytest.skip("Current vulcan_cfg network does not match saved HD209 state")
+        pytest.fail("Current default network does not match saved HD209 state")
 
     layer = 2
     n_layers = int(state["variable"]["y"].shape[0])
@@ -262,9 +267,10 @@ def test_hd209_jit_rhs_projection_removes_atom_residual() -> None:
     raw_residual = out_jit @ atom_counts  # shape: (nz, n_atoms)
     nojit_residual = out_nojit @ atom_counts
     # State-robust floor for the raw JIT FMA drift: its magnitude varies with
-    # the captured HD209 state (~6e8-1e9), so assert it sits far above the
-    # < 1e4 corrected value instead of pinning an exact number.
-    assert abs(float(raw_residual[0, c_idx])) > 1.0e8
+    # the converged HD209 state. Require a two-order-of-magnitude separation
+    # from the <1e4 corrected invariant instead of pinning an old artifact's
+    # exact residual.
+    assert abs(float(raw_residual[0, c_idx])) > 1.0e6
     assert abs(float(nojit_residual[0, c_idx])) < 1.0e4
 
     projected = np.asarray(jax_step._project_chem_rhs(jnp.asarray(out_jit)))
@@ -363,17 +369,19 @@ def test_codegen_matches_master_chemdf():
     """Codegen RHS bit-faithful to VULCAN-master's `chemdf` at rtol=1e-12.
     Runs in a subprocess; skips cleanly when the oracle is absent.
     """
-    if not VULCAN_MASTER.is_dir():
-        pytest.skip(f"VULCAN-master sibling absent at {VULCAN_MASTER}")
-
     import subprocess
+    from tests.oracle import oracle_worktree
 
-    result = subprocess.run(
-        [sys.executable, "-c", _MASTER_VS_CODEGEN_DRIVER],
-        capture_output=True,
-        text=True,
-        cwd=str(ROOT),
-    )
+    with oracle_worktree("vulcan2_ncho") as master_copy:
+        env = os.environ.copy()
+        env["VULCAN_MASTER_DIR"] = str(master_copy)
+        result = subprocess.run(
+            [sys.executable, "-c", _MASTER_VS_CODEGEN_DRIVER],
+            capture_output=True,
+            text=True,
+            cwd=str(ROOT),
+            env=env,
+        )
     print("--- subprocess stdout ---")
     print(result.stdout)
     if result.returncode != 0:
@@ -394,7 +402,10 @@ ROOT = Path.cwd()                               # set by test caller; = VULCAN-J
 # an auto-detected ../VULCAN-master pins nothing, and the copy on this project's
 # machine is not even a git checkout. `tests/oracle.py` resolves it and verifies
 # the pinned revision + a clean tree before any comparison runs.
-VULCAN_MASTER = _oracle_dir()
+raw_oracle = os.environ.get("VULCAN_MASTER_DIR")
+if not raw_oracle:
+    raise RuntimeError("VULCAN_MASTER_DIR is required by the master driver")
+VULCAN_MASTER = Path(raw_oracle).expanduser().resolve()
 warnings.filterwarnings("ignore")
 
 # === 1. Run master pipeline FROM master cwd so its relative paths resolve

@@ -209,12 +209,14 @@ def main() -> int:
 def test_main():
     """Run the master comparison in a fresh Python process."""
     import subprocess
+    from tests.oracle import oracle_worktree
 
-    result = subprocess.run(
-        [sys.executable, str(Path(__file__).resolve())],
-        capture_output=True,
-        text=True,
-    )
+    with oracle_worktree("vulcan2_ncho", "cfg_examples/vulcan_cfg_HD189.py") as master:
+        env = os.environ.copy()
+        env["VULCAN_MASTER_DIR"] = str(master)
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve())],
+            capture_output=True, text=True, env=env)
     assert result.returncode == 0, (
         f"subprocess exited {result.returncode}\n"
         f"--- stdout ---\n{result.stdout}\n"

@@ -167,12 +167,14 @@ def test_main():
     """Runs main() in a fresh subprocess: the master/JAX module-table swap
     only works from a cold Python start."""
     import subprocess
+    from tests.oracle import oracle_worktree
 
-    result = subprocess.run(
-        [sys.executable, str(Path(__file__).resolve())],
-        capture_output=True,
-        text=True,
-    )
+    with oracle_worktree("vulcan2_ncho", "cfg_examples/vulcan_cfg_HD189.py") as master:
+        env = os.environ.copy()
+        env["VULCAN_MASTER_DIR"] = str(master)
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve())],
+            capture_output=True, text=True, env=env)
     assert result.returncode == 0, (
         f"subprocess exited {result.returncode}\n"
         f"--- stdout ---\n{result.stdout}\n"

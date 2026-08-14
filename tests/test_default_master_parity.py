@@ -117,6 +117,7 @@ def run() -> None:
             "use_flux_movie = False\n"
             "save_evolution = False\n"
             "plot_TP = False\n"
+            "use_adapt_rtol = False\n"
         )
         (master_root / "vulcan_cfg.py").write_text(cfg_text + overrides)
         shutil.copy2(
@@ -422,44 +423,23 @@ def test_audit_refuses_a_contaminated_oracle() -> None:
 
 
 @pytest.mark.master_serial
-def test_audit_master_parity_with_staged_stock_fastchem() -> None:
-    """Audit is clean when master is temporarily staged with stock FastChem.
-    SKIPPED (not passed) when the checkout is not pristine upstream: a parity
-    verdict against a contaminated tree would be circular.
-    """
-    if not VULCAN_MASTER.is_dir():
-        pytest.skip(f"VULCAN-master absent at {VULCAN_MASTER}")
+def test_audit_master_parity_against_pinned_oracle() -> None:
+    """The static HD189 audit is clean against its exact, pristine oracle."""
+    from tests.oracle import require_oracle
+    from tools.audit_master_parity import audit
 
-    from tools.audit_master_parity import _check_oracle_is_pristine
-
-    provenance = _check_oracle_is_pristine(VULCAN_MASTER)
-    if provenance:
-        pytest.skip(
-            "sibling VULCAN-master is not pristine upstream, so this parity "
-            "verdict would be circular — NOT a pass. Reasons: " + " | ".join(provenance)
-        )
-
-    stock = PACKAGE_ROOT / "fastchem_vulcan/input/solar_element_abundances.dat"
-    target = VULCAN_MASTER / "fastchem_vulcan/input/solar_element_abundances.dat"
-    original = target.read_bytes()
-    try:
-        shutil.copy2(stock, target)
-        from tools.audit_master_parity import audit
-
-        errors = audit(VULCAN_MASTER, PACKAGE_ROOT)
-    finally:
-        target.write_bytes(original)
-
+    master = require_oracle("vulcan2_ncho")
+    errors = audit(master, PACKAGE_ROOT, "vulcan2_ncho")
     assert errors == []
 
 
 @pytest.mark.master_serial
 def test_default_hd189_preloop_and_matched_steps_match_master() -> None:
     """Default HD189 initial state and 20 matched Ros2 steps match master."""
-    if not VULCAN_MASTER.is_dir():
-        pytest.skip(f"VULCAN-master absent at {VULCAN_MASTER}")
+    from tests.oracle import oracle_worktree
 
-    with tempfile.TemporaryDirectory(prefix="default_parity_") as tmp:
+    with tempfile.TemporaryDirectory(prefix="default_parity_") as tmp, \
+            oracle_worktree("vulcan2_ncho") as master_root:
         tmp_path = Path(tmp)
         master_npz = tmp_path / "master_hd189.npz"
         jax_npz = tmp_path / "jax_hd189.npz"
@@ -476,7 +456,7 @@ def test_default_hd189_preloop_and_matched_steps_match_master() -> None:
         master_res = _run_script(
             _MASTER_SCRIPT,
             [
-                VULCAN_MASTER,
+                master_root,
                 master_npz,
                 master_backup,
                 stock_fastchem,
@@ -486,12 +466,11 @@ def test_default_hd189_preloop_and_matched_steps_match_master() -> None:
             python=_master_python(),
             timeout=900.0,
         )
-        if master_res.returncode != 0:
-            pytest.skip(
-                f"master subprocess failed {master_res.returncode}; "
-                f"skipping master parity check. stderr tail:\n"
-                f"{master_res.stderr[-1500:]}"
-            )
+        assert master_res.returncode == 0, (
+            f"master subprocess failed {master_res.returncode}\n"
+            f"--- stdout ---\n{master_res.stdout}\n"
+            f"--- stderr ---\n{master_res.stderr}"
+        )
         assert "MASTER_OK" in master_res.stdout
 
         jax_res = _run_script(
