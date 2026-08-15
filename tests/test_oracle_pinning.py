@@ -219,3 +219,49 @@ def test_worktree_raises_if_the_original_was_mutated(fake_oracle, monkeypatch):
     finally:
         monkeypatch.setitem(orc.manifest()["oracles"]["vulcan2_ncho"],
                             "commit", want)
+
+
+def test_the_oracle_workflow_matches_the_manifest():
+    """.github/workflows/oracle.yml must pin the manifest's exact commits.
+
+    The workflow clones upstream itself, so its SHAs are a second copy of
+    `science_sources.yaml`. If they drift, the release gate silently compares
+    against the wrong revision -- and because reaction indices are positional,
+    that produces failures (or passes) unrelated to the ported kernels.
+
+    Also checks every selected path exists, so a renamed test file cannot
+    quietly drop out of the gate.
+    """
+    import yaml as _yaml
+
+    wf_path = ROOT / ".github" / "workflows" / "oracle.yml"
+    assert wf_path.is_file(), f"missing {wf_path}"
+    wf = _yaml.safe_load(wf_path.read_text())
+    include = wf["jobs"]["oracle"]["strategy"]["matrix"]["include"]
+    manifest = _yaml.safe_load(
+        (ROOT / "tests" / "science_sources.yaml").read_text())["oracles"]
+
+    covered = set()
+    for entry in include:
+        family = entry["family"]
+        assert family in manifest, (
+            f"oracle.yml runs family {family!r}, absent from "
+            f"science_sources.yaml")
+        assert entry["commit"] == manifest[family]["commit"], (
+            f"oracle.yml pins {family} at {entry['commit']} but the manifest "
+            f"says {manifest[family]['commit']}; update both together")
+        covered.add(family)
+        for rel in entry["select"].split():
+            assert (ROOT / rel).is_file(), (
+                f"oracle.yml selects {rel}, which does not exist")
+
+    # vulcan3_vm_branch has no test file yet; only assert what is claimed.
+    used_in_tests = set()
+    for f in sorted((ROOT / "tests").glob("test_*.py")):
+        for fam in manifest:
+            if f'"{fam}"' in f.read_text():
+                used_in_tests.add(fam)
+    missing = sorted(used_in_tests - covered)
+    assert not missing, (
+        f"oracle families {missing} are used by tests but no oracle.yml job "
+        f"runs them, so the release gate would never exercise them")

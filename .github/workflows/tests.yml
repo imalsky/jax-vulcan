@@ -21,12 +21,14 @@ jobs:
       - name: Show resolved versions
         run: python -c "import jax, numpy, scipy, vulcan_jax; print('jax', jax.__version__, '| numpy', numpy.__version__, '| scipy', scipy.__version__, '| vulcan_jax', vulcan_jax.__version__)"
       # The master-oracle comparison tests skip on their own: $VULCAN_MASTER_DIR
-      # is unset here, so require_oracle() skips with the clone commands. There
-      # is deliberately no oracle job yet -- it would need two upstream
-      # checkouts (the manifest pins two families at different commits) plus a
-      # FastChem build. A release job that wants them enforced sets
-      # VULCAN_JAX_REQUIRE_ORACLE=1 so a missing oracle FAILS instead of
-      # skipping. The NH3 batched-condensation subprocess test takes ~10 min on
+      # is unset here, so require_oracle() skips with the clone commands. They
+      # are ENFORCED in the separate `oracle.yml` workflow (manual dispatch +
+      # weekly), which clones the two pinned upstream revisions -- the manifest
+      # pins two families at different commits, so one checkout can never
+      # satisfy both -- builds FastChem, and sets VULCAN_JAX_REQUIRE_ORACLE=1
+      # so a missing oracle FAILS instead of skipping. Keeping it out of this
+      # per-push job is deliberate: it is slow and needs two clones.
+      # The NH3 batched-condensation subprocess test takes ~10 min on
       # a laptop and longer on this runner, so it stays a local-only test.
       # ALLOW_MISSING_FIXTURES: the large .npz test fixtures are not in the git
       # repo; this is the suite's own reduced-coverage switch for such machines.

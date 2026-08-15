@@ -429,10 +429,17 @@ A wrong revision, a dirty tree, or an unset variable skips with the exact clone
 commands, and `VULCAN_JAX_REQUIRE_ORACLE=1` turns those skips into failures.
 
 The manifest pins two families at different commits, so one run cannot satisfy
-both. Measured 2026-08-14: 304 passed and 7 skipped on `80f75b9`
-(`vulcan2_ncho`), and the three tests that skip there pass on `8970337`
+both. Measured 2026-08-14: 310 passed and 10 skipped on `80f75b9`
+(`vulcan2_ncho`), and the tests that skip there pass on `8970337`
 (`vulcan2_fastchem_ps_order`). Slow tests, including the adjoint ones, run only
 when `VULCAN_JAX_RUN_SLOW=1`.
+
+Continuous integration runs both pins in the separate `oracle` workflow (manual
+dispatch plus weekly), one job per family, each with `REQUIRE_ORACLE` set so a
+missing or wrong-revision checkout fails rather than skips. It also checks that
+the oracle clone comes back byte-clean, because upstream setup code rewrites
+files in place. The per-push `tests` workflow leaves the comparisons skipped:
+it would need two clones and a FastChem build.
 
 Two tests are sensitive to the JAX version and the processor, and they are the
 reason continuous integration pins JAX 0.6.2. Both compare a number against a

@@ -1,0 +1,92 @@
+name: oracle
+
+# The upstream-comparison suite, run against REAL pinned checkouts of
+# exoclime/VULCAN. Separate from `tests.yml` because it is slow and needs
+# things a per-push job should not: two upstream clones at DIFFERENT commits
+# and a compiled FastChem binary.
+#
+# Why two jobs and not one: tests/science_sources.yaml pins two oracle
+# families at different revisions, and reaction indices are POSITIONAL, so a
+# single checkout can only ever satisfy one of them. Anything trying to run
+# both from one clone would silently skip half the comparisons.
+#
+# VULCAN_JAX_REQUIRE_ORACLE=1 is the point of this workflow: it turns a
+# missing or wrong-revision oracle into a FAILURE instead of a skip. Without
+# it a broken clone step would look green (skipped != passed).
+
+on:
+  workflow_dispatch:        # release gate: run it deliberately before tagging
+  schedule:
+    - cron: "17 5 * * 1"    # and weekly, so upstream drift is noticed early
+
+jobs:
+  oracle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false      # one family failing must not hide the other
+      matrix:
+        include:
+          - family: vulcan2_ncho
+            commit: 80f75b9bf243a5a8db55eb04a5806269f56125e7
+            # every upstream-comparison file except the FastChem P/S one
+            select: >-
+              tests/test_chem.py tests/test_chem_rhs_codegen.py
+              tests/test_default_master_parity.py tests/test_diffusion.py
+              tests/test_diffusion_variants.py tests/test_gibbs.py
+              tests/test_ini_abun.py tests/test_network_parse.py
+              tests/test_oracle_pinning.py tests/test_outer_loop_atm_refresh.py
+              tests/test_photo.py tests/test_rates.py tests/test_ros2_step.py
+              tests/test_w39b_fastchem_invariant.py
+          - family: vulcan2_fastchem_ps_order
+            commit: 897033769d62caa27ee44f7360dcaba1e947919c
+            select: tests/test_fastchem_element_order.py
+
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      # Same pin as tests.yml: newer jax breaks the batch-vs-solo bit-identity
+      # contract in test_vmap_photo_batch.
+      - name: Install
+        run: python -m pip install -e ".[dev,plot]" "jax==0.6.2"
+
+      # A DIFFERENT directory per family so neither job can accidentally see
+      # the other's revision. require_oracle checks the exact commit AND a
+      # clean worktree, so a dirty or wrong clone fails loudly here.
+      - name: Clone the pinned upstream oracle
+        run: |
+          git clone --quiet https://github.com/exoclime/VULCAN "$RUNNER_TEMP/oracle-${{ matrix.family }}"
+          git -C "$RUNNER_TEMP/oracle-${{ matrix.family }}" checkout --quiet ${{ matrix.commit }}
+          test -z "$(git -C "$RUNNER_TEMP/oracle-${{ matrix.family }}" status --porcelain)"
+
+      # oracle_worktree() stages OUR built binary into its disposable copy of
+      # the oracle (upstream ships FastChem source, never a binary), so the
+      # build has to happen before any ini_mix='EQ' comparison runs.
+      - name: Build FastChem
+        run: |
+          make -C src/vulcan_jax/fastchem_vulcan
+          test -x src/vulcan_jax/fastchem_vulcan/fastchem
+
+      - name: Run the ${{ matrix.family }} comparisons
+        env:
+          VULCAN_MASTER_DIR: ${{ runner.temp }}/oracle-${{ matrix.family }}
+          VULCAN_JAX_REQUIRE_ORACLE: "1"
+          VULCAN_JAX_ALLOW_MISSING_FIXTURES: "1"
+        run: python -m pytest ${{ matrix.select }} -q --tb=short -ra
+
+      # The oracle must come back byte-clean: upstream setup rewrites files in
+      # place (make_chem_funs renumbers a network file, FastChem writes into
+      # fastchem_vulcan/), which is why every test works on a COPY.
+      # oracle_worktree asserts this per test; this is the end-to-end check.
+      - name: The oracle checkout must be unchanged
+        run: |
+          cd "$RUNNER_TEMP/oracle-${{ matrix.family }}"
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "The oracle checkout was MUTATED by the test run:"
+            git status --porcelain
+            exit 1
+          fi
