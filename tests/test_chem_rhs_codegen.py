@@ -208,10 +208,18 @@ def _hd209_repeated_final_layer_fixture() -> tuple[
     if not saved.exists():
         saved = ROOT / "output" / "HD209.vul"
     if not saved.exists():
-        pytest.fail(
+        # This oracle is a converged run, not a checked-in .npz: it lives in the
+        # sibling jax_paper checkout or in local output/, so a bare clone (CI)
+        # cannot have it. Honour the suite's own reduced-coverage switch instead
+        # of failing every machine that has not run HD209 -- but only that
+        # switch, so an unset environment still fails rather than skips.
+        _missing = (
             "HD209 steady-state oracle absent; run "
             "`python -m vulcan_jax.vulcan_jax_cli --config HD209`"
         )
+        if os.environ.get("VULCAN_JAX_ALLOW_MISSING_FIXTURES") == "1":
+            pytest.skip(_missing)
+        pytest.fail(_missing)
 
     with saved.open("rb") as handle:
         state = pickle.load(handle)
