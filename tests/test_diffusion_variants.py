@@ -19,29 +19,13 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 
-# Oracle test: requires VULCAN-master sibling for the upstream op.diffdf_vm /
-# op.diffdf_settling reference. Skip cleanly when absent.
-def _oracle_dir():
-    """Configured upstream oracle checkout, or a non-existent sentinel path
-    (so the `is_dir()` skip sites work without a None branch)."""
-    import os
-    from pathlib import Path as _P
+from oracle import oracle_dir_or_skip  # noqa: E402
 
-    raw = os.environ.get("VULCAN_MASTER_DIR")
-    return _P(raw).expanduser().resolve() if raw else _P("/nonexistent/VULCAN-oracle-unset")
-
-
-# Oracle location comes from $VULCAN_MASTER_DIR, never from a sibling guess:
-# an auto-detected ../VULCAN-master pins nothing. Do not restore the fallback.
-VULCAN_MASTER = _oracle_dir()
-if not VULCAN_MASTER.is_dir():
-    pytest.skip(
-        f"upstream oracle not configured (looked at {VULCAN_MASTER}). Set "
-        f"$VULCAN_MASTER_DIR to a clean clone at the commit pinned in "
-        f"tests/science_sources.yaml; "
-        "this comparison test requires the upstream sibling repo.",
-        allow_module_level=True,
-    )
+# The oracle location comes from $VULCAN_MASTER_DIR only, never a sibling
+# guess. The PARENT process verifies the pinned revision and a clean tree
+# (run_oracle_subprocess -> oracle_worktree -> require_oracle) and points
+# this at a temporary COPY; see oracle.oracle_dir_or_skip.
+VULCAN_MASTER = oracle_dir_or_skip("this diffusion-variant comparison")
 warnings.filterwarnings("ignore")
 
 
@@ -177,20 +161,10 @@ def main() -> int:
 @pytest.mark.master_serial
 def test_main():
     """Run the master comparison in a fresh Python process."""
-    import subprocess
-    from oracle import oracle_worktree
+    from oracle import run_oracle_subprocess
 
-    with oracle_worktree("vulcan2_ncho", "cfg_examples/vulcan_cfg_HD189.py") as master:
-        env = os.environ.copy()
-        env["VULCAN_MASTER_DIR"] = str(master)
-        result = subprocess.run(
-            [sys.executable, str(Path(__file__).resolve())],
-            capture_output=True, text=True, env=env)
-    assert result.returncode == 0, (
-        f"subprocess exited {result.returncode}\n"
-        f"--- stdout ---\n{result.stdout}\n"
-        f"--- stderr ---\n{result.stderr}"
-    )
+    run_oracle_subprocess(__file__, "vulcan2_ncho",
+                          "cfg_examples/vulcan_cfg_HD189.py")
 
 
 if __name__ == "__main__":

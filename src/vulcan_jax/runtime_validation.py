@@ -8,6 +8,23 @@ from pathlib import Path
 from . import chem_funs
 
 
+# The validator bound-checks knobs a config DECLARES; it never supplies one.
+# A literal default here would be a second copy of a number the YAML owns --
+# and outer_loop.py already owns the runtime back-compat fallback -- so the
+# two could drift and this module would then validate a value the run never
+# uses. `_declared` returns None for an undeclared knob and the caller skips
+# it. `tests/test_runtime_validation_knobs.py` pins that every shipped config
+# declares every knob checked here, so the skip cannot hide anything in
+# practice.
+_ABSENT = object()
+
+
+def _declared(cfg, key, cast=float):
+    """Cast a declared knob, or None when ``cfg`` does not declare it."""
+    v = getattr(cfg, key, _ABSENT)
+    return None if v is _ABSENT else cast(v)
+
+
 # Default FastChem abundances (Lodders 2019 / Wogan & Tsai 2023). Rocky
 # elements are pinned to -3.0: no shipped network has Mg/Si/Fe/... species,
 # and leaving them at solar silently sequesters ~19% of O into oxides that
@@ -257,73 +274,75 @@ def _validate_numerical_bounds(cfg) -> list[str]:
 
     # Adaptive rtol controller
     use_adapt = bool(getattr(cfg, "use_adapt_rtol", False))
-    adapt_rtol_dec = float(getattr(cfg, "adapt_rtol_dec", 0.75))
-    adapt_rtol_inc = float(getattr(cfg, "adapt_rtol_inc", 1.25))
-    if not (0.0 < adapt_rtol_dec < 1.0):
+    adapt_rtol_dec = _declared(cfg, "adapt_rtol_dec")
+    adapt_rtol_inc = _declared(cfg, "adapt_rtol_inc")
+    if adapt_rtol_dec is not None and not (0.0 < adapt_rtol_dec < 1.0):
         errors.append(
             f"adapt_rtol_dec={adapt_rtol_dec} must satisfy 0 < adapt_rtol_dec < 1."
         )
-    if not (adapt_rtol_inc > 1.0):
+    if adapt_rtol_inc is not None and not (adapt_rtol_inc > 1.0):
         errors.append(
             f"adapt_rtol_inc={adapt_rtol_inc} must satisfy adapt_rtol_inc > 1."
         )
     for key in ("adapt_rtol_dec_period", "adapt_rtol_inc_period"):
-        v = int(getattr(cfg, key, 1))
-        if v < 1:
+        v = _declared(cfg, key, int)
+        if v is not None and v < 1:
             errors.append(f"{key}={v} must be >= 1.")
-    adapt_loss_mul = float(getattr(cfg, "adapt_rtol_loss_mul", 2.0))
-    if adapt_loss_mul <= 1.0:
+    adapt_loss_mul = _declared(cfg, "adapt_rtol_loss_mul")
+    if adapt_loss_mul is not None and adapt_loss_mul <= 1.0:
         errors.append(
             f"adapt_rtol_loss_mul={adapt_loss_mul} must be > 1 (it relaxes the loss criterion)."
         )
-    inc_loss_thresh = float(getattr(cfg, "adapt_rtol_inc_loss_thresh", 2e-4))
-    if inc_loss_thresh <= 0.0:
+    inc_loss_thresh = _declared(cfg, "adapt_rtol_inc_loss_thresh")
+    if inc_loss_thresh is not None and inc_loss_thresh <= 0.0:
         errors.append(f"adapt_rtol_inc_loss_thresh={inc_loss_thresh} must be > 0.")
-    loss_eps = float(getattr(cfg, "loss_eps", 1e-1))
-    if use_adapt and inc_loss_thresh >= loss_eps:
+    loss_eps = _declared(cfg, "loss_eps")
+    if use_adapt and None not in (inc_loss_thresh, loss_eps) \
+            and inc_loss_thresh >= loss_eps:
         errors.append(
             f"adapt_rtol_inc_loss_thresh={inc_loss_thresh} must be < loss_eps={loss_eps} "
             f"(otherwise rtol increases never gate on loss)."
         )
 
     # rtol bounds
-    rtol = float(getattr(cfg, "rtol", 0.2))
-    rtol_min = float(getattr(cfg, "rtol_min", 0.0))
-    rtol_max = float(getattr(cfg, "rtol_max", 1.0))
-    if not (rtol_min <= rtol_max):
+    rtol = _declared(cfg, "rtol")
+    rtol_min = _declared(cfg, "rtol_min")
+    rtol_max = _declared(cfg, "rtol_max")
+    if None not in (rtol_min, rtol_max) and not (rtol_min <= rtol_max):
         errors.append(f"rtol_min={rtol_min} must be <= rtol_max={rtol_max}.")
-    if use_adapt and not (rtol_min <= rtol <= rtol_max):
+    if use_adapt and None not in (rtol, rtol_min, rtol_max) \
+            and not (rtol_min <= rtol <= rtol_max):
         errors.append(
             f"rtol={rtol} must lie in [rtol_min={rtol_min}, rtol_max={rtol_max}] "
             f"when use_adapt_rtol=True."
         )
 
     # Per-step retry cap
-    bmr = int(getattr(cfg, "batch_max_retries", 64))
-    if bmr < 1:
+    bmr = _declared(cfg, "batch_max_retries", int)
+    if bmr is not None and bmr < 1:
         errors.append(f"batch_max_retries={bmr} must be >= 1.")
 
     # Step-size knobs
-    safety = float(getattr(cfg, "step_size_safety", 0.9))
-    if not (0.0 < safety < 1.0):
+    safety = _declared(cfg, "step_size_safety")
+    if safety is not None and not (0.0 < safety < 1.0):
         errors.append(
             f"step_size_safety={safety} must satisfy 0 < step_size_safety < 1 "
             f"(safety factor on the Ros2 step prediction)."
         )
-    zdf = float(getattr(cfg, "step_size_zero_delta_frac", 0.01))
-    if zdf <= 0.0:
+    zdf = _declared(cfg, "step_size_zero_delta_frac")
+    if zdf is not None and zdf <= 0.0:
         errors.append(f"step_size_zero_delta_frac={zdf} must be > 0.")
 
     # PI step-size controller exponents (only consumed when
     # use_pi_controller=True; alpha=1, beta=0 reproduces I-control).
-    pi_a = float(getattr(cfg, "pi_controller_alpha", 0.7))
-    if not (0.0 < pi_a <= 1.0):
+    pi_a = _declared(cfg, "pi_controller_alpha")
+    if pi_a is not None and not (0.0 < pi_a <= 1.0):
         errors.append(
             f"pi_controller_alpha={pi_a} must satisfy 0 < pi_controller_alpha <= 1 "
             f"(proportional exponent of the PI step-size controller)."
         )
-    pi_b = float(getattr(cfg, "pi_controller_beta", 0.4))
-    if not (0.0 <= pi_b <= 1.0):
+    pi_b = _declared(cfg, "pi_controller_beta")
+    if pi_b is not None and not (0.0 <= pi_b <= 1.0):
         errors.append(
             f"pi_controller_beta={pi_b} must satisfy 0 <= pi_controller_beta <= 1 "
             f"(integral/history exponent of the PI step-size controller)."
@@ -331,23 +350,23 @@ def _validate_numerical_bounds(cfg) -> list[str]:
 
     # Photo-frequency switch
     for key in ("photo_switch_longdy_thresh", "photo_switch_longdydt_thresh"):
-        v = float(getattr(cfg, key, 1.0))
-        if v <= 0.0:
+        v = _declared(cfg, key)
+        if v is not None and v <= 0.0:
             errors.append(f"{key}={v} must be > 0.")
 
     # Hycean pin time
-    hpt = float(getattr(cfg, "hycean_pin_time", 1e6))
-    if hpt <= 0.0:
+    hpt = _declared(cfg, "hycean_pin_time")
+    if hpt is not None and hpt <= 0.0:
         errors.append(f"hycean_pin_time={hpt} must be > 0.")
 
     # FastChem Newton solver (only checked when ini_mix in {EQ, const_lowT})
     ini_mix = getattr(cfg, "ini_mix", None)
     if ini_mix in ("EQ", "const_lowT"):
-        max_iter = int(getattr(cfg, "fastchem_newton_max_iter", 50))
-        if max_iter < 1:
+        max_iter = _declared(cfg, "fastchem_newton_max_iter", int)
+        if max_iter is not None and max_iter < 1:
             errors.append(f"fastchem_newton_max_iter={max_iter} must be >= 1.")
-        tol = float(getattr(cfg, "fastchem_newton_tol", 1e-12))
-        if tol <= 0.0:
+        tol = _declared(cfg, "fastchem_newton_tol")
+        if tol is not None and tol <= 0.0:
             errors.append(f"fastchem_newton_tol={tol} must be > 0.")
 
     # loss_ex must be a subset of atom_list
@@ -360,38 +379,49 @@ def _validate_numerical_bounds(cfg) -> list[str]:
         )
 
     # Gravity is derived from Mp + Rp (g = G*Mp/Rp^2); both must be positive.
-    Mp = getattr(cfg, "Mp", None)
-    Rp = float(getattr(cfg, "Rp", 0.0))
-    if Mp is None or float(Mp) <= 0.0:
+    Mp = _declared(cfg, "Mp")
+    Rp = _declared(cfg, "Rp")
+    if Mp is None or Mp <= 0.0:
         errors.append(
-            f"Mp={Mp} must be set and > 0 (planet mass, g) to derive gs = G*Mp/Rp^2."
+            f"Mp={'not declared' if Mp is None else Mp} must be set and > 0 "
+            f"(planet mass, g) to derive gs = G*Mp/Rp^2."
         )
-    if Rp <= 0.0:
-        errors.append(f"Rp={Rp} must be > 0 (planet radius, cm) to derive gs.")
+    if Rp is None or Rp <= 0.0:
+        errors.append(
+            f"Rp={'not declared' if Rp is None else Rp} must be set and > 0 "
+            f"(planet radius, cm) to derive gs."
+        )
 
     # High-temperature bottom cut
     if bool(getattr(cfg, "high_temp_cut", False)):
-        htc_K = float(getattr(cfg, "high_temp_cut_K", 3500.0))
-        htc_P = float(getattr(cfg, "high_temp_cut_P", 1e6))
-        if htc_K <= 0.0:
+        htc_K = _declared(cfg, "high_temp_cut_K")
+        htc_P = _declared(cfg, "high_temp_cut_P")
+        if htc_K is not None and htc_K <= 0.0:
             errors.append(f"high_temp_cut_K={htc_K} must be > 0 (K).")
-        if htc_P <= 0.0:
+        if htc_P is not None and htc_P <= 0.0:
             errors.append(f"high_temp_cut_P={htc_P} must be > 0 (dyne/cm^2).")
 
     # --- numerical core -----------------------------------------------------
     # Knobs a typo makes silently wrong rather than loudly broken (nz=1 and an
     # inverted P_b/P_t both ran to completion). Sign/ordering checks only; no
     # opinion about what a good value is.
-    nz = int(getattr(cfg, "nz", 150))
-    if nz < 3:
+    nz = _declared(cfg, "nz", int)
+    if nz is None:
+        errors.append("nz is not declared; every config must set the layer count.")
+    elif nz < 3:
         errors.append(
             f"nz={nz} must be >= 3. The containers allocate nz-1 interface and "
             f"nz+1 edge arrays, so nz<=2 is degenerate (nz=1 gives an empty "
             f"interface grid and the run completes on a meaningless column)."
         )
-    P_b = float(getattr(cfg, "P_b", 1e9))
-    P_t = float(getattr(cfg, "P_t", 1e-2))
-    if P_b <= 0.0 or P_t <= 0.0:
+    P_b = _declared(cfg, "P_b")
+    P_t = _declared(cfg, "P_t")
+    if P_b is None or P_t is None:
+        errors.append(
+            "P_b and P_t must both be declared (bottom and top pressure, "
+            "dyne/cm^2); the grid cannot be built without them."
+        )
+    elif P_b <= 0.0 or P_t <= 0.0:
         errors.append(f"P_b={P_b:g} and P_t={P_t:g} must both be > 0 (dyne/cm^2).")
     elif P_b <= P_t:
         errors.append(
@@ -402,19 +432,19 @@ def _validate_numerical_bounds(cfg) -> list[str]:
 
     # Strictly-positive scalars. Each would produce NaN/garbage rather than an
     # error if left unchecked.
-    for key, default, unit in (
-        ("atol", 1e-1, "absolute tolerance floor"),
-        ("mtol", 1e-22, "mixing-ratio floor"),
-        ("mtol_conv", 1e-14, "convergence mixing-ratio floor"),
-        ("pos_cut", 0.0, "positive clip threshold"),
-        ("dttry", 1e-8, "initial timestep, s"),
-        ("dt_min", 1e-14, "minimum timestep, s"),
-        ("dt_max", 1e10, "maximum timestep, s"),
-        ("yconv_cri", 1e-2, "convergence criterion"),
-        ("yconv_min", 1e-1, "loose-branch convergence gate"),
-        ("slope_cri", 1e-4, "slope criterion"),
-        ("r_star", 1.0, "stellar radius, Rsun"),
-        ("orbit_radius", 1.0, "orbital distance, AU"),
+    for key, unit in (
+        ("atol", "absolute tolerance floor"),
+        ("mtol", "mixing-ratio floor"),
+        ("mtol_conv", "convergence mixing-ratio floor"),
+        ("pos_cut", "positive clip threshold"),
+        ("dttry", "initial timestep, s"),
+        ("dt_min", "minimum timestep, s"),
+        ("dt_max", "maximum timestep, s"),
+        ("yconv_cri", "convergence criterion"),
+        ("yconv_min", "loose-branch convergence gate"),
+        ("slope_cri", "slope criterion"),
+        ("r_star", "stellar radius, Rsun"),
+        ("orbit_radius", "orbital distance, AU"),
     ):
         if not hasattr(cfg, key):
             continue
@@ -451,13 +481,8 @@ def _validate_numerical_bounds(cfg) -> list[str]:
             )
 
     # Positive integer counters
-    for key, default in (
-        ("count_min", 120),
-        ("count_max", 10000),
-        ("update_frq", 100),
-        ("conv_step", 500),
-        ("conv_stall_window", 200),
-    ):
+    for key in ("count_min", "count_max", "update_frq", "conv_step",
+                "conv_stall_window"):
         if not hasattr(cfg, key):
             continue
         v = int(getattr(cfg, key))
@@ -515,9 +540,9 @@ def _validate_condensation(cfg) -> list[str]:
             "would silently be zero."
         )
 
-    start_ct = float(getattr(cfg, "start_conden_time", 0.0))
-    stop_ct = float(getattr(cfg, "stop_conden_time", 0.0))
-    if stop_ct < start_ct:
+    start_ct = _declared(cfg, "start_conden_time")
+    stop_ct = _declared(cfg, "stop_conden_time")
+    if None not in (start_ct, stop_ct) and stop_ct < start_ct:
         errors.append(
             f"stop_conden_time={stop_ct} < start_conden_time={start_ct}: the "
             "condensation window would never open."

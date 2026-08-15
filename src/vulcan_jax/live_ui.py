@@ -40,7 +40,12 @@ _TEX_LABELS = {
     "NH3": "NH$_3$",
 }
 
-_TABLEAU20 = [
+# VULCAN-master's Tableau 20 palette, 0-1 normalized. THE one copy: it is
+# published in the .vul `parameter` dict (`para.tableau20`), which upstream
+# plot_py/ scripts read, so the values are a compatibility contract. Three
+# separately-maintained copies lived in live_ui, legacy_io and state until
+# 2026-08-14.
+_TABLEAU20_RGB255 = [
     (31, 119, 180),
     (255, 127, 14),
     (44, 160, 44),
@@ -62,7 +67,43 @@ _TABLEAU20 = [
     (219, 219, 141),
     (158, 218, 229),
 ]
-_TABLEAU20 = [(r / 255.0, g / 255.0, b / 255.0) for (r, g, b) in _TABLEAU20]
+
+
+def master_tableau20() -> list[tuple[float, float, float]]:
+    """VULCAN-master's normalized Tableau 20 plotting palette."""
+    return [(r / 255.0, g / 255.0, b / 255.0) for r, g, b in _TABLEAU20_RGB255]
+
+
+_TABLEAU20 = master_tableau20()
+
+
+def import_plt():
+    """Lazy-import pyplot, selecting a backend by ONE merged policy.
+
+    The two former policies disagreed: `legacy_io._import_plt` honoured
+    `VULCAN_HEADLESS_PLOT` and ignored the display, while `LiveUI._ensure_mpl`
+    checked `DISPLAY`/`MPLBACKEND`/platform and ignored `VULCAN_HEADLESS_PLOT`.
+    Setting the project's own variable therefore did nothing for the live UI.
+    The merged order, most explicit first:
+
+    1. `MPLBACKEND` set  -> matplotlib already honours it; touch nothing.
+    2. `VULCAN_HEADLESS_PLOT` set -> Agg (the project's explicit override).
+    3. No `DISPLAY`, and not macOS -> Agg (there is no display to draw on;
+       macOS is excluded because its native backend needs no DISPLAY).
+    4. Otherwise leave the default backend alone.
+
+    Import is lazy so a run that never plots does not pay for matplotlib.
+    """
+    import matplotlib
+
+    if not os.environ.get("MPLBACKEND"):
+        if os.environ.get("VULCAN_HEADLESS_PLOT"):
+            matplotlib.use("Agg")
+        elif not os.environ.get("DISPLAY") and "darwin" not in os.uname().sysname.lower():
+            matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    return plt
 
 
 def any_live_flag_on(cfg=None) -> bool:
@@ -95,17 +136,7 @@ class LiveUI:
     def _ensure_mpl(self):
         """Lazy-import matplotlib with a headless-safe backend; cache the module."""
         if self._plt is None:
-            import matplotlib
-
-            if (
-                not os.environ.get("DISPLAY")
-                and not os.environ.get("MPLBACKEND")
-                and "darwin" not in os.uname().sysname.lower()
-            ):
-                matplotlib.use("Agg")
-            import matplotlib.pyplot as plt
-
-            self._plt = plt
+            self._plt = import_plt()
         return self._plt
 
     def _ensure_species_index(self):

@@ -17,6 +17,7 @@ import numpy as np
 from .config import default_config
 from .phy_const import G_grav, Navo, au, kb, r_sun
 from ._paths import resolve_data_path
+from .atm_refresh import recompute_vm_jax
 
 # x64 is required for the rate-constant dynamic range.
 jax.config.update("jax_enable_x64", True)
@@ -710,24 +711,16 @@ def compute_mol_diff(
         alpha_j = jnp.asarray(alpha_arr, dtype=jnp.float64)
         # Interface-centered upwind drift velocity (vm_branch op.update_mu_dz):
         # vm = -Dzz * (1/H_i - 1/Hp + thermal) on cell interfaces, using the
-        # same arithmetic means compute_mu_dz_g forms for Ti/Hpi/dzi.
-        Ti = 0.5 * (Tco_j[:-1] + Tco_j[1:])  # (nz-1,)
+        # same arithmetic means compute_mu_dz_g forms for Ti/Hpi/dzi. ONE
+        # implementation, in atm_refresh: the runner refreshes vm in-loop with
+        # the identical formula, and three separately-maintained copies would
+        # let a reassociation move float64 bits and churn step counts.
         Hpi = 0.5 * (Hp_j[:-1] + Hp_j[1:])  # (nz-1,)
         dzi = 0.5 * (dz_j[1:] + dz_j[:-1])  # (nz-1,)
-        delta_Ti = Tco_j[1:] - Tco_j[:-1]  # (nz-1,) = T[k+1]-T[k]
-        # Per-species 1/H_i at cell centers; average H_i across adjacent cells
-        # and invert back (harmonic-type interface average; vm_branch form).
-        inv_Hi = ms_j[None, :] * g_j[:, None] / (Navo * kb * Tco_j[:, None])  # (nz, ni)
-        H_cell = 1.0 / inv_Hi
-        Hi_interf = 1.0 / (0.5 * (H_cell[:-1] + H_cell[1:]))  # (nz-1, ni)
-        drift = (
-            Hi_interf
-            - 1.0 / Hpi[:, None]
-            + alpha_j[None, :] / Ti[:, None] * delta_Ti[:, None] / dzi[:, None]
-        )
         # `Dzz` is already zeroed on the non-gas interfaces above, so vm
         # vanishes there with no separate condensation gate.
-        vm = -Dzz * drift  # (nz-1, ni)
+        vm = recompute_vm_jax(g_j, Hpi, dzi, Dzz, ms_j, alpha_j, Tco_j,
+                              kb, Navo)  # (nz-1, ni)
         out["vm"] = np.asarray(vm)
     return out
 

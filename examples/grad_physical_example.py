@@ -75,7 +75,6 @@ def main() -> int:
         use_moldiff=True,
         use_vm_mol=False,
         use_settling=False,
-        use_condense=False,
         use_topflux=False,
         use_botflux=False,
     )

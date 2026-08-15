@@ -933,46 +933,15 @@ This is the single source of truth for where VULCAN-JAX intentionally diverges
 from upstream VULCAN, and for confirmed bugs in VULCAN-master. It is also the
 "bug guide" the standing rules point at.
 
-### Policy (LLMs: read this first)
+### Scope of this guide
 
-1. **The goal is parity with VULCAN-master.** VULCAN-JAX must reproduce
-   VULCAN-master's science. Match master by default. Any intentional divergence
-   must (a) fix a **confirmed, results-affecting** defect and (b) be recorded in
-   this guide with `file:line` on both sides. If a behavior is not listed here, do
-   not "improve" it -- reproduce master.
-
-2. **VULCAN-master is the oracle; do not edit or refactor it.** If you find a real
-   bug in VULCAN-master, do **not** patch master. Document it here: under
-   "Corrected in the JAX port" if the JAX port fixes it (also allowlist any
-   data-file divergence in `tools/audit_master_parity.py`), or under "Bugs still
-   present" if the port inherits it. Give `file:line` and the measured or
-   estimated impact.
-
-2b. **"What does upstream do?" is answered by FETCHING upstream, never by reading
-   `../VULCAN-master/`.** That directory is an unversioned copy (`git rev-parse`
-   fails in it) and it is **contaminated**: verified 2026-07-30, it contains
-   VULCAN-JAX's own stall detector (`store.py:204-209`, `op.py:1078-1104`), its
-   `conv_stall_window` knob (`vulcan_cfg.py:141`,
-   `cfg_examples/vulcan_cfg_HD189.py:122`), its `wall_clock_max`/`end_case=4`
-   exit (`op.py:1119-1126`), and a 13-species `conver_ignore`
-   (`vulcan_cfg.py:183`) that exists in no upstream repository. Citing it as
-   upstream is how a wrong config change shipped on 2026-07-26 (`eebc8a5`) and
-   2026-07-30 (`2fdc66b`). Fetch instead:
-   `raw.githubusercontent.com/exoclime/VULCAN/master/<path>` for VULCAN 2, and
-   `shami-EEG/VULCAN` `vm_branch` for VULCAN 3 features.
-   `tools/audit_master_parity.py` now refuses to run against a checkout carrying
-   VULCAN-JAX-only identifiers, and `tests/test_default_master_parity.py` skips
-   (loudly, not passes) rather than reporting a circular parity verdict.
-   The copy is still useful as a *numerical* oracle for per-step kernel
-   comparisons, which do not depend on the contaminated convergence/config code.
-
-3. **Only real, results-affecting bugs belong here.** A "real bug" changes a
-   number a user relies on, crashes, or silently corrupts a result on a path that
-   can actually run. Do **not** log or report comment typos, stale docstrings,
-   dead code, style, defensible approximations, or issues on paths no shipped
-   config selects. The test is: *would this change a result someone trusts?* If
-   no, drop it silently. Keeping this guide short is deliberate -- it is meant to
-   be read end to end without wading through trivia.
+Only real, results-affecting bugs are listed: something that changes a number a
+user relies on, crashes, or silently corrupts a result on a path a shipped
+config can actually select. Comment typos, stale docstrings, dead code, style,
+and defensible approximations are deliberately absent, so the guide stays short
+enough to read end to end. The working rules behind it (match master by
+default, never patch the oracle, answer "what does upstream do" by fetching
+upstream) are maintainer directives and live in `CLAUDE.md`.
 
 Conventions: locations are `file:line`. "master" = the workspace
 `../VULCAN-master` validation oracle **for per-step numerical comparisons only**
@@ -1805,167 +1774,43 @@ See `examples/grad_reverse_example.py` and
 
 ---
 
-### Condensation contract: project-wide report and scope decision (F1-F5)
+### Condensation contract (F1-F5)
 
-Date:    2026-07-15
-Status:  Implemented (F1-F5 landed with guard tests).
-Scope:   VULCAN-JAX, vulcan-retrieval, vulcan-jwst-tool.
-Related: notes.md, "Route B record" (the shelved open-system smooth-rainout
-         plan + B0A decision record); steady_state_grad.py (the first-order
-         adjoint machinery).
-
-#### 1. The question, and the short answer
-
-Goal: make condensation "usable for differentiation" across all three repos.
-
-The answer depends entirely on what "usable" means, and the two meanings have
-opposite cost:
-
-- **(A) Honest, bounded differentiation.** Forward-mode `jvp` works on a fixed
-  smooth branch; the reverse-mode reaction adjoint gives a conditional
-  (frozen-reservoir) ranking; everything that is not reliably differentiable
-  hard-errors with a clear explanation. This is the **simpler fix**: about 40 to
-  60 lines of guards, labels, and one bypass close, plus tests, spread over the
-  three repos. It touches no solver code and no physics. **It does not need
-  Route B.**
-
-- **(B) Trustworthy total derivatives through condensation.** Reliable
-  `d(spectrum)/dT`, `d(SO2)/d(rate)` including the reservoir-capture history, i.e.
-  what a Fisher matrix or gradient-MALA actually consumes. This requires
-  replacing the pin with a smooth open-system steady state. **That is Route B**,
-  and it reached a measured no-go.
-
-**Recommendation: adopt (A), hard-error (B).** Do not resurrect Route B unless
-the science specifically requires open-system rainout physics and someone owns
-the flux-closure problem that failed. The (B) cases are not a "simpler fix" away;
-they are ill-posed with the current pin, which is exactly why Route B had to
-change the physics to attempt them.
-
-#### 2. Why the pin is not differentiable (root cause)
-
-The upstream `master_pin` methodology (the only condensation path on `main`) is:
-run a condensation window, snapshot the condensable reservoir at the first
-accepted step after `stop_conden_time`, then pin those abundances with
-`fix_species` for the rest of the integration. Three independent obstructions
-follow, and they are separate problems:
+Condensation is supported as a forward model and refused as a differentiation
+target. The reason is the upstream `master_pin` methodology itself, not the
+vapor-pressure formulas: a run integrates a condensation window, snapshots the
+condensable reservoir at the first accepted step after `stop_conden_time`, then
+pins those abundances with `fix_species`. Three independent obstructions follow.
 
 1. **Transient snapshot / path sensitivity.** The snapshot rides the adaptive
-   accepted-step sequence. A small parameter change shifts that sequence, so the
-   perturbed run captures a slightly different drainage state. Forward-mode
-   differentiates the branch the unperturbed run took; finite differences
-   reconverge a different branch. Measured disagreement for the pinned S8 /
-   S8_l_s tangents: relative error about 0.91, i.e. the tangent is roughly
-   91% wrong -- an order-unity failure, NOT a 0.91 agreement ratio and NOT a
-   9% mismatch (`tests/test_condensation_live_tp.py`).
-
-2. **Phase-boundary nonsmoothness.** `max(0, y - y_sat)` switches condensation on
-   and off; the set of condensing layers changes discretely; the NH3 cold trap
-   uses an integer `argmin` that carries no tangent. Away from these switches the
-   smooth formulas are fine; at them the derivative is undefined.
-
+   accepted-step sequence, so a small parameter change captures a different
+   drainage state. Measured for the pinned S8 / S8_l_s tangents: relative error
+   about **0.91**, i.e. the tangent is roughly 91% wrong. That is an
+   order-unity failure, NOT a 0.91 agreement ratio and NOT a 9% mismatch
+   (`tests/test_condensation_live_tp.py`).
+2. **Phase-boundary nonsmoothness.** `max(0, y - y_sat)` switches condensation
+   on and off, the set of condensing layers changes discretely, and the NH3
+   cold trap uses an integer `argmin` that carries no tangent.
 3. **Closed column vs open physics.** The pin conserves sulfur by freezing it;
    real rainout removes it. Neither is the derivative of a smooth physical
    steady state, because the pinned state is not one.
 
 The low-level kernels (`conden.sat_p_jax`, `conden.build_conden_profile`) are
 genuinely differentiable and rebuild every saturation quantity from the live
-temperature. The problem is never the vapor-pressure formula; it is the
-completed, pinned solution.
+temperature. The problem is the completed, pinned solution.
 
-#### 3. Consumer inventory: what each needs, and whether the simpler fix suffices
+The alternative was Route B: replace the pin with an open-system smooth rainout
+plus an imposed deep sulfur reservoir, about 1250 lines across 15 files. Its
+B0C feasibility gate reached a measured **no-go** (flux-closure residual ~26.4%,
+the reference column exhausted its step budget); it is shelved on branch
+`research/smooth-rainout-fisher`, tag `smooth-rainout-b0c-no-go-2026-07-14`, in
+both `jax-vulcan` and `vulcan-retrieval`. Do not resurrect it unless the science
+requires open-system rainout physics and someone owns the flux closure that
+failed. Three cheaper middle paths were considered and rejected.
 
-| # | Consumer | Repo | What it needs | Simpler fix (A) suffices? | Route B needed? |
-|---|---|---|---|---|---|
-| 1 | Forward model, condensation on, no AD | VULCAN-JAX / retrieval synth / jwst forward | Config hardening only | Yes | No |
-| 2 | Forward-mode `jvp` on a fixed smooth branch (d comp / d ln Kzz, away from switches) | VULCAN-JAX | Works today; a "validate your column" caveat | Yes | No |
-| 3 | Reverse-mode reaction ranking `dSO2/d ln k`, conden on | VULCAN-JAX / paper | A conditional-on-frozen-reservoir label | Yes, as a conditional derivative | Only for the total (history-inclusive) derivative |
-| 4 | Input sensitivity `dL/dT`, `dL/dKzz`, conden on | VULCAN-JAX | Hard error | Yes (the fix is to refuse) | Route B is the only path that would deliver it; it failed |
-| 5 | Retrieval gradient-MALA inference, conden on | vulcan-retrieval | Refuse (resolved-config gate) | Yes (refuse) | Route B (failed) |
-| 6 | JWST Fisher, conden on | vulcan-jwst-tool | Already refused | Yes (done) | Route B (failed) |
-| 7 | Hessian, condensation off | VULCAN-JAX / paper | Wire the implicit-root recipe into production | Independent of condensation | No |
-| 8 | Hessian, through condensation | VULCAN-JAX | C2 smoothing | No fix | More than Route B (its sink is C1) |
+**The resulting contract:**
 
-Read across the table: the simpler fix makes every consumer either work (2, 3),
-correctly refuse (4, 5, 6), or become config-hardened (1). The only capabilities
-Route B would add are the total-derivative versions of rows 3 to 6, and those are
-exactly what its B0C feasibility gate no-go'd.
-
-#### 4. The required fixes and guards (the simpler-fix work items)
-
-Most of the guard architecture already exists. What is verified present today:
-core validation of the `condense_sp` support tier and `fix_species`/`use_condense`
-consistency (`runtime_validation.py:373,403-419`); the reaction adjoint hard-errors
-on a condensation state passed without body terms (`steady_state_grad.py:804-814`);
-`make_body_terms` packs both condensation regimes correctly
-(`steady_state_grad.py:1561-1585`); `audit_adjoint_scope` emits error/warning/info
-findings and sets `ok=False` on any error (`steady_state_grad.py:1685-1854,2073`);
-the retrieval refuses conden inference behind `allow_condense_inference`
-(`config_schema.py:494-504`); the retrieval forward wrapper validates
-`use_moldiff` / empty / `use_sat_surfaceH2O` / inert `condense_sp`
-(`vulcan_chem.py:212-251`); and the jwst-tool hard-gates `use_condense` before
-Fisher (`forward.py:240-252`, `app.py:271-276`).
-
-The remaining delta is five items:
-
-**F1 (VULCAN-JAX). Input-sensitivity guard: fix the keyed field, and hard error.**
-`steady_state_input_sensitivity` warns "leading-order only" only when
-`conden_static is not None` (`steady_state_grad.py:1328-1336`), i.e. the in-window
-regime. The regime a real converged condensing run ends in is post-pin, where
-`make_body_terms` sets `conden_static=None` and `fix_mask=<pins>`
-(`1568-1585`); there the warning never fires and `_guard_unmodeled_processes`
-passes it (`terms_pins=True` satisfies the guard at `804`). So `dL/dT` through a
-pinned condensation column returns silently, missing both `d(sat)/dT` and the
-reservoir-capture path. Change: hard-error on any active condensation
-(`conden_static is not None` or `fix_mask is not None` or the `*_l_s`
-fingerprint), with the explanation. Recommended default: raise, with an explicit
-`allow_frozen_condensation_input_grad=True` escape hatch for a knowing user.
-~15 lines.
-
-**F2 (VULCAN-JAX). Reaction adjoint: label the conditional case.** With
-`body_terms.fix_mask` set, the body map holds the reservoir at `fix_y`
-(`steady_state_grad.py:477-479`), so the result is `dL/d ln k` at fixed captured
-reservoir: a valid partial derivative, not the total. It proceeds silently today.
-Set `info["conditional_on_fixed_reservoir"]=True` /
-`info["includes_condensation_history"]=False` plus a one-shot warning. This is the
-most defensible condensation-AD case (rates do not move the saturation curve
-directly), so label rather than forbid; an opt-in `allow_conditional_fixed_reservoir`
-is optional. ~10 lines.
-
-**F3 (VULCAN-JAX). Core forward hardening.** Add to the existing `if use_condense:`
-block in `validate_runtime_config` (`runtime_validation.py:403`): `use_moldiff=False`
-raises (confirmed universal: `Dzz` is zeroed at `atm_setup.py:696` and
-`atm_jax.py:248`, so the growth term `Dg=0` and nothing condenses silently); empty
-`condense_sp` raises; `stop_conden_time < start_conden_time` raises (not checked
-anywhere today). Do not lift the `use_sat_surfaceH2O` refusal into core: that
-constraint is specific to the retrieval's live-`T(P)` rebuild; the standalone
-forward model legitimately supports it. ~10 lines.
-
-**F4 (VULCAN-JAX). Doc cleanup.** Trim the stale `conden_mode` / `smooth_rainout`
-bullet from `CLAUDE.md:154`. That Route B code is not on `main` (zero occurrences
-in `src/`), so the contract should not describe it. ~1 line.
-
-**F5 (vulcan-retrieval). Resolved-config inference gate.** The gate keys on
-`cfg.cfg_overrides.get("use_condense")` (`config_schema.py:494`), but the resolver
-loads a base config first (`load_config(vulcan_cfg_name)`, `vulcan_chem.py:156`) and
-`Earth.yaml` defaults `use_condense: true` (`Earth.yaml:105`). A case pointing at
-such a base without restating the flag in overrides sails past the gate. Keep the
-fast early gate and add an authoritative one on the resolved signal right after
-`chem = build_chem_model(...)` (`retrieval_forward.py:55`): if
-`chem.conden_spec is not None and cfg.run_inference and not cfg.allow_condense_inference:
-raise`. `conden_spec` is the resolved truth (`vulcan_chem.py:651`). ~4 lines.
-
-**Tests.** One unit test per guard's raise path, plus a "condensation contract"
-test that pins the whole policy: a forward run with condensation works; input
-sensitivity raises; the reaction adjoint sets the conditional flags; and the
-retrieval inference gate refuses via the `Earth.yaml`-base bypass.
-
-Total production change is roughly 40 lines plus tests, all in the moderate-to-small
-band. The library changes (F1 to F4) carry the most leverage because the two
-sibling repos inherit them.
-
-#### 5. The resulting contract (what "usable" then means)
-
-| Operation | Condensation policy after F1-F5 |
+| Operation | Condensation policy |
 |---|---|
 | Forward VULCAN run, condensation on | Supported (config-hardened) |
 | JIT / vmap of forward runs | Supported |
@@ -1975,54 +1820,14 @@ sibling repos inherit them.
 | Input adjoint (`dL/dT`, `dL/dKzz`), condensation active | Hard error |
 | Retrieval / MALA inference, condensation on | Hard error |
 | JWST Fisher, condensation on | Hard error |
-| Hessian, condensation active | Hard error (and no production Hessian entry point exists) |
+| Hessian, condensation active | Hard error (no production Hessian entry point exists) |
 
-That is an honest, complete contract: condensation works as a forward model, its
-smooth components stay composable in JAX, and every unreliable full-model
-derivative fails loudly instead of returning a plausible but wrong number.
-
-#### 6. The Hessian (separate and independent)
-
-There is no production Hessian entry point today (only the paper demo). The recipe
-exists and is validated in `jax_paper/scripts/hessian_demo/hessian_lib.py`:
-`hessian = jacfwd(jacfwd(f))` (forward-over-forward, which the runner's
-`lax.while_loop` supports because both orders are `jvp`), plus an `implicit_root`
-wrapper (`lax.custom_root`, implicit-function theorem) that does second-order
-implicit differentiation through a fixed point, checked against FD in
-`_selfcheck_implicit`.
-
-- **Off condensation:** to make the Hessian easy in production, wire that recipe
-  into a `steady_state_hessian` (a `custom_root`-wrapped runner reusing the
-  adjoint's log-scale and null-space deflation at second order). Moderate,
-  self-contained, and entirely independent of the condensation work. It is cheap
-  only for the low-dimensional Hessian the science wants (a few T-P / Z / C-O
-  directions for Laplace evidence or Fisher curvature), not for the full
-  1150-reaction space.
-- **Through condensation:** the first derivative is already piecewise and
-  path-sensitive, so its derivative is undefined at the switches. Even the shelved
-  Route B sink is C1 (a "one-sided C1 hinge"), and its deep-boundary lookup is C0
-  as built (trilinear in ln x, notes.md Route B record, B0A item 3). A
-  meaningful condensation Hessian needs a C2 hinge and a C1 boundary, which is
-  strictly more than Route B attempted.
-
-F1 transitively hard-errors any condensation Hessian, since it would build on the
-input-sensitivity gradient.
-
-#### 7. Route B and the alternatives considered
-
-Route B (open-system rainout plus an imposed deep sulfur reservoir) is not
-"condensation made differentiable": it replaces the physical model, because the
-mass-conserving pin cannot be linearized. About 1250 lines across 15 files.
-Status: the B0C feasibility gate reached a **no-go** (flux-closure residual
-~26.4%, the reference column exhausted its step budget). Shelved to branch
-`research/smooth-rainout-fisher`, tag `smooth-rainout-b0c-no-go-2026-07-14`, in
-both `jax-vulcan` and `vulcan-retrieval`. Fisher through condensation stays
-disabled.
-
-No cheap middle path delivers reliable total derivatives through condensation.
-The three considered and rejected (criterion-gated pin, differentiate only the
-frozen branch, smooth surrogate) and the full sequencing record are in
-`notes.md`, "Condensation contract".
+Condensation works as a forward model, its smooth components stay composable in
+JAX, and every unreliable full-model derivative fails loudly instead of
+returning a plausible but wrong number. The guards landed 2026-07-15 with tests
+and govern vulcan-retrieval and vulcan-jwst-tool too. The consumer inventory,
+the per-item F1-F5 work list with `file:line`, the Hessian discussion, and the
+full Route B record are in `notes.md`.
 
 ## Support
 

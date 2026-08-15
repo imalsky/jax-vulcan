@@ -15,19 +15,12 @@ import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-def _oracle_dir():
-    """Configured upstream oracle checkout, or a non-existent sentinel path
-    (so the `is_dir()` skip sites work without a None branch)."""
-    import os
-    from pathlib import Path as _P
+from oracle import oracle_dir_or_sentinel  # noqa: E402
 
-    raw = os.environ.get("VULCAN_MASTER_DIR")
-    return _P(raw).expanduser().resolve() if raw else _P("/nonexistent/VULCAN-oracle-unset")
-
-
-# Oracle location comes from $VULCAN_MASTER_DIR, never from a sibling guess:
-# an auto-detected ../VULCAN-master pins nothing. Do not restore the fallback.
-VULCAN_MASTER = _oracle_dir()
+# Oracle location from $VULCAN_MASTER_DIR only, never a sibling guess. The
+# parent verifies the pinned revision + clean tree and points this at a
+# temporary COPY; the per-test is_dir() skips below handle "not configured".
+VULCAN_MASTER = oracle_dir_or_sentinel()
 from vulcan_jax._paths import PACKAGE_ROOT
 
 EXPECTED_FREE_O = 5.37e-3 - 2.95e-3

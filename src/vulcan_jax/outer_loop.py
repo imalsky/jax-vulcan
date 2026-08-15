@@ -312,61 +312,69 @@ def _step_size(
     return jnp.clip(dt * h_factor, dt_min, dt_max)
 
 
+def _clip_prologue(y_in, pos_cut: float, nega_cut: float):
+    """Master's per-step clip, shared by both `_make_clip_fn` branches.
+
+    Returns `(y_clip, small_y_inc, nega_y_inc)`. Only the NORMALIZATION that
+    follows differs between the gas-mask and no-mask branches, so this half is
+    written once: two copies of an operation order that must stay bit-faithful
+    to master is a divergence waiting to happen.
+
+    The second rule is master's op.py:2503, which tests the POST-SOLVE ymix
+    (written at op.py:3031-3034, before clip). That value is < mtol for any
+    y<0 cell, so the rule reduces to "zero every negative" and needs no
+    ymix argument at all. Testing the PRE-step ymix instead would leave
+    negative densities and make the all_nonneg gate reject steps master
+    accepts.
+    """
+    small_y_inc = jnp.sum(
+        jnp.where((y_in < pos_cut) & (y_in >= 0), jnp.abs(y_in), 0.0)
+    )
+    nega_y_inc = jnp.sum(
+        jnp.where((y_in > nega_cut) & (y_in <= 0), jnp.abs(y_in), 0.0)
+    )
+    y_clip = jnp.where((y_in < pos_cut) & (y_in >= nega_cut), 0.0, y_in)
+    y_clip = jnp.where(y_clip < 0, 0.0, y_clip)
+    return y_clip, small_y_inc, nega_y_inc
+
+
 def _make_clip_fn(
     non_gas_present: bool,
     gas_indx_mask: jnp.ndarray,
-    mtol: float,
     pos_cut: float,
     nega_cut: float,
 ):
-    """Build a `clip(y_in, ymix_old) → (y_clip, ymix_new, small_inc, nega_inc)`
-    closure.
+    """Build a `clip(y_in) → (y_clip, ymix_new, small_inc, nega_inc)` closure.
 
     `non_gas_present` selects between the gas-only / total `ysum` denominators
-    at closure time so the traced body keeps a single branch.
+    at closure time so the traced body keeps a single branch. THE TWO DIVIDE
+    GUARDS ARE DELIBERATELY DIFFERENT and must stay so -- see each branch.
     """
     if non_gas_present:
         gas_mask_2d = gas_indx_mask  # (ni,) bool
 
-        def clip_fn(y_in, ymix_old):
-            small_y_inc = jnp.sum(
-                jnp.where((y_in < pos_cut) & (y_in >= 0), jnp.abs(y_in), 0.0)
-            )
-            nega_y_inc = jnp.sum(
-                jnp.where((y_in > nega_cut) & (y_in <= 0), jnp.abs(y_in), 0.0)
-            )
-            y_clip = jnp.where((y_in < pos_cut) & (y_in >= nega_cut), 0.0, y_in)
-            # master's second rule (op.py:2503) tests the POST-SOLVE ymix
-            # (written at op.py:3031-3034, before clip), which is < mtol for
-            # any y<0 cell -- so it reduces to "zero every negative". Testing
-            # the pre-step ymix instead would leave negative densities and
-            # make the all_nonneg gate reject steps master accepts.
-            y_clip = jnp.where(y_clip < 0, 0.0, y_clip)
+        def clip_fn(y_in):
+            y_clip, small_y_inc, nega_y_inc = _clip_prologue(
+                y_in, pos_cut, nega_cut)
             ysum = jnp.sum(
                 jnp.where(gas_mask_2d[None, :], y_clip, 0.0), axis=1, keepdims=True
             )
             # Normalization guard: an all-clipped gas layer gives ysum==0
             # (master divides unguarded -> inf/NaN); return 0 mixing there.
-            # A condensate numerator over a 1e-300 floor would overflow, so
-            # `where`, not `maximum`. Bit-identical for normal layers
-            # (ysum ~ n_0 >> 0).
+            # A condensate numerator over a 1e-300 floor would OVERFLOW, so
+            # `where`, not `maximum` -- this is why the two branches differ.
+            # Bit-identical for normal layers (ysum ~ n_0 >> 0).
             ymix_new = jnp.where(ysum > 0, y_clip / ysum, 0.0)
             return y_clip, ymix_new, small_y_inc, nega_y_inc
     else:
 
-        def clip_fn(y_in, ymix_old):
-            small_y_inc = jnp.sum(
-                jnp.where((y_in < pos_cut) & (y_in >= 0), jnp.abs(y_in), 0.0)
-            )
-            nega_y_inc = jnp.sum(
-                jnp.where((y_in > nega_cut) & (y_in <= 0), jnp.abs(y_in), 0.0)
-            )
-            y_clip = jnp.where((y_in < pos_cut) & (y_in >= nega_cut), 0.0, y_in)
-            # As above: master's post-solve-ymix rule reduces to "zero every
-            # negative".
-            y_clip = jnp.where(y_clip < 0, 0.0, y_clip)
-            # Floor an all-zero layer's ysum (0/0 guard); no-op on the
-            # physical path where ysum ~ n_0 >> 1e-300.
+        def clip_fn(y_in):
+            y_clip, small_y_inc, nega_y_inc = _clip_prologue(
+                y_in, pos_cut, nega_cut)
+            # No condensate column exists here, so the numerator cannot
+            # overflow a tiny denominator: flooring an all-zero layer's ysum
+            # is enough (0/0 guard), and it is a no-op on the physical path
+            # where ysum ~ n_0 >> 1e-300.
             ysum = jnp.sum(y_clip, axis=1, keepdims=True)
             ysum = jnp.maximum(ysum, _UNDERFLOW_DENOM)
             return y_clip, y_clip / ysum, small_y_inc, nega_y_inc
@@ -713,7 +721,7 @@ def _make_runner(
     (ready & converged)`.
     """
     clip_fn = _make_clip_fn(
-        non_gas_present, gas_indx_mask, statics.mtol, statics.pos_cut, statics.nega_cut
+        non_gas_present, gas_indx_mask, statics.pos_cut, statics.nega_cut
     )
     agg_delta_fn = _make_aggregate_delta_fn(
         statics.mtol, statics.atol, zero_bot_row, condense_zero_mask
@@ -1017,7 +1025,7 @@ def _make_runner(
         else:
             sol, delta_arr = jax_ros2_step(s.y, s.k_arr, s.dt, atm_step, net)
 
-        sol_clip, ymix_new, small_y_inc, nega_y_inc = clip_fn(sol, s.ymix)
+        sol_clip, ymix_new, small_y_inc, nega_y_inc = clip_fn(sol)
         atom_loss_new = _compute_atom_loss(sol_clip, compo_arr, s.pv.atom_ini)
         # delta uses the PRE-clip sol (master computes it before clip):
         # sol_clip would erase the truncation error of cells about to clip to
@@ -2021,7 +2029,7 @@ class OuterLoop:
 
         self._statics = self._build_statics(var, atm)
         self._photo_static = self._build_photo_static(var, atm)
-        self._refresh_static = self._build_refresh_static(var, atm)
+        self._refresh_static = self._build_refresh_static(atm)
         self._conden_static = self._build_conden_static(var, atm, gas_mask_jnp)
         self._runner, self._runner_batch = _make_runner(
             _NET_JAX,
@@ -2126,12 +2134,14 @@ class OuterLoop:
             ag0_is_zero=(ag0 == 0.0),
         )
 
-    def _build_refresh_static(self, var, atm) -> _atm_refresh_mod.AtmRefreshStatic:
+    def _build_refresh_static(self, atm) -> _atm_refresh_mod.AtmRefreshStatic:
         """Pack the static inputs to `atm_refresh.update_mu_dz_jax`.
 
         Captures the T-P profile, planetary constants, species masses, and
         the reference layer / boundary z-value once at OuterLoop init.
-        These never change during integration.
+        These never change during integration. Reads `atm` only: the refresh
+        statics are structural, so a `var` parameter would suggest a
+        dependence on the evolving state that does not exist.
         """
         from . import composition as _ba
 
@@ -2312,7 +2322,7 @@ class OuterLoop:
         """
         var, atm, _ = _state_mod.legacy_view(rs, cfg=self._cfg)
         statics = self._build_statics(var, atm)
-        refresh = self._build_refresh_static(var, atm)
+        refresh = self._build_refresh_static(atm)
         ni = _NETWORK.ni
         nz = int(atm.Tco.shape[0])
         gas_mask_np = np.zeros(ni, dtype=bool)
@@ -2747,29 +2757,6 @@ class OuterLoop:
         """
         var.k_arr = np.asarray(state.k_arr, dtype=np.float64)
 
-    def _f_dy(self, var, para):
-        """Compute dy / dydt diagnostics from var.y vs var.y_prev.
-
-        Inlined from `op.Integration.f_dy` — no JAX, just NumPy reductions
-        used once per integration to populate `var.dy` / `var.dydt` for the
-        final-state print.
-        """
-        if para.count == 0:
-            var.dy, var.dydt = 1.0, 1.0
-            return var
-        y, ymix, y_prev = var.y, var.ymix, var.y_prev
-        dy = np.abs(y - y_prev)
-        dy[ymix < self._cfg.mtol] = 0
-        dy[y < self._cfg.atol] = 0
-        pos = y > 0
-        if np.any(pos):
-            dy_val = float(np.amax(dy[pos] / y[pos]))
-        else:
-            dy_val = 0.0
-        var.dy = dy_val
-        var.dydt = dy_val / var.dt if var.dt > 0 else 0.0
-        return var
-
     def _classify_end_case(self, state: JaxIntegState, wall_clock_hit=False):
         """Classify end-of-run (op.py:1075-1087) from the carry's live budget.
 
@@ -2919,8 +2906,14 @@ class OuterLoop:
             final_state = self._runner(init_state, atm_static)
         self._unpack_state(final_state, var, para, atm)
 
-        # dy/dydt diagnostics for the final-state print.
-        var = self._f_dy(var, para)
+        # (No _f_dy call: the port of op.Integration.f_dy was deleted
+        # 2026-08-14. It wrote var.dy / var.dydt at the very end of a run and
+        # nothing read either afterwards -- the final print uses the DIFFERENT
+        # carry values var.longdy / var.longdydt, dy/dydt are absent from
+        # upstream's var_save so they never reached the .vul file, and
+        # upstream's own consumer, `var.dydt_time.append(var.dydt)`, is
+        # commented out at op.py:1102. The container attributes stay at their
+        # initialized 1.0 for master-shape compatibility.)
 
         # Determine end_case (op.py:1075-1087) for the final print.
         para.end_case = self._classify_end_case(final_state, wall_clock_hit)

@@ -236,13 +236,14 @@ def test_clip_fn_degenerate_layer_stays_finite():
             [-1e-25, -1e-25, -1e-25],  # all negative -> all clip to 0 (0/0 risk)
         ]
     )
-    ymix_old = jnp.array([[0.4, 0.5, 0.1], [0.0, 0.0, 1.0], [0.3, 0.3, 0.4]])
-
+    # No ymix argument: master's second clip rule tests the POST-solve ymix,
+    # which reduces to "zero every negative" (see _clip_prologue), so the
+    # closure never needed the previous step's mixing ratios.
     for non_gas_present in (False, True):
         clip = _make_clip_fn(
-            non_gas_present, gas_mask, mtol=1e-20, pos_cut=1e-20, nega_cut=-1e-20
+            non_gas_present, gas_mask, pos_cut=1e-20, nega_cut=-1e-20
         )
-        _y_clip, ymix_new, _s, _n = clip(y, ymix_old)
+        _y_clip, ymix_new, _s, _n = clip(y)
         assert bool(jnp.all(jnp.isfinite(ymix_new))), (
             f"clip produced non-finite ymix (non_gas_present={non_gas_present})"
         )

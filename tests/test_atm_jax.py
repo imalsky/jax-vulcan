@@ -122,7 +122,6 @@ def test_mol_diff_vm_branch_matches_host():
         atm_base="H2",
         non_gas_sp=["H2O_l_s"],
         use_vm_mol=True,
-        use_condense=True,
     )
     ref = atm_setup.compute_mol_diff(
         cfg, Tco, n_0, g, Hp, dz, ms_arr, alpha, species_list
@@ -154,7 +153,6 @@ def test_mol_diff_vm_branch_matches_host():
         use_moldiff=True,
         use_vm_mol=True,
         use_settling=False,
-        use_condense=True,
         use_topflux=False,
         use_botflux=False,
     )
@@ -224,7 +222,6 @@ def test_compute_mol_diff_vm_matches_vm_branch_reference():
         atm_base="H2",
         non_gas_sp=["H2O_l_s"],
         use_vm_mol=True,
-        use_condense=True,
     )
     out = atm_setup.compute_mol_diff(
         cfg, Tco, n_0, g, Hp, dz, ms_arr, alpha, species_list
@@ -278,7 +275,6 @@ def test_vm_branch_differentiates_wrt_Tco():
         use_moldiff=True,
         use_vm_mol=True,
         use_settling=False,
-        use_condense=True,
         use_topflux=False,
         use_botflux=False,
     )

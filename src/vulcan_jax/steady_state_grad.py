@@ -51,8 +51,11 @@ Limitations (read before using):
   ~0.2% vs re-converged FD); pass `photo_recompute_k=None` only to reproduce
   the frozen-photolysis legacy result. Costs an RT solve per Krylov matvec.
 * `body_dt` is an adjoint-only probe knob with a column-dependent usable
-  window: scan a few values and keep the lowest-residual, low-spread solution
-  (`scan_body_dt_reaction_sensitivity`).
+  window: scan `BODY_MAP_DT_CANDIDATES` on a new column and keep the
+  lowest-residual, low-spread solution. (A built-in scan wrapper existed until
+  2026-08-14 and was deleted unused: every consumer, including
+  vulcan-jwst-tool's `adjoint_diag`, drives its own loop over the candidates
+  because it wants its own accept/refuse policy on each row.)
 * The gradient is the MEAN over an `n_solves` twin ensemble and
   `info["ensemble_spread"]` is the honest magnitude error bar: trust
   magnitudes when residual and spread are small, else treat the output as a
@@ -915,8 +918,8 @@ def steady_state_reaction_sensitivity(
     Accuracy is limited by the linear solve AND by the finite-tolerance
     mismatch between the exact fixed point and the state the forward run
     stopped at. The usable `body_dt` window is column-dependent: for
-    publication-grade magnitudes use `scan_body_dt_reaction_sensitivity` and
-    inspect residuals/spread. For `dL/dT`, `dL/dKzz`, ... use
+    publication-grade magnitudes loop over `BODY_MAP_DT_CANDIDATES` and
+    inspect `info["resid_median"]` / `info["ensemble_spread"]` per candidate. For `dL/dT`, `dL/dKzz`, ... use
     `steady_state_input_sensitivity`; forward-mode `jvp` is exact for a
     handful of directions.
 
@@ -2107,146 +2110,3 @@ def audit_adjoint_scope(
         "n_clip_dead_excluded": n_clip_dead,
         "clip_dead_worst_defect": clip_dead_worst,
     }
-
-
-def _scan_score(info: dict) -> tuple[float, float, float, float, float]:
-    """Sort key for body-map dt candidates.
-
-    Primary target is the median Krylov residual. Spread and max residual break
-    ties; fixed-point and null-quality diagnostics are later tie-breakers.
-    """
-    return (
-        float(info.get("resid_median", np.median(info["resids"]))),
-        float(info["ensemble_spread"]),
-        float(info["resid"]),
-        float(info["fp_err"]),
-        float(info["null_quality"]),
-    )
-
-
-def scan_body_dt_reaction_sensitivity(
-    loss_fn: Callable[[jnp.ndarray], jnp.ndarray],
-    y_star: jnp.ndarray,
-    k_arr: jnp.ndarray,
-    atm: AtmStatic,
-    net: NetworkArrays,
-    *,
-    compo_array: jnp.ndarray,
-    dz: jnp.ndarray,
-    body_dt_candidates: Sequence[float] = BODY_MAP_DT_CANDIDATES,
-    solver_map: str = SOLVER_MAP_DEFAULT,
-    photo_recompute_k: PhotoRecomputeArg = PHOTO_RECOMPUTE_AUTO,
-    runner_photo_static=None,
-    converged_state=None,
-    integ=None,
-    body_terms: BodyTerms | None = None,
-    lgmres_inner_m: int = LGMRES_INNER_M,
-    lgmres_outer_k: int = LGMRES_OUTER_K,
-    lgmres_maxiter: int = LGMRES_MAXITER,
-    lgmres_cycles: int = LGMRES_CYCLES,
-    rtol: float = LGMRES_RTOL,
-    n_solves: int = N_SOLVES_DEFAULT,
-    return_info: bool = False,
-):
-    """Run `steady_state_reaction_sensitivity` over several body-map steps.
-
-    The accuracy-oriented entry point: one adjoint solve per candidate
-    `body_dt`, warnings suppressed for discarded candidates, returns the
-    lowest-residual/lowest-spread result. `info["body_dt_scan"]` lists
-    per-candidate residuals, spreads, fixed-point errors, null quality, and
-    warnings/errors.
-
-    The scan reduces solver-regime error only; it cannot remove the
-    finite-tolerance mismatch with the state the forward run stopped at --
-    converge or polish `y_star` tighter for that.
-    """
-    if len(body_dt_candidates) == 0:
-        raise ValueError("body_dt_candidates must contain at least one value.")
-    photo_recompute_k = _resolve_photo_recompute_k(
-        photo_recompute_k,
-        k_arr,
-        net,
-        solver_map,
-        runner_photo_static=runner_photo_static,
-        converged_state=converged_state,
-        integ=integ,
-    )
-
-    best = None
-    scan_rows: list[dict] = []
-    failures: list[str] = []
-    for body_dt in body_dt_candidates:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            try:
-                grad, info = steady_state_reaction_sensitivity(
-                    loss_fn,
-                    y_star,
-                    k_arr,
-                    atm,
-                    net,
-                    compo_array=compo_array,
-                    dz=dz,
-                    body_dt=float(body_dt),
-                    solver_map=solver_map,
-                    photo_recompute_k=photo_recompute_k,
-                    body_terms=body_terms,
-                    lgmres_inner_m=lgmres_inner_m,
-                    lgmres_outer_k=lgmres_outer_k,
-                    lgmres_maxiter=lgmres_maxiter,
-                    lgmres_cycles=lgmres_cycles,
-                    rtol=rtol,
-                    n_solves=n_solves,
-                    return_info=True,
-                )
-            except Exception as exc:
-                message = f"body_dt={float(body_dt):.3e}: {exc!r}"
-                failures.append(message)
-                scan_rows.append(
-                    {
-                        "body_dt": float(body_dt),
-                        "error": repr(exc),
-                        "warnings": [str(w.message) for w in caught],
-                    }
-                )
-                continue
-
-        info = dict(info)
-        info["warnings"] = [str(w.message) for w in caught]
-        score = _scan_score(info)
-        scan_rows.append(
-            {
-                "body_dt": float(body_dt),
-                "resid": float(info["resid"]),
-                "resid_median": float(info["resid_median"]),
-                "ensemble_spread": float(info["ensemble_spread"]),
-                "fp_err": float(info["fp_err"]),
-                "null_quality": float(info["null_quality"]),
-                "pair_antisym": float(info["pair_antisym"]),
-                "score": score,
-                "warnings": info["warnings"],
-            }
-        )
-        if best is None or score < best[0]:
-            best = (score, grad, info)
-
-    if best is None:
-        joined = "; ".join(failures)
-        raise RuntimeError(
-            "All body_dt candidates failed in scan_body_dt_reaction_sensitivity: "
-            f"{joined}"
-        )
-
-    score, grad, info = best
-    info = dict(info)
-    info["body_dt_scan"] = scan_rows
-    info["selected_score"] = score
-    _warn_poor_convergence(
-        float(info["resid_median"]),
-        float(info["fp_err"]),
-        float(info["ensemble_spread"]),
-    )
-
-    if return_info:
-        return grad, info
-    return grad

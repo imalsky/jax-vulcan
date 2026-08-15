@@ -61,6 +61,7 @@ from .atm_setup import (
     surface_gravity,
 )
 from .jax_step import AtmStatic
+from .atm_refresh import recompute_vm_jax
 from .phy_const import Navo, kb
 
 jax.config.update("jax_enable_x64", True)
@@ -109,9 +110,12 @@ class AtmSpec(NamedTuple):
     use_moldiff: bool
     use_vm_mol: bool
     use_settling: bool
-    use_condense: bool
     use_topflux: bool
     use_botflux: bool
+    # (no use_condense: the on-graph builder never reads it. Condensation is a
+    # per-step runtime process driven from the ProfileVars carry, not a
+    # structural-cascade input, so the field sat here unread until it was
+    # removed on 2026-08-14. Do not re-add it "for symmetry".)
 
 
 def pco_from_endpoints(P_b, P_t, nz: int) -> jnp.ndarray:
@@ -188,22 +192,14 @@ def _mol_diff(phys: PhysicalInputs, spec: AtmSpec, n_0, gz, Hp, dz):
     vm = jnp.zeros((nz - 1, ni), dtype=jnp.float64)
     if spec.use_vm_mol:
         # Interface-centered upwind advective velocity (nz-1, ni), matching
-        # VULCAN's vm_branch op.update_mu_dz. See atm_setup.compute_mol_diff
-        # for the derivation; Ti/Hpi/dzi are the same interface means used by
-        # _mu_dz_g, recomputed here so this stays a pure function of (gz,Hp,dz).
-        Ti = 0.5 * (Tco[:-1] + Tco[1:])
+        # VULCAN's vm_branch op.update_mu_dz. ONE implementation, in
+        # atm_refresh (see its docstring); Hpi/dzi are the same interface means
+        # _mu_dz_g uses, recomputed here so this stays a pure function of
+        # (gz, Hp, dz).
         Hpi = 0.5 * (Hp[:-1] + Hp[1:])
         dzi = 0.5 * (dz[1:] + dz[:-1])
-        delta_Ti = Tco[1:] - Tco[:-1]
-        inv_Hi = spec.ms[None, :] * gz[:, None] / (Navo * kb * Tco[:, None])
-        H_cell = 1.0 / inv_Hi
-        Hi_interf = 1.0 / (0.5 * (H_cell[:-1] + H_cell[1:]))
-        drift = (
-            Hi_interf
-            - 1.0 / Hpi[:, None]
-            + spec.alpha[None, :] / Ti[:, None] * delta_Ti[:, None] / dzi[:, None]
-        )
-        vm = -Dzz * drift
+        vm = recompute_vm_jax(gz, Hpi, dzi, Dzz, spec.ms, spec.alpha, Tco,
+                              kb, Navo)
     return Dzz, Dzz_cen, vm
 
 
@@ -341,7 +337,6 @@ def make_physical_inputs(
         use_moldiff=bool(getattr(cfg, "use_moldiff", True)),
         use_vm_mol=bool(getattr(cfg, "use_vm_mol", False)),
         use_settling=bool(getattr(cfg, "use_settling", False)),
-        use_condense=bool(getattr(cfg, "use_condense", False)),
         use_topflux=bool(getattr(cfg, "use_topflux", False)),
         use_botflux=bool(getattr(cfg, "use_botflux", False)),
     )

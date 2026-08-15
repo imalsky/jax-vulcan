@@ -19,6 +19,7 @@ import numpy as np
 from . import chem_funs
 from .config import default_config
 from ._paths import resolve_data_path
+from .live_ui import master_tableau20
 
 
 class AtmInputs(NamedTuple):
@@ -395,31 +396,6 @@ def _atom_arr_to_dict(arr, atom_order) -> dict:
     return {a: float(arr[i]) for i, a in enumerate(atom_order)}
 
 
-def _master_tableau20() -> list[tuple[float, float, float]]:
-    """Return VULCAN-master's normalized Tableau 20 plotting palette."""
-    colors = [
-        (31, 119, 180),
-        (255, 127, 14),
-        (44, 160, 44),
-        (214, 39, 40),
-        (148, 103, 189),
-        (140, 86, 75),
-        (227, 119, 194),
-        (127, 127, 127),
-        (188, 189, 34),
-        (23, 190, 207),
-        (174, 199, 232),
-        (255, 187, 120),
-        (152, 223, 138),
-        (255, 152, 150),
-        (197, 176, 213),
-        (196, 156, 148),
-        (247, 182, 210),
-        (199, 199, 199),
-        (219, 219, 141),
-        (158, 218, 229),
-    ]
-    return [(r / 255.0, g / 255.0, b / 255.0) for r, g, b in colors]
 
 
 def runstate_from_store(var, atm, para) -> RunState:
@@ -570,7 +546,7 @@ def runstate_to_store(state: RunState, var, atm, para) -> None:
             state.params.where_varies_most,
             dtype=np.float64,
         )
-        para.tableau20 = _master_tableau20()
+        para.tableau20 = master_tableau20()
         para.fix_species_start = bool(state.params.fix_species_start)
 
     if state.atoms is not None:
@@ -1130,7 +1106,7 @@ def legacy_view(rs: RunState, cfg=None):
             rs.params.where_varies_most,
             dtype=np.float64,
         )
-        para.tableau20 = _master_tableau20()
+        para.tableau20 = master_tableau20()
         para.fix_species_start = bool(rs.params.fix_species_start)
     if md is not None:
         para.start_time = float(md.start_time)
@@ -1349,4 +1325,4 @@ class _Parameters(object):
         self.where_varies_most = np.zeros((_nz, _ni))
         self.pic_count = 0
         self.fix_species_start = False
-        self.tableau20 = _master_tableau20()
+        self.tableau20 = master_tableau20()

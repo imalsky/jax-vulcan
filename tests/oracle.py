@@ -27,6 +27,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 from contextlib import contextmanager
 from pathlib import Path
@@ -77,6 +78,79 @@ def _fail_or_skip(msg: str):
     if os.environ.get(ENV_REQUIRE) == "1":
         pytest.fail(msg)
     pytest.skip(msg)
+
+
+def oracle_dir_or_skip(what: str) -> Path:
+    """Oracle path for a RE-EXEC'D CHILD, skipping the module when unset.
+
+    Call this at module scope in an oracle test that runs itself as a
+    subprocess. It is deliberately weaker than `require_oracle`, and the split
+    is the whole design:
+
+    - The PARENT pytest process verifies the pin -- `run_oracle_subprocess`
+      goes through `oracle_worktree` -> `require_oracle`, which checks the
+      exact commit and a clean tree -- then copies the checkout and points
+      `VULCAN_MASTER_DIR` at the COPY.
+    - The CHILD reads that copy. It cannot re-verify the revision because the
+      copy has no `.git` by construction (upstream setup rewrites files in
+      place, so the child must never touch the real checkout).
+
+    So a bare existence check is the correct check HERE, and only here. Under
+    a plain `pytest tests/` with no oracle configured, this skips the module,
+    which is how these files behave on a fresh clone. With
+    `VULCAN_JAX_REQUIRE_ORACLE=1` it fails instead (skipped != passed).
+    """
+    raw = os.environ.get(ENV_DIR)
+    path = Path(raw).expanduser().resolve() if raw else None
+    if path is not None and path.is_dir():
+        return path
+    msg = (
+        f"upstream oracle not configured (looked at "
+        f"{path if path is not None else '$' + ENV_DIR + ' unset'}). Set "
+        f"${ENV_DIR} to a clean clone at the commit pinned in "
+        f"tests/science_sources.yaml; {what} requires the upstream repo.")
+    if os.environ.get(ENV_REQUIRE) == "1":
+        pytest.fail(msg, pytrace=False)
+    pytest.skip(msg, allow_module_level=True)
+
+
+UNSET_SENTINEL = Path("/nonexistent/VULCAN-oracle-unset")
+
+
+def oracle_dir_or_sentinel() -> Path:
+    """Oracle path for a re-exec'd child, or a path that cannot exist.
+
+    Same parent-verifies / child-reads split as `oracle_dir_or_skip` (see its
+    docstring), but for the files that skip PER TEST instead of at module
+    scope, because they also hold tests needing no oracle. The sentinel keeps
+    every `if not VULCAN_MASTER.is_dir(): skip` site free of a None branch.
+    """
+    return oracle_dir() or UNSET_SENTINEL
+
+
+def run_oracle_subprocess(test_file, family: str,
+                          config_rel: str | None = None, *,
+                          fastchem_abundance: str | None = None,
+                          timeout: float | None = None) -> None:
+    """Run `test_file`'s `main()` in a fresh process against an oracle COPY.
+
+    The master/JAX module-table swap only works from a cold Python start, so
+    every upstream-comparison test re-execs itself. This is the shared body of
+    those wrappers: verify + copy the oracle, point the child at the copy, and
+    surface the child's output on failure.
+    """
+    with oracle_worktree(family, config_rel,
+                         fastchem_abundance=fastchem_abundance) as master:
+        env = os.environ.copy()
+        env["VULCAN_MASTER_DIR"] = str(master)
+        result = subprocess.run(
+            [sys.executable, str(Path(test_file).resolve())],
+            capture_output=True, text=True, env=env, timeout=timeout)
+    assert result.returncode == 0, (
+        f"subprocess exited {result.returncode}\n"
+        f"--- stdout ---\n{result.stdout}\n"
+        f"--- stderr ---\n{result.stderr}"
+    )
 
 
 def require_oracle(family: str) -> Path:

@@ -22,6 +22,7 @@ from .config import default_config
 from . import chem_funs
 from .chem_funs import ni, nr
 from ._paths import resolve_data_path
+from .live_ui import import_plt, master_tableau20
 
 _CFG = default_config()
 species = chem_funs.spec_list
@@ -85,31 +86,6 @@ def _restore_rate_parse(var, snap: dict) -> None:
         setattr(var, name, copy.deepcopy(value))
 
 
-def _master_tableau20() -> list[tuple[float, float, float]]:
-    """Return VULCAN-master's normalized Tableau 20 plotting palette."""
-    colors = [
-        (31, 119, 180),
-        (255, 127, 14),
-        (44, 160, 44),
-        (214, 39, 40),
-        (148, 103, 189),
-        (140, 86, 75),
-        (227, 119, 194),
-        (127, 127, 127),
-        (188, 189, 34),
-        (23, 190, 207),
-        (174, 199, 232),
-        (255, 187, 120),
-        (152, 223, 138),
-        (255, 152, 150),
-        (197, 176, 213),
-        (196, 156, 148),
-        (247, 182, 210),
-        (199, 199, 199),
-        (219, 219, 141),
-        (158, 218, 229),
-    ]
-    return [(r / 255.0, g / 255.0, b / 255.0) for r, g, b in colors]
 
 
 def _warn_stale_reaction_ids(
@@ -416,16 +392,6 @@ class ReadRate(object):
     # from sys.path.
 
 
-def _import_plt():
-    """Lazy import of matplotlib so tests that don't plot don't pay the cost."""
-    import matplotlib
-
-    matplotlib.use(
-        "Agg" if os.environ.get("VULCAN_HEADLESS_PLOT") else matplotlib.get_backend()
-    )
-    import matplotlib.pyplot as plt
-
-    return plt
 
 
 def _synthesize_cross_dicts(static) -> dict:
@@ -766,7 +732,7 @@ def _synthesize_save_dicts(runstate, cfg, photo_static=None):
         para_save["fix_species_start"] = bool(p.fix_species_start)
     # Plotting-only master field. Runtime values live in live_ui, but the
     # public .vul schema should still expose the same parameter key.
-    para_save["tableau20"] = _master_tableau20()
+    para_save["tableau20"] = master_tableau20()
     para_save.setdefault("end_case", 0)
     para_save.setdefault("termination_reason", 0)
     para_save.setdefault("solver_str", "solver")
@@ -1089,7 +1055,7 @@ class Output(object):
         """Save the final mixing-ratio profile (`cfg.plot_spec`) vs pressure
         (or height when `cfg.plot_height`) to `plot_dir/mix2.png`.
         """
-        plt = _import_plt()
+        plt = import_plt()
         plot_dir = self._cfg.plot_dir
         colors = [
             "b",
@@ -1153,7 +1119,7 @@ class Output(object):
         `plot_dir/evo.png`. `plot_j` selects the layer (-1 = top), `plot_ymin`
         sets the y-axis floor, `dn` strides the stored time samples.
         """
-        plt = _import_plt()
+        plt = import_plt()
         plot_spec = self._cfg.plot_spec
         plot_dir = self._cfg.plot_dir
         plt.figure("evolution")
@@ -1178,7 +1144,7 @@ class Output(object):
         """Save the temperature and Kzz profiles vs pressure (or height when
         `cfg.plot_height`) on twin x-axes to `plot_dir/TPK.png`.
         """
-        plt = _import_plt()
+        plt = import_plt()
         plot_dir = self._cfg.plot_dir
         fig, ax1 = plt.subplots()
         ax2 = ax1.twiny()
