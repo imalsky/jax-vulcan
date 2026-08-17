@@ -308,9 +308,11 @@ def test_fastchem_eq_forms_co_not_atomic_carbon(tmp_path: Path, fname: str):
         src / "input" / fname, tree / "input" / "element_abundances_vulcan.dat"
     )
     # Force a known single point and the no-ion parameter set. mkdir first:
-    # vulcan_TP/ is runtime-generated and git tracks no empty dirs, so a
-    # clean checkout (CI) does not have it.
+    # vulcan_TP/ and output/ are runtime-generated and git tracks no empty
+    # dirs, so a clean checkout (CI) has neither; FastChem itself does not
+    # create its output directory.
     (tree / "input" / "vulcan_TP").mkdir(exist_ok=True)
+    (tree / "output").mkdir(exist_ok=True)
     (tree / "input" / "vulcan_TP" / "vulcan_TP.dat").write_text(
         "#p (bar)\tT (K)\n1.000e+00\t2000.0"
     )
