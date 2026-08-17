@@ -64,25 +64,19 @@ def _validate(rel: str) -> list[str]:
 
 
 @pytest.mark.parametrize("rel", [DEFAULT_REL, UPSTREAM_REL])
-def test_shipped_preset_is_accepted(rel):
-    assert (PKG / rel).exists(), f"{rel} is not shipped"
-    assert _validate(rel) == [], f"{rel} should validate clean"
-
-
-@pytest.mark.parametrize("rel", [DEFAULT_REL, UPSTREAM_REL])
-def test_both_presets_use_the_fastchem_row_order(rel):
-    """FastChem hard-codes element slots, so P must precede S in BOTH files."""
+def test_shipped_preset_is_accepted_in_fastchem_row_order(rel):
+    """Both presets validate clean, and FastChem hard-codes element slots so
+    P must precede S in BOTH files (mass_action_constant.cpp index_P=5,
+    index_S=6; upstream's own file has them the other way round, C12)."""
     from vulcan_jax.runtime_validation import _FASTCHEM_ELEMENT_ORDER
 
+    assert (PKG / rel).exists(), f"{rel} is not shipped"
+    assert _validate(rel) == [], f"{rel} should validate clean"
     _values, order = _parse(rel)
     assert order in (_FASTCHEM_ELEMENT_ORDER, _FASTCHEM_ELEMENT_ORDER[:-1]), (
         f"{rel} row order is {order}, must be {_FASTCHEM_ELEMENT_ORDER}"
     )
-    assert order.index("P") < order.index("S"), (
-        f"{rel}: P must precede S. mass_action_constant.cpp hard-codes "
-        "index_P=5, index_S=6; upstream's own file has them the other way "
-        "round (correction C12)."
-    )
+    assert order.index("P") < order.index("S")
 
 
 def test_upstream_preset_carries_upstream_values():
@@ -159,26 +153,13 @@ def test_a_hand_edited_file_is_rejected_naming_both_presets(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_every_config_declares_its_abundance_file():
-    """No config may inherit the composition implicitly.
-
-    A config that omits the key falls back to the code default, so its
-    composition becomes invisible in the file that is supposed to define the
-    run. That happened to the K2-18b case before it was withdrawn.
-    """
-    missing = []
+def test_every_config_declares_an_existing_abundance_file():
+    """No config may inherit the composition implicitly (an omitted key falls
+    back to the code default, making the composition invisible in the file
+    that defines the run), and each declared file must exist."""
     for cfg_path in sorted(glob.glob("src/vulcan_jax/configs/*.yaml")):
         cfg = yaml.safe_load(open(cfg_path))
-        if "fastchem_solar_abundance_file" not in cfg:
-            missing.append(os.path.basename(cfg_path))
-    assert not missing, (
-        f"configs not declaring fastchem_solar_abundance_file: {missing}. "
-        "The composition must be visible in the config, not inherited."
-    )
-
-
-def test_shipped_configs_point_at_a_file_that_exists():
-    for cfg_path in sorted(glob.glob("src/vulcan_jax/configs/*.yaml")):
-        cfg = yaml.safe_load(open(cfg_path))
+        assert "fastchem_solar_abundance_file" in cfg, (
+            f"{cfg_path} does not declare fastchem_solar_abundance_file")
         rel = cfg["fastchem_solar_abundance_file"]
         assert (PKG / rel).exists(), f"{cfg_path} points at missing {rel}"

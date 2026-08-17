@@ -149,65 +149,37 @@ def test_window_is_a_lookback_not_an_off_switch():
     assert "conv_stall_window" in str(excinfo.value)
 
 
-def test_parity_configs_ship_the_fallback_off():
-    """Shipped VULCAN 2 parity configs must declare `use_conv_stall: false`."""
+def test_shipped_configs_pin_the_fallback_off_and_declared():
+    """Every shipped config must DECLARE use_conv_stall (an omitted key takes
+    the code default, True) and none may enable it: the fallback has no
+    VULCAN 2.0 counterpart, and a run that stops on it is not converged by any
+    criterion VULCAN 2.0 has. Do not flip it for the VULCAN 3 preset either:
+    HD189_vulcan3 converges on the normal criterion (2820 steps, reason 1),
+    so the fallback never fired even when enabled."""
+    import glob
+
+    import yaml
+
     from vulcan_jax.config import load_config
 
-    for name in _PARITY_CONFIGS:
-        cfg = load_config(name)
-        assert getattr(cfg, "use_conv_stall", None) is False, (
-            f"{name}.yaml must ship use_conv_stall: false — the fallback has no "
-            "VULCAN 2.0 counterpart and must not affect a parity run"
-        )
-
-
-def test_no_shipped_config_enables_the_fallback():
-    """Nothing shipped may decide convergence on a non-VULCAN criterion.
-
-    Do not flip this back for the VULCAN 3 preset: HD189_vulcan3 converges on
-    the normal criterion (2820 accepted steps, termination_reason 1), so the
-    fallback never fired even when enabled. It stays available as an opt-in.
-    """
-    import glob
-
-    import yaml
-
-    enabled = []
-    for cfg_path in sorted(glob.glob("src/vulcan_jax/configs/*.yaml")):
-        with open(cfg_path) as fh:
-            raw = yaml.safe_load(fh)
-        if raw.get("use_conv_stall") is True:
-            enabled.append(os.path.basename(cfg_path))
-    assert not enabled, (
-        f"configs enabling the JAX-only stall fallback: {enabled}. No shipped "
-        "case needs it, and a run that stops on it is not converged by any "
-        "criterion VULCAN 2.0 has. Enable it deliberately per run instead."
-    )
-
-
-def test_every_config_declares_the_fallback_explicitly():
-    """An omitted key silently takes the code default, which is True."""
-    import glob
-
-    import yaml
-
-    missing = []
+    bad = {"enabled": [], "undeclared": []}
     for cfg_path in sorted(glob.glob("src/vulcan_jax/configs/*.yaml")):
         with open(cfg_path) as fh:
             raw = yaml.safe_load(fh)
         if "use_conv_stall" not in raw:
-            missing.append(os.path.basename(cfg_path))
-    assert not missing, (
-        f"configs not declaring use_conv_stall: {missing}. The code default is "
-        "True, so an omitted key turns the fallback ON."
-    )
+            bad["undeclared"].append(os.path.basename(cfg_path))
+        elif raw["use_conv_stall"] is True:
+            bad["enabled"].append(os.path.basename(cfg_path))
+    assert not bad["enabled"] and not bad["undeclared"], bad
+    for name in _PARITY_CONFIGS:
+        assert getattr(load_config(name), "use_conv_stall", None) is False
 
 
 def test_termination_reason_reaches_the_vul_parameter_dict():
     """A single-profile result must expose WHY it stopped, not just end_case.
 
-    `end_case` cannot separate a normal convergence from a stall convergence —
-    both are 1 — so the finer-grained code has to survive into the saved file.
+    `end_case` cannot separate a normal convergence from a stall convergence --
+    both are 1 -- so the finer-grained code has to survive into the saved file.
     """
     from vulcan_jax.state import ParamInputs
 

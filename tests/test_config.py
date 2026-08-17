@@ -81,10 +81,7 @@ def test_overrides_win_over_yaml_and_derived():
     # An explicit derived key in the overrides is not clobbered.
     cfg2 = load_config("default", dt_max=123.0)
     assert cfg2.dt_max == 123.0
-
-
-def test_default_config_is_cached_singleton():
-    assert default_config() is default_config()
+    assert default_config() is default_config()   # cached singleton
 
 
 def test_cwd_configs_override(tmp_path, monkeypatch):
@@ -114,60 +111,34 @@ def test_cwd_configs_override(tmp_path, monkeypatch):
     assert cfg.para_anaTP == [1, 2, 3]
 
 
-def test_missing_config_raises():
+def test_loader_refuses_bad_input(tmp_path, monkeypatch):
+    """One refusal per failure class (fail-fast rule): missing config, the
+    removed `gs` knob (migration message), an unknown override, an unknown
+    key authored in the YAML itself, and duplicate YAML keys. Scientific
+    notation must parse as float (the CWD test covers the int case)."""
     with pytest.raises(FileNotFoundError):
         load_config("no_such_config_name_xyz")
-
-
-def test_removed_gs_key_raises_migration_error():
-    """The removed `gs` knob must fail loudly with a migration message, not be
-    silently stored as an inert attribute (standing fail-fast rule)."""
     with pytest.raises(ValueError, match=r"removed config key.*gs.*Mp"):
         load_config("W39b", gs=9999.0)
-
-
-def test_unknown_override_key_raises():
-    """A misspelled/undeclared override must be rejected, not silently ignored."""
     with pytest.raises(ValueError, match=r"unknown config key.*gss"):
         load_config("W39b", gss=8888.0)
-
-
-def test_unknown_key_in_yaml_file_raises(tmp_path, monkeypatch):
-    """An undeclared key authored directly in a YAML file is rejected too."""
     cfgdir = tmp_path / "configs"
     cfgdir.mkdir()
-    (cfgdir / "typo.yaml").write_text(
-        "runtime: 1e22\nyconv_min: 0.1\nlive_plot_frq: 10\npara_warm: [1.0]\n"
-        "count_max: 30000\nnetwork: thermo/NCHO_photo_network.txt\n"
-        "atom_list: [H, O, C, N]\ncom_file: thermo/all_compose.txt\n"
-        "nz_typo: 100\n"  # not a declared knob
-    )
+    base = ("runtime: 1e22\ndt_min: 1e-14\nyconv_min: 0.1\nlive_plot_frq: 10\n"
+            "para_warm: [1.0]\ncount_max: 30000\n"
+            "network: thermo/NCHO_photo_network.txt\n"
+            "atom_list: [H, O, C, N]\ncom_file: thermo/all_compose.txt\n")
+    (cfgdir / "typo.yaml").write_text(base + "nz_typo: 100\n")
+    (cfgdir / "dup.yaml").write_text("nz: 100\nnz: 150\n")
+    (cfgdir / "sci.yaml").write_text(base)
     monkeypatch.chdir(tmp_path)
     with pytest.raises(ValueError, match=r"unknown config key.*nz_typo"):
         load_config("typo")
-
-
-def test_strict_loader_parses_scientific_notation(tmp_path, monkeypatch):
-    """Unsigned-exponent scientific notation must parse as float, not string."""
-    cfgdir = tmp_path / "configs"
-    cfgdir.mkdir()
-    (cfgdir / "sci.yaml").write_text(
-        "runtime: 1e22\ndt_min: 1e-14\nyconv_min: 0.1\nlive_plot_frq: 10\n"
-        "para_warm: [1.0]\ncount_max: 30000\n"
-    )
-    monkeypatch.chdir(tmp_path)
+    with pytest.raises(yaml.YAMLError):
+        load_config("dup")
     cfg = load_config("sci")
     assert isinstance(cfg.runtime, float) and cfg.runtime == 1e22
     assert isinstance(cfg.dt_min, float) and cfg.dt_min == 1e-14
-
-
-def test_strict_loader_rejects_duplicate_keys(tmp_path, monkeypatch):
-    cfgdir = tmp_path / "configs"
-    cfgdir.mkdir()
-    (cfgdir / "dup.yaml").write_text("nz: 100\nnz: 150\n")
-    monkeypatch.chdir(tmp_path)
-    with pytest.raises(yaml.YAMLError):
-        load_config("dup")
 
 
 def test_frozen_env_overrides_yaml():

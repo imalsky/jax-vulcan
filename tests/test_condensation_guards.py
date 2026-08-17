@@ -39,32 +39,24 @@ def _cfg(**overrides):
 # --- forward-config hardening (F3) ------------------------------------------
 
 
-def test_conden_off_is_a_noop():
-    assert _validate_condensation(SimpleNamespace(use_condense=False)) == []
-
-
-def test_valid_conden_config_passes():
-    assert _validate_condensation(_cfg()) == []
-
-
-def test_conden_requires_moldiff():
-    errs = _validate_condensation(_cfg(use_moldiff=False))
-    assert any("use_moldiff" in e for e in errs)
-
-
-def test_conden_rejects_empty_condense_sp():
-    errs = _validate_condensation(_cfg(condense_sp=[]))
-    assert any("empty condense_sp" in e for e in errs)
-
-
-def test_conden_rejects_inverted_window():
-    errs = _validate_condensation(_cfg(start_conden_time=100.0, stop_conden_time=10.0))
-    assert any("would never open" in e for e in errs)
-
-
-def test_conden_rejects_unsupported_species():
-    errs = _validate_condensation(_cfg(condense_sp=["NOPE"]))
-    assert any("not a supported condensate" in e for e in errs)
+@pytest.mark.parametrize("overrides,expect", [
+    (dict(_off=True), None),                       # conden off -> no errors
+    (dict(), None),                                # valid config -> no errors
+    (dict(use_moldiff=False), "use_moldiff"),
+    (dict(condense_sp=[]), "empty condense_sp"),
+    (dict(start_conden_time=100.0, stop_conden_time=10.0), "would never open"),
+    (dict(condense_sp=["NOPE"]), "not a supported condensate"),
+], ids=["off_noop", "valid", "needs_moldiff", "empty_sp", "inverted_window",
+        "unsupported_species"])
+def test_validate_condensation(overrides, expect):
+    if overrides.pop("_off", False):
+        errs = _validate_condensation(SimpleNamespace(use_condense=False))
+    else:
+        errs = _validate_condensation(_cfg(**overrides))
+    if expect is None:
+        assert errs == []
+    else:
+        assert any(expect in e for e in errs), errs
 
 
 # --- input-sensitivity refusal (F1) -----------------------------------------
@@ -88,22 +80,16 @@ def _dummy_input_sensitivity(body_terms, **kw):
     )
 
 
-def test_input_sensitivity_refuses_pinned_condensation():
-    bt = BodyTerms(fix_mask=jnp.ones((2, 3), dtype=bool), fix_y=jnp.zeros((2, 3)))
+def test_input_sensitivity_refuses_condensation_active_states():
+    """Refused both post-pin (fix_mask set) and in-window (conden_static);
+    without condensation the guard passes and failure comes later from the
+    dummy arguments, never with the conden message."""
+    bt = BodyTerms(fix_mask=jnp.ones((2, 3), dtype=bool),
+                   fix_y=jnp.zeros((2, 3)))
     with pytest.raises(ValueError, match="reliably differentiable"):
         _dummy_input_sensitivity(bt)
-
-
-def test_input_sensitivity_refuses_inwindow_condensation():
-    # A non-None conden_static (any object) marks the in-window regime.
-    bt = BodyTerms(conden_static=object())
     with pytest.raises(ValueError, match="reliably differentiable"):
-        _dummy_input_sensitivity(bt)
-
-
-def test_input_sensitivity_no_condensation_passes_the_guard():
-    # Without condensation the refusal does not fire; the call proceeds past the
-    # guard and fails later on the dummy arguments (NOT with the conden message).
+        _dummy_input_sensitivity(BodyTerms(conden_static=object()))
     with pytest.raises(Exception) as exc:
         _dummy_input_sensitivity(BodyTerms())
     assert "reliably differentiable" not in str(exc.value)

@@ -208,31 +208,6 @@ def gibbs_sp(name, T):
     return g_RT(T, _NASA9_COEFFS[j, 0], _NASA9_COEFFS[j, 1])
 
 
-def cp_R(T, a):
-    """Heat capacity cp(T)/R for a NASA-9 coefficient row."""
-    T = np.asarray(T, dtype=np.float64)
-    return (
-        a[0] / T**2
-        + a[1] / T
-        + a[2]
-        + a[3] * T
-        + a[4] * T**2
-        + a[5] * T**3
-        + a[6] * T**4
-    )
-
-
-def cp_R_sp(name, T):
-    """Per-species cp/R."""
-    T = np.asarray(T, dtype=np.float64)
-    if np.any(np.logical_or(T < _NASA9_T_MIN, T > _NASA9_T_MAX)):
-        print("T exceeds the valid range.")
-    j = spec_list.index(name)
-    return (T < _NASA9_BRANCH_T) * cp_R(T, _NASA9_COEFFS[j, 0]) + (
-        T >= _NASA9_BRANCH_T
-    ) * cp_R(T, _NASA9_COEFFS[j, 1])
-
-
 # Cache K_eq arrays by T identity. `Gibbs(i, T)` is typically called in a loop
 # over reaction indices with the same T, so naive recomputation costs ~600x.
 _K_EQ_CACHE: dict = {}

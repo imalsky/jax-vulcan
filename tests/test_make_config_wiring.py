@@ -79,50 +79,6 @@ def test_grid_and_runner_overrides_reach_setup_and_runner_without_leakage():
     assert int(default_integ._cfg.count_max) != 37
 
 
-@pytest.mark.strict_isolation
-def test_alternate_network_fails_fast_with_clear_message():
-    """Network is import-locked; make_config(network=...) must fail fast with a
-    clear $VULCAN_JAX_NETWORK message, not a cryptic shape error 30s into setup."""
-    import vulcan_jax
-    from vulcan_jax.state import RunState
-
-    cfg = vulcan_jax.make_config(network="thermo/SNCHO_photo_network.txt")
-    with pytest.raises(ValueError) as excinfo:
-        RunState.with_pre_loop_setup(cfg)
-
-    msg = str(excinfo.value)
-    assert "VULCAN_JAX_NETWORK" in msg
-    assert "import-locked" in msg
-    # The cryptic downstream symptom must not be what the user sees.
-    assert "k_arr" not in msg
-
-
-@pytest.mark.strict_isolation
-def test_same_species_different_nr_network_blocked():
-    """A *_thermo network has the same species as the import-locked *_photo one
-    but fewer reactions (nr 782 vs 878). The guard must still fail fast on nr,
-    not let it slip through to the cryptic k_arr shape error."""
-    import vulcan_jax
-    from vulcan_jax.state import RunState
-
-    cfg = vulcan_jax.make_config(network="thermo/NCHO_thermo_network.txt")
-    with pytest.raises(ValueError) as excinfo:
-        RunState.with_pre_loop_setup(cfg)
-    msg = str(excinfo.value)
-    assert "import-locked" in msg and "reactions" in msg
-    assert "k_arr" not in msg
-
-
-@pytest.mark.strict_isolation
-def test_missing_com_file_fails_fast():
-    """make_config(com_file=<missing>) must raise, not silently fall back to the
-    composition table already loaded at import."""
-    import vulcan_jax
-    from vulcan_jax.state import RunState
-
-    cfg = vulcan_jax.make_config(com_file="thermo/DOES_NOT_EXIST.txt")
-    with pytest.raises(ValueError, match="com_file"):
-        RunState.with_pre_loop_setup(cfg)
 
 
 def test_output_reads_cfg_not_global():
@@ -137,68 +93,72 @@ def test_output_reads_cfg_not_global():
     assert int(legacy_io.Output()._cfg.count_max) == int(g.count_max)
 
 
+
+
+# Import-locked knob refusals: network/atom_list/com_file are frozen at the
+# first `import vulcan_jax`, so a conflicting make_config value must fail
+# FAST with a clear message ($VULCAN_JAX_NETWORK / "import-locked"), never
+# the cryptic k_arr shape error 30 s into setup. One case per conflict class;
+# the two synthetic networks prove species+nr equality is NOT sufficient
+# (the codegen RHS and k_arr indexing are order- and identity-specific).
+def _case_alternate(tmp_path):
+    return dict(network="thermo/SNCHO_photo_network.txt"), "import-locked"
+
+
+def _case_same_species_fewer_nr(tmp_path):
+    return dict(network="thermo/NCHO_thermo_network.txt"), "import-locked"
+
+
+def _case_reordered(tmp_path):
+    import re
+    from vulcan_jax._paths import PACKAGE_ROOT
+    src = (PACKAGE_ROOT / "thermo"
+           / "NCHO_photo_network.txt").read_text().splitlines()
+    rxn = [i for i, ln in enumerate(src) if re.match(r"^\s*\d+\s*\[", ln)]
+    src[rxn[0]], src[rxn[1]] = src[rxn[1]], src[rxn[0]]
+    net = tmp_path / "NCHO_reordered.txt"
+    net.write_text("\n".join(src) + "\n")
+    return dict(network=str(net)), "topology|import-locked"
+
+
+def _case_renamed_species(tmp_path):
+    import re
+    from vulcan_jax._paths import PACKAGE_ROOT
+    text = (PACKAGE_ROOT / "thermo" / "NCHO_photo_network.txt").read_text()
+    renamed = re.sub(r"(?<![A-Za-z0-9_])H(?![A-Za-z0-9_])", "X", text)
+    net = tmp_path / "NCHO_H_renamed.txt"
+    net.write_text(renamed)
+    return dict(network=str(net)), "import-locked"
+
+
+def _case_atom_list(tmp_path):
+    return dict(atom_list=["H", "O", "C"]), "atom_list"
+
+
+def _case_com_file(tmp_path):
+    return dict(com_file="thermo/DOES_NOT_EXIST.txt"), "com_file"
+
+
 @pytest.mark.strict_isolation
-def test_reordered_network_blocked(tmp_path):
-    """A network with the SAME species and reaction count but reordered
-    reactions must be blocked: the import-time codegen RHS and k_arr indexing
-    are order-specific, so species + nr equality is not sufficient."""
+@pytest.mark.parametrize("case", [
+    _case_alternate, _case_same_species_fewer_nr, _case_reordered,
+    _case_renamed_species, _case_atom_list, _case_com_file,
+], ids=lambda c: c.__name__[6:])
+def test_import_locked_overrides_fail_fast(case, tmp_path):
     import re
 
     import vulcan_jax
-    from vulcan_jax._paths import PACKAGE_ROOT
     from vulcan_jax.state import RunState
 
-    src = (PACKAGE_ROOT / "thermo" / "NCHO_photo_network.txt").read_text().splitlines()
-    rxn = [i for i, ln in enumerate(src) if re.match(r"^\s*\d+\s*\[", ln)]
-    assert len(rxn) >= 2
-    a, b = rxn[0], rxn[1]
-    src[a], src[b] = src[b], src[a]  # same species/nr, different topology
-    swapped = tmp_path / "NCHO_reordered.txt"
-    swapped.write_text("\n".join(src) + "\n")
-
-    cfg = vulcan_jax.make_config(network=str(swapped))
+    overrides, pattern = case(tmp_path)
+    cfg = vulcan_jax.make_config(**overrides)
     with pytest.raises(ValueError) as excinfo:
         RunState.with_pre_loop_setup(cfg)
     msg = str(excinfo.value)
-    assert "topology" in msg or "import-locked" in msg
-    assert "k_arr" not in msg
+    assert re.search(pattern, msg), msg
+    assert "k_arr" not in msg      # never the cryptic downstream symptom
 
 
-@pytest.mark.strict_isolation
-def test_renamed_species_network_blocked(tmp_path):
-    """A network with the SAME numeric topology but a renamed species (H->X)
-    must be blocked. The topology signature is index-based, so species identity
-    has to be compared too — otherwise cfg-time species metadata would pair with
-    the import-time codegen/species state."""
-    import re
-
-    import vulcan_jax
-    from vulcan_jax._paths import PACKAGE_ROOT
-    from vulcan_jax.state import RunState
-
-    text = (PACKAGE_ROOT / "thermo" / "NCHO_photo_network.txt").read_text()
-    renamed = re.sub(r"(?<![A-Za-z0-9_])H(?![A-Za-z0-9_])", "X", text)  # H token -> X
-    assert renamed != text
-    net = tmp_path / "NCHO_H_renamed.txt"
-    net.write_text(renamed)
-
-    cfg = vulcan_jax.make_config(network=str(net))
-    with pytest.raises(ValueError) as excinfo:
-        RunState.with_pre_loop_setup(cfg)
-    assert "import-locked" in str(excinfo.value)
-    assert "k_arr" not in str(excinfo.value)
-
-
-@pytest.mark.strict_isolation
-def test_atom_list_import_frozen():
-    """make_config(atom_list=...) different from the import-time value must fail
-    fast — the reservoir-projection tables are baked at import."""
-    import vulcan_jax
-    from vulcan_jax.state import RunState
-
-    cfg = vulcan_jax.make_config(atom_list=["H", "O", "C"])
-    with pytest.raises(ValueError, match="atom_list"):
-        RunState.with_pre_loop_setup(cfg)
 
 
 def test_save_cfg_serializes_active_cfg(tmp_path, monkeypatch):

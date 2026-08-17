@@ -134,7 +134,12 @@ UI_OUTPUT_KEYS = {
 }
 
 IGNORED_RUNTIME_FILENAMES = {".DS_Store"}
-IGNORED_RUNTIME_SUFFIXES = {".py", ".pyc"}
+# `.md` is documentation, not runtime data: master's vendored trees carry
+# `thermo/README.md` + `thermo/photo_cross/README.md`, whose content moved into
+# our README's "Vendored data provenance" section on 2026-08-16 (3-doc policy).
+# Without this the whole-tree symmetric fallback below would report those two
+# as `only master=` drift, which is a doc-layout difference, not a data one.
+IGNORED_RUNTIME_SUFFIXES = {".py", ".pyc", ".md"}
 STOCK_FASTCHEM = Path("fastchem_vulcan/input/solar_element_abundances.dat")
 
 
