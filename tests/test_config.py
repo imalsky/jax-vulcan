@@ -56,7 +56,7 @@ def test_shipped_config_loads_and_resolves(name):
     cfg = load_config(name)
     assert isinstance(cfg, Config)
 
-    # Gravity is derived from Mp + Rp; `gs` is no longer a config attribute.
+    # Gravity is derived from Mp + Rp; `gs` is not a config attribute.
     assert not hasattr(cfg, "gs")
     assert surface_gravity(cfg) == pytest.approx(_EXPECTED_GS[name], rel=1e-9)
 

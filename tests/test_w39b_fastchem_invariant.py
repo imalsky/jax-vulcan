@@ -245,10 +245,10 @@ def _max_relerr(a: np.ndarray, b: np.ndarray, floor: float = 1e-30) -> float:
 def _stage_master_inputs(master_root: Path, scratch: Path) -> Path:
     """Stage the resolved W39 config and its pinned inputs into the oracle.
 
-    Upstream has never shipped ``cfg_examples/vulcan_cfg_W39b.py``.  The old
-    test named that nonexistent file and therefore skipped before performing
-    a comparison.  Generate the legacy Python config from the shipped YAML and
-    copy only the inputs identified in ``science_sources.yaml``.
+    Upstream has never shipped ``cfg_examples/vulcan_cfg_W39b.py``, so naming
+    that file would make this test skip instead of compare.  Generate the
+    legacy Python config from the shipped YAML and copy only the inputs
+    identified in ``science_sources.yaml``.
     """
     from vulcan_jax.config import load_config
 

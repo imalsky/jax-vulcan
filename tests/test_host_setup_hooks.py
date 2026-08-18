@@ -1,4 +1,4 @@
-"""Unit tests for the host-setup parallelism hooks added in 0.1.10.
+"""Unit tests for the host-setup parallelism hooks.
 
 These back the GPU-batched emulator's parallel host setup (one spawn worker per
 profile, each with a private FastChem tree). Three independent, additive hooks:

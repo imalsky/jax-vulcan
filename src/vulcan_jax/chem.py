@@ -169,10 +169,9 @@ chem_rhs_segment_sum = jax.vmap(
 
 # jacrev beats jacfwd here ("scatter at the end" pattern). Kept as the test
 # oracle for `chem_jac_analytical`; production uses the analytical form
-# (16x faster measured on HD189: 92.1 -> 5.66 ms, notes.md dev log
-# 2026-07-24). Bound to the segment_sum reference
-# kernel — the Jacobian has no cancellation amplifier so the floor that
-# motivated the codegen RHS does not apply here.
+# (16x faster measured on HD189: 92.1 -> 5.66 ms, notes.md dev log). Bound to
+# the segment_sum reference kernel — the Jacobian has no cancellation
+# amplifier so the floor that motivated the codegen RHS does not apply here.
 chem_jac_per_layer = jax.jacrev(chem_rhs_per_layer_segment_sum, argnums=0)
 chem_jac = jax.vmap(
     chem_jac_per_layer,

@@ -69,8 +69,7 @@ _StrictLoader.add_implicit_resolver(
 
 # Import-frozen knobs (read at the first `import vulcan_jax`): each honors an
 # environment override so a non-default network / atom set / composition can be
-# selected before import. Mirrors the historical vulcan_cfg module behavior;
-# `com_file` is newly overridable for symmetry.
+# selected before import. `com_file` is overridable for symmetry.
 _FROZEN_ENV = {
     "network": "VULCAN_JAX_NETWORK",
     "atom_list": "VULCAN_JAX_ATOM_LIST",

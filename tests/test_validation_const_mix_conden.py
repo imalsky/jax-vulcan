@@ -4,9 +4,9 @@
    the same configuration (`build_atm.ini_y` calls `species.index(sp)`
    unconditionally — its shipped Earth example crashes on 'Ar' at
    `build_atm.py:200`), so inert/background gases are NOT live master
-   physics to port. VULCAN-JAX historically raised the same bare
-   `ValueError` deep inside setup; `validate_runtime_config` now rejects
-   the config upfront with an explanation.
+   physics to port. `validate_runtime_config` rejects the config upfront
+   with an explanation rather than letting a bare `ValueError` surface deep
+   inside setup.
 
 2. `condense_sp` entries outside the supported condensate set. Master's
    `op.conden` has explicit branches for {H2O, NH3, H2SO4, S2, S4, S8, C}

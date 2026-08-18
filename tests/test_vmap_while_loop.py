@@ -61,7 +61,7 @@ def _pin_cfg():
     # Batched/emulator generation wants a deterministic, fixed diffusion scheme:
     # the hybrid phase flip turns count-exhaustion into a mid-run scheme switch
     # with a per-lane extended budget, which breaks the freeze-on-done
-    # equivalence premise. Pin the (new) hybrid default off here.
+    # equivalence premise. Pin the hybrid default off here.
     vulcan_cfg.use_vm_mol = False
     vulcan_cfg.use_hybrid_vm_mol = False
     return vulcan_cfg

@@ -123,7 +123,7 @@ class JaxIntegState(NamedTuple):
 
     # Photo state (lives in device memory between batches).
     # All zeros / unused when use_photo=False.
-    k_arr: jnp.ndarray  # (nr+1, nz)     reaction-rate table (was a Python dict)
+    k_arr: jnp.ndarray  # (nr+1, nz)     reaction-rate table
     tau: jnp.ndarray  # (nz+1, nbin)   optical depth
     aflux: jnp.ndarray  # (nz, nbin)     actinic flux
     sflux: jnp.ndarray  # (nz+1, nbin)   direct beam
@@ -2906,14 +2906,13 @@ class OuterLoop:
             final_state = self._runner(init_state, atm_static)
         self._unpack_state(final_state, var, para, atm)
 
-        # (No _f_dy call: the port of op.Integration.f_dy was deleted
-        # 2026-08-14. It wrote var.dy / var.dydt at the very end of a run and
-        # nothing read either afterwards -- the final print uses the DIFFERENT
-        # carry values var.longdy / var.longdydt, dy/dydt are absent from
-        # upstream's var_save so they never reached the .vul file, and
-        # upstream's own consumer, `var.dydt_time.append(var.dydt)`, is
-        # commented out at op.py:1102. The container attributes stay at their
-        # initialized 1.0 for master-shape compatibility.)
+        # (op.Integration.f_dy is deliberately not ported: nothing reads its
+        # var.dy / var.dydt -- the final print uses the DIFFERENT carry values
+        # var.longdy / var.longdydt, dy/dydt are absent from upstream's
+        # var_save so they never reach the .vul file, and upstream's own
+        # consumer, `var.dydt_time.append(var.dydt)`, is commented out at
+        # op.py:1102. The container attributes stay at their initialized 1.0
+        # for master-shape compatibility.)
 
         # Determine end_case (op.py:1075-1087) for the final print.
         para.end_case = self._classify_end_case(final_state, wall_clock_hit)
@@ -2978,7 +2977,7 @@ class OuterLoop:
 
         # Wire a pre-built PhotoStaticInputs onto the solver so
         # _build_photo_static doesn't rebuild from the legacy_view shim
-        # (which no longer carries the var.cross* dict surface).
+        # (which does not carry the var.cross* dict surface).
         if (
             rs.photo_static is not None
             and getattr(self.odesolver, "_photo_static", None) is None

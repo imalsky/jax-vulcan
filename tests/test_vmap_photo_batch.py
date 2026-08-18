@@ -59,7 +59,7 @@ def _pin_cfg():
     vulcan_cfg.atm_type = "isothermal"
     vulcan_cfg.Kzz_prof = "Pfunc"
     # Deterministic fixed diffusion scheme for the batched/emulator regime
-    # (the new hybrid default would flip schemes mid-run per lane).
+    # (the hybrid default would flip schemes mid-run per lane).
     vulcan_cfg.use_vm_mol = False
     vulcan_cfg.use_hybrid_vm_mol = False
     vulcan_cfg.nz = 40

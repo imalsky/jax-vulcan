@@ -42,9 +42,7 @@ _TEX_LABELS = {
 
 # VULCAN-master's Tableau 20 palette, 0-1 normalized. THE one copy: it is
 # published in the .vul `parameter` dict (`para.tableau20`), which upstream
-# plot_py/ scripts read, so the values are a compatibility contract. Three
-# separately-maintained copies lived in live_ui, legacy_io and state until
-# 2026-08-14.
+# plot_py/ scripts read, so the values are a compatibility contract.
 _TABLEAU20_RGB255 = [
     (31, 119, 180),
     (255, 127, 14),
@@ -80,11 +78,8 @@ _TABLEAU20 = master_tableau20()
 def import_plt():
     """Lazy-import pyplot, selecting a backend by ONE merged policy.
 
-    The two former policies disagreed: `legacy_io._import_plt` honoured
-    `VULCAN_HEADLESS_PLOT` and ignored the display, while `LiveUI._ensure_mpl`
-    checked `DISPLAY`/`MPLBACKEND`/platform and ignored `VULCAN_HEADLESS_PLOT`.
-    Setting the project's own variable therefore did nothing for the live UI.
-    The merged order, most explicit first:
+    Both the post-run plotters and the live UI resolve the backend here, so
+    `VULCAN_HEADLESS_PLOT` works for both. The order, most explicit first:
 
     1. `MPLBACKEND` set  -> matplotlib already honours it; touch nothing.
     2. `VULCAN_HEADLESS_PLOT` set -> Agg (the project's explicit override).

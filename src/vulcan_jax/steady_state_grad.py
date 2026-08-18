@@ -52,10 +52,10 @@ Limitations (read before using):
   the frozen-photolysis legacy result. Costs an RT solve per Krylov matvec.
 * `body_dt` is an adjoint-only probe knob with a column-dependent usable
   window: scan `BODY_MAP_DT_CANDIDATES` on a new column and keep the
-  lowest-residual, low-spread solution. (A built-in scan wrapper existed until
-  2026-08-14 and was deleted unused: every consumer, including
-  vulcan-jwst-tool's `adjoint_diag`, drives its own loop over the candidates
-  because it wants its own accept/refuse policy on each row.)
+  lowest-residual, low-spread solution. (No built-in scan wrapper: every
+  consumer, including vulcan-jwst-tool's `adjoint_diag`, drives its own loop
+  over the candidates because it wants its own accept/refuse policy on each
+  row.)
 * The gradient is the MEAN over an `n_solves` twin ensemble and
   `info["ensemble_spread"]` is the honest magnitude error bar: trust
   magnitudes when residual and spread are small, else treat the output as a

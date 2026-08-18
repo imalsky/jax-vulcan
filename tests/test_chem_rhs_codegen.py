@@ -267,8 +267,8 @@ def test_hd209_jit_rhs_projection_removes_atom_residual() -> None:
     nojit_residual = out_nojit @ atom_counts
     # State-robust floor for the raw JIT FMA drift: its magnitude varies with
     # the captured HD209 state, so assert it sits far above the < 1e4 corrected
-    # value instead of pinning an exact number. Measured 2026-08-14 on both
-    # shipped fixtures: 7.7e9 (jax_paper/data/jax_HD209.vul) and 1.4e9
+    # value instead of pinning an exact number. Measured on both shipped
+    # fixtures: 7.7e9 (jax_paper/data/jax_HD209.vul) and 1.4e9
     # (output/HD209.vul), so 1e8 keeps a >10x margin on the lower one.
     assert abs(float(raw_residual[0, c_idx])) > 1.0e8
     assert abs(float(nojit_residual[0, c_idx])) < 1.0e4

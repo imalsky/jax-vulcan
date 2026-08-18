@@ -114,8 +114,7 @@ class AtmSpec(NamedTuple):
     use_botflux: bool
     # (no use_condense: the on-graph builder never reads it. Condensation is a
     # per-step runtime process driven from the ProfileVars carry, not a
-    # structural-cascade input, so the field sat here unread until it was
-    # removed on 2026-08-14. Do not re-add it "for symmetry".)
+    # structural-cascade input. Do not add it "for symmetry".)
 
 
 def pco_from_endpoints(P_b, P_t, nz: int) -> jnp.ndarray:

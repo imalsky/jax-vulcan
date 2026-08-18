@@ -1,15 +1,14 @@
 """Every knob `runtime_validation` bound-checks must be declared in every
 shipped config.
 
-`_validate_numerical_bounds` used to carry a literal default beside each knob
-(`getattr(cfg, "rtol", 0.2)`), a second copy of a number the YAML owns. Those
-were removed on 2026-08-14: the validator now bound-checks what a config
-DECLARES and skips what it does not, so there is exactly one home for each
-value. That skip is only safe while the shipped configs declare everything, and
-this test is what makes it safe -- without it, deleting a knob from a YAML would
-silently turn its bound check off instead of failing.
+`_validate_numerical_bounds` bound-checks what a config DECLARES and skips what
+it does not, so there is exactly one home for each value: no literal default
+beside a knob (`getattr(cfg, "rtol", 0.2)`), which would be a second copy of a
+number the YAML owns. That skip is only safe while the shipped configs declare
+everything, and this test is what makes it safe -- without it, deleting a knob
+from a YAML would silently turn its bound check off instead of failing.
 
-Also pins that the literals stay gone.
+Also pins that no such literal comes back.
 """
 from __future__ import annotations
 
@@ -67,9 +66,9 @@ def test_every_shipped_config_declares_every_checked_knob(cfg_path):
     missing = sorted(required - declared)
     assert not missing, (
         f"{cfg_path.name} does not declare {missing}. runtime_validation "
-        f"bound-checks these, and since 2026-08-14 it SKIPS a knob a config "
-        f"does not declare instead of substituting a literal -- so an "
-        f"undeclared knob silently loses its check. Declare it in the YAML."
+        f"bound-checks these, and it SKIPS a knob a config does not declare "
+        f"instead of substituting a literal -- so an undeclared knob silently "
+        f"loses its check. Declare it in the YAML."
     )
 
 
