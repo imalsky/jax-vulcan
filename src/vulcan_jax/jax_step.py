@@ -556,7 +556,7 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
         atm.top_flux / jnp.where(y_top_pos, y[-1], 1.0),
         0.0,
     )
-    diag_d = diag_d.at[-1].add(-diff_lim)
+    diag_d = diag_d.at[-1].add(diff_lim)
 
     eye = jnp.eye(ni)
     di = jnp.arange(ni)
