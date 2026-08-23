@@ -176,7 +176,7 @@ def operator_column_weights(dz):
 
 
 def column_atom_loss(y, y_ini, dz, compo_arr=compo_array):
-    """Physical column-conservation residual per atom. Returns (n_atoms,).
+    """Operator-weighted column-conservation residual per atom. Returns (n_atoms,).
 
     Relative change, between `y_ini` and `y`, of the column integral
     `Σ_z w_z * compo[i,a] * y[z,i]` with `w = operator_column_weights(dz)` —
