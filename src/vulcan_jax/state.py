@@ -884,6 +884,10 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
     if bool(getattr(cfg, "use_condense", False)):
         make_atm.sp_sat(atm)
 
+    from . import runtime_validation as _rv
+
+    _rv.report_rate_temp_ranges(chem_funs._NETWORK, np.asarray(atm.Tco))
+
     rate = _io.ReadRate()
     var = rate.read_rate(var, atm)
     network = _rates_mod.setup_var_k(cfg, var, atm)

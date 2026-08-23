@@ -17,6 +17,7 @@ are NOT appended — `runtime_validation` rejects such configs upfront.
 from __future__ import annotations
 
 import re
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +32,14 @@ _SECTION_CONDEN = "conden"
 _SECTION_RADIATIVE = "radiative"
 _SECTION_PHOTO = "photo"
 _SECTION_ION = "ion"
+
+# Sections whose rows carry Arrhenius fits read from the file; only these
+# have a meaningful documented temperature range in the trailing annotation.
+_THERMAL_SECTIONS = (
+    _SECTION_TWO_BODY,
+    _SECTION_THREE_BODY_KINF,
+    _SECTION_THREE_BODY_NO_KINF,
+)
 
 
 @dataclass(frozen=True)
@@ -95,8 +104,82 @@ class Network:
     # Original file path for debugging
     network_path: str
 
+    # Documented temperature validity, parser-i -> ((lo, hi), ...) in K, for
+    # thermal (Arrhenius) forward rows only. An empty tuple means the row's
+    # trailing annotation carries no parseable range. Advisory: nothing in
+    # either VULCAN implementation enforces these at runtime.
+    temp_ranges: dict | None = None
+
 
 _RE_LINE = re.compile(r"^\s*(\d+)\s*\[\s*([^\]]+)\s*\]\s*(.*)$")
+
+# Temperature annotations in the trailing `Temp` column: '250-2580',
+# '300-2.50E4', a bare measurement temperature '298', or comma-separated
+# lists of these. No sign and no negative exponent — temperatures are
+# positive Kelvin, and allowing 'E-' would make the range split ambiguous.
+_NUM = r"\d+(?:\.\d+)?(?:[Ee]\+?\d+)?"
+_RE_TEMP_RANGE = re.compile(rf"^({_NUM})-({_NUM})$")
+_RE_TEMP_SINGLE = re.compile(rf"^{_NUM}$")
+
+
+def _parse_temp_ranges(tokens: list[str]) -> tuple[tuple[float, float], ...]:
+    """Parse the documented temperature range(s) off a row's annotation tokens.
+
+    Scans from the END of the annotation (the Temp column is last) and stops
+    at the first token that is not a range or a bare temperature. Strict on
+    purpose: a reference fused to a range (e.g. '1986TSA/HAM1087300-2500')
+    or an inverted 'lo-hi' yields NO ranges rather than a garbage window.
+    A bare temperature T becomes the degenerate range (T, T).
+    """
+    out: list[tuple[float, float]] = []
+    for tok in reversed(tokens):
+        t = tok.strip(",")
+        m = _RE_TEMP_RANGE.match(t)
+        if m:
+            lo, hi = float(m.group(1)), float(m.group(2))
+            if lo > hi:
+                return ()
+            out.append((lo, hi))
+            continue
+        if _RE_TEMP_SINGLE.match(t):
+            v = float(t)
+            out.append((v, v))
+            continue
+        break
+    return tuple(reversed(out))
+
+
+def _announce_duplicate_reactions(
+    network_path: str, dups: list[tuple[str, int, int]], duplicates_ok: bool
+) -> None:
+    """Refuse (or, with `duplicates_ok`, warn about) repeated reactions.
+
+    The parser is positional and appends every row, so both copies of a
+    duplicated reaction become independent slots and their contributions are
+    double-counted (forward AND reverse) — silent scientific corruption, so
+    the default is to raise. Upstream's `make_chem_funs.py` only prints
+    (`check_duplicate()`). The vendored TiSNCHO network ships three such
+    duplicates (an upstream data bug); no shipped config selects it.
+    `duplicates_ok=True` downgrades to a RuntimeWarning for inspection and
+    file-sweep uses that must parse the file anyway.
+    """
+    if not dups:
+        return
+    shown = "; ".join(
+        f"{eq!r} at positions {first} and {second}"
+        for eq, first, second in dups[:4]
+    )
+    more = f" (+{len(dups) - 4} more)" if len(dups) > 4 else ""
+    msg = (
+        f"Network {network_path} contains {len(dups)} duplicated reaction(s) "
+        f"within the same section: {shown}{more}. Both copies are parsed as "
+        "independent reactions, so their rate contributions are DOUBLE-COUNTED "
+        "in both directions. Fix the network file before using it for science, "
+        "or pass duplicates_ok=True to parse it anyway for inspection."
+    )
+    if not duplicates_ok:
+        raise ValueError(msg)
+    warnings.warn(msg, RuntimeWarning, stacklevel=3)
 
 
 def _parse_term(term: str) -> tuple[int, str]:
@@ -148,8 +231,13 @@ def _detect_section(line: str, _current: str) -> str | None:
     return None
 
 
-def parse_network(network_path: str | Path) -> Network:
-    """Parse a VULCAN network file. See module docstring."""
+def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> Network:
+    """Parse a VULCAN network file. See module docstring.
+
+    Raises ValueError if a reaction is duplicated within one section (its
+    contribution would be silently double-counted); `duplicates_ok=True`
+    downgrades that to a RuntimeWarning for inspection/file-sweep uses.
+    """
     from ._paths import resolve_data_path
 
     network_path = str(resolve_data_path(str(network_path)))
@@ -175,6 +263,7 @@ def parse_network(network_path: str | Path) -> Network:
     forward_records: list[dict] = []
     Rf_text: dict[int, str] = {}
     Rindx_map: dict[int, int] = {}
+    temp_ranges: dict[int, tuple[tuple[float, float], ...]] = {}
 
     def _intern_species(sp: str) -> int:
         if sp == "M":
@@ -279,6 +368,8 @@ def parse_network(network_path: str | Path) -> Network:
             forward_records.append(rec)
             Rf_text[parser_i] = eq
             Rindx_map[parser_i] = file_id
+            if section in _THERMAL_SECTIONS:
+                temp_ranges[parser_i] = _parse_temp_ranges(cols[len(num_cols):])
 
             if section == _SECTION_PHOTO:
                 target_sp = cols[0] if cols else eq.split()[0]
@@ -304,6 +395,24 @@ def parse_network(network_path: str | Path) -> Network:
     # parser_i has been bumped past the last reverse → nr = parser_i - 1.
     nr = parser_i - 1
     ni = len(species_order)
+
+    # A reaction repeated within one section is double-counted by this
+    # positional parser: refuse (upstream's check_duplicate() only prints).
+    seen_eq: dict[tuple, int] = {}
+    dups: list[tuple[str, int, int]] = []
+    for rec in forward_records:
+        key = (
+            rec["section"],
+            tuple(sorted(rec["reactants_collapsed"].items())),
+            tuple(sorted(rec["products_collapsed"].items())),
+            rec["has_M_reac"],
+            rec["has_M_prod"],
+            rec["photo_meta"],
+        )
+        first_i = seen_eq.setdefault(key, rec["parser_i"])
+        if first_i != rec["parser_i"]:
+            dups.append((rec["Rf"], first_i, rec["parser_i"]))
+    _announce_duplicate_reactions(network_path, dups, duplicates_ok)
 
     if stop_rev_indx is None:
         # Older networks may omit `# reverse stops`; default: reverses are
@@ -447,6 +556,7 @@ def parse_network(network_path: str | Path) -> Network:
         Rf=dict(Rf_text),
         Rindx=dict(Rindx_map),
         network_path=network_path,
+        temp_ranges=dict(temp_ranges),
     )
 
 

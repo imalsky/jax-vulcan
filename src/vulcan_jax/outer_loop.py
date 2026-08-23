@@ -267,6 +267,28 @@ def _compute_atom_loss(
     return (atom_sum - atom_ini_arr) / atom_ini_arr
 
 
+def _print_column_atom_loss(cfg, y, y_ini, dz) -> None:
+    """Opt-in end-of-run physical column budget (`report_column_atom_loss`).
+
+    Reported, never gated: step acceptance keeps the unweighted
+    master-parity `atom_loss`; this prints the operator-weighted column
+    drift (`ini_abun.column_atom_loss`) — the quantity the discretized
+    transport actually conserves on a nonuniform grid.
+    """
+    if not bool(getattr(cfg, "report_column_atom_loss", False)):
+        return
+    from .composition import atom_list as _compo_atoms
+    from .ini_abun import column_atom_loss
+
+    drift = np.asarray(column_atom_loss(y, y_ini, dz))
+    loss_ex = list(getattr(cfg, "loss_ex", []) or [])
+    print("column atom budget (operator-weighted; diagnostic, not a gate):")
+    # Mirror print_end_msg: only the atoms this config tracks, minus loss_ex.
+    for name in getattr(cfg, "atom_list", []):
+        if name in _compo_atoms and name not in loss_ex:
+            print(f"{name}: {drift[_compo_atoms.index(name)]:.4e} ")
+
+
 def _step_size(
     dt: jnp.ndarray,
     delta: jnp.ndarray,
@@ -2952,6 +2974,7 @@ class OuterLoop:
             self.output.print_end_msg(var, para)
         elif para.end_case in (2, 3, 4):
             self.output.print_unconverged_msg(var, para, para.end_case)
+        _print_column_atom_loss(self._cfg, var.y, var.y_ini, atm.dz)
 
     def _call_runstate(self, rs: "_state_mod.RunState", var=None, atm=None, para=None):
         """RunState entry point: integrate from a typed `RunState` and
@@ -3077,6 +3100,9 @@ class OuterLoop:
             self.output.print_end_msg(var_shim, para_shim)
         elif end_case in (2, 3, 4):
             self.output.print_unconverged_msg(var_shim, para_shim, end_case)
+        _print_column_atom_loss(
+            self._cfg, rs_out.step.y, rs_out.metadata.y_ini, rs_out.atm.dz
+        )
 
         return rs_out
 

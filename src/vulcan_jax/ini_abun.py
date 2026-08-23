@@ -161,6 +161,42 @@ def compute_atom_ini(y, compo_arr=compo_array):
     return jnp.einsum("zi,ia->a", y, compo_arr)
 
 
+def operator_column_weights(dz):
+    """Cell weights (nz,) that the flux-form transport operator conserves.
+
+    The diffusion divergence divides by the interface-centered spacing
+    `dz_ave = 0.5*(dz[j-1]+dz[j])` (`jax_step`, mirroring master op.py), so
+    with zero-flux boundaries the discrete transport invariant is
+    `Σ_j n_j * w_j` with `w_0 = dzi[0]`, `w_j = 0.5*(dzi[j-1]+dzi[j])`,
+    `w_{nz-1} = dzi[-1]` — NOT `Σ_j n_j * dz_j`. On a uniform grid w == dz.
+    """
+    dz = jnp.asarray(dz, dtype=jnp.float64)
+    dzi = 0.5 * (dz[1:] + dz[:-1])
+    return jnp.concatenate([dzi[:1], 0.5 * (dzi[:-1] + dzi[1:]), dzi[-1:]])
+
+
+def column_atom_loss(y, y_ini, dz, compo_arr=compo_array):
+    """Physical column-conservation residual per atom. Returns (n_atoms,).
+
+    Relative change, between `y_ini` and `y`, of the column integral
+    `Σ_z w_z * compo[i,a] * y[z,i]` with `w = operator_column_weights(dz)` —
+    the quantity the discretized transport actually conserves on a
+    nonuniform grid. Diagnostic only: step acceptance uses the unweighted
+    `atom_loss` (master parity), and this never gates anything. The weights
+    are evaluated on the `dz` passed in; the run's grid measures the budget
+    on its own geometry, the initial grid isolates solver drift from the
+    mu/dz refresh.
+    """
+    w = operator_column_weights(dz)
+    col = jnp.einsum("z,zi,ia->a", w, jnp.asarray(y, dtype=jnp.float64), compo_arr)
+    col0 = jnp.einsum(
+        "z,zi,ia->a", w, jnp.asarray(y_ini, dtype=jnp.float64), compo_arr
+    )
+    # compo_arr spans every composition-table element; atoms absent from the
+    # loaded network have a zero column and no budget — report 0, not 0/0.
+    return jnp.where(col0 == 0.0, 0.0, (col - col0) / jnp.where(col0 == 0.0, 1.0, col0))
+
+
 def _run_fastchem_locked(data_atm) -> None:
     """Inner FastChem driver. Caller must already hold the flock."""
     solar_ele = _fastchem_solar_abundance_path()

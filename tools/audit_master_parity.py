@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import math
+import os
 import runpy
 import sys
 from pathlib import Path
@@ -621,19 +622,19 @@ def audit(
 def main(argv: list[str] | None = None) -> int:
     """Run the parity audit CLI."""
     parser = argparse.ArgumentParser(description=__doc__)
-    repo_root = Path(__file__).resolve().parent.parent  # VULCAN-JAX/
     # Runtime data (atm/, thermo/, fastchem_vulcan/) lives under the installed
     # package, not the repo root; the JAX config is loaded by name from
-    # configs/*.yaml. Default to the package dir so the documented invocation
-    # `python tools/audit_master_parity.py --master ../VULCAN-master` works
-    # without an explicit --jax-root.
+    # configs/*.yaml. Default to the package dir so no explicit --jax-root is
+    # needed.
     from vulcan_jax._paths import PACKAGE_ROOT
 
     parser.add_argument(
         "--master",
         type=Path,
-        default=repo_root.parent / "VULCAN-master",
-        help="Path to the VULCAN-master checkout.",
+        default=None,
+        help="Path to the VULCAN checkout to audit against; falls back to "
+        "$VULCAN_MASTER_DIR. There is deliberately no ../VULCAN-master "
+        "default: that tree is unversioned and carries VULCAN-JAX-only code.",
     )
     parser.add_argument(
         "--oracle-family",
@@ -649,8 +650,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    master = args.master
+    if master is None:
+        env_master = os.environ.get("VULCAN_MASTER_DIR")
+        if not env_master:
+            parser.error(
+                "--master is required (or set $VULCAN_MASTER_DIR to a clean "
+                "pinned clone of exoclime/VULCAN; see tests/science_sources.yaml)."
+            )
+        master = Path(env_master)
+
     errors = audit(
-        args.master.resolve(),
+        master.resolve(),
         args.jax_root.resolve(),
         args.oracle_family,
     )

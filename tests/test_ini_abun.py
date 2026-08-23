@@ -422,5 +422,50 @@ def test_zzz_main_eq_vs_master():
     )
 
 
+def test_column_atom_loss_uses_the_operator_invariant():
+    """The physical column budget must weight by what transport conserves.
+
+    A flux-form update `n_j += (F_{j-1/2} - F_{j+1/2}) / w_j` with zero
+    boundary fluxes telescopes: it conserves `sum_j w_j n_j` exactly for the
+    operator's own cell measure `w` and does NOT conserve `sum_j dz_j n_j`
+    on a nonuniform grid. On a uniform grid `w == dz`, so the budget reduces
+    to the unweighted `atom_loss` relative change identically.
+    """
+    from vulcan_jax.ini_abun import column_atom_loss, operator_column_weights
+
+    rng = np.random.default_rng(7)
+    nz, ni, na = 12, 5, 3
+    compo = rng.uniform(0.0, 3.0, (ni, na))
+    y0 = rng.uniform(1e8, 1e10, (nz, ni))
+
+    # Nonuniform (jumpy) grid: apply random interface fluxes per species.
+    dz = rng.uniform(1e5, 9e5, nz)
+    w = np.asarray(operator_column_weights(dz))
+    flux = rng.uniform(-1e12, 1e12, (nz - 1, ni))
+    y1 = y0 + (
+        np.vstack([np.zeros((1, ni)), flux]) - np.vstack([flux, np.zeros((1, ni))])
+    ) / w[:, None]
+    drift = np.asarray(column_atom_loss(y1, y0, dz, compo_arr=compo))
+    np.testing.assert_allclose(drift, 0.0, atol=1e-12)
+    dz_drift = np.einsum("z,zi,ia->a", dz, y1 - y0, compo)
+    dz_ref = np.einsum("z,zi,ia->a", dz, y0, compo)
+    assert np.max(np.abs(dz_drift / dz_ref)) > 1e-6, (
+        "plain-dz weighting should NOT be conserved on a nonuniform grid; "
+        "if it is, this test's flux is degenerate"
+    )
+
+    # Uniform grid: identical to the unweighted relative change.
+    dz_u = np.full(nz, 3.7e5)
+    y2 = y0 * rng.uniform(0.9, 1.1, (nz, ni))
+    unweighted = (
+        np.einsum("zi,ia->a", y2, compo) - np.einsum("zi,ia->a", y0, compo)
+    ) / np.einsum("zi,ia->a", y0, compo)
+    np.testing.assert_allclose(
+        np.asarray(column_atom_loss(y2, y0, dz_u, compo_arr=compo)),
+        unweighted,
+        rtol=1e-12,
+    )
+
+
 if __name__ == "__main__":
     sys.exit(main())

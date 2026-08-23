@@ -5,6 +5,8 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
+import numpy as np
+
 from . import chem_funs
 
 
@@ -686,3 +688,80 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
             "Unsupported or invalid VULCAN-JAX runtime configuration:\n- "
             + "\n- ".join(errors)
         )
+
+
+# One report per (network, T-grid signature, exposure) per process: repeated
+# rebuilds of the SAME case stay quiet, but a different profile on the same
+# network reports again — the exposure depends on Tco, not just the network.
+# (vulcan-forward builds the RunState once per model; per-proposal T varies
+# on-graph, so this cannot spam a retrieval log.)
+_TEMP_RANGE_REPORTED: set[tuple] = set()
+
+
+def rate_temp_range_exposure(net, Tco) -> dict:
+    """Count thermal rows evaluated outside their documented T ranges on `Tco`.
+
+    Coverage per row is the UNION of its documented ranges (lenient: a
+    Lindemann row's k0 and k_inf windows are OR'd, so this undercounts).
+    A bare measurement temperature parses as a degenerate (T, T) range, so
+    room-temperature-only rates count as out-of-range on hot profiles
+    rather than hiding in the no-range bucket.
+    """
+    T = np.asarray(Tco, dtype=np.float64)
+    no_range = any_outside = all_outside = 0
+    for ranges in (net.temp_ranges or {}).values():
+        if not ranges:
+            no_range += 1
+            continue
+        covered = np.zeros(T.shape, dtype=bool)
+        for lo, hi in ranges:
+            covered |= (T >= lo) & (T <= hi)
+        n_out = int(np.count_nonzero(~covered))
+        if n_out:
+            any_outside += 1
+            if n_out == T.size:
+                all_outside += 1
+    return {
+        "thermal_rows": len(net.temp_ranges or {}),
+        "no_range": no_range,
+        "any_outside": any_outside,
+        "all_outside": all_outside,
+    }
+
+
+def report_rate_temp_ranges(net, Tco) -> None:
+    """Print a one-time advisory on rate-law T-range exposure for this run.
+
+    The network files carry per-row documented temperature ranges (the free-
+    text `Temp` column) that neither VULCAN implementation enforces, so hot
+    or cold profiles silently extrapolate many fitted rates. Say so once per
+    distinct (network, T grid, exposure), against the ACTUAL model T grid.
+    Advisory only — no rate is altered or gated (VULCAN-master evaluates
+    every rate everywhere, and parity requires the same here).
+    """
+    if net.temp_ranges is None:
+        return
+    T = np.asarray(Tco, dtype=np.float64)
+    ex = rate_temp_range_exposure(net, T)
+    if not (ex["any_outside"] or ex["no_range"]):
+        return
+    key = (
+        str(net.network_path),
+        int(T.size),
+        round(float(T.min()), 1),
+        round(float(T.max()), 1),
+        ex["any_outside"],
+        ex["all_outside"],
+        ex["no_range"],
+    )
+    if key in _TEMP_RANGE_REPORTED:
+        return
+    _TEMP_RANGE_REPORTED.add(key)
+    print(
+        f"rate T-range advisory ({Path(net.network_path).name}): model grid "
+        f"spans {T.min():.0f}-{T.max():.0f} K over {T.size} layers; of "
+        f"{ex['thermal_rows']} thermal rows, {ex['any_outside']} are evaluated "
+        f"outside their documented T range in >=1 layer ({ex['all_outside']} in "
+        f"ALL layers) and {ex['no_range']} carry no parseable range. Advisory "
+        "only: no rate is altered (matches VULCAN-master)."
+    )

@@ -9,6 +9,12 @@ This test recomputes each molecular mass from the atom counts and standard
 atomic weights and asserts agreement, and separately checks that every
 condensate (`*_l_s` / `*_s`) has the same mass as its gas-phase counterpart.
 
+Duplicate rows are a second silent hazard: production resolves a species via
+`list.index`, i.e. the FIRST row wins, so a duplicate with a different mass is
+file-order-dependent. The vendored upstream table ships exactly six duplicated
+species (three disagreeing in mass); that state is pinned below so any new
+duplicate, or any change to which value wins, fails loudly.
+
 Pure data check — no FastChem, no VULCAN-master, no integration.
 """
 
@@ -49,6 +55,14 @@ _ATOMIC_MASS = {
 }
 _TOL = 0.12
 
+# The vendored upstream all_compose.txt defines these species twice (same atom
+# counts). Three pairs disagree in mass; production's first-wins `.index`
+# selects the values below. HCS's 45.178 sits 0.099 amu above its elemental
+# sum (the SECOND row's 45.079 is the consistent one) — an upstream data bug,
+# kept for parity: measured effect is ~7e-5 on one moldiff coefficient.
+_KNOWN_DUPLICATE_SPECIES = {"C4H2", "CH3O2", "CH3OOH", "C2H4O", "CH3NO2", "HCS"}
+_KNOWN_FIRST_WINS_MASS = {"C2H4O": 44.054, "CH3NO2": 61.042, "HCS": 45.178}
+
 
 def main() -> int:
     from vulcan_jax._paths import resolve_data_path
@@ -86,8 +100,35 @@ def main() -> int:
             f"OK: all {len(species)} species masses consistent with atom counts (tol {_TOL})"
         )
 
+    # Duplicate rows: mirror production (`list.index` -> FIRST row wins).
+    mass_by_sp: dict[str, float] = {}
+    for sp, m in zip(species, listed):
+        mass_by_sp.setdefault(sp, float(m))
+
+    dup_names = {sp for sp in mass_by_sp if species.count(sp) > 1}
+    if dup_names != _KNOWN_DUPLICATE_SPECIES:
+        ok = False
+        print(
+            f"FAIL: duplicated species set changed: got {sorted(dup_names)}, "
+            f"pinned {sorted(_KNOWN_DUPLICATE_SPECIES)}. A new duplicate is "
+            "resolved silently by row order -- deduplicate the table instead."
+        )
+    for sp in sorted(dup_names):
+        rows = [i for i, s in enumerate(species) if s == sp]
+        if any(not np.array_equal(counts[i], counts[rows[0]]) for i in rows[1:]):
+            ok = False
+            print(f"FAIL: duplicate rows for {sp} disagree in ATOM COUNTS.")
+        masses = {float(listed[i]) for i in rows}
+        expect = _KNOWN_FIRST_WINS_MASS.get(sp)
+        if len(masses) > 1 and (expect is None or mass_by_sp[sp] != expect):
+            ok = False
+            print(
+                f"FAIL: duplicate rows for {sp} disagree in mass {sorted(masses)} "
+                f"and first-wins value {mass_by_sp[sp]} is not the pinned "
+                f"{expect}. The model silently uses the first row."
+            )
+
     # Condensates must share the mass of their gas-phase counterpart.
-    mass_by_sp = dict(zip(species, listed))
     for sp in species:
         for suffix in ("_l_s", "_s", "_l"):
             if sp.endswith(suffix):

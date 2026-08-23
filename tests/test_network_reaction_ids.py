@@ -89,7 +89,10 @@ def test_photo_rate_index_is_positional_and_in_range(net_path):
     """
     from vulcan_jax import network as netmod
 
-    net = netmod.parse_network(net_path)
+    # duplicates_ok: this is a file sweep over every vendored network, and the
+    # positional-index invariant holds regardless of duplicated rows (TiSNCHO
+    # carries three; tests/test_network_integrity.py pins the refusal).
+    net = netmod.parse_network(net_path, duplicates_ok=True)
     indices = list(net.pho_rate_index.values()) + list(net.ion_rate_index.values())
     if not indices:
         pytest.skip(f"{os.path.basename(net_path)} has no photo/ion reactions")
