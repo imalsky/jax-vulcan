@@ -423,7 +423,7 @@ def test_zzz_main_eq_vs_master():
 
 
 def test_column_atom_loss_uses_the_operator_invariant():
-    """The physical column budget must weight by what transport conserves.
+    """The column budget must weight by what transport conserves.
 
     A flux-form update `n_j += (F_{j-1/2} - F_{j+1/2}) / w_j` with zero
     boundary fluxes telescopes: it conserves `sum_j w_j n_j` exactly for the

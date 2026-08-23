@@ -268,7 +268,7 @@ def _compute_atom_loss(
 
 
 def _print_column_atom_loss(cfg, y, y_ini, dz) -> None:
-    """Opt-in end-of-run physical column budget (`report_column_atom_loss`).
+    """Opt-in end-of-run operator-weighted column budget (`report_column_atom_loss`).
 
     Reported, never gated: step acceptance keeps the unweighted
     master-parity `atom_loss`; this prints the operator-weighted column

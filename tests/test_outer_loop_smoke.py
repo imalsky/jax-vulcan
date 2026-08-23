@@ -53,7 +53,7 @@ def main() -> int:
     vulcan_cfg.use_print_prog = False
     vulcan_cfg.use_live_plot = False
     vulcan_cfg.use_live_flux = False
-    # Exercise the opt-in physical column budget alongside the parity metric.
+    # Exercise the opt-in operator-weighted column budget alongside the parity metric.
     vulcan_cfg.report_column_atom_loss = True
 
     import numpy as np
@@ -134,7 +134,7 @@ def main() -> int:
         print(f"FAIL: t = {data_var.t:.3e} not finite-positive after 50 steps")
         ok = False
 
-    # 6. The physical (operator-weighted) column budget must agree with the
+    # 6. The operator-weighted column budget must agree with the
     # unweighted parity metric to within a factor: on this grid the two were
     # measured ~10% apart, so a large split means the weights or the wiring
     # broke.

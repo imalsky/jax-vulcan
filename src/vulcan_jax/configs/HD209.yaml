@@ -196,6 +196,7 @@ photo_switch_longdydt_thresh: 1.0e-06
 # bottom mixing ratios are snapshotted and pinned. Inert otherwise.
 hycean_pin_time: 1000000.0
 loss_ex: []
+report_column_atom_loss: false
 fastchem_newton_tol: 1.0e-12
 fastchem_newton_max_iter: 50
 use_fix_all_bot: false
