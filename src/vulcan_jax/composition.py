@@ -29,9 +29,41 @@ atom_list: tuple[str, ...] = tuple(
     name for name in compo.dtype.names if name not in ("species", "mass")
 )
 
+# Upstream ships six species twice; three of those pairs disagree, so the row
+# picked decides the mass. Both codes take the first (`list.index`), which is
+# what these values are — keeping them is a parity choice, not an endorsement
+# (HCS's 45.178 is 0.099 amu above its own elemental sum). Any OTHER
+# disagreeing duplicate is new data corruption and must refuse rather than
+# silently depend on file order.
+_PARITY_DUPLICATES = {"C2H4O", "CH3NO2", "HCS"}
+
+
+_seen: dict[str, int] = {}
+_bad = [
+    f"{sp} (rows {_seen[sp] + 1} and {i + 1})"
+    for i, sp in enumerate(compo_row)
+    if _seen.setdefault(sp, i) != i
+    and sp not in _PARITY_DUPLICATES
+    and tuple(compo[_seen[sp]]) != tuple(compo[i])
+]
+if _bad:
+    raise ValueError(
+        f"{COM_FILE_PATH}: duplicated species with disagreeing rows: "
+        f"{', '.join(_bad)}. First row wins, so the physics would depend on "
+        "file order. Fix the table, or add it to _PARITY_DUPLICATES if it is a "
+        "known upstream bug kept deliberately for parity."
+    )
+
 _ni = chem_funs.ni
 _compo_array_np = np.zeros((_ni, len(atom_list)), dtype=np.float64)
 for _i, _sp in enumerate(species):
+    if _sp not in compo_row:
+        raise ValueError(
+            f"species {_sp!r} is used by the loaded network but has no row in "
+            f"{COM_FILE_PATH}, so its atom counts and mass are unknown and "
+            "elemental bookkeeping, mean molecular weight, and molecular "
+            "diffusion would all be wrong."
+        )
     _row = compo[compo_row.index(_sp)]
     for _j, _atom in enumerate(atom_list):
         _compo_array_np[_i, _j] = float(_row[_atom])

@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import glob
 import os
+import subprocess
+import sys
 import warnings
 from pathlib import Path
 
@@ -131,3 +133,25 @@ def test_shipped_profile_temp_range_exposure_is_pinned(cfg_name):
     temp_col = next(n for n in prof.dtype.names if n.lower().startswith("temp"))
     exposure = rv.rate_temp_range_exposure(net, np.asarray(prof[temp_col], float))
     assert exposure == _EXPOSURE[cfg_name]
+
+
+# A network whose species lack a composition row cannot be integrated: atom
+# counts and mass drive elemental bookkeeping, mean molecular weight, and
+# molecular diffusion. The shipped C3 network uses C3, which upstream's
+# all_compose.txt never defines. The composition table is import-frozen, so
+# selecting that network needs a fresh process.
+def test_network_species_without_composition_row_refuse():
+    child = (
+        "import os, sys, warnings; warnings.filterwarnings('ignore');"
+        "os.environ['JAX_PLATFORM_NAME']='cpu';"
+        "os.environ['VULCAN_JAX_NETWORK']='thermo/SNCHO_photo_network_C3.txt';"
+        "os.environ['VULCAN_JAX_ATOM_LIST']='H,O,C,N,S';"
+        f"sys.path.insert(0, {str(ROOT / 'src')!r});"
+        "from vulcan_jax import composition"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", child], capture_output=True, text=True,
+        timeout=600, check=False,
+    )
+    assert proc.returncode != 0, "C3 network loaded despite having no C3 composition row"
+    assert "C3" in proc.stderr, proc.stderr
