@@ -134,6 +134,8 @@ def _parse_temp_ranges(tokens: list[str]) -> tuple[tuple[float, float], ...]:
     out: list[tuple[float, float]] = []
     for tok in reversed(tokens):
         t = tok.strip(",")
+        if t == "/":  # k0 / k_inf window separator on three-body rows
+            continue
         m = _RE_TEMP_RANGE.match(t)
         if m:
             lo, hi = float(m.group(1)), float(m.group(2))

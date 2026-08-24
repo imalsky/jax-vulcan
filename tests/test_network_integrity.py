@@ -99,7 +99,7 @@ def test_temp_range_annotation_parser(annotation, expected):
 _EXPOSURE = {
     "HD189.yaml": {"thermal_rows": 390, "no_range": 95, "any_outside": 291, "all_outside": 43},
     "HD209.yaml": {"thermal_rows": 390, "no_range": 95, "any_outside": 291, "all_outside": 58},
-    "W39b.yaml": {"thermal_rows": 513, "no_range": 143, "any_outside": 197, "all_outside": 64},
+    "W39b.yaml": {"thermal_rows": 513, "no_range": 143, "any_outside": 194, "all_outside": 63},
 }
 
 
