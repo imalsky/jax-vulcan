@@ -1,7 +1,7 @@
 """`save_evolution` time-series capture in the OuterLoop runner.
 
 When `vulcan_cfg.save_evolution=True`, master appends `var.y` and `var.t`
-to `var.y_time` / `var.t_time` every accepted step (op.py:1099-1102) and
+to `var.y_time` / `var.t_time` every accepted step (op.py:1096-1099) and
 slices by `save_evo_frq` at save time. The JAX OuterLoop captures the
 trajectory directly at the configured cadence into a fixed-size buffer.
 
@@ -77,7 +77,7 @@ def main() -> int:
     vulcan_cfg = legacy_io.default_config()
     save_evo_frq = 10
     count_max = 50
-    # Master runs `count_max + 1` save_steps (op.py:1083 uses `>`, not `>=`),
+    # Master runs `count_max + 1` save_steps (op.py:1080 uses `>`, not `>=`),
     # then post-slices `var.y_time[::save_evo_frq]`, so the kept length is
     # `ceil((count_max + 1) / save_evo_frq)` = (count_max + save_evo_frq)
     # // save_evo_frq. For (50, 10) that's 6 entries (indices 0,10,20,30,

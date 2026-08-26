@@ -60,7 +60,8 @@ JAX_ONLY_DEFAULTS: dict[str, Any] = {
 #   use_vm_mol   -- vm_branch upwind molecular diffusion; on in the VULCAN 3
 #                   preset, off in the VULCAN 2 parity configs (which match
 #                   fetched exoclime master).
-#   conver_ignore-- the parity configs ship upstream master's `[]`; the VULCAN 3
+#   conver_ignore-- the parity configs ship the pinned HD189 example's `[]`
+#                   (exoclime's root vulcan_cfg.py ships ['HC3N']); the VULCAN 3
 #                   preset ships vm_branch's `['HC3N']`. Measured behaviourally
 #                   identical on HD189/HD209 (same step count, same longdy,
 #                   same controlling cell).

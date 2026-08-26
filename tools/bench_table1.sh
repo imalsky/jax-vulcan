@@ -91,7 +91,7 @@ t = p.read_text()
 t = re.sub(r"^network\s*=.*$", f"network = '{net}'", t, flags=re.M)
 for k in ("use_print_prog", "use_live_plot", "use_live_flux", "use_plot_end", "use_plot_evo"):
     t = re.sub(rf"^{k}\s*=.*$", f"{k} = False", t, flags=re.M)
-# master's shipped wall_clock_max = 1800 s aborts a healthy HD189 benchmark mid-integration:
+# the hand-patched sibling copy's wall_clock_max = 1800 s (not an upstream knob) aborts a healthy HD189 benchmark mid-integration:
 # that run needs ~2000+ s even at cpu/wall 0.97, so the timer, not convergence, would end it.
 if re.search(r"^wall_clock_max\s*=", t, flags=re.M):
     t = re.sub(r"^wall_clock_max\s*=.*$", "wall_clock_max = 1.e9", t, flags=re.M)

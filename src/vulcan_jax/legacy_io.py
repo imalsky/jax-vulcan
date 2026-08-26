@@ -447,7 +447,7 @@ def _integrate_J_branch(
 ) -> np.ndarray:
     """Trapezoidal-rule integral of `aflux * cross` over wavelength bins.
 
-    Mirrors `op.compute_J` (op.py:2774-2783): a midpoint sum on each of the
+    Mirrors `op.compute_J` (op.py:2771-2780): a midpoint sum on each of the
     two-resolution sub-grids minus a half-weight correction at the four
     boundary samples (low-end, split, split-1, high-end). Works for both
     1-D `cross_branch` of shape (nbin,) and 2-D (nz, nbin) — broadcasting
@@ -491,13 +491,13 @@ def _synthesize_J_sp_dict(
     from cross sections × actinic flux, matching `op.compute_J`.
 
     Master writes `var.J_sp[(sp, nbr)]` for ALL branches in `n_branch[sp]`
-    (op.py:2767) and only skips writing `var.k[idx]` for branches whose
-    `pho_rate_index` is in `cfg.remove_list` (op.py:2788). Reading J from
+    (op.py:2764) and only skips writing `var.k[idx]` for branches whose
+    `pho_rate_index` is in `cfg.remove_list` (op.py:2785). Reading J from
     `runstate.rate.k` therefore loses the J-rate for any removed branch.
     We integrate `aflux * cross` directly so removed branches still report
     their true photolysis rate, exactly matching master's writer.
 
-    Branch 0 is the across-branch sum (master op.py:2786).
+    Branch 0 is the across-branch sum (op.py:2783).
 
     Args:
         runstate:       populated RunState; needs `photo_runtime.aflux`
@@ -548,7 +548,7 @@ def _synthesize_J_sp_dict(
                 dbin1,
                 dbin2,
             )
-        # Branch 0 = sum across branches 1..nbr_max (master op.py:2786).
+        # Branch 0 = sum across branches 1..nbr_max (op.py:2783).
         if nbr_max > 0:
             out[(sp, 0)] = sum(out[(sp, br)] for br in range(1, nbr_max + 1))
         else:

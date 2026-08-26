@@ -44,10 +44,10 @@ SUPPORTED_CONDEN_KINETICS: tuple[str, ...] = (
     "C",
 )
 
-# Molar masses (g/mol) from op.conden (op.py:1128-1291). Deliberate correction:
+# Molar masses (g/mol) from op.conden (op.py:1109-1290; S2 at :1203, S8 at :1249). Deliberate correction:
 # upstream hardcodes S2=45.019 / S8=360.152 (copy-paste error, biasing those
 # rates 0.702x / 1.404x); we use the composition-table 64.12 / 256.48
-# (2x / 8x atomic S = 32.06). Do not revert. See README.md (Parity & bug guide).
+# (2x / 8x atomic S = 32.06). Do not revert. See notes.md, Parity & bug guide C2.
 GAS_MASS_G_PER_MOL: dict[str, float] = {
     "H2O": 18.0,
     "NH3": 17.0,
@@ -73,7 +73,7 @@ class CondenSpec(NamedTuple):
 
     Species identity, k_arr row indices, and the per-reaction coefficient
     `m / (rho_p * r_p**2)` (relax-shorted H2O/NH3 rows get 0.0, matching
-    the `var.k[re] = 0` short-circuits at op.py:1124-1126 / 1156-1158).
+    the `var.k[re] = 0` short-circuits at op.py:1121-1123 / 1153-1155).
     Built once per config on the host by `make_conden_spec`; consumed by
     `build_conden_profile` for every T-P realization.
     """
@@ -147,7 +147,7 @@ def make_conden_spec(cfg, var, atm, species_idx) -> CondenSpec:
         m = GAS_MASS_G_PER_MOL[gas_sp] / Navo
         coeff = m / (float(atm.rho_p[condensate]) * float(atm.r_p[condensate]) ** 2)
         # use_relax short-circuit exists only on upstream H2O/NH3
-        # branches (op.py:1124-1126, 1156-1158). Other condensates,
+        # branches (op.py:1121-1123, 1153-1155). Other condensates,
         # including H2SO4, still use their condensation-rate rows.
         if gas_sp in {"H2O", "NH3"} and gas_sp in relax_set:
             coeff = 0.0
@@ -237,7 +237,7 @@ def build_conden_profile(
         )
 
     def _Dg_col(sp_col: int) -> jnp.ndarray:
-        # Dg = atm.Dzz[:, sp] with [0] reused at the bottom (op.py:1138).
+        # Dg = atm.Dzz[:, sp] with [0] reused at the bottom (op.py:1135).
         col = Dzz[:, sp_col]
         return jnp.concatenate([col[:1], col])
 

@@ -1,8 +1,10 @@
 """`use_fix_all_bot` post-step bottom clamp inside the runner.
 
 With `use_fix_all_bot=True`, OuterLoop clamps the bottom layer to the
-init-captured `ymix[0] * n_0[0]` on every accepted step (mirrors
-`op.Ros2.solver_fix_all_bot`). A 10-step HD189 run must leave the bottom
+init-captured `ymix[0] * n_0[0]` on every accepted step (named after
+`op.Ros2.solver_fix_all_bot`, which upstream never selects: its
+`naming_solver` selection is commented out, op.py:3080-3083, so this
+path is JAX-only and has no oracle). A 10-step HD189 run must leave the bottom
 row equal to that target to machine precision.
 """
 

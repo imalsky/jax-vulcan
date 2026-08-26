@@ -79,7 +79,7 @@ _REASON_NAMES = {
     5: "non-finite",
 }
 # Reasons that count as a profile genuinely reaching steady state: 1 is the
-# normal yconv/slope criterion, 4 is master's stall fallback (end_case=1 too).
+# normal yconv/slope criterion, 4 is the JAX-only stall fallback (end_case=1 too; no upstream counterpart).
 _OK_REASONS = (1, 4)
 
 

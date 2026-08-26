@@ -1,8 +1,8 @@
 """Formula correctness of the three pure-JAX conden kernels in `conden.py`,
 fed synthetic but physically-shaped inputs:
 
-    1. `update_conden_rates` vs the `op.conden` loop body (op.py:1135-1151).
-    2. `apply_h2o_relax_jax` vs `op.h2o_conden_evap_relax` (op.py:1334-1370).
+    1. `update_conden_rates` vs the `op.conden` loop body (op.py:1119-1148).
+    2. `apply_h2o_relax_jax` vs `op.h2o_conden_evap_relax` (op.py:1331-1367).
     3. `apply_nh3_relax_jax` vs `op.nh3_conden_evap_relax`, including the
        `i <= conden_top` clamp and the NH3_l_s >= 0 clip.
 
@@ -202,7 +202,7 @@ def test_apply_h2o_relax_jax():
     y_jax = np.asarray(y_jax)
     ymix_jax = np.asarray(ymix_jax)
 
-    # Reference: NumPy port of op.h2o_conden_evap_relax (op.py:1334-1370).
+    # Reference: NumPy port of op.h2o_conden_evap_relax (op.py:1331-1367).
     tau = 1.0 / (Dg * m_over_rho_r2 * (y[:, h2o_idx] - sat))
     sat_mix = sat / n_0
     y_conden = (ymix[:, h2o_idx] + dt / tau * sat_mix) / (1.0 + dt / tau)
@@ -219,7 +219,7 @@ def test_apply_h2o_relax_jax():
     ymix_ref[evap_mask, h2o_idx] += ice_loss[evap_mask] / n_0[evap_mask]
     ymix_ref[evap_mask, h2o_l_s_idx] -= ice_loss[evap_mask] / n_0[evap_mask]
 
-    # The projection uses pre-relax y (op.py:1368).
+    # The projection uses pre-relax y (op.py:1365).
     ysum = np.sum(y, axis=1, keepdims=True)
     y_ref = ymix_ref * ysum
 
@@ -281,7 +281,7 @@ def test_apply_nh3_relax_jax():
     y_jax = np.asarray(y_jax)
     ymix_jax = np.asarray(ymix_jax)
 
-    # Reference: NumPy port of op.nh3_conden_evap_relax (op.py:1372-1424).
+    # Reference: NumPy port of op.nh3_conden_evap_relax (op.py:1369-1424).
     tau = 1.0 / (Dg * m_over_rho_r2 * (y[:, nh3_idx] - sat))
     y_conden = (ymix[:, nh3_idx] + dt / tau * sat_mix) / (1.0 + dt / tau)
     ice_loss = (y[:, nh3_idx] - sat) * dt / tau
@@ -299,7 +299,7 @@ def test_apply_nh3_relax_jax():
     ymix_ref[evap_mask, nh3_l_s_idx] -= ice_loss[evap_mask] / n_0[evap_mask]
     ymix_ref[:, nh3_l_s_idx] = np.maximum(ymix_ref[:, nh3_l_s_idx], 0.0)
 
-    # Projection uses pre-relax y (op.py:1422).
+    # Projection uses pre-relax y (op.py:1421).
     ysum = np.sum(y, axis=1, keepdims=True)
     y_ref = ymix_ref * ysum
 

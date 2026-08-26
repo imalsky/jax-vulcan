@@ -1,4 +1,4 @@
-"""`use_fix_H2He` Hycean-world bottom pin (op.py:2938-2944).
+"""`use_fix_H2He` Hycean-world bottom pin (op.py:2935-2941).
 
 When `vulcan_cfg.use_fix_H2He=True`, master snapshots the bottom-layer
 mixing ratios of H2 and He at the first per-step iteration with
@@ -13,7 +13,10 @@ This test:
   3. Runs a 5-step HD189 integration with `use_fix_H2He=True`.
   4. Asserts:
        a. `var.y[0, H2_idx]` / `var.y[0, He_idx]` after the run equal
-          `pre_ymix[0, sp] * atm.n_0[0]` to machine precision.
+          `pre_ymix[0, sp] * atm.n_0[0]` up to the layer renormalization:
+          upstream pins `sol[0]` BEFORE clip and the `y = n_0 * ymix`
+          rebalance (op.py:2945-2946), so the pinned density is rescaled by
+          n_0[0] / sum(sol[0]) (~1e-8 here), not held to machine precision.
        b. `vulcan_cfg.use_fix_sp_bot` post-run contains the snapshotted
           values (master mutates the dict — JAX writes them back via
           `_unpack_state`).
@@ -110,10 +113,10 @@ def main() -> int:
             f"target n = {he_target:.6e}; post-run y[0] = {he_post:.6e}; "
             f"relerr = {he_relerr:.3e}"
         )
-        ok_pin = (h2_relerr < 1e-12) and (he_relerr < 1e-12)
+        ok_pin = (h2_relerr < 1e-6) and (he_relerr < 1e-6)
 
         # Master mutates vulcan_cfg.use_fix_sp_bot in-place at the moment
-        # of pinning (op.py:2939-2944). We mirror that in _unpack_state so
+        # of pinning (op.py:2935-2941). We mirror that in _unpack_state so
         # downstream tooling sees the same state.
         post_dict = getattr(vulcan_cfg, "use_fix_sp_bot", {}) or {}
         ok_dict = (

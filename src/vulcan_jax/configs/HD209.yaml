@@ -156,11 +156,11 @@ slope_cri: 0.0001
 yconv_min: 0.1
 flux_cri: 0.1
 flux_atol: 1.0
-# VULCAN 2 parity: fetched exoclime/VULCAN master vulcan_cfg.py:151 and
-# cfg_examples/vulcan_cfg_HD189.py:148 BOTH ship the empty list, as does
-# shami-EEG/VULCAN master (that file is byte-identical to exoclime's).
-# shami-EEG vm_branch:157 ships ['HC3N'] -- that is the VULCAN 3 value and it
-# lives in HD189_vulcan3.yaml.
+# VULCAN 2 parity: the HD189 example the oracle tests pin
+# (exoclime/VULCAN@80f75b9 cfg_examples/vulcan_cfg_HD189.py:148) ships the
+# empty list. That revision's ROOT vulcan_cfg.py:153 -- and current exoclime
+# and shami-EEG master, and vm_branch:157 -- ship ['HC3N'], the VULCAN 3 value
+# that lives in HD189_vulcan3.yaml. Measured identical on HD189 (below).
 #
 # A 13-heavy-hydrocarbon list used to sit here, credited to "VULCAN-master
 # cfg:149". That attribution was false: the list exists in NO upstream

@@ -129,7 +129,7 @@ def main() -> int:
     from vulcan_jax.phy_const import hc
 
     # Master's op.compute_flux reads sl_angle/edd from its OWN vulcan_cfg
-    # (master ships sl_angle=83 deg, JAX ships 48 deg); feed the JAX kernel
+    # (both ship 48 deg for HD189; 83 deg is W39b's value); feed the JAX kernel
     # the angle master actually used or the comparison is invalid.
     aflux_jax, _, _, _ = photo_mod.compute_flux_jax(
         jnp.asarray(tau_ref),

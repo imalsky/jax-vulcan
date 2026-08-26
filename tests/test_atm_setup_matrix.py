@@ -31,7 +31,7 @@ warnings.filterwarnings("ignore")
 
 
 def _ref_TP_H14(pco, params, gs, Pb):
-    """Verbatim numpy port of `Atm.TP_H14` (VULCAN-master build_atm.py:493)."""
+    """Verbatim numpy port of `Atm.TP_H14` (VULCAN-master build_atm.py:494)."""
     T_int, T_irr, ka_0, ka_s, beta_s, beta_l = params
     albedo = (1.0 - beta_s) / (1.0 + beta_s)
     T_irr *= (1 - albedo) ** 0.25

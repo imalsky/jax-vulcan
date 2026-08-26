@@ -1,15 +1,11 @@
 """In-runner atm refresh + hydrostatic balance vs master's update_mu_dz /
 update_phi_esc + `var.y = n_0 * var.ymix` on HD189.
 
-The two are NOT the same kernel: master computes g(z) from a STALE atm.zco
-while `update_mu_dz_jax` is self-consistent, a documented divergence (~1.8%
-at the top of atmosphere; positive pin in tests/test_atm_refresh_gravity.py).
-So the hydrostatic fields (g/Hp/dz/dzi/Hpi/zco) are held to REFRESH_RTOL
-(2e-2, asserted so a magnitude change surfaces), while mu and post-hydro
-var.y must match to <= 1e-13.
-
-`top_flux` is intentionally not compared: physically inert on HD189, and the
-two harness paths seed its BC array differently (a harness artifact).
+Same kernel on both sides: master's sweeps write `zco[i+1]` before reading
+it for `g[i+1]`, so its g(z) is self-consistent exactly as
+`update_mu_dz_jax` is (measured 0.0 relative difference on g). Every
+refreshed field, including the diffusion-limited escape flux (`diff_esc`
+forced to ['H'] on both sides), is held to REFRESH_RTOL.
 """
 
 from __future__ import annotations
@@ -37,7 +33,7 @@ VULCAN_MASTER = oracle_dir_or_skip("this atm-refresh comparison")
 warnings.filterwarnings("ignore")
 
 
-REFRESH_RTOL = 2e-2
+REFRESH_RTOL = 1e-12
 
 
 def main() -> int:
@@ -47,6 +43,11 @@ def main() -> int:
 
     vulcan_cfg = default_config()
     import op
+    import vulcan_cfg as master_cfg
+
+    # Exercise update_phi_esc on both sides (HD189 ships diff_esc = []).
+    vulcan_cfg.diff_esc = ["H"]
+    master_cfg.diff_esc = ["H"]
 
     os.chdir(ROOT)
     import vulcan_jax.op_jax as op_jax
@@ -89,6 +90,7 @@ def main() -> int:
     dzi_A = atm_A.dzi.copy()
     Hpi_A = atm_A.Hpi.copy()
     zco_A = atm_A.zco.copy()
+    top_flux_A = atm_A.top_flux.copy()
     y_A = var_A.y.copy()
 
     # --- Path B: atm-refresh branch + hydrostatic balance via JAX runner ---
@@ -112,6 +114,7 @@ def main() -> int:
     dzi_B = np.asarray(after_refresh_state.dzi)
     Hpi_B = np.asarray(after_refresh_state.Hpi)
     zco_B = np.asarray(after_refresh_state.zco)
+    top_flux_B = np.asarray(after_refresh_state.top_flux)
 
     # Hydrostatic balance: y_B = n_0 * ymix. body_fn applies this after
     # the Ros2 step; here we exercise it standalone against atm.n_0
@@ -134,6 +137,7 @@ def main() -> int:
         ("dzi", dzi_A, dzi_B, REFRESH_RTOL),
         ("Hpi", Hpi_A, Hpi_B, REFRESH_RTOL),
         ("zco", zco_A, zco_B, REFRESH_RTOL),
+        ("top_flux", top_flux_A, top_flux_B, REFRESH_RTOL),
         ("y_post_hydro", y_A, y_B, 1e-13),
     ):
         err = _relerr(A, B)

@@ -1,7 +1,7 @@
 """Regression test: condensation gate uses entry-time t, not post-advance t_next.
 
 Master's `op.py:856` gates conden on `var.t` BEFORE `save_step` advances it
-(`__call__` runs save_step at line 1094, AFTER the conden block at 856-902).
+(`__call__` runs save_step at line 918, AFTER the conden block at 856-902).
 The JAX runner's `body_fn` at outer_loop.py:843 must use `s.t` (entry-time),
 not `t_next = s.t + dt` (post-advance), to match master at the boundary step
 crossing `start_conden_time`.

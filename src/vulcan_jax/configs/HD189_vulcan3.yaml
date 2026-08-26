@@ -183,8 +183,9 @@ slope_cri: 0.0001
 yconv_min: 0.1
 flux_cri: 0.1
 flux_atol: 1.0
-# shami-EEG/VULCAN vm_branch vulcan_cfg.py:157. Upstream master ships [];
-# this single entry is the VULCAN 3 value and matches Shami's own practice
+# shami-EEG/VULCAN vm_branch vulcan_cfg.py:157; exoclime master's root
+# vulcan_cfg.py ships the same ['HC3N'] (only its HD189 example ships []).
+# This single entry is the VULCAN 3 value and matches Shami's own practice
 # (2026-07-14: "Usually, I only have HC3N").
 conver_ignore:
 - HC3N

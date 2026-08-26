@@ -24,9 +24,18 @@ VULCAN_MASTER = oracle_dir_or_sentinel()
 
 from vulcan_jax._paths import PACKAGE_ROOT
 
-MATCHED_ACCEPTED_STEPS = 20
-COUNT_MAX = MATCHED_ACCEPTED_STEPS - 1
-MATCHED_STEP_RTOL = 3.0e-9
+# (count_max, update_frq, diff_esc, rtol, ymix_min). The first case is the
+# default HD189 config for 20 accepted steps at the FP-accumulation floor over
+# every cell. The second fires the hydrostatic refresh 40 times and refreshes
+# the diffusion-limited escape flux with it over 200 steps: an escape Jacobian
+# term applied outside upstream's upwind variants diverges to 3.7e-3 at the TOA
+# by step 200 while the no-escape control sits at 9e-8 (measured 2026-08-26),
+# so the bar is 1e-6 over cells with master ymix > 1e-10 (trace cells clip to
+# zero on different steps once dt has grown, so the all-cell metric is noise).
+MATCHED_CASES = [
+    (19, 100, [], 3.0e-9, 0.0),
+    (199, 5, ["H"], 1.0e-6, 1.0e-10),
+]
 
 
 _MASTER_SCRIPT = r"""
@@ -47,6 +56,8 @@ backup_dir = Path(sys.argv[3])
 stock_fastchem = Path(sys.argv[4])
 count_max = int(sys.argv[5])
 jax_fastchem_bin = Path(sys.argv[6])
+update_frq = int(sys.argv[7])
+diff_esc = [sp for sp in sys.argv[8].split(",") if sp]
 
 TRACKED_FILES = [
     Path("vulcan_cfg.py"),
@@ -108,6 +119,8 @@ def run() -> None:
             "save_evolution = False\n"
             "plot_TP = False\n"
             "use_adapt_rtol = False\n"
+            f"update_frq = {update_frq}\n"
+            f"diff_esc = {diff_esc!r}\n"
         )
         (master_root / "vulcan_cfg.py").write_text(cfg_text + overrides)
         shutil.copy2(
@@ -257,6 +270,8 @@ import numpy as np
 jax_root = Path(sys.argv[1])
 out_npz = Path(sys.argv[2])
 count_max = int(sys.argv[3])
+update_frq = int(sys.argv[4])
+diff_esc = [sp for sp in sys.argv[5].split(",") if sp]
 
 os.chdir(jax_root)
 sys.path.insert(0, str(jax_root))
@@ -267,8 +282,11 @@ vulcan_cfg = default_config()
 vulcan_cfg.count_max = count_max
 vulcan_cfg.count_min = count_max + 1
 vulcan_cfg.trun_min = 1e22
-# Master comparison is the PRE-FLIP central-difference baseline: upstream
-# VULCAN-master has no upwind vm_mol, and the hybrid phase flip extends the
+vulcan_cfg.update_frq = update_frq
+vulcan_cfg.diff_esc = diff_esc
+# Master comparison is the PRE-FLIP central-difference baseline: the pinned
+# VULCAN 2 oracle's own use_vm_mol (off by default) is the setup-frozen
+# cell-centred form, not vm_branch's refreshed interface form, and the hybrid phase flip extends the
 # step budget past count_max on phase-0 exhaustion (count+1000), which breaks
 # the matched-count contract. Pin both vm_branch defaults off for this oracle.
 vulcan_cfg.use_vm_mol = False
@@ -373,11 +391,14 @@ def _run_script(
     )
 
 
-def _safe_relerr(a: np.ndarray, b: np.ndarray, floor: float = 1.0e-30) -> float:
-    """Return max relative error with a denominator floor."""
+def _safe_relerr(
+    a: np.ndarray, b: np.ndarray, floor: float = 1.0e-30, mask=None
+) -> float:
+    """Return max relative error with a denominator floor, over `mask` cells."""
     a = np.asarray(a, dtype=np.float64)
     b = np.asarray(b, dtype=np.float64)
-    return float(np.max(np.abs(a - b) / np.maximum(np.abs(b), floor)))
+    rel = np.abs(a - b) / np.maximum(np.abs(b), floor)
+    return float(np.max(rel if mask is None else rel[mask]))
 
 
 def _atom_dict(data: np.lib.npyio.NpzFile) -> dict[str, float]:
@@ -424,8 +445,13 @@ def test_audit_master_parity_against_pinned_oracle() -> None:
 
 
 @pytest.mark.master_serial
-def test_default_hd189_preloop_and_matched_steps_match_master() -> None:
-    """Default HD189 initial state and 20 matched Ros2 steps match master."""
+@pytest.mark.parametrize(
+    "count_max, update_frq, diff_esc, rtol, ymix_min", MATCHED_CASES
+)
+def test_default_hd189_preloop_and_matched_steps_match_master(
+    count_max: int, update_frq: int, diff_esc: list[str], rtol: float, ymix_min: float
+) -> None:
+    """HD189 initial state and `count_max + 1` matched Ros2 steps match master."""
     from oracle import oracle_worktree
 
     with tempfile.TemporaryDirectory(prefix="default_parity_") as tmp, \
@@ -450,8 +476,10 @@ def test_default_hd189_preloop_and_matched_steps_match_master() -> None:
                 master_npz,
                 master_backup,
                 stock_fastchem,
-                COUNT_MAX,
+                count_max,
                 jax_fastchem_bin,
+                update_frq,
+                ",".join(diff_esc),
             ],
             python=_master_python(),
             timeout=900.0,
@@ -465,7 +493,7 @@ def test_default_hd189_preloop_and_matched_steps_match_master() -> None:
 
         jax_res = _run_script(
             _JAX_SCRIPT,
-            [PACKAGE_ROOT, jax_npz, COUNT_MAX],
+            [PACKAGE_ROOT, jax_npz, count_max, update_frq, ",".join(diff_esc)],
             timeout=900.0,
         )
         assert jax_res.returncode == 0, (
@@ -488,8 +516,9 @@ def test_default_hd189_preloop_and_matched_steps_match_master() -> None:
         np.testing.assert_array_equal(jax["Tco"], master["Tco"])
         np.testing.assert_allclose(jax["Kzz"], master["Kzz"], rtol=1e-14, atol=0.0)
 
-        y_relerr = _safe_relerr(jax["y"], master["y"])
-        ymix_relerr = _safe_relerr(jax["ymix"], master["ymix"])
+        sig = np.asarray(master["ymix"]) > ymix_min
+        y_relerr = _safe_relerr(jax["y"], master["y"], mask=sig)
+        ymix_relerr = _safe_relerr(jax["ymix"], master["ymix"], mask=sig)
         t_relerr = abs(float(jax["t"]) - float(master["t"])) / abs(float(master["t"]))
         dt_relerr = abs(float(jax["dt"]) - float(master["dt"])) / abs(
             float(master["dt"])
@@ -497,9 +526,9 @@ def test_default_hd189_preloop_and_matched_steps_match_master() -> None:
 
         max_relerr = max(y_relerr, ymix_relerr, t_relerr, dt_relerr)
         assert int(jax["count"]) == int(master["count"])
-        assert max_relerr <= MATCHED_STEP_RTOL, (
-            f"default HD189 matched-step relerr {max_relerr:.3e} > "
-            f"{MATCHED_STEP_RTOL:.3e}: y={y_relerr:.3e}, "
+        assert max_relerr <= rtol, (
+            f"HD189 matched-step relerr {max_relerr:.3e} > "
+            f"{rtol:.3e}: y={y_relerr:.3e}, "
             f"ymix={ymix_relerr:.3e}, t={t_relerr:.3e}, dt={dt_relerr:.3e}, "
             f"longdy_jax={float(jax['longdy']):.3e}, "
             f"longdy_master={float(master['longdy']):.3e}, "

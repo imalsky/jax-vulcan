@@ -5,7 +5,7 @@ comparisons, which are False for NaN — silently dropped poisoned cells from
 the `longdy` maximum, so an all-NaN state read `longdy == 0.0` (*perfectly*
 converged) and the run reported `end_case=1` "Integration successful".
 VULCAN-master cannot do this: its `np.amax(longdy[ymix>0]/ymix[ymix>0])`
-(op.py:1053) reduces an empty selection and raises. The fix forces
+(op.py:1055) reduces an empty selection and raises. The fix forces
 `longdy = +inf` on any non-finite `y`/`ymix` cell, reproducing master's "can
 never converge" semantics inside a jittable reduction.
 """

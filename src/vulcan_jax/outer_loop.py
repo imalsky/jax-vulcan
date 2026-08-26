@@ -136,7 +136,7 @@ class JaxIntegState(NamedTuple):
     Jion_br: jnp.ndarray  # (n_ion_br, nz) per-branch J-rate (ion)
 
     # Atmosphere geometry, refreshed at the END of an accepted iteration every
-    # `update_frq` steps (op.py:904-906); the next body_fn splices g/dzi/Hpi/
+    # `update_frq` steps (op.py:905-907); the next body_fn splices g/dzi/Hpi/
     # top_flux/vs into AtmStatic so jax_ros2_step sees refreshed diffusion.
     g: jnp.ndarray  # (nz,)          gravity
     mu: jnp.ndarray  # (nz,)          mean molar mass (g/mol)
@@ -342,8 +342,8 @@ def _clip_prologue(y_in, pos_cut: float, nega_cut: float):
     written once: two copies of an operation order that must stay bit-faithful
     to master is a divergence waiting to happen.
 
-    The second rule is master's op.py:2503, which tests the POST-SOLVE ymix
-    (written at op.py:3031-3034, before clip). That value is < mtol for any
+    The second rule is master's op.py:2459, which tests the POST-SOLVE ymix
+    (written at op.py:2991-2993, before clip). That value is < mtol for any
     y<0 cell, so the rule reduces to "zero every negative" and needs no
     ymix argument at all. Testing the PRE-step ymix instead would leave
     negative densities and make the all_nonneg gate reject steps master
@@ -415,12 +415,16 @@ def _make_aggregate_delta_fn(
     """
     cond_zero = jnp.asarray(condense_zero_mask, dtype=jnp.bool_)
 
-    def agg(sol, delta_arr, ymix_old):
+    def agg(sol, delta_arr, ymix_old, zero_bot=None):
         masked = jnp.where(ymix_old < mtol, 0.0, delta_arr)
         masked = jnp.where(sol < atol, 0.0, masked)
-        if zero_bot_row:
-            row_zero = jnp.zeros_like(masked).at[0].set(1.0).astype(jnp.bool_)
-            masked = jnp.where(row_zero, 0.0, masked)
+        # `zero_bot` is the runtime extension of the static flag: upstream's
+        # use_fix_H2He trip turns `use_fix_sp_bot` non-empty mid-run, which
+        # activates its `delta[0] = 0` for the rest of the run.
+        zb = jnp.bool_(zero_bot_row)
+        if zero_bot is not None:
+            zb = zb | zero_bot
+        masked = jnp.where(zb, masked.at[0].set(0.0), masked)
         masked = jnp.where(cond_zero, 0.0, masked)
         ratio = jnp.where(
             sol > 0, masked / jnp.maximum(jnp.abs(sol), _UNDERFLOW_DENOM), 0.0
@@ -518,7 +522,7 @@ def _make_photo_branch(photo_static: _PhotoStatic):
         else:
             Jion_br_new = s.Jion_br
 
-        # aflux_change: mirrors op.py:2740 / op_jax.py:94-101.
+        # aflux_change: mirrors op.py:2737 / op_jax.py:94-101.
         # `s.aflux` here is the OLD aflux; we use it as `prev_aflux` in the
         # ratio. After this branch, prev_aflux <- old aflux, aflux <- new.
         mask = aflux_new > flux_atol
@@ -657,6 +661,7 @@ class _Statics(NamedTuple):
     final_update_photo_frq: int
     update_frq: int
     use_adapt_rtol: bool
+    rtol_accept: float  # cfg.rtol at build; acceptance never sees adapted rtol
     rtol_min: float
     rtol_max: float
     adapt_rtol_dec_period: int
@@ -730,7 +735,9 @@ def _make_runner(
     Body order per iteration (matches `op.Integration.__call__`):
       1. photo       (when accept_count % update_photo_frq == 0)
       2. Ros2 step + clip + atom_loss + delta + accept/reject
-      3. conden      (on accept, when t in [start_conden_time, stop_conden_time])
+      3. conden      (on accept, when t >= start_conden_time and the
+                      fix_species freeze has not fired; stop_conden_time only
+                      arms that freeze -- with fix_species=[] conden runs forever)
       4. atm_refresh (on accept, when accept_count % update_frq == 0;
                       reads post-conden ymix, geometry feeds next iter)
       5. hydrostatic balance (reads post-conden ymix)
@@ -786,6 +793,7 @@ def _make_runner(
     final_update_photo_frq = statics.final_update_photo_frq
     update_frq = statics.update_frq
     use_adapt_rtol = statics.use_adapt_rtol
+    rtol_accept = jnp.float64(statics.rtol_accept)
     rtol_min = statics.rtol_min
     rtol_max = statics.rtol_max
     adapt_rtol_dec_period = int(statics.adapt_rtol_dec_period)
@@ -892,7 +900,7 @@ def _make_runner(
         # NaN guard: the masks above are all False for NaN, so an all-NaN
         # state would read longdy == 0.0 ("converged"). Force +inf so a
         # poisoned run can never converge and exits via the count/runtime
-        # ladder, matching master's raise on an empty amax (op.py:1053).
+        # ladder, matching master's raise on an empty amax (op.py:1055).
         state_is_bad = ~jnp.all(jnp.isfinite(s.y)) | ~jnp.all(jnp.isfinite(s.ymix))
         longdy_new = jnp.where(state_is_bad, jnp.inf, longdy_new)
         dt_lookback = jnp.maximum(s.t - s.t_time_ring[indx], _UNDERFLOW_DENOM)
@@ -937,7 +945,7 @@ def _make_runner(
     def _real_terminate(s: JaxIntegState):
         """Real (non-chunk) termination predicate + reason code.
 
-        Reason priority matches master's stop() (op.py:1072-1118): converged
+        Reason priority matches master's stop() (op.py:1065-1085): converged
         over runtime over step-count, so a step that is both converged and at
         a cap reports success. Codes: 0 running, 1 converged, 2 runtime
         exceeded, 3 step-count exceeded, 4 stalled-convergence.
@@ -995,7 +1003,7 @@ def _make_runner(
             )
             s = jax.lax.cond(photo_due, photo_branch, lambda ss: ss, s)
 
-        # Splice the carry's refreshed geometry (op.py:904-906) into AtmStatic
+        # Splice the carry's refreshed geometry (op.py:905-907) into AtmStatic
         # for this step.
         atm_step = atm_static_._replace(
             g=s.g, dzi=s.dzi, Hpi=s.Hpi, top_flux=s.top_flux, vs=s.vs
@@ -1024,7 +1032,7 @@ def _make_runner(
             )
 
         # use_ion: master pins the electron rows inside BOTH Ros2 stages
-        # (op.py:2949-2952, 2966-2967) so sol[e]=y[e], delta[e]=0; 'e' is then
+        # (op.py:2908-2911, 2925-2926) so sol[e]=y[e], delta[e]=0; 'e' is then
         # recomputed by the post-step charge balance below. The fix_mask
         # row-pin implements exactly that; unlike fix_species, the e column
         # must NOT be overwritten with fix_y (the pinned step already returns
@@ -1047,17 +1055,59 @@ def _make_runner(
         else:
             sol, delta_arr = jax_ros2_step(s.y, s.k_arr, s.dt, atm_step, net)
 
+        # Bottom-layer pins are applied to `sol` BEFORE the truncation error
+        # and the clip (exoclime@80f75b9 op.py:2935-2946): the carried ymix
+        # and the hydrostatic rebalance then see the pinned value normalized
+        # with its layer, exactly as upstream. use_fix_H2He (op.py:2935-2941)
+        # snapshots the pre-step ymix[0] once `t > hycean_pin_time` and turns
+        # the fix_sp_bot pin (and its `delta[0] = 0`) on for the rest of the
+        # run; no accept gate, since upstream snapshots before accept/reject.
+        if use_fix_sp_bot_static:
+            sol = sol.at[0, fix_sp_bot_idx_static].set(
+                fix_sp_bot_mix_static * s.pv.n_0[0]
+            )
+        if use_fix_H2He_static:
+            trip = (~s.h2he_pinned) & (s.t > jnp.float64(hycean_pin_time))
+            h2_mix_snap = jnp.where(trip, s.ymix[0, h2_idx_static], s.h2he_mix[0])
+            he_mix_snap = jnp.where(trip, s.ymix[0, he_idx_static], s.h2he_mix[1])
+            h2he_mix_next = jnp.stack([h2_mix_snap, he_mix_snap])
+            h2he_pinned_next = s.h2he_pinned | trip
+            sol = sol.at[0, h2_idx_static].set(
+                jnp.where(
+                    h2he_pinned_next,
+                    h2_mix_snap * s.pv.n_0[0],
+                    sol[0, h2_idx_static],
+                )
+            )
+            sol = sol.at[0, he_idx_static].set(
+                jnp.where(
+                    h2he_pinned_next,
+                    he_mix_snap * s.pv.n_0[0],
+                    sol[0, he_idx_static],
+                )
+            )
+            zero_bot_dyn = h2he_pinned_next
+        else:
+            h2he_pinned_next = s.h2he_pinned
+            h2he_mix_next = s.h2he_mix
+            zero_bot_dyn = None
+
         sol_clip, ymix_new, small_y_inc, nega_y_inc = clip_fn(sol)
         atom_loss_new = _compute_atom_loss(sol_clip, compo_arr, s.pv.atom_ini)
         # delta uses the PRE-clip sol (master computes it before clip):
         # sol_clip would erase the truncation error of cells about to clip to
         # zero and let overly aggressive steps through (HD209 exercises this).
-        delta = agg_delta_fn(sol, delta_arr, s.ymix)
+        delta = agg_delta_fn(sol, delta_arr, s.ymix, zero_bot_dyn)
 
-        # Use dynamic s.rtol so adaptive-rtol updates take effect immediately.
+        # Acceptance uses the BUILD-TIME rtol, never the carry's adapted one:
+        # upstream binds `rtol = vulcan_cfg.rtol` as a default argument of
+        # `step_ok`/`step_reject` at import (exoclime@80f75b9 op.py:2489,2495;
+        # vm_branch@84d010d op.py:2568,2574), so the adaptive-rtol and
+        # `post_conden_rtol` writes reach only `step_size`, which reads the
+        # live value. `s.rtol` therefore feeds `_step_size` alone.
         all_nonneg = jnp.all(sol_clip >= 0)
         loss_diff = jnp.max(jnp.abs(atom_loss_new - s.atom_loss_prev))
-        accept = all_nonneg & (loss_diff < loss_eps) & (delta <= s.rtol)
+        accept = all_nonneg & (loss_diff < loss_eps) & (delta <= rtol_accept)
 
         # Force-accept when shrinking dt would underflow or we've burned the
         # retry budget — prevents the runner from getting permanently stuck.
@@ -1070,8 +1120,8 @@ def _make_runner(
         # Exactly one counter increments per FAILED attempt, classified on
         # `~accept` (not `~do_accept`) so a force-accepted failure still
         # counts -- master bumps its reject counter before the dt<dt_min
-        # force-accept clamp (op.py:2536-2563).
-        delta_too_big = delta > s.rtol
+        # force-accept clamp (op.py:2495-2518).
+        delta_too_big = delta > rtol_accept
         any_neg = jnp.any(sol_clip < 0)
         attempt_failed = ~accept
         delta_count_inc = (attempt_failed & delta_too_big).astype(jnp.int32)
@@ -1139,7 +1189,7 @@ def _make_runner(
             vs_next = s.vs
             trigger_fix = jnp.bool_(False)
 
-        # Atm refresh (op.py:904-906): after conden, before hydrostatic
+        # Atm refresh (op.py:905-907): after conden, before hydrostatic
         # balance, on accepted steps only. `s.accept_count` is pre-increment,
         # matching master's `count % update_frq == 0` cadence.
         if refresh_static is not None:
@@ -1221,32 +1271,6 @@ def _make_runner(
         # snapshotted at init, scaled by n_0[0]. Trace-time branch.
         if use_fix_all_bot_static:
             sol_balanced = sol_balanced.at[0].set(s.pv.bottom_n)
-        if use_fix_sp_bot_static:
-            sol_balanced = sol_balanced.at[0, fix_sp_bot_idx_static].set(
-                fix_sp_bot_mix_static * s.pv.n_0[0]
-            )
-
-        # Hycean H2/He bottom-pin (op.py:2937-2944): master snapshots BEFORE
-        # the accept/reject decision, so no accept gate here; `s.ymix[0]` is
-        # unchanged between rejected retries, so the snapshot matches master.
-        if use_fix_H2He_static:
-            trip = (~s.h2he_pinned) & (s.t > jnp.float64(hycean_pin_time))
-            h2_mix_snap = jnp.where(trip, s.ymix[0, h2_idx_static], s.h2he_mix[0])
-            he_mix_snap = jnp.where(trip, s.ymix[0, he_idx_static], s.h2he_mix[1])
-            h2he_mix_next = jnp.stack([h2_mix_snap, he_mix_snap])
-            h2he_pinned_next = s.h2he_pinned | trip
-            apply_pin = h2he_pinned_next
-            new_h2_val = jnp.where(
-                apply_pin, h2_mix_snap * s.pv.n_0[0], sol_balanced[0, h2_idx_static]
-            )
-            new_he_val = jnp.where(
-                apply_pin, he_mix_snap * s.pv.n_0[0], sol_balanced[0, he_idx_static]
-            )
-            sol_balanced = sol_balanced.at[0, h2_idx_static].set(new_h2_val)
-            sol_balanced = sol_balanced.at[0, he_idx_static].set(new_he_val)
-        else:
-            h2he_pinned_next = s.h2he_pinned
-            h2he_mix_next = s.h2he_mix
 
         # y / ymix / atom_loss for the next iteration.
         y_next = jnp.where(do_accept, sol_balanced, s.y_prev)
@@ -1336,7 +1360,7 @@ def _make_runner(
         )
         # Stall bookkeeping: require a >=5% relative drop to count as a new
         # minimum (strict less-than would let ULP-floor jitter reset the
-        # counter forever). Gate on master's ready predicate (op.py:1072) so
+        # counter forever). Gate on master's ready predicate (op.py:1069) so
         # the early transient never charges the stall window.
         stall_ready = (s.t > jnp.float64(trun_min)) & (
             accept_count_next > s.count_min_dyn
@@ -1517,9 +1541,17 @@ def _make_runner(
 
         # Photo-frequency ini→final switch when longdy / longdydt drop
         # below their respective cfg.photo_switch_* thresholds.
+        # Upstream evaluates `conv()` (which writes longdy/longdydt) only once
+        # `t > trun_min and count > count_min` (op.py:1069); before that both
+        # sit at their initial 1.0 and the switch cannot fire. Mirror that
+        # readiness gate instead of the always-updated ring-buffer longdy.
+        ready_next = (t_next > jnp.float64(trun_min)) & (
+            accept_count_next > count_min_dyn_next
+        )
         switch_to_final = (
             jnp.bool_(use_photo_static)
             & ~s.is_final_photo_frq
+            & ready_next
             & (longdy_next < jnp.float64(photo_switch_longdy_thresh))
             & (longdydt_next < jnp.float64(photo_switch_longdydt_thresh))
         )
@@ -1824,13 +1856,13 @@ class OuterLoop:
             dtype=np.float64,
         )
 
-        # conver_ignore species are zeroed in the longdy reduction (op.py:1049).
+        # conver_ignore species are zeroed in the longdy reduction (op.py:1045-1046).
         conver_ignore_np = np.zeros(ni, dtype=bool)
         for sp in getattr(self._cfg, "conver_ignore", []):
             if sp in _NETWORK.species_idx:
                 conver_ignore_np[_NETWORK.species_idx[sp]] = True
 
-        # condense_zero_conv (op.py:1051-1052): when use_condense, the
+        # condense_zero_conv (op.py:1048-1049): when use_condense, the
         # non_gas_sp columns are zeroed in longdy. HD189 has non_gas_sp=[].
         nz = atm.Tco.shape[0]
         cond_zero_conv_np = np.zeros((nz, ni), dtype=bool)
@@ -1852,7 +1884,7 @@ class OuterLoop:
                     ]
             e_idx = _NETWORK.species_idx["e"] if "e" in _NETWORK.species_idx else 0
             # Exclude 'e' from the charge column so `e[:] = -dot(y, charge_arr)`
-            # is consistent (op.py:3004 zeros e first).
+            # is consistent (op.py:3001 zeros e first).
             charge_np[e_idx] = 0.0
         else:
             charge_np = np.zeros(ni, dtype=np.float64)
@@ -1861,7 +1893,8 @@ class OuterLoop:
         use_fix_all_bot = bool(getattr(self._cfg, "use_fix_all_bot", False))
         if use_fix_all_bot:
             # Pin bottom layer to chemical-EQ mixing ratios captured at
-            # init time, scaled by static n_0[0] (op.py:3022, 3050-3051).
+            # init time, scaled by static n_0[0] (op.py:3019, 3047-3048; a solver upstream never selects,
+            # see naming_solver op.py:3080-3083).
             bottom_n_np = np.asarray(var.ymix[0], dtype=np.float64) * float(atm.n_0[0])
         else:
             bottom_n_np = np.zeros(ni, dtype=np.float64)
@@ -1959,6 +1992,7 @@ class OuterLoop:
             final_update_photo_frq=int(getattr(self._cfg, "final_update_photo_frq", 1)),
             update_frq=int(self._cfg.update_frq),
             use_adapt_rtol=bool(getattr(self._cfg, "use_adapt_rtol", False)),
+            rtol_accept=float(self._cfg.rtol),
             rtol_min=float(getattr(self._cfg, "rtol_min", 0.0)),
             rtol_max=float(getattr(self._cfg, "rtol_max", 1.0)),
             adapt_rtol_dec_period=int(getattr(self._cfg, "adapt_rtol_dec_period", 10)),
@@ -2203,8 +2237,8 @@ class OuterLoop:
         `use_condense=False` (the runner then omits the conden branch).
 
         Reactions whose species is in `use_relax` get `coeff_per_re = 0`
-        (matches the `var.k[re] = 0` short-circuits at op.py:1124-1126,
-        1156-1158); the H2O/NH3 relax blocks are degenerate unless the
+        (matches the `var.k[re] = 0` short-circuits at op.py:1121-1123,
+        1153-1155); the H2O/NH3 relax blocks are degenerate unless the
         species is in `use_relax` (the `*_active` bools short-circuit at
         trace time).
         """
@@ -2656,7 +2690,7 @@ class OuterLoop:
         rs_out = self._unpack_state_to_runstate(state, rs_entry)
         _state_mod.runstate_to_store(rs_out, var, atm, para)
 
-        # Hycean pin diagnostic (op.py:2938-2944): mirror master's cfg
+        # Hycean pin diagnostic (op.py:2935-2941): mirror master's cfg
         # mutation so post-run readers of use_fix_sp_bot see the pinned values.
         if self._statics.use_fix_H2He and bool(state.h2he_pinned):
             h2he_mix_arr = np.asarray(state.h2he_mix, dtype=np.float64)
@@ -2696,7 +2730,7 @@ class OuterLoop:
     def _unpack_J_sp(self, state: JaxIntegState, var) -> None:
         """Rebuild `var.J_sp` dict from carry's J_br / J_br_T arrays.
 
-        Mirrors the dict population in `op.compute_J` (op.py:2767, 2786):
+        Mirrors the dict population in `op.compute_J` (op.py:2764, 2783):
         per (sp, nbr) entries for nbr>=1, plus a per-species (sp, 0) total.
         Needed by `var.var_save` for the .vul output and by any downstream
         plot scripts.
@@ -2780,7 +2814,7 @@ class OuterLoop:
         var.k_arr = np.asarray(state.k_arr, dtype=np.float64)
 
     def _classify_end_case(self, state: JaxIntegState, wall_clock_hit=False):
-        """Classify end-of-run (op.py:1075-1087) from the carry's live budget.
+        """Classify end-of-run (op.py:1069-1085) from the carry's live budget.
 
         Reads `count_max_dyn`/`runtime_dyn`, not the static caps: the hybrid
         phase flip extends the budget in-loop, so a phase-1 convergence past
@@ -2936,7 +2970,7 @@ class OuterLoop:
         # op.py:1102. The container attributes stay at their initialized 1.0
         # for master-shape compatibility.)
 
-        # Determine end_case (op.py:1075-1087) for the final print.
+        # Determine end_case (op.py:1069-1085) for the final print.
         para.end_case = self._classify_end_case(final_state, wall_clock_hit)
         para.termination_reason = int(final_state.termination_reason)
         if para.end_case == 3:

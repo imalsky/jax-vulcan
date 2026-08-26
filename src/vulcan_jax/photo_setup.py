@@ -157,18 +157,27 @@ def _make_bins(
 ) -> np.ndarray:
     """Two-resolution wavelength bin grid (nm).
 
-    If `bin_min <= dbin_12trans <= bin_max`, fine-grid arange below the
-    transition is concatenated with coarse-grid arange above; else a single
-    dbin1-spaced arange.
+    The transition must lie strictly inside the modeled interval. Upstream
+    (op.py:583-585) falls back to a single dbin1-spaced grid otherwise, with
+    `sflux_din12_indx = -1`, which its compute_J then slices as `bins[:-1]`;
+    refused here instead (Parity & bug guide C15).
     """
-    if dbin_12trans >= bin_min and dbin_12trans <= bin_max:
-        return np.concatenate(
-            (
-                np.arange(bin_min, dbin_12trans, dbin1),
-                np.arange(dbin_12trans, bin_max, dbin2),
-            )
+    values = (bin_min, bin_max, dbin1, dbin2, dbin_12trans)
+    if not all(np.isfinite(values)) or dbin1 <= 0.0 or dbin2 <= 0.0:
+        raise ValueError(
+            f"photolysis bins need finite bounds and positive spacings: bin_min={bin_min!r}, "
+            f"bin_max={bin_max!r}, dbin1={dbin1!r}, dbin2={dbin2!r}, dbin_12trans={dbin_12trans!r}"
         )
-    return np.arange(bin_min, bin_max, dbin1)
+    if not bin_min < dbin_12trans < bin_max:
+        raise ValueError(
+            f"dbin_12trans={dbin_12trans:g} nm must lie strictly inside "
+            f"the photolysis interval [{bin_min:g}, {bin_max:g}] nm")
+    return np.concatenate(
+        (
+            np.arange(bin_min, dbin_12trans, dbin1),
+            np.arange(dbin_12trans, bin_max, dbin2),
+        )
+    )
 
 
 def _sort_pairs(xp: np.ndarray, fp: np.ndarray) -> tuple[np.ndarray, np.ndarray]:

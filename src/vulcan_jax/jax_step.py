@@ -544,11 +544,15 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
         jnp.zeros_like(atm.bot_vdep),
     )
     diag_d = diag_d.at[0].add(bot_vdep_term)
-    # Diffusion-limited escape at TOA: master adds this to the top-layer
-    # diagonal in all live lhs_jac_* variants, gated on a non-empty `diff_esc`
-    # list, NOT on `use_topflux`. The escape flux already enters the RHS, so
-    # omitting it here would leave the Jacobian inconsistent with the residual.
-    # The inner `where` mirrors master's `y > 0` guard and keeps the division
+    # Diffusion-limited escape at TOA (`top_flux / y[-1]` on the top-layer
+    # diagonal). Upstream carries this term ONLY in the upwind variants
+    # `lhs_jac_tot_vm` and `lhs_jac_settling_vm` (exoclime@80f75b9 op.py:2044-
+    # 2121, 2366+; vm_branch@84d010d op.py:2123-2200, 2445+); `lhs_jac_tot`,
+    # `lhs_jac_settling` and `lhs_jac_no_mol` have no escape term, and the
+    # `lhs_jac_fix_all_bot` copy is dead (its solver is never selected,
+    # op.py:3080-3083). So the gate is `use_vm_mol`, not "diff_esc non-empty";
+    # the RHS flux itself is gated on `use_topflux` above, as upstream.
+    # The inner `where` mirrors upstream's `y > 0` guard and keeps the division
     # and its derivative finite at y = 0.
     y_top_pos = y[-1] > 0.0
     diff_lim = jnp.where(
@@ -556,7 +560,9 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
         atm.top_flux / jnp.where(y_top_pos, y[-1], 1.0),
         0.0,
     )
-    diag_d = diag_d.at[-1].add(diff_lim)
+    diag_d = diag_d.at[-1].add(
+        diff_lim * jnp.asarray(atm.use_vm_mol, dtype=jnp.float64)
+    )
 
     eye = jnp.eye(ni)
     di = jnp.arange(ni)

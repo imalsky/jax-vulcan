@@ -300,7 +300,8 @@ def make_physical_inputs(
         if sp in species_list:
             nongas[species_list.index(sp)] = True
     # Diffusion-limited-escape species get an extra Jacobian top-diagonal term
-    # (master op.py:2144-2148); mirrors make_atm_static so the two builders
+    # (op.py:2102-2107, applied by jax_step only in the upwind
+    # variants upstream carries it in); mirrors make_atm_static so the two builders
     # stay field-for-field identical.
     _diff_esc_mask = np.zeros(ni, dtype=bool)
     for sp in getattr(cfg, "diff_esc", []) or []:

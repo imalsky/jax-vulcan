@@ -206,6 +206,24 @@ def _read_atm_table(atm_file: str) -> dict[str, np.ndarray]:
         out["Kzz"] = np.asarray(table["Kzz"], dtype=np.float64)
     if "vz" in table.dtype.names:
         out["vz"] = np.asarray(table["vz"], dtype=np.float64)
+    nrow = out["Pressure"].size
+    if out["Pressure"].ndim != 1 or nrow < 2:
+        raise ValueError(f"atmosphere table {atm_file}: need at least two rows")
+    if any(values.ndim != 1 or values.size != nrow for values in out.values()):
+        raise ValueError(f"atmosphere table {atm_file}: columns have inconsistent lengths")
+    if any(not np.all(np.isfinite(values)) for values in out.values()):
+        raise ValueError(f"atmosphere table {atm_file}: all values must be finite")
+    # Upstream (build_atm.load_TPK, interp1d with assume_sorted=False) sorts
+    # the pressure column and accepts Kzz = 0; only sign/finiteness are refused.
+    if np.any(out["Pressure"] <= 0.0) or np.any(out["Temp"] <= 0.0):
+        raise ValueError(
+            f"atmosphere table {atm_file}: Pressure and Temp must be positive "
+            f"(min Pressure {out['Pressure'].min():g}, min Temp {out['Temp'].min():g})"
+        )
+    if "Kzz" in out and np.any(out["Kzz"] < 0.0):
+        raise ValueError(
+            f"atmosphere table {atm_file}: Kzz must be >= 0 (min {out['Kzz'].min():g})"
+        )
     return out
 
 
@@ -750,6 +768,23 @@ def read_sflux_binned(
     # Scale the surface flux to the planet's orbit by (R_star / r_orbit)^2.
     geom = (float(cfg.r_star) * r_sun / (au * float(cfg.orbit_radius))) ** 2
     raw_flux = np.asarray(sflux_raw["flux"], dtype=np.float64) * geom
+    # `np.interp` (like upstream's interp1d) needs a NON-decreasing wavelength
+    # column; duplicates are legitimate (sflux-epseri.txt keeps 20, pinned
+    # byte-identical by C4). A decreasing file is refused: bin_min is read
+    # off wavelength[0] here and upstream (op.py:575).
+    if (raw_lambda.ndim != 1 or raw_lambda.shape != raw_flux.shape
+            or raw_lambda.size < 2
+            or not (np.all(np.isfinite(raw_lambda)) and np.all(np.isfinite(raw_flux)))):
+        raise ValueError(
+            f"stellar flux {cfg.sflux_file}: need equal-length finite 1-D wavelength/flux "
+            f"columns with >= 2 rows (got shapes {raw_lambda.shape}, {raw_flux.shape})"
+        )
+    if np.any(raw_lambda <= 0.0) or np.any(np.diff(raw_lambda) < 0.0) or np.any(raw_flux < 0.0):
+        raise ValueError(
+            f"stellar flux {cfg.sflux_file}: wavelength must be positive and "
+            f"non-decreasing and flux non-negative (min lambda {raw_lambda.min():g}, "
+            f"min diff {np.diff(raw_lambda).min():g}, min flux {raw_flux.min():g})"
+        )
 
     sflux_top = np.asarray(
         jnp.interp(
@@ -762,11 +797,15 @@ def read_sflux_binned(
         dtype=np.float64,
     )
 
-    sflux_din12_indx = -1
-    for n, ld in enumerate(bins_np):
-        if ld == dbin_12:
-            sflux_din12_indx = n
-            break
+    # Upstream (build_atm.py:635) leaves sflux_din12_indx = -1 when the node is
+    # absent and compute_J then integrates bins[:-1] at dbin1 (dropping the
+    # last bin); refused here instead (Parity & bug guide C15).
+    transition = np.flatnonzero(bins_np == dbin_12)
+    if transition.size != 1 or transition[0] == 0 or transition[0] == bins_np.size - 1:
+        raise ValueError(
+            f"photolysis grid must contain one internal dbin_12trans={dbin_12:g} nm node "
+            f"(grid [{bins_np[0]:g}, {bins_np[-1]:g}] nm, {transition.size} matches)")
+    sflux_din12_indx = int(transition[0])
 
     # Energy-conservation diagnostic: raw trapezoidal integral vs. binned sum.
     raw_left_indx = int(np.searchsorted(raw_lambda, bins_np[0], side="right"))
@@ -883,7 +922,7 @@ def sat_p_jax(sp: str, T: jnp.ndarray) -> jnp.ndarray:
         # Murray formulae: ice for T < 0 C, liquid water for T >= 0 C.
         # CORRECTION vs upstream: op.sp_sat's `(T<0)*ice + (T>0)*water` is
         # exactly 0 at T = 273.0 K (artificial cold trap); the single `where`
-        # is continuous through 0 C. See README.md (Parity & bug guide).
+        # is continuous through 0 C. See notes.md, Parity & bug guide C3.
         ice = c0 * jnp.exp((c1 * T_C + T_C**2 / c2) / (T_C + c3))
         liquid = w0 * jnp.exp((w1 * T_C + T_C**2 / w2) / (T_C + w3))
         return jnp.where(T_C < 0, ice, liquid)
