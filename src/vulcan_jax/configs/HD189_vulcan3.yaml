@@ -210,9 +210,6 @@ adapt_rtol_inc_loss_thresh: 0.0002
 batch_max_retries: 110
 step_size_safety: 0.9
 step_size_zero_delta_frac: 0.01
-use_pi_controller: false
-pi_controller_alpha: 0.7
-pi_controller_beta: 0.4
 photo_switch_longdydt_thresh: 1.0e-06
 # Only read when use_fix_H2He is true: the model time at which the H2/He
 # bottom mixing ratios are snapshotted and pinned. Inert otherwise.

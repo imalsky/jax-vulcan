@@ -102,6 +102,11 @@ _REMOVED_KEYS: dict[str, str] = {
         "the per-step delta print was not ported (a VULCAN-master live-UI "
         "knob); use `use_print_prog` for progress output"
     ),
+    **dict.fromkeys(
+        ("use_pi_controller", "pi_controller_alpha", "pi_controller_beta"),
+        "the Gustafsson PI step-size controller was removed; the master-faithful "
+        "I-controller is the only dt control (drop the key)",
+    ),
 }
 
 _KNOWN_KEYS: frozenset[str] | None = None
