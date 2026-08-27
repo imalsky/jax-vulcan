@@ -227,10 +227,26 @@ _REBUILD_CONSISTENCY_ERR = 1e-3
 # different map and the gradient would be silently wrong.
 
 
-def _warn_poor_convergence(resid: float, fp_err: float, spread: float = 0.0) -> None:
+_NULL_QUALITY_WARN = 1e-3
+# Production sits ~3 orders below this; O(1) means a deflated direction is not
+# null (e.g. open boundary fluxes) and the deflation is corrupting the solve.
+
+
+def _warn_poor_convergence(
+    resid: float, fp_err: float, spread: float = 0.0, null_quality: float = 0.0
+) -> None:
     """Warn (even when the caller ignores `info`) on an under-converged solve,
-    a loose fixed point, or twin disagreement. `pair_antisym` is intentionally
-    not gated here (see `_FP_ERR_WARN`'s NOTE)."""
+    a loose fixed point, twin disagreement, or a non-null deflation basis.
+    `pair_antisym` is intentionally not gated here (see `_FP_ERR_WARN`'s NOTE)."""
+    if null_quality > _NULL_QUALITY_WARN:
+        warnings.warn(
+            f"steady_state_reaction_sensitivity: null_quality {null_quality:.2e} "
+            f"exceeds {_NULL_QUALITY_WARN:.0e}: a deflated direction is not "
+            "actually null, so the deflation is corrupting the adjoint solve. "
+            "Check the boundary conditions (open fluxes break the conservation "
+            "null space) before trusting the magnitudes.",
+            stacklevel=3,
+        )
     if fp_err > _FP_ERR_WARN:
         warnings.warn(
             "steady_state_reaction_sensitivity: y_star is not a tight fixed point "
@@ -930,7 +946,9 @@ def steady_state_reaction_sensitivity(
         e.g. `lambda y: jnp.log10(y[L, so2] / y[L].sum())`.
     y_star : (nz, ni)
         Converged state (number density, cm^-3) -- a tight fixed point of the
-        CHOSEN body map (`info["fp_err"]`; ~1e-9 for the renorm default).
+        CHOSEN body map (`info["fp_err"]`; ~1e-9 for the renorm default). Do
+        NOT iterate the renorm map to tighten `fp_err`: it trades the deflation
+        basis for the fixed point and degrades `info["null_quality"]`.
         Clip, charge balance, condensation, fix-species and bottom pins are in
         NEITHER map: run `audit_adjoint_scope(...)` first (its per-cell defect
         scan also catches what the global max-norm `fp_err` masks).
@@ -1082,7 +1100,7 @@ def steady_state_reaction_sensitivity(
     # Default-on diagnostics: a poorly-converged solve still returns a
     # finite-looking gradient. Warn on the ensemble MEDIAN residual (robust to
     # one wandering twin); info["resid"] still reports the max.
-    _warn_poor_convergence(resid_median, fp_err, ensemble_spread)
+    _warn_poor_convergence(resid_median, fp_err, ensemble_spread, null_quality)
 
     if not bool(jnp.all(jnp.isfinite(dL_dlnk))):
         raise ValueError(
@@ -1336,7 +1354,7 @@ def steady_state_input_sensitivity(
     resid = max(resids)
     resid_median = float(np.median(resids))
 
-    _warn_poor_convergence(resid_median, fp_err, ensemble_spread)
+    _warn_poor_convergence(resid_median, fp_err, ensemble_spread, null_quality)
 
     finite = all(
         bool(jnp.all(jnp.isfinite(leaf))) for leaf in jax.tree_util.tree_leaves(dL_dp)

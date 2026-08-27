@@ -29,7 +29,9 @@ import yaml
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 
-_SECTION_RE = re.compile(r"^(\d+)\s*\[")
+# The id column is optional (upstream never reads it); a blank id is a
+# real reaction row and occupies a position like any other.
+_SECTION_RE = re.compile(r"^(\d*)\s*\[")
 
 
 def _file_ids_by_position(path: str) -> list[tuple[int, int, str]]:
@@ -54,7 +56,7 @@ def _file_ids_by_position(path: str) -> list[tuple[int, int, str]]:
         m = _SECTION_RE.match(s)
         if not m:
             continue
-        out.append((pos, int(m.group(1)), section))
+        out.append((pos, int(m.group(1) or 0), section))
         pos += 2
     return out
 

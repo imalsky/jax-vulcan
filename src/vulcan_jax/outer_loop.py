@@ -885,24 +885,16 @@ def _make_runner(
         diffs_guarded = diffs.at[last_idx].set(big)
         indx = jnp.argmin(diffs_guarded)
 
-        y_old = s.y_time_ring[indx]
-        n_0_col = s.pv.n_0[:, None]
-        longdy_arr = jnp.abs((s.y - y_old) / n_0_col)
-        longdy_arr = jnp.where(s.ymix < mtol_conv, 0.0, longdy_arr)
-        longdy_arr = jnp.where(s.y < statics.atol, 0.0, longdy_arr)
-        longdy_arr = jnp.where(conver_ignore_mask[None, :], 0.0, longdy_arr)
-        longdy_arr = jnp.where(condense_zero_conv_mask, 0.0, longdy_arr)
-
-        ratio = jnp.where(
-            s.ymix > 0, longdy_arr / jnp.maximum(s.ymix, _UNDERFLOW_DENOM), 0.0
+        longdy_new, ratio = _longdy_reduce(
+            s.y,
+            s.ymix,
+            s.y_time_ring[indx],
+            s.pv.n_0,
+            atol=statics.atol,
+            mtol_conv=mtol_conv,
+            ignore_mask=conver_ignore_mask[None, :],
+            condense_mask=condense_zero_conv_mask,
         )
-        longdy_new = jnp.max(ratio)
-        # NaN guard: the masks above are all False for NaN, so an all-NaN
-        # state would read longdy == 0.0 ("converged"). Force +inf so a
-        # poisoned run can never converge and exits via the count/runtime
-        # ladder, matching master's raise on an empty amax (op.py:1055).
-        state_is_bad = ~jnp.all(jnp.isfinite(s.y)) | ~jnp.all(jnp.isfinite(s.ymix))
-        longdy_new = jnp.where(state_is_bad, jnp.inf, longdy_new)
         dt_lookback = jnp.maximum(s.t - s.t_time_ring[indx], _UNDERFLOW_DENOM)
         longdydt_new = longdy_new / dt_lookback
         return longdy_new, longdydt_new, ratio
@@ -913,6 +905,14 @@ def _make_runner(
 
         `slope_min` is recomputed from the live Hp because atm refresh can
         change it mid-run.
+
+        The two branches are not equivalent, and every shipped config exits on
+        the LOOSE one: measured 2026-08-27, HD189 longdy 0.09172, HD209 0.03013,
+        W39b 0.09900 against `yconv_cri` 0.01 and `yconv_min` 0.1. Quote the
+        realised `longdy` next to any "converged" claim rather than naming the
+        criterion -- 0.099 against a 0.1 threshold is a weaker statement than
+        0.01. The identical two-branch predicate is upstream's
+        (.oracles/vulcan2_ncho/op.py:1056), so this is inherited.
         """
         slope_min = jnp.minimum(
             jnp.min(s.pv.Kzz / (0.1 * s.Hp[:-1]) ** 2),
@@ -1765,6 +1765,32 @@ def stack_atm_statics(atms: "list[AtmStatic]") -> AtmStatic:
         for name in array_fields
     }
     return first._replace(**stacked)
+
+
+def _longdy_reduce(
+    y, ymix, y_old, n_0, *, atol, mtol_conv, ignore_mask=None, condense_mask=None
+):
+    """The `longdy` convergence reduction. Returns (longdy, ratio).
+
+    Module level so the regression guards exercise the shipped code rather
+    than an in-test copy of it.
+    """
+    longdy_arr = jnp.abs((y - y_old) / n_0[:, None])
+    longdy_arr = jnp.where(ymix < mtol_conv, 0.0, longdy_arr)
+    longdy_arr = jnp.where(y < atol, 0.0, longdy_arr)
+    if ignore_mask is not None:
+        longdy_arr = jnp.where(ignore_mask, 0.0, longdy_arr)
+    if condense_mask is not None:
+        longdy_arr = jnp.where(condense_mask, 0.0, longdy_arr)
+
+    ratio = jnp.where(ymix > 0, longdy_arr / jnp.maximum(ymix, _UNDERFLOW_DENOM), 0.0)
+    longdy = jnp.max(ratio)
+    # NaN guard: the masks above are all False for NaN, so an all-NaN state
+    # would read longdy == 0.0 ("converged"). Force +inf so a poisoned run can
+    # never converge and exits via the count/runtime ladder, matching master's
+    # raise on an empty amax (op.py:1055).
+    state_is_bad = ~jnp.all(jnp.isfinite(y)) | ~jnp.all(jnp.isfinite(ymix))
+    return jnp.where(state_is_bad, jnp.inf, longdy), ratio
 
 
 class OuterLoop:
@@ -2821,6 +2847,13 @@ class OuterLoop:
         the static count_max must still read end_case=1. Wall-clock exit
         (end_case=4) is sticky -- the JIT'd loop has not actually terminated,
         only the host bailed out.
+
+        end_case=5 is a VULCAN-JAX addition with no upstream counterpart: the
+        run stopped without meeting the convergence criterion and without
+        hitting either cap -- a lane frozen on non-finite state
+        (termination_reason 5) or one that only yielded at a chunk boundary
+        (reason 0). Both freeze early, below both caps, so neither cap fires
+        and the fall-through would otherwise report "Integration successful".
         """
         if wall_clock_hit:
             return 4
@@ -2828,6 +2861,10 @@ class OuterLoop:
             return 3
         if float(state.t) > float(state.runtime_dyn):
             return 2
+        if int(state.termination_reason) in (0, 5) or not bool(
+            jnp.all(jnp.isfinite(state.y))
+        ):
+            return 5
         return 1
 
     def _run_chunked(self, init_state, atm_static, var, para, atm):
@@ -2983,6 +3020,12 @@ class OuterLoop:
                 "Integration not completed...\nMaximal allowed runtime "
                 f"exceeded ({self._cfg.runtime} sec)!"
             )
+        elif para.end_case == 5:
+            print(
+                "Integration not completed...\nStopped without converging and "
+                f"without hitting a cap (termination_reason "
+                f"{para.termination_reason}); the state may be non-finite."
+            )
         elif para.end_case == 1:
             how = (
                 "via the stall fallback (JAX-only; no VULCAN 2.0 counterpart)"
@@ -3006,7 +3049,7 @@ class OuterLoop:
         # (end_case=1); we also call print_unconverged_msg for 2/3/4.
         if para.end_case == 1:
             self.output.print_end_msg(var, para)
-        elif para.end_case in (2, 3, 4):
+        elif para.end_case in (2, 3, 4, 5):
             self.output.print_unconverged_msg(var, para, para.end_case)
         _print_column_atom_loss(self._cfg, var.y, var.y_ini, atm.dz)
 
@@ -3097,6 +3140,12 @@ class OuterLoop:
                 "Integration not completed...\nMaximal allowed runtime "
                 f"exceeded ({self._cfg.runtime} sec)!"
             )
+        elif end_case == 5:
+            print(
+                "Integration not completed...\nStopped without converging and "
+                f"without hitting a cap (termination_reason {reason}); the "
+                "state may be non-finite."
+            )
         elif end_case != 4:
             # Reason 4 (JAX-only stall fallback) shares end_case=1 with a real
             # convergence; say so in the message.
@@ -3132,7 +3181,7 @@ class OuterLoop:
 
         if end_case == 1:
             self.output.print_end_msg(var_shim, para_shim)
-        elif end_case in (2, 3, 4):
+        elif end_case in (2, 3, 4, 5):
             self.output.print_unconverged_msg(var_shim, para_shim, end_case)
         _print_column_atom_loss(
             self._cfg, rs_out.step.y, rs_out.metadata.y_ini, rs_out.atm.dz

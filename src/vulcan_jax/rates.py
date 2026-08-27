@@ -91,7 +91,6 @@ def compute_forward_k(net: Network, T: np.ndarray, M: np.ndarray) -> np.ndarray:
     is_conden = net.is_conden
     is_photo = net.is_photo
     is_ion = net.is_ion
-    is_radiative = net.is_radiative
     a = net.a
     n = net.n
     E = net.E
@@ -102,7 +101,7 @@ def compute_forward_k(net: Network, T: np.ndarray, M: np.ndarray) -> np.ndarray:
     for i in range(1, nr + 1, 2):
         if not is_forward[i]:
             continue
-        if is_photo[i] or is_ion[i] or is_conden[i] or is_radiative[i]:
+        if is_photo[i] or is_ion[i] or is_conden[i]:
             continue
 
         if is_special[i]:

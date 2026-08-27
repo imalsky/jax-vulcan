@@ -114,12 +114,10 @@ def _toy_network_for_codegen(tmp_path: Path):
         has_kinf=bools.copy(),
         is_special=bools.copy(),
         is_conden=bools.copy(),
-        is_radiative=bools.copy(),
         is_photo=bools.copy(),
         is_ion=bools.copy(),
         stop_rev_indx=nr + 1,
         conden_indx=nr + 1,
-        radiative_indx=nr + 1,
         photo_indx=nr + 1,
         ion_indx=nr + 1,
         photo_sp=(),
@@ -146,6 +144,22 @@ def test_codegen_source_preserves_master_emission_rules(tmp_path):
     assert "dydt_0 = -1.0*v_1 -1.0*v_1 +1.0*v_3" in src
     assert "dydt_1 = +1.0*v_1 -1.0*v_3" in src
     assert "dydt_2 = +1.0*v_3" in src
+
+
+def test_codegen_cache_key_changes_with_the_generator(tmp_path, monkeypatch):
+    """A codegen fix must re-key, or the stale cache file is exec'd instead."""
+    import vulcan_jax.make_chem_funs as mcf
+
+    net = _toy_network_for_codegen(tmp_path)
+    key0 = mcf.chem_rhs_cache_key(net)
+
+    original = mcf._emit_rate_term
+
+    def _emit_rate_term(net, slot_i, max_terms, PAD):  # same behaviour, new source
+        return original(net, slot_i, max_terms, PAD)
+
+    monkeypatch.setattr(mcf, "_emit_rate_term", _emit_rate_term)
+    assert mcf.chem_rhs_cache_key(net) != key0
 
 
 def test_codegen_cache_key_changes_with_consumed_network_fields(tmp_path):

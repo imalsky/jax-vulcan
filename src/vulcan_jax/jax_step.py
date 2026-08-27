@@ -498,9 +498,17 @@ def _apply_diffusion_jax(
     return diff
 
 
-# Ros2 free parameter gamma = 1 + 1/sqrt(2) (Verwer et al. 1997, L-stable
-# 2nd-order Rosenbrock). The stage-2 factor 2/(gamma*dt) and solution weights
-# 3/(2*gamma), 1/(2*gamma) below derive from it; matches VULCAN-master op.py.
+# Ros2 free parameter gamma = 1 + 1/sqrt(2) (Verwer et al. 1997). The stage-2
+# factor 2/(gamma*dt) and solution weights 3/(2*gamma), 1/(2*gamma) below
+# derive from it; matches VULCAN-master op.py.
+#
+# gamma is the L-stable choice and second order holds, but L-stability is a
+# property of the EXACT-Jacobian Rosenbrock. The Jacobian actually supplied
+# below is exact for chemistry and models transport with a diagonal-in-species
+# tridiagonal that omits the ysum coupling, so this is a second-order W-method:
+# second order for an arbitrary approximate Jacobian, with contractivity on
+# these columns coming from the post-step hydrostatic rebalance rather than
+# from the linear solve alone. The same omission is in both pinned upstreams.
 _ROS2_GAMMA = 1.0 + 2.0**-0.5
 
 
@@ -554,6 +562,15 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
     # the RHS flux itself is gated on `use_topflux` above, as upstream.
     # The inner `where` mirrors upstream's `y > 0` guard and keeps the division
     # and its derivative finite at y = 0.
+    #
+    # DELIBERATE DIVERGENCE from the analytic derivative, inherited from both
+    # pinned upstreams (vulcan2_ncho op.py:2106-2107, vm_branch op.py:2185-2186):
+    # the RHS adds top_flux/dzi[-1] (a flux DIVERGENCE) while this entry is
+    # d(top_flux)/dy, so it is larger than the true derivative by dzi[-1].
+    # top_flux is exactly linear in y[-1] (atm_refresh.py:175), so the correct
+    # entry would be top_flux/(y*dzi[-1]). Not corrected: it is on the LHS only
+    # -- a W-method tolerates an approximate Jacobian without moving the fixed
+    # point -- and correcting it would break bit-parity with both oracles.
     y_top_pos = y[-1] > 0.0
     diff_lim = jnp.where(
         atm.diff_esc_mask & y_top_pos,

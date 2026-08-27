@@ -33,12 +33,13 @@ JAX_ONLY_DEFAULTS: dict[str, Any] = {
     "rtol_max": 1.0,
     # These must match the shipped PARITY YAMLs (default/HD189/HD209/W39b),
     # NOT the code fallbacks (1000 / 0.75), which no config uses. The parity
-    # configs leave the adapt-rtol controller OFF; HD189_vulcan3 carries
-    # vm_branch's 1000 / 0.5 / 1.25.
+    # configs leave the adapt-rtol controller OFF but now carry vm_branch's
+    # schedule (op.py:845-848) rather than a schedule of their own, so a user
+    # who switches it on gets upstream's behaviour.
     "adapt_rtol_dec_period": 10,
-    "adapt_rtol_inc_period": 500,
+    "adapt_rtol_inc_period": 1000,
     "adapt_rtol_dec": 0.5,
-    "adapt_rtol_inc": 1.5,
+    "adapt_rtol_inc": 1.25,
     "adapt_rtol_loss_mul": 2.0,
     "adapt_rtol_inc_loss_thresh": 2e-4,
     "batch_max_retries": 110,
@@ -65,9 +66,18 @@ JAX_ONLY_DEFAULTS: dict[str, Any] = {
 #                   preset ships vm_branch's `['HC3N']`. Measured behaviourally
 #                   identical on HD189/HD209 (same step count, same longdy,
 #                   same controlling cell).
+#   top_BC_flux_file / bot_BC_flux_file
+#                -- master names atm/BC_top.txt and atm/BC_bot.txt, which exist
+#                   in neither tree (only the Earth/Jupiter/mars variants ship).
+#                   The parity configs leave use_topflux/use_botflux OFF, so the
+#                   keys are inert; JAX carries `null` instead of a path to a
+#                   file that is not there, and runtime_validation refuses an
+#                   unset path if the flag is ever turned on.
 INTENTIONAL_JAX_DELTAS = {
     "use_vm_mol",
     "conver_ignore",
+    "top_BC_flux_file",
+    "bot_BC_flux_file",
 }
 
 # Vendored network files where JAX intentionally diverges from master by a known,

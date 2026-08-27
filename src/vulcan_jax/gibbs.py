@@ -108,7 +108,7 @@ def K_eq_array(net: Network, gibbs_sp: np.ndarray, T: np.ndarray) -> np.ndarray:
             continue
         if i + 1 >= net.stop_rev_indx:
             continue
-        if net.is_photo[i] or net.is_ion[i] or net.is_conden[i] or net.is_radiative[i]:
+        if net.is_photo[i] or net.is_ion[i] or net.is_conden[i]:
             continue
 
         reac_sum = np.zeros(nz, dtype=np.float64)

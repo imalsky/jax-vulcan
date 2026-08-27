@@ -846,13 +846,17 @@ def _cfg_overlay(cfg):
 def _build_pre_loop_runstate(cfg, *, skip_chem_warmup: bool = False) -> RunState:
     """Run the full pre-loop pipeline and return a populated RunState.
 
-    Fails fast on network/com_file/atom_list import-lock mismatches, then runs
+    Fails fast on network/com_file/atom_list import-lock mismatches and on an
+    invalid runtime configuration, then runs
     the pipeline with ``cfg`` overlaid onto the process default so
     ``make_config()`` overrides are honored with zero leakage.
     """
     _assert_network_matches_import(cfg)
     _assert_com_file_matches_import(cfg)
     _assert_atom_list_matches_import(cfg)
+    from .runtime_validation import validate_runtime_config
+
+    validate_runtime_config(cfg)
     with _cfg_overlay(cfg):
         return _build_pre_loop_runstate_impl(cfg, skip_chem_warmup=skip_chem_warmup)
 

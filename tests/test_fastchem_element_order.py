@@ -328,7 +328,9 @@ def test_fastchem_eq_forms_co_not_atomic_carbon(tmp_path: Path, fname: str):
         timeout=120,
     )
     if res.returncode != 0:
-        pytest.skip(f"FastChem binary did not run here: {res.stderr[-400:]}")
+        # The binary was checked to exist 27 lines above, so a non-zero exit is
+        # a built binary that FAILED -- exactly the regression this file guards.
+        pytest.fail(f"FastChem binary exited {res.returncode}: {res.stderr[-400:]}")
 
     out = tree / "output" / "vulcan_EQ.dat"
     data = np.genfromtxt(out, names=True, dtype=None, encoding="utf-8")

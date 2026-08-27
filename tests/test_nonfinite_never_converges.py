@@ -24,20 +24,12 @@ os.chdir(ROOT)
 
 jax.config.update("jax_enable_x64", True)
 
-_UNDERFLOW_DENOM = 1e-300
-
 
 def _longdy(y, ymix, y_old, n_0, *, atol=1e-2, mtol_conv=1e-20):
-    """Mirror of `outer_loop._conv_jax`'s longdy reduction, including the
-    non-finite guard. Kept in-test because `_conv_jax` is a closure built
-    inside `_build_runner` and is not importable on its own."""
-    longdy_arr = jnp.abs((y - y_old) / n_0[:, None])
-    longdy_arr = jnp.where(ymix < mtol_conv, 0.0, longdy_arr)
-    longdy_arr = jnp.where(y < atol, 0.0, longdy_arr)
-    ratio = jnp.where(ymix > 0, longdy_arr / jnp.maximum(ymix, _UNDERFLOW_DENOM), 0.0)
-    longdy = jnp.max(ratio)
-    state_is_bad = ~jnp.all(jnp.isfinite(y)) | ~jnp.all(jnp.isfinite(ymix))
-    return jnp.where(state_is_bad, jnp.inf, longdy)
+    """The shipped reduction, imported so deleting the guard fails this file."""
+    from vulcan_jax.outer_loop import _longdy_reduce
+
+    return _longdy_reduce(y, ymix, y_old, n_0, atol=atol, mtol_conv=mtol_conv)[0]
 
 
 def _mk(nz=3, ni=4):
@@ -101,3 +93,26 @@ def test_nonfinite_ymix_alone_is_caught():
     y, ymix, y_old, n_0 = _mk()
     longdy = float(_longdy(y, ymix.at[0, 0].set(jnp.nan), y_old, n_0))
     assert longdy == np.inf, f"NaN in ymix alone gave longdy={longdy}"
+
+
+def test_end_case_is_not_success_for_a_frozen_or_yielded_lane():
+    """`termination_reason` 0 (chunk yield) and 5 (non-finite freeze) both
+    stop below both caps, so neither cap fires and the fall-through used to
+    report end_case=1 "Integration successful"."""
+    from vulcan_jax.outer_loop import OuterLoop
+
+    class _S:
+        accept_count, count_max_dyn = 10, 1000
+        t, runtime_dyn = 1.0, 1e10
+        y = jnp.ones((2, 2))
+
+        def __init__(self, reason):
+            self.termination_reason = reason
+
+    clf = OuterLoop._classify_end_case
+    assert clf(None, _S(1)) == 1
+    for reason in (0, 5):
+        assert clf(None, _S(reason)) == 5, f"reason {reason} reported as success"
+    bad = _S(1)
+    bad.y = jnp.asarray([[1.0, jnp.nan], [1.0, 1.0]])
+    assert clf(None, bad) == 5

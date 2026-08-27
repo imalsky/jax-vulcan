@@ -78,14 +78,12 @@ class Network:
     has_kinf: np.ndarray  # bool: uses Lindemann falloff
     is_special: np.ndarray  # bool: hardcoded rate (OH+CH3+M)
     is_conden: np.ndarray  # bool
-    is_radiative: np.ndarray  # bool: radiative recombination
     is_photo: np.ndarray  # bool: photodissociation
     is_ion: np.ndarray  # bool: photoionization
 
     # Section delimiters (parser-i values; 1-based)
     stop_rev_indx: int  # reverse slots filled for even i in 2..stop_rev_indx-1
     conden_indx: int  # parser-i of first condensation reaction
-    radiative_indx: int  # parser-i of first radiative reaction
     photo_indx: int  # parser-i of first photo reaction
     ion_indx: int  # parser-i of first ion reaction
 
@@ -99,7 +97,7 @@ class Network:
 
     # Reaction text, indexed by parser-i (1-based)
     Rf: dict  # parser-i -> "A + B -> C + D"
-    Rindx: dict  # parser-i -> file-ID
+    Rindx: dict  # parser-i -> file-ID (0 = the row carried no id column)
 
     # Original file path for debugging
     network_path: str
@@ -111,7 +109,7 @@ class Network:
     temp_ranges: dict | None = None
 
 
-_RE_LINE = re.compile(r"^\s*(\d+)\s*\[\s*([^\]]+)\s*\]\s*(.*)$")
+_RE_LINE = re.compile(r"^\s*(\d*)\s*\[\s*([^\]]+)\s*\]\s*(.*)$")
 
 # Temperature annotations in the trailing `Temp` column: '250-2580',
 # '300-2.50E4', a bare measurement temperature '298', or comma-separated
@@ -251,7 +249,6 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
     parser_i = 1  # forwards: 1, 3, 5, ...
     stop_rev_indx: int | None = None
     conden_indx: int | None = None
-    radiative_indx: int | None = None
     photo_indx: int | None = None
     ion_indx: int | None = None
 
@@ -276,7 +273,7 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
         return species_idx[sp]
 
     with open(network_path) as f:
-        for raw_line in f:
+        for lineno, raw_line in enumerate(f, 1):
             line = raw_line.rstrip("\n")
             if not line.strip():
                 continue
@@ -287,8 +284,13 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
                 section = new_sec
                 if section == _SECTION_CONDEN and conden_indx is None:
                     conden_indx = parser_i
-                if section == _SECTION_RADIATIVE and radiative_indx is None:
-                    radiative_indx = parser_i
+                if section == _SECTION_RADIATIVE:
+                    raise ValueError(
+                        f"{network_path}:{lineno}: radiative-recombination networks are "
+                        "not supported -- rates.py, rates_jax.py and gibbs.py all "
+                        "exclude those slots, so their reactions would be silently "
+                        "dropped."
+                    )
                 if section == _SECTION_PHOTO and photo_indx is None:
                     photo_indx = parser_i
                 if section == _SECTION_ION and ion_indx is None:
@@ -304,10 +306,16 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
 
             m = _RE_LINE.match(line)
             if m is None:
-                continue
+                raise ValueError(
+                    f"{network_path}:{lineno}: not a reaction row and not a comment: "
+                    f"{line.rstrip()!r}"
+                )
 
             file_id_str, eq, tail = m.group(1), m.group(2), m.group(3)
-            file_id = int(file_id_str)
+            # A blank id column is legitimate: upstream never reads it and
+            # renumbers from its own counter, so such rows are real reactions
+            # (NCHO_full_photo_network.txt, SNCHO_photo_network_C3.txt).
+            file_id = int(file_id_str) if file_id_str else 0
             eq = eq.strip()
             reactants, products = _parse_eq(eq)
 
@@ -422,8 +430,6 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
         stop_rev_indx = photo_indx if photo_indx is not None else nr + 1
     if conden_indx is None:
         conden_indx = nr + 1
-    if radiative_indx is None:
-        radiative_indx = nr + 1
     if photo_indx is None:
         photo_indx = nr + 1
     if ion_indx is None:
@@ -462,7 +468,6 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
     has_kinf = np.zeros(nr + 1, dtype=bool)
     is_special = np.zeros(nr + 1, dtype=bool)
     is_conden = np.zeros(nr + 1, dtype=bool)
-    is_radiative = np.zeros(nr + 1, dtype=bool)
     is_photo = np.zeros(nr + 1, dtype=bool)
     is_ion = np.zeros(nr + 1, dtype=bool)
 
@@ -500,9 +505,6 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
         if sec == _SECTION_CONDEN:
             is_conden[i] = True
             is_conden[ir] = True
-        if sec == _SECTION_RADIATIVE:
-            is_radiative[i] = True
-            is_radiative[ir] = True
         if sec == _SECTION_PHOTO:
             is_photo[i] = True
             # Photo has no reverse — guarded via stop_rev_indx.
@@ -541,12 +543,10 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
         has_kinf=has_kinf,
         is_special=is_special,
         is_conden=is_conden,
-        is_radiative=is_radiative,
         is_photo=is_photo,
         is_ion=is_ion,
         stop_rev_indx=stop_rev_indx,
         conden_indx=conden_indx,
-        radiative_indx=radiative_indx,
         photo_indx=photo_indx,
         ion_indx=ion_indx,
         photo_sp=tuple(photo_sp),
@@ -572,7 +572,6 @@ def summarize(net: Network) -> str:
         f"  with k_inf falloff:   {int(net.has_kinf[1::2].sum())}",
         f"  special (hardcoded):  {int(net.is_special[1::2].sum())}",
         f"  condensation:         {int(net.is_conden[1::2].sum())}",
-        f"  radiative recomb.:    {int(net.is_radiative[1::2].sum())}",
         f"  photo dissociation:   {int(net.is_photo[1::2].sum())}",
         f"  photo ionization:     {int(net.is_ion[1::2].sum())}",
         f"  stop_rev_indx = {net.stop_rev_indx}",

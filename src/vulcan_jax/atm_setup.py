@@ -7,6 +7,7 @@ read attributes directly (rate parser, .vul writer, atm_refresh).
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Mapping
 
 import jax
@@ -784,6 +785,20 @@ def read_sflux_binned(
             f"stellar flux {cfg.sflux_file}: wavelength must be positive and "
             f"non-decreasing and flux non-negative (min lambda {raw_lambda.min():g}, "
             f"min diff {np.diff(raw_lambda).min():g}, min flux {raw_flux.min():g})"
+        )
+
+    # The bin grid comes from the network's cross-section span
+    # (photo_setup.build_bins), the star file from the config -- they are
+    # independent, and `left/right=0.0` below zero-fills any bin outside the
+    # file rather than failing. Say so instead of hiding it.
+    if bins_np[0] < raw_lambda[0] or bins_np[-1] > raw_lambda[-1]:
+        warnings.warn(
+            f"stellar flux {cfg.sflux_file} spans "
+            f"[{raw_lambda[0]:g}, {raw_lambda[-1]:g}] nm but the photolysis bins "
+            f"span [{bins_np[0]:g}, {bins_np[-1]:g}] nm; bins outside the file are "
+            "zero-filled, so photolysis is switched off there.",
+            RuntimeWarning,
+            stacklevel=2,
         )
 
     sflux_top = np.asarray(

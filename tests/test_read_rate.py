@@ -216,7 +216,7 @@ def test_build_rate_array_matches_legacy_hd189(hd189_state):
     # Rows set outside the legacy chain, out of build_rate_array's scope.
     skip_mask = np.zeros(nr + 1, dtype=bool)
     for i in range(1, nr + 1):
-        if net.is_photo[i] or net.is_ion[i] or net.is_conden[i] or net.is_radiative[i]:
+        if net.is_photo[i] or net.is_ion[i] or net.is_conden[i]:
             skip_mask[i] = True
 
     rows = np.flatnonzero(~skip_mask)

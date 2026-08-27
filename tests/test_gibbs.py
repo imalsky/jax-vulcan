@@ -94,7 +94,7 @@ def main() -> int:
     n_compared = 0
     n_fail = 0
     for i in range(1, net.stop_rev_indx, 2):
-        if net.is_photo[i] or net.is_ion[i] or net.is_conden[i] or net.is_radiative[i]:
+        if net.is_photo[i] or net.is_ion[i] or net.is_conden[i]:
             continue
         try:
             ref = chem_funs.Gibbs(i, T)

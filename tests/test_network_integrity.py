@@ -59,6 +59,36 @@ def test_configured_networks_have_no_duplicate_reactions(net_rel):
     assert not dup_msgs, dup_msgs
 
 
+_SHIPPED_NETWORKS = sorted(glob.glob("src/vulcan_jax/thermo/*network*.txt"))
+
+
+@pytest.mark.parametrize("net_path", _SHIPPED_NETWORKS, ids=os.path.basename)
+def test_no_reaction_row_is_dropped(net_path):
+    """Every non-comment bracketed row must reach the parsed network.
+
+    The id column is optional upstream (make_chem_funs.py:65-73 reads the
+    equation by `partition('[')` and renumbers from its own counter); a
+    leading-integer requirement silently dropped eight rows across two
+    shipped files. Each row occupies a forward and a reverse slot.
+    """
+    with open(net_path) as fh:
+        rows = sum(
+            1 for ln in fh if ln.strip() and not ln.lstrip().startswith("#") and "[" in ln
+        )
+    net, _ = _parse_quietly(net_path)
+    assert net.nr == 2 * rows, f"{net.nr // 2} rows parsed, {rows} in the file"
+
+
+def test_a_radiative_section_is_refused(tmp_path):
+    """Every rate path zeroes a radiative slot, so the section must refuse."""
+    from vulcan_jax import network as netmod
+
+    f = tmp_path / "net.txt"
+    f.write_text("# two-body\n1  [ H + H -> H2 ]  1.0E-10  0.0  0.0\n# radiative\n")
+    with pytest.raises(ValueError, match="radiative-recombination"):
+        netmod.parse_network(f)
+
+
 def test_duplicate_reactions_refuse_naming_the_equations():
     """TiSNCHO's three upstream duplicates must refuse by default, warn on opt-in."""
     from vulcan_jax import network as netmod

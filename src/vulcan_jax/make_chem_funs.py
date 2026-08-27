@@ -17,6 +17,7 @@ writes the cache file. Compatibility shim for upstream `vulcan.py -n`
 from __future__ import annotations
 
 import hashlib
+import inspect
 from pathlib import Path
 from typing import Any, Callable
 
@@ -113,20 +114,25 @@ def emit_chem_rhs_source(net: Network) -> str:
 
 
 def chem_rhs_cache_key(net: Network) -> str:
-    """SHA-256 of the network identity, truncated to 16 hex chars.
+    """SHA-256 of the network AND the generator, truncated to 16 hex chars.
 
-    Inputs cover every byte the codegen consumes: resolved file path, mtime,
-    stoichiometry tables, reaction-type masks, ni, nr. A pure rename re-keys
-    via the resolved path string (a rename leaves mtime unchanged); an in-place
-    edit re-keys via mtime and the array bytes.
+    Covers every input the emitted source depends on: the stoichiometry
+    tables, reaction-type masks, ni, nr -- and the emitter's own source, so a
+    codegen fix re-keys instead of being masked by a stale cache file. The
+    resolved path is included for readability of the cache filename only; it
+    is the arrays, not the path or mtime, that pin the content.
     """
     h = hashlib.sha256()
-    p = Path(net.network_path)
     try:
-        h.update(p.resolve().as_posix().encode())
-        h.update(int(p.stat().st_mtime_ns).to_bytes(8, "little"))
+        h.update(Path(net.network_path).resolve().as_posix().encode())
     except (FileNotFoundError, OSError):
         h.update(net.network_path.encode())
+    for fn in (emit_chem_rhs_source, _emit_rate_term):
+        try:
+            h.update(inspect.getsource(fn).encode())
+        except OSError:  # zipped/frozen install: bytecode still re-keys
+            h.update(fn.__code__.co_code)
+            h.update(repr(fn.__code__.co_consts).encode())
     for arr in (
         net.reactant_idx,
         net.product_idx,

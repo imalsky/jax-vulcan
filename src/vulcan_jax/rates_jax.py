@@ -131,13 +131,12 @@ def compute_forward_k(
     special_val = jnp.where(oh_mask, troe, arr)
     k = jnp.where(is_special, special_val, general)
 
-    # Keep only thermal forward slots; zero photo/ion/conden/radiative/non-forward.
+    # Keep only thermal forward slots; zero photo/ion/conden/non-forward.
     thermal_fwd = (
         net.is_forward
         & ~net.is_photo
         & ~net.is_ion
         & ~net.is_conden
-        & ~net.is_radiative
     )
     keep = jnp.asarray(np.asarray(thermal_fwd, dtype=bool))[:, None]
     return jnp.where(keep, k, 0.0)
@@ -241,7 +240,6 @@ def K_eq_array(net: Network, gibbs_sp: jnp.ndarray, T: jnp.ndarray) -> jnp.ndarr
         & ~net.is_photo
         & ~net.is_ion
         & ~net.is_conden
-        & ~net.is_radiative
     )
     valid_m = jnp.asarray(np.asarray(valid, dtype=bool))[:, None]
     return jnp.where(valid_m, K_raw, 1.0)
