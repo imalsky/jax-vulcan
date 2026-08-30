@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import os
 from pathlib import Path
 from typing import Any, Callable
 
@@ -174,10 +175,16 @@ def build_chem_rhs(net: Network) -> Callable:
     if cached is not None:
         return cached
     path = cache_path_for(net)
-    if not path.exists():
+    if path.exists():
+        src = path.read_text()
+    else:
+        src = emit_chem_rhs_source(net)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(emit_chem_rhs_source(net))
-    src = path.read_text()
+        # Publish atomically: a concurrent pytest-xdist worker must never
+        # exec a half-written file.
+        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+        tmp.write_text(src)
+        os.replace(tmp, path)
     ns: dict = {}
     exec(compile(src, str(path), "exec"), ns)
     raw_fn = ns["chem_rhs_codegen"]
