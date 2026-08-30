@@ -1169,7 +1169,8 @@ def _make_runner(
             )
             # Splice this lane's per-profile atmosphere from the carry into
             # the closure-baked refresh static (vmap batches the carry, not
-            # closures). `pref_indx` stays baked and must be batch-constant.
+            # closures). `pref_indx` stays baked and must be batch-constant
+            # (prepare_runstate rejects a mismatch).
             refresh_lane = refresh_static._replace(
                 Tco=s.pv.r_Tco,
                 pico=s.pv.r_pico,
@@ -2515,22 +2516,45 @@ class OuterLoop:
         `_unpack_state` flows through this constructor + `runstate_to_store`.
         The static atm fields (pco, Tco, Kzz, n_0, ms, alpha, ...) are
         preserved verbatim from `rs_entry.atm`; only the dynamic refresh
-        slots (g, mu, Hp, dz, dzi, zco, Hpi, top_flux, vs) come from the
-        carry. Step / params / atoms / photo_runtime / fix_species are
-        rebuilt from the carry against the entry-time ordering captured
-        in `rs_entry`.
+        slots (g, mu, Hp, dz, dzi, zco, zmco, Hpi, top_flux, vs, and vm
+        under use_vm_mol) come from the carry. Step / params / atoms /
+        photo_runtime / fix_species are rebuilt from the carry against
+        the entry-time ordering captured in `rs_entry`.
         """
+        g = jnp.asarray(state.g, dtype=jnp.float64)
+        zco = jnp.asarray(state.zco, dtype=jnp.float64)
+        dzi = jnp.asarray(state.dzi, dtype=jnp.float64)
+        Hpi = jnp.asarray(state.Hpi, dtype=jnp.float64)
         atm_out = rs_entry.atm._replace(
-            g=jnp.asarray(state.g, dtype=jnp.float64),
+            g=g,
             mu=jnp.asarray(state.mu, dtype=jnp.float64),
             Hp=jnp.asarray(state.Hp, dtype=jnp.float64),
             dz=jnp.asarray(state.dz, dtype=jnp.float64),
-            zco=jnp.asarray(state.zco, dtype=jnp.float64),
-            dzi=jnp.asarray(state.dzi, dtype=jnp.float64),
-            Hpi=jnp.asarray(state.Hpi, dtype=jnp.float64),
+            zco=zco,
+            # op.py:972-973: cell-centre heights follow the refreshed zco.
+            zmco=0.5 * (zco[:-1] + zco[1:]),
+            dzi=dzi,
+            Hpi=Hpi,
             top_flux=jnp.asarray(state.top_flux, dtype=jnp.float64),
             vs=jnp.asarray(state.vs, dtype=jnp.float64),
         )
+        if self._statics.use_vm_mol:
+            # vm_branch op.py:945-992 refreshes vm inside update_mu_dz. The
+            # runner recomputes it per step from the carry and never stores
+            # it, so rebuild the terminal value here (same inputs as in-loop).
+            atm_out = atm_out._replace(
+                vm=_atm_refresh_mod.recompute_vm_jax(
+                    g,
+                    Hpi,
+                    dzi,
+                    jnp.asarray(rs_entry.atm.Dzz, dtype=jnp.float64),
+                    jnp.asarray(rs_entry.atm.ms, dtype=jnp.float64),
+                    jnp.asarray(rs_entry.atm.alpha, dtype=jnp.float64),
+                    jnp.asarray(rs_entry.atm.Tco, dtype=jnp.float64),
+                    float(_phy_const.kb),
+                    float(_phy_const.Navo),
+                )
+            )
 
         rate_out = rs_entry.rate._replace(
             k=jnp.asarray(state.k_arr, dtype=jnp.float64),
@@ -3121,8 +3145,8 @@ class OuterLoop:
         The batched GPU driver calls this per profile, then stacks the
         results (`stack_integ_states` / `stack_atm_statics`) into one batch
         for `run_batch`. All profiles in a single `run_batch` call must share
-        the same nz / toggle-combo so the closure and array shapes match —
-        the emulator buckets accordingly. This mirrors the setup `_call_runstate`
+        the same nz / toggle-combo / `pref_indx` so the closure and array
+        shapes match — the emulator buckets accordingly. This mirrors the setup `_call_runstate`
         does up to (but not including) the runner call.
         """
         validate_runtime_config(self._cfg)
@@ -3158,6 +3182,16 @@ class OuterLoop:
                     "profile's."
                 )
         self._ensure_runner(var, atm)
+        # The refresh closure bakes the first profile's `pref_indx` (it sizes
+        # a `jnp.arange`, so it cannot ride ProfileVars); reject a lane that
+        # differs instead of silently anchoring it at lane 0's layer.
+        baked_pref = int(self._refresh_static.pref_indx)
+        if int(atm.pref_indx) != baked_pref:
+            raise ValueError(
+                "run_batch lanes must share pref_indx: this profile has "
+                f"{int(atm.pref_indx)}, the runner was built with {baked_pref}; "
+                "bucket profiles by pref_indx before batching."
+            )
         ni = _NETWORK.ni
         nz = int(rs.atm.Tco.shape[0])
         atm_static = make_atm_static(atm, ni, nz, cfg=self._cfg)

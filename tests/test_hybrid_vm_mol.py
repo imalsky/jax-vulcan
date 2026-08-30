@@ -89,3 +89,29 @@ def test_hybrid_flips_and_extends_budget():
     # extended budget (count+1000), not the static cap.
     assert int(final.accept_count) > count_max + 100
     assert np.all(np.isfinite(np.asarray(final.y)))
+
+
+def test_returned_atm_carries_refreshed_zmco_and_vm():
+    """The returned atm (what the .vul writer stores) must carry the fields
+    upstream's update_mu_dz refreshes in-loop: zmco from the refreshed zco
+    (op.py:972-973) and, under use_vm_mol, vm from the refreshed g/Hpi/dzi
+    (vm_branch op.py:945-992). Setup-time copies are the silent failure."""
+    import vulcan_jax.legacy_io as op
+    import vulcan_jax.op_jax as op_jax
+    import vulcan_jax.outer_loop as outer_loop
+    from vulcan_jax import phy_const as C
+    from vulcan_jax.atm_refresh import recompute_vm_jax
+    from vulcan_jax.state import RunState
+
+    vc = _pin_cfg()
+    vc.use_vm_mol, vc.use_hybrid_vm_mol = True, False
+    vc.count_max, vc.use_atm_refresh, vc.update_frq = 40, True, 5
+    rs = RunState.with_pre_loop_setup(vc)
+    a0 = rs.atm
+    a = outer_loop.OuterLoop(op_jax.Ros2JAX(), op.Output())(rs).atm
+    zco = np.asarray(a.zco)
+    assert np.max(np.abs(zco - np.asarray(a0.zco))) > 0.0  # the refresh ran
+    np.testing.assert_array_equal(np.asarray(a.zmco), 0.5 * (zco[:-1] + zco[1:]))
+    vm_ref = recompute_vm_jax(a.g, a.Hpi, a.dzi, a.Dzz, a.ms, a.alpha, a.Tco,
+                              float(C.kb), float(C.Navo))
+    np.testing.assert_array_equal(np.asarray(a.vm), np.asarray(vm_ref))
