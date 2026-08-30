@@ -76,8 +76,11 @@ def main() -> int:
     k_arr = jnp.asarray(d["k_arr"])
     dz = jnp.asarray(d["dz"])
     compo = jnp.asarray(d["compo"])
+    fields = {k[5:]: jnp.asarray(d[k]) for k in d.files if k.startswith("atm__")}
+    # The fixture predates `diff_esc_mask`; HD189 ships `diff_esc: []`.
+    fields.setdefault("diff_esc_mask", jnp.zeros(ni, dtype=jnp.bool_))
     atm = AtmStatic(
-        **{k[5:]: jnp.asarray(d[k]) for k in d.files if k.startswith("atm__")},
+        **fields,
         **{k[9:]: bool(d[k]) for k in d.files if k.startswith("atmbool__")},
     )
     net = chem_funs._NET_JAX

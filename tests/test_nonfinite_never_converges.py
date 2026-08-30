@@ -98,7 +98,9 @@ def test_nonfinite_ymix_alone_is_caught():
 def test_end_case_is_not_success_for_a_frozen_or_yielded_lane():
     """`termination_reason` 0 (chunk yield) and 5 (non-finite freeze) both
     stop below both caps, so neither cap fires and the fall-through used to
-    report end_case=1 "Integration successful"."""
+    report end_case=1 "Integration successful". Conversely a step that
+    converges on the same step it hits count_max is a success (master's
+    stop() tests convergence first), never end_case=3."""
     from vulcan_jax.outer_loop import OuterLoop
 
     class _S:
@@ -116,3 +118,7 @@ def test_end_case_is_not_success_for_a_frozen_or_yielded_lane():
     bad = _S(1)
     bad.y = jnp.asarray([[1.0, jnp.nan], [1.0, 1.0]])
     assert clf(None, bad) == 5
+    at_cap = _S(1)
+    at_cap.accept_count = at_cap.count_max_dyn + 1
+    assert clf(None, at_cap) == 1, "converged at count_max must be a success"
+    assert clf(None, _S(3)) == 3 and clf(None, _S(2)) == 2

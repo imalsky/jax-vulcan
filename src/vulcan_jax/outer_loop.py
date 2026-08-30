@@ -1920,7 +1920,7 @@ class OuterLoop:
             dt_var_max=float(self._cfg.dt_var_max),
             dt_min=float(self._cfg.dt_min),
             dt_max=float(self._cfg.dt_max),
-            batch_max_retries=int(getattr(self._cfg, "batch_max_retries", 64)),
+            batch_max_retries=int(getattr(self._cfg, "batch_max_retries", 110)),
             conv_step=int(self._cfg.conv_step),
             count_min=int(self._cfg.count_min),
             count_max=int(self._cfg.count_max),
@@ -1952,7 +1952,7 @@ class OuterLoop:
                 and getattr(self._cfg, "use_moldiff", True)
             ),
             use_conden=bool(self._cfg.use_condense),
-            final_update_photo_frq=int(getattr(self._cfg, "final_update_photo_frq", 1)),
+            final_update_photo_frq=int(getattr(self._cfg, "final_update_photo_frq", 5)),
             update_frq=int(self._cfg.update_frq),
             use_adapt_rtol=bool(getattr(self._cfg, "use_adapt_rtol", False)),
             rtol_accept=float(self._cfg.rtol),
@@ -1962,7 +1962,7 @@ class OuterLoop:
             adapt_rtol_inc_period=int(
                 getattr(self._cfg, "adapt_rtol_inc_period", 1000)
             ),
-            adapt_rtol_dec=float(getattr(self._cfg, "adapt_rtol_dec", 0.75)),
+            adapt_rtol_dec=float(getattr(self._cfg, "adapt_rtol_dec", 0.5)),
             adapt_rtol_inc=float(getattr(self._cfg, "adapt_rtol_inc", 1.25)),
             adapt_rtol_loss_mul=float(getattr(self._cfg, "adapt_rtol_loss_mul", 2.0)),
             adapt_rtol_inc_loss_thresh=float(
@@ -1999,18 +1999,18 @@ class OuterLoop:
                 getattr(self._cfg, "post_conden_rtol", self._cfg.rtol)
             ),
             fix_species_from_coldtrap_lev=bool(
-                getattr(self._cfg, "fix_species_from_coldtrap_lev", False)
+                getattr(self._cfg, "fix_species_from_coldtrap_lev", True)
             ),
             fix_species_idx=jnp.asarray(fix_species_idx),
             fix_species_sat_mix=jnp.asarray(fix_species_sat_mix),
             fix_species_wholecol=jnp.asarray(fix_species_wholecol),
             save_evolution=bool(getattr(self._cfg, "save_evolution", False)),
-            save_evo_frq=int(getattr(self._cfg, "save_evo_frq", 1)),
+            save_evo_frq=int(getattr(self._cfg, "save_evo_frq", 10)),
             save_evo_n_max=(
                 int(
                     np.ceil(
                         int(self._cfg.count_max)
-                        / max(int(getattr(self._cfg, "save_evo_frq", 1)), 1)
+                        / max(int(getattr(self._cfg, "save_evo_frq", 10)), 1)
                     )
                 )
                 + 1
@@ -2056,7 +2056,7 @@ class OuterLoop:
             jnp.asarray(cond_mask_np),
             self._hydro_partial,
             float(getattr(self._cfg, "start_conden_time", 0.0)),
-            float(getattr(self._cfg, "stop_conden_time", 0.0)),
+            float(getattr(self._cfg, "stop_conden_time", 100000.0)),
             photo_static=self._photo_static,
             refresh_static=self._refresh_static,
             conden_static=self._conden_static,
@@ -2308,7 +2308,7 @@ class OuterLoop:
         nz = int(rs.atm.Tco.shape[0])
         ni = _NETWORK.ni
         conv_step = int(self._cfg.conv_step)
-        ini_frq = int(getattr(self._cfg, "ini_update_photo_frq", 1))
+        ini_frq = int(getattr(self._cfg, "ini_update_photo_frq", 100))
         return dict(
             y_time_ring=jnp.zeros((conv_step, nz, ni), dtype=jnp.float64),
             t_time_ring=jnp.zeros((conv_step,), dtype=jnp.float64),
@@ -2789,32 +2789,29 @@ class OuterLoop:
         var.atom_loss_time = [final_atom_loss for _ in range(L)]
 
     def _classify_end_case(self, state: JaxIntegState, wall_clock_hit=False):
-        """Classify end-of-run (op.py:1069-1085) from the carry's live budget.
+        """Classify end-of-run (op.py:1069-1085) from the in-loop reason.
 
-        Reads `count_max_dyn`/`runtime_dyn`, not the static caps: the hybrid
-        phase flip extends the budget in-loop, so a phase-1 convergence past
-        the static count_max must still read end_case=1. Wall-clock exit
-        (end_case=4) is sticky -- the JIT'd loop has not actually terminated,
-        only the host bailed out.
+        `_real_terminate` applies master's priority (converged over runtime
+        over step-count) against the live budget, so a step that converges
+        while hitting a cap reads end_case=1, and so does a hybrid phase-1
+        convergence past the static count_max. Wall-clock exit (end_case=4)
+        is sticky -- the JIT'd loop has not actually terminated, only the
+        host bailed out.
 
         end_case=5 is a VULCAN-JAX addition with no upstream counterpart: the
         run stopped without meeting the convergence criterion and without
         hitting either cap -- a lane frozen on non-finite state
-        (termination_reason 5) or one that only yielded at a chunk boundary
-        (reason 0). Both freeze early, below both caps, so neither cap fires
-        and the fall-through would otherwise report "Integration successful".
+        (termination_reason 5), one that only yielded at a chunk boundary
+        (reason 0), or a "converged" state that is not finite.
         """
         if wall_clock_hit:
             return 4
-        if int(state.accept_count) > int(state.count_max_dyn):
-            return 3
-        if float(state.t) > float(state.runtime_dyn):
-            return 2
-        if int(state.termination_reason) in (0, 5) or not bool(
-            jnp.all(jnp.isfinite(state.y))
-        ):
-            return 5
-        return 1
+        reason = int(state.termination_reason)
+        if reason in (2, 3):
+            return reason
+        if reason in (1, 4) and bool(jnp.all(jnp.isfinite(state.y))):
+            return 1  # the JAX-only stall fallback (4) shares end_case=1
+        return 5
 
     def _run_chunked(self, init_state, atm_static, var, para, atm):
         """Run the integration in chunks so the host can fire `print_prog`
@@ -2839,8 +2836,8 @@ class OuterLoop:
             if self._live_ui is None:
                 self._live_ui = LiveUI(self._cfg)
         else:
-            chunk_size = max(int(getattr(self._cfg, "print_prog_num", 100)), 1)
-        use_print_prog = bool(getattr(self._cfg, "use_print_prog", False))
+            chunk_size = max(int(getattr(self._cfg, "print_prog_num", 500)), 1)
+        use_print_prog = bool(getattr(self._cfg, "use_print_prog", True))
         wall_clock_max = getattr(self._cfg, "wall_clock_max", None)
         wall_clock_max = (
             float(wall_clock_max)

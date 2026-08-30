@@ -91,6 +91,7 @@ atm_type: file
 Kzz_prof: file
 K_max: 100000.0
 K_p_lev: 0.1
+K_deep: 0.0  # Kzz_prof JM16 only: deep Kzz floor (cm^2/s); 0 = no floor
 vz_prof: const
 Tiso: 1000
 para_warm:

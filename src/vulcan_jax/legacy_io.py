@@ -768,10 +768,8 @@ class Output(object):
             self._cfg.plot_dir,
         )
 
-        if not os.path.exists(output_dir):
-            os.makedirs(output_dir)
-        if not os.path.exists(plot_dir):
-            os.makedirs(plot_dir)
+        os.makedirs(output_dir, exist_ok=True)
+        os.makedirs(plot_dir, exist_ok=True)
 
         if os.path.isfile(output_dir + out_name):
             print("Warning... the output file: " + str(out_name) + " already exists.\n")
@@ -1070,7 +1068,7 @@ class Output(object):
         # an external viewer; otherwise close so figures don't accumulate.
         if getattr(self._cfg, "use_live_plot", False):
             plt.draw()
-        elif getattr(self._cfg, "use_PIL", False):
+        elif getattr(self._cfg, "use_PIL", True):
             from PIL import Image
 
             Image.open(plot_dir + "mix2.png").show()
