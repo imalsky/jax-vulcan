@@ -76,9 +76,7 @@ def _configured_networks() -> dict[str, list[str]]:
     return out
 
 
-# ---------------------------------------------------------------------------
 # The invariant that actually protects the rate array
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("net_path", _shipped_networks(), ids=os.path.basename)
@@ -142,9 +140,7 @@ def test_legacy_io_and_network_agree_on_photo_indices():
     assert sorted(net.pho_rate_index.values()) == sorted(photo_positions)
 
 
-# ---------------------------------------------------------------------------
 # Guard against a silent regression in the shipped results
-# ---------------------------------------------------------------------------
 
 
 def test_configured_networks_have_consistent_ids():

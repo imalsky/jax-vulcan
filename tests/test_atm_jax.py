@@ -48,9 +48,7 @@ def _rel(a, b):
     return float(np.max(np.abs(a - b) / denom))
 
 
-# ---------------------------------------------------------------------------
 # 1. Equivalence with the production make_atm_static path.
-# ---------------------------------------------------------------------------
 
 
 def test_build_atm_static_matches_make_atm_static(hd189_state):
@@ -318,9 +316,7 @@ def test_settling_velocity_jax_matches_host():
     assert np.any(np.asarray(got)[:, 3] != 0.0)
 
 
-# ---------------------------------------------------------------------------
 # 2. Differentiability -- forward-mode tangents vs finite differences.
-# ---------------------------------------------------------------------------
 
 
 def test_jvp_dz_wrt_gs_matches_fd(hd189_state):

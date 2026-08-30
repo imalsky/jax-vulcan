@@ -28,9 +28,7 @@ _CFG = default_config()
 species = chem_funs.spec_list
 
 
-# ---------------------------------------------------------------------------
 # Rate-parse cache
-# ---------------------------------------------------------------------------
 # `ReadRate.read_rate` writes only metadata onto `var` (its scratch `k` dict
 # is discarded; `rates.build_rate_array` recomputes `var.k_arr`), so the parse
 # is memoised per process, keyed by (resolved network path, use_ion). A cache
@@ -240,7 +238,6 @@ class ReadRate(object):
                     var.stop_rev_indx = i
 
                 # skip common lines and blank lines
-                # ========================================================================================
                 if (
                     not line.startswith("#")
                     and line.strip()
@@ -277,7 +274,6 @@ class ReadRate(object):
 
                     i += 2
                     # end if not
-                # ========================================================================================
                 elif special_re and line.strip() and not line.startswith("#"):
                     Rindx[i] = int(line.partition("[")[0].strip())
                     Rf[i] = line.partition("[")[-1].rpartition("]")[0].strip()

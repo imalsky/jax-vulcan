@@ -208,7 +208,7 @@ finally:
 """
 
 
-def _run_probe(script: str, *args: Path, skip_on_failure: bool = False):
+def _run_probe(script: str, *args: Path):
     """Run a probe subprocess and surface stdout/stderr on failure."""
     result = subprocess.run(
         [sys.executable, "-c", script, *map(str, args)],
@@ -216,11 +216,6 @@ def _run_probe(script: str, *args: Path, skip_on_failure: bool = False):
         text=True,
         timeout=240,
     )
-    if result.returncode != 0 and skip_on_failure:
-        pytest.skip(
-            f"probe subprocess failed {result.returncode}; stderr tail:\n"
-            f"{result.stderr[-1500:]}"
-        )
     assert result.returncode == 0, (
         f"probe failed with {result.returncode}\n"
         f"--- stdout ---\n{result.stdout}\n"

@@ -14,12 +14,11 @@ compute_Jion_jax fired inside the loop; (C) per-layer charge neutrality to
 
 from __future__ import annotations
 
-import os
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from _helpers import run_child
 
 ROOT = Path(__file__).resolve().parent.parent
 BASE_NETWORK = ROOT / "src" / "vulcan_jax" / "thermo" / "NCHO_photo_network.txt"
@@ -197,23 +196,7 @@ def test_ion_chemistry_end_to_end(tmp_path):
     ion_network = tmp_path / "NCHO_photo_ion_network.txt"
     ion_network.write_text(BASE_NETWORK.read_text().rstrip() + "\n" + ION_SECTION)
 
-    env = {
-        **os.environ,
-        "JAX_PLATFORM_NAME": "cpu",
-        "VULCAN_JAX_NETWORK": str(ion_network),
-    }
-    res = subprocess.run(
-        [sys.executable, "-c", _CHILD, str(ROOT)],
-        capture_output=True,
-        text=True,
-        timeout=600,
-        env=env,
-        cwd=ROOT,
-    )
-    assert res.returncode == 0, (
-        f"ion activation subprocess exited {res.returncode}\n"
-        f"--- stdout ---\n{res.stdout}\n--- stderr ---\n{res.stderr}"
-    )
+    res = run_child(_CHILD, network=str(ion_network), label="ion activation")
     # Each stage must have reported, and the run must finish on PASS.
     for marker in ("A WIRED", "B IONS", "C NEUTRAL", "D STABLE"):
         assert marker in res.stdout, f"missing {marker!r} stage:\n{res.stdout}"

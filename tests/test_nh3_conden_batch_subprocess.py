@@ -14,12 +14,11 @@ Jupiter example with an analytical Heng+14 T-P so no atm file is read.
 
 from __future__ import annotations
 
-import os
-import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from _helpers import run_child
 
 ROOT = Path(__file__).resolve().parent.parent
 CONDEN_NETWORK = "thermo/NCHO_photo_network_lowT_Jupiter.txt"
@@ -171,23 +170,7 @@ def test_nh3_conden_batch_subprocess():
     if not (PACKAGE_ROOT / CONDEN_NETWORK).exists():
         pytest.skip(f"condensate network {CONDEN_NETWORK!r} not vendored")
 
-    env = {
-        **os.environ,
-        "JAX_PLATFORM_NAME": "cpu",
-        "VULCAN_JAX_NETWORK": CONDEN_NETWORK,
-    }
-    res = subprocess.run(
-        [sys.executable, "-c", _CHILD, str(ROOT)],
-        capture_output=True,
-        text=True,
-        timeout=1800,
-        env=env,
-        cwd=ROOT,
-    )
-    assert res.returncode == 0, (
-        f"NH3 batched-conden subprocess exited {res.returncode}\n"
-        f"--- stdout ---\n{res.stdout}\n--- stderr ---\n{res.stderr}"
-    )
+    res = run_child(_CHILD, network=CONDEN_NETWORK, label="NH3 batched-conden", timeout=1800)
     assert "PASS" in res.stdout, res.stdout
 
 

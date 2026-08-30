@@ -119,7 +119,6 @@ def _toy_network_for_codegen(tmp_path: Path):
         stop_rev_indx=nr + 1,
         conden_indx=nr + 1,
         photo_indx=nr + 1,
-        ion_indx=nr + 1,
         photo_sp=(),
         pho_rate_index={},
         n_branch={},
@@ -127,7 +126,6 @@ def _toy_network_for_codegen(tmp_path: Path):
         ion_rate_index={},
         ion_branch={},
         Rf={1: "2*A + M -> B", 3: "B -> A + C"},
-        Rindx={1: 1, 3: 2},
         network_path=str(tmp_path / "toy_network.txt"),
     )
 

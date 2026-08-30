@@ -30,6 +30,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from _helpers import fast_cfg
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -43,35 +44,25 @@ YMIX_FLOOR = 1e-15
 def _pin_cfg():
     """Pin vulcan_cfg for a small photo-ON batched run: isothermal T-P,
     const_mix init, lowered photo cadence so the branch fires within
-    COUNT_MAX. Mirrors test_vmap_while_loop._pin_cfg."""
-    import vulcan_jax.legacy_io as op
+    COUNT_MAX. Mirrors test_vmap_while_loop._pin_cfg.
 
-    vulcan_cfg = op.default_config()
-
-    vulcan_cfg.count_max = COUNT_MAX
-    vulcan_cfg.count_min = 1
-    vulcan_cfg.use_print_prog = False
-    vulcan_cfg.use_live_plot = False
-    vulcan_cfg.use_live_flux = False
-    vulcan_cfg.use_photo = True
-    vulcan_cfg.use_ion = False
-    vulcan_cfg.ini_mix = "const_mix"  # no FastChem; default const_mix dict
-    vulcan_cfg.atm_type = "isothermal"
-    vulcan_cfg.Kzz_prof = "Pfunc"
-    # Deterministic fixed diffusion scheme for the batched/emulator regime
-    # (the hybrid default would flip schemes mid-run per lane).
-    vulcan_cfg.use_vm_mol = False
-    vulcan_cfg.use_hybrid_vm_mol = False
-    vulcan_cfg.nz = 40
-    # Photo fires every 5 accepted steps -> several firings inside COUNT_MAX.
-    vulcan_cfg.ini_update_photo_frq = 5
-    # T-dependent H2O cross sections (vendored 423K-2360K tables): the two
-    # Tiso values interpolate to different per-layer cross sections, which is
-    # exactly the per-lane data this test must prove rides the carry.
-    vulcan_cfg.T_cross_sp = ["H2O"]
-    return vulcan_cfg
-
-
+    `ini_mix="const_mix"` avoids FastChem. The fixed diffusion scheme is
+    deterministic for the batched/emulator regime (the hybrid default would
+    flip schemes mid-run per lane). `T_cross_sp=["H2O"]` selects the vendored
+    T-dependent 423K-2360K tables: the two Tiso values interpolate to
+    different per-layer cross sections, which is exactly the per-lane data
+    this test must prove rides the carry.
+    """
+    return fast_cfg(
+        count_max=COUNT_MAX,
+        use_photo=True,
+        ini_mix="const_mix",
+        use_vm_mol=False,
+        use_hybrid_vm_mol=False,
+        nz=40,
+        ini_update_photo_frq=5,
+        T_cross_sp=["H2O"],
+    )
 def _build_rs(vulcan_cfg, *, Tiso):
     from vulcan_jax.state import RunState
 

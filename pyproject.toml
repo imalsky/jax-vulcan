@@ -100,7 +100,6 @@ version = { attr = "vulcan_jax._version.__version__" }
 "examples/quickstart.ipynb" = ["E402"]
 "tests/test_atom_conservation_projection.py" = ["E402"]
 "tests/test_block_thomas.py" = ["E402"]
-"tests/test_block_thomas_diag.py" = ["E402"]
 "tests/test_chem_rhs_codegen.py" = ["E402"]
 "tests/test_default_master_parity.py" = ["E402"]
 "tests/test_photo_ion.py" = ["E402"]

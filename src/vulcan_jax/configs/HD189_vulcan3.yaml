@@ -232,7 +232,6 @@ use_flux_movie: false
 plot_height: false
 use_PIL: true
 live_plot_frq: 10
-y_time_freq: 1
 plot_spec:
 - H2O
 - H

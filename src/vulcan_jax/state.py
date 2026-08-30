@@ -945,6 +945,38 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
     return rs._replace(photo_static=photo_static_pytree)
 
 
+def _var_save_list(*, use_photo, t_cross_sp, use_ion) -> list[str]:
+    """The legacy `var_save` key list, mirroring `VULCAN-master/store.py:83-90`.
+
+    Returns a FRESH list per call: `VULCAN-master/op.py:3286` iterates this
+    attribute and both producers extend it in place, so they must not share
+    one object.
+
+    Takes resolved values rather than a cfg because the two callers read their
+    config differently on purpose -- `legacy_view` defensively (the run's cfg
+    may be absent), `Variables.__init__` strictly (the process default always
+    has the keys). Keeping the reads at the call sites preserves both.
+    """
+    keys = [
+        "k", "y", "ymix", "y_ini", "t", "dt", "longdy", "longdydt",
+        "atom_ini", "atom_sum", "atom_loss", "atom_conden", "aflux_change", "Rf",
+    ]
+    if use_photo:
+        keys.extend([
+            "nbin", "bins", "dbin1", "dbin2", "tau", "sflux", "aflux",
+            "cross", "cross_scat", "cross_J", "J_sp", "n_branch",
+        ])
+        if t_cross_sp:
+            keys.extend(["cross_J", "cross_T"])
+        if use_ion:
+            keys.extend([
+                "charge_list", "ion_sp", "cross_Jion", "Jion_sp",
+                "ion_wavelen", "ion_branch", "ion_br_ratio",
+            ])
+    return keys
+
+
+
 def legacy_view(rs: RunState, cfg=None):
     """Return a `(var, atm, para)` SimpleNamespace shim built from `rs`.
 
@@ -985,53 +1017,11 @@ def legacy_view(rs: RunState, cfg=None):
     var.def_bin_max = float(rs.photo.def_bin_max)
     _cfg = default_config() if cfg is None else cfg
 
-    var.var_save = [
-        "k",
-        "y",
-        "ymix",
-        "y_ini",
-        "t",
-        "dt",
-        "longdy",
-        "longdydt",
-        "atom_ini",
-        "atom_sum",
-        "atom_loss",
-        "atom_conden",
-        "aflux_change",
-        "Rf",
-    ]
-    if bool(getattr(_cfg, "use_photo", False)):
-        var.var_save.extend(
-            [
-                "nbin",
-                "bins",
-                "dbin1",
-                "dbin2",
-                "tau",
-                "sflux",
-                "aflux",
-                "cross",
-                "cross_scat",
-                "cross_J",
-                "J_sp",
-                "n_branch",
-            ]
-        )
-        if getattr(_cfg, "T_cross_sp", []):
-            var.var_save.extend(["cross_J", "cross_T"])
-        if bool(getattr(_cfg, "use_ion", False)):
-            var.var_save.extend(
-                [
-                    "charge_list",
-                    "ion_sp",
-                    "cross_Jion",
-                    "Jion_sp",
-                    "ion_wavelen",
-                    "ion_branch",
-                    "ion_br_ratio",
-                ]
-            )
+    var.var_save = _var_save_list(
+        use_photo=bool(getattr(_cfg, "use_photo", False)),
+        t_cross_sp=getattr(_cfg, "T_cross_sp", []),
+        use_ion=bool(getattr(_cfg, "use_ion", False)),
+    )
     var.var_evol_save = ["y_time", "t_time"]
     var.y_time = []
     var.t_time = []
@@ -1190,53 +1180,11 @@ class _Variables(object):
         self.def_bin_min = stellar_flux.def_bin_min
         self.def_bin_max = stellar_flux.def_bin_max
 
-        self.var_save = [
-            "k",
-            "y",
-            "ymix",
-            "y_ini",
-            "t",
-            "dt",
-            "longdy",
-            "longdydt",
-            "atom_ini",
-            "atom_sum",
-            "atom_loss",
-            "atom_conden",
-            "aflux_change",
-            "Rf",
-        ]
-        if _vcfg.use_photo:
-            self.var_save.extend(
-                [
-                    "nbin",
-                    "bins",
-                    "dbin1",
-                    "dbin2",
-                    "tau",
-                    "sflux",
-                    "aflux",
-                    "cross",
-                    "cross_scat",
-                    "cross_J",
-                    "J_sp",
-                    "n_branch",
-                ]
-            )
-            if _vcfg.T_cross_sp:
-                self.var_save.extend(["cross_J", "cross_T"])
-            if _vcfg.use_ion:
-                self.var_save.extend(
-                    [
-                        "charge_list",
-                        "ion_sp",
-                        "cross_Jion",
-                        "Jion_sp",
-                        "ion_wavelen",
-                        "ion_branch",
-                        "ion_br_ratio",
-                    ]
-                )
+        self.var_save = _var_save_list(
+            use_photo=_vcfg.use_photo,
+            t_cross_sp=_vcfg.T_cross_sp,
+            use_ion=_vcfg.use_ion,
+        )
         self.var_evol_save = ["y_time", "t_time"]
         self.conden_re_list = []
 

@@ -346,26 +346,3 @@ def test_hd189_reaction_sensitivity_regression():
     assert rel_bare > rel_renorm, (
         f"bare rel {rel_bare:.3f} should exceed renorm rel {rel_renorm:.3f}"
     )
-
-
-def main() -> int:
-    """Script-style runner for the always-on fast unit tests."""
-    test_safe_inv_y_masks_exact_zeros()
-    test_conserved_null_basis_annihilates_atom_vectors()
-    test_conserved_null_basis_requires_populated_columns()
-    test_conserved_null_basis_rejects_rank_deficiency()
-    test_conserved_null_basis_rejects_zero_column()
-    test_deflation_projector_idempotent()
-    test_reaction_cotangent_chain_rule_identity()
-    return 0
-
-
-def test_main():
-    """Pytest entry consistency with the suite's `test_main()` convention."""
-    assert main() == 0
-
-
-if __name__ == "__main__":
-    import sys
-
-    sys.exit(main())

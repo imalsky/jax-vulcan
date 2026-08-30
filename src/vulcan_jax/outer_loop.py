@@ -2682,7 +2682,7 @@ class OuterLoop:
 
         # Conden k unpack: same full-array overwrite as photo.
         if self._conden_static is not None:
-            self._unpack_conden_k(state, var)
+            self._unpack_k(state, var)
 
     def _unpack_J_sp(self, state: JaxIntegState, var) -> None:
         """Rebuild `var.J_sp` dict from carry's J_br / J_br_T arrays.
@@ -2763,12 +2763,6 @@ class OuterLoop:
         # plot scripts indexing the list don't error.
         final_atom_loss = list(np.asarray(state.atom_loss).tolist())
         var.atom_loss_time = [final_atom_loss for _ in range(L)]
-
-    def _unpack_conden_k(self, state: JaxIntegState, var) -> None:
-        """Snapshot the full conden-updated `state.k_arr` into `var.k_arr`
-        (rows the runner didn't touch keep their pre-runner values).
-        """
-        var.k_arr = np.asarray(state.k_arr, dtype=np.float64)
 
     def _classify_end_case(self, state: JaxIntegState, wall_clock_hit=False):
         """Classify end-of-run (op.py:1069-1085) from the carry's live budget.

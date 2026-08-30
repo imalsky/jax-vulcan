@@ -85,7 +85,6 @@ class Network:
     stop_rev_indx: int  # reverse slots filled for even i in 2..stop_rev_indx-1
     conden_indx: int  # parser-i of first condensation reaction
     photo_indx: int  # parser-i of first photo reaction
-    ion_indx: int  # parser-i of first ion reaction
 
     # Photo metadata
     photo_sp: tuple[str, ...]  # species that photodissociate
@@ -97,7 +96,6 @@ class Network:
 
     # Reaction text, indexed by parser-i (1-based)
     Rf: dict  # parser-i -> "A + B -> C + D"
-    Rindx: dict  # parser-i -> file-ID (0 = the row carried no id column)
 
     # Original file path for debugging
     network_path: str
@@ -250,7 +248,6 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
     stop_rev_indx: int | None = None
     conden_indx: int | None = None
     photo_indx: int | None = None
-    ion_indx: int | None = None
 
     photo_sp: list[str] = []
     pho_rate_index: dict[tuple[str, int], int] = {}
@@ -261,7 +258,6 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
 
     forward_records: list[dict] = []
     Rf_text: dict[int, str] = {}
-    Rindx_map: dict[int, int] = {}
     temp_ranges: dict[int, tuple[tuple[float, float], ...]] = {}
 
     def _intern_species(sp: str) -> int:
@@ -293,8 +289,6 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
                     )
                 if section == _SECTION_PHOTO and photo_indx is None:
                     photo_indx = parser_i
-                if section == _SECTION_ION and ion_indx is None:
-                    ion_indx = parser_i
                 continue
 
             stripped = line.lstrip()
@@ -377,7 +371,6 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
             }
             forward_records.append(rec)
             Rf_text[parser_i] = eq
-            Rindx_map[parser_i] = file_id
             if section in _THERMAL_SECTIONS:
                 temp_ranges[parser_i] = _parse_temp_ranges(cols[len(num_cols):])
 
@@ -432,8 +425,6 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
         conden_indx = nr + 1
     if photo_indx is None:
         photo_indx = nr + 1
-    if ion_indx is None:
-        ion_indx = nr + 1
 
     max_reac = max(
         (len(rec["reactants_collapsed"]) for rec in forward_records),
@@ -548,7 +539,6 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
         stop_rev_indx=stop_rev_indx,
         conden_indx=conden_indx,
         photo_indx=photo_indx,
-        ion_indx=ion_indx,
         photo_sp=tuple(photo_sp),
         pho_rate_index=dict(pho_rate_index),
         n_branch=dict(n_branch),
@@ -556,35 +546,6 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
         ion_rate_index=dict(ion_rate_index),
         ion_branch=dict(ion_branch),
         Rf=dict(Rf_text),
-        Rindx=dict(Rindx_map),
         network_path=network_path,
         temp_ranges=dict(temp_ranges),
     )
-
-
-def summarize(net: Network) -> str:
-    """Human-readable summary of a parsed Network."""
-    lines = [
-        f"Network: {net.network_path}",
-        f"  ni = {net.ni} species",
-        f"  nr = {net.nr} reaction slots ({net.nr // 2} forward + reverses)",
-        f"  three-body reactions: {int(net.is_three_body[1::2].sum())}",
-        f"  with k_inf falloff:   {int(net.has_kinf[1::2].sum())}",
-        f"  special (hardcoded):  {int(net.is_special[1::2].sum())}",
-        f"  condensation:         {int(net.is_conden[1::2].sum())}",
-        f"  photo dissociation:   {int(net.is_photo[1::2].sum())}",
-        f"  photo ionization:     {int(net.is_ion[1::2].sum())}",
-        f"  stop_rev_indx = {net.stop_rev_indx}",
-        f"  photo_indx    = {net.photo_indx}",
-        f"  first 10 species: {net.species[:10]}",
-        f"  last 5 species:   {net.species[-5:]}",
-    ]
-    return "\n".join(lines)
-
-
-if __name__ == "__main__":
-    import sys
-
-    path = sys.argv[1] if len(sys.argv) > 1 else "thermo/SNCHO_photo_network_2025.txt"
-    net = parse_network(path)
-    print(summarize(net))

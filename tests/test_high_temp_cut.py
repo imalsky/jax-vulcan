@@ -26,9 +26,7 @@ def _make_pco(P_b, P_t, nz):
     return np.logspace(np.log10(P_b), np.log10(P_t), nz)
 
 
-# ---------------------------------------------------------------------------
 # Pure selection/re-grid logic
-# ---------------------------------------------------------------------------
 
 
 def test_regrid_raises_Pb_to_first_cool_deep_level():
@@ -83,9 +81,7 @@ def test_regrid_noop_when_no_deep_layers():
     )
 
 
-# ---------------------------------------------------------------------------
 # End-to-end through load_TPK (file mode) — deep column drops below T_max
-# ---------------------------------------------------------------------------
 
 
 def _write_hot_tp_file(path: Path) -> None:

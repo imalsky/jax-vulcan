@@ -197,21 +197,3 @@ def build_chem_rhs(net: Network) -> Callable:
     fn = jax.jit(chem_rhs_codegen_barriered)
     _BUILD_CACHE[key] = fn
     return fn
-
-
-if __name__ == "__main__":
-    import sys
-
-    from .config import default_config
-    from .network import parse_network
-    from ._paths import resolve_data_path
-
-    net = parse_network(str(resolve_data_path(default_config().network)))
-    path = cache_path_for(net)
-    if path.exists():
-        print(f"chem_rhs codegen cache hit: {path}")
-    else:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(emit_chem_rhs_source(net))
-        print(f"chem_rhs codegen written: {path}")
-    sys.exit(0)

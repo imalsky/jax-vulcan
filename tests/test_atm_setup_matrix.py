@@ -25,9 +25,7 @@ os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
 
-# ---------------------------------------------------------------------------
 # Atm type matrix: Tco, Kzz, vz, M, n_0
-# ---------------------------------------------------------------------------
 
 
 def _ref_TP_H14(pco, params, gs, Pb):
@@ -209,9 +207,7 @@ def test_load_TPK_use_kzz_off_zeroes_kzz():
     assert np.all(out["Kzz"] == 0.0)
 
 
-# ---------------------------------------------------------------------------
 # atm_base x mol_diff matrix
-# ---------------------------------------------------------------------------
 
 
 def _ref_Dzz(atm_base, T, n_tot, mi):
@@ -307,9 +303,7 @@ def test_compute_mol_diff_use_moldiff_off_zeros():
     assert np.all(out["Dzz_cen"] == 0.0)
 
 
-# ---------------------------------------------------------------------------
 # BC_flux modes
-# ---------------------------------------------------------------------------
 
 
 def test_read_bc_flux_default_zero():
@@ -362,9 +356,7 @@ def test_read_bc_flux_use_botflux(tmp_path):
     assert out["bot_vdep"][1] == 0.005
 
 
-# ---------------------------------------------------------------------------
 # sat_p (sp_sat) per condensable
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -400,9 +392,7 @@ def test_compute_sat_p_unknown_species_raises():
         compute_sat_p(["XYZ"], np.array([300.0]))
 
 
-# ---------------------------------------------------------------------------
 # f_pico bit-exact + edge cases
-# ---------------------------------------------------------------------------
 
 
 def test_compute_pico_matches_master_formula():
@@ -419,9 +409,7 @@ def test_compute_pico_matches_master_formula():
     assert np.allclose(pico, pi_ref, rtol=1e-15, atol=0.0)
 
 
-# ---------------------------------------------------------------------------
 # f_mu_dz: height integration upward + downward
-# ---------------------------------------------------------------------------
 
 
 def test_compute_mu_dz_g_rocky_anchor_at_surface():
@@ -484,9 +472,7 @@ def test_compute_mu_dz_g_gas_giant_anchor_at_1bar():
     assert np.all(np.diff(z) > 0.0)
 
 
-# ---------------------------------------------------------------------------
 # Settling velocity
-# ---------------------------------------------------------------------------
 
 
 def test_compute_settling_velocity_off_returns_zeros():
@@ -524,9 +510,7 @@ def test_compute_settling_velocity_h2so4_negative():
     assert np.all(out[:, 0] == 0.0) and np.all(out[:, 1] == 0.0)
 
 
-# ---------------------------------------------------------------------------
 # Cross-check JAX TP_H14 vs scipy expn reference
-# ---------------------------------------------------------------------------
 
 
 def test_TP_H14_matches_scipy_reference():

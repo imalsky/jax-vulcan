@@ -20,7 +20,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-
+from _helpers import fast_cfg
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -39,34 +39,18 @@ YMIX_FLOOR = 1e-15  # ignore ULP-noise trace species below this in the ref
 def _pin_cfg():
     """Pin vulcan_cfg for a fast, photo-off batched run (the emulator regime;
     photo-on batching is covered by test_vmap_photo_batch). Mirrors
-    test_outer_loop_smoke."""
-    import vulcan_jax.legacy_io as op
+    test_outer_loop_smoke.
 
-    vulcan_cfg = op.default_config()
-
-    vulcan_cfg.count_max = COUNT_MAX
-    vulcan_cfg.count_min = 1
-    vulcan_cfg.use_print_prog = False
-    vulcan_cfg.use_live_plot = False
-    vulcan_cfg.use_live_flux = False
-    vulcan_cfg.use_photo = False
-    vulcan_cfg.use_ion = False
-    # Isothermal T-P so `Tiso` directly sets the atmosphere; different Tiso
-    # gives genuinely different n_0 / Tco / equilibrium abundances (the
-    # heterogeneous-batch probe). 'file' mode would ignore our overrides.
-    # Pfunc Kzz is pressure-analytic, so it needs no atm file (isothermal
-    # mode does not load one).
-    vulcan_cfg.atm_type = "isothermal"
-    vulcan_cfg.Kzz_prof = "Pfunc"
-    # Batched/emulator generation wants a deterministic, fixed diffusion scheme:
-    # the hybrid phase flip turns count-exhaustion into a mid-run scheme switch
-    # with a per-lane extended budget, which breaks the freeze-on-done
-    # equivalence premise. Pin the hybrid default off here.
-    vulcan_cfg.use_vm_mol = False
-    vulcan_cfg.use_hybrid_vm_mol = False
-    return vulcan_cfg
-
-
+    Batched/emulator generation wants a deterministic, fixed diffusion scheme:
+    the hybrid phase flip turns count-exhaustion into a mid-run scheme switch
+    with a per-lane extended budget, which breaks the freeze-on-done
+    equivalence premise, so the hybrid default is pinned off here.
+    """
+    return fast_cfg(
+        count_max=COUNT_MAX,
+        use_vm_mol=False,
+        use_hybrid_vm_mol=False,
+    )
 def _build_rs(vulcan_cfg, *, Tiso=None, gs=None, Rp=None):
     """Build a RunState, optionally overriding temperature / gravity / radius
     so two calls produce genuinely different atmospheres."""

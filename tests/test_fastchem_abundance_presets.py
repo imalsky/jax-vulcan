@@ -58,9 +58,7 @@ def _validate(rel: str) -> list[str]:
     return _validate_fastchem_input_vs_network(cfg, PKG)
 
 
-# ---------------------------------------------------------------------------
 # Both presets exist and are accepted
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("rel", [DEFAULT_REL, UPSTREAM_REL])
@@ -123,9 +121,7 @@ def test_the_two_presets_differ_only_where_expected():
     assert a["Mg"] == -3.0 and b["Mg"] > 0, "rocky suppression is the other axis"
 
 
-# ---------------------------------------------------------------------------
 # Anything else is rejected
-# ---------------------------------------------------------------------------
 
 
 def test_a_hand_edited_file_is_rejected_naming_both_presets(tmp_path):
@@ -148,9 +144,7 @@ def test_a_hand_edited_file_is_rejected_naming_both_presets(tmp_path):
         target.unlink()
 
 
-# ---------------------------------------------------------------------------
 # Every config states its choice
-# ---------------------------------------------------------------------------
 
 
 def test_every_config_declares_an_existing_abundance_file():

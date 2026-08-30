@@ -23,9 +23,7 @@ os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
 
-# ---------------------------------------------------------------------------
 # Small helpers shared across cases.
-# ---------------------------------------------------------------------------
 
 
 @contextlib.contextmanager
@@ -104,9 +102,7 @@ def _setup_full_state(count_max: int = 5):
     return solver, output, data_var, data_atm, data_para, make_atm
 
 
-# ---------------------------------------------------------------------------
 # Case 1: use_lowT_limit_rates=True with HD189 atmosphere.
-# ---------------------------------------------------------------------------
 
 
 def test_lowT_limit_rates_noop_on_HD189():
@@ -156,9 +152,7 @@ def test_lowT_limit_rates_noop_on_HD189():
     np.testing.assert_array_equal(k_on[i_c2h5], k_off[i_c2h5])
 
 
-# ---------------------------------------------------------------------------
 # Case 2: T_cross_sp non-empty (Earth-style T-dep cross-section path).
-# ---------------------------------------------------------------------------
 
 
 def test_T_cross_sp_path_finite_positive():
@@ -191,9 +185,7 @@ def test_T_cross_sp_path_finite_positive():
     assert np.any(absp_T_cross > 0.0), "T-dep cross-sections all zero"
 
 
-# ---------------------------------------------------------------------------
 # Case 3: use_vm_mol=True populates atm.vm.
-# ---------------------------------------------------------------------------
 
 
 def test_use_vm_mol_populates_vm():
@@ -228,9 +220,7 @@ def test_use_vm_mol_populates_vm():
     assert np.any(np.abs(vm) > 0.0), "vm all-zero with use_vm_mol=True"
 
 
-# ---------------------------------------------------------------------------
 # Case 4: use_settling=True populates atm.vs for non-gas species.
-# ---------------------------------------------------------------------------
 
 
 def test_use_settling_populates_vs_for_non_gas():
@@ -277,9 +267,7 @@ def test_use_settling_populates_vs_for_non_gas():
     assert np.all(vs[:, other] == 0.0), "settling nonzero for gaseous species"
 
 
-# ---------------------------------------------------------------------------
 # Cases 5-6: BC flux file readers with use_topflux / use_botflux.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -327,9 +315,7 @@ def test_bc_flux_loaded_from_file(flag, file_attr, file_path, target_sp):
     assert np.any(arr != 0.0)
 
 
-# ---------------------------------------------------------------------------
 # Case 7: fix_species runtime smoke.
-# ---------------------------------------------------------------------------
 
 
 def test_fix_species_runtime_smoke():
@@ -383,9 +369,7 @@ def test_fix_species_runtime_smoke():
     del vulcan_cfg  # silence unused-import lint
 
 
-# ---------------------------------------------------------------------------
 # Case 8: use_fix_all_bot integration check.
-# ---------------------------------------------------------------------------
 
 
 def test_use_fix_all_bot_keeps_bottom_at_eq_mix():

@@ -13,7 +13,6 @@ condensation integration is out of scope here (HD189 has use_condense=False).
 from __future__ import annotations
 
 import os
-import sys
 import warnings
 from pathlib import Path
 
@@ -475,25 +474,3 @@ def test_no_op_when_inactive():
     assert all(
         e <= KERNEL_RTOL for e in (err_h2o_y, err_h2o_ymix, err_nh3_y, err_nh3_ymix)
     )
-
-
-def main() -> int:
-    try:
-        print("--- update_conden_rates ---")
-        test_update_conden_rates()
-        print("--- apply_h2o_relax_jax ---")
-        test_apply_h2o_relax_jax()
-        print("--- apply_nh3_relax_jax ---")
-        test_apply_nh3_relax_jax()
-        print("--- no-op when inactive ---")
-        test_no_op_when_inactive()
-    except AssertionError as e:
-        print(f"\nFAIL: {e}")
-        return 1
-    print()
-    print("PASS")
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

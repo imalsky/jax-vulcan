@@ -27,7 +27,6 @@ warnings.filterwarnings("ignore")
 # no shipped case needs it. It stays as an opt-in, and its counters stay as
 # diagnostics (vulcan-forward and vulcan-retrieval read them).
 _PARITY_CONFIGS = ("default", "HD189", "HD209", "W39b")
-_V3_CONFIGS = ("HD189_vulcan3",)
 
 
 def _cfg():

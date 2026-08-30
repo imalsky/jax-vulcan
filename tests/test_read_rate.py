@@ -21,9 +21,7 @@ os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
 
-# ---------------------------------------------------------------------------
 # Helpers
-# ---------------------------------------------------------------------------
 
 
 def _find_rxn_idx(net, eq: str) -> int:
@@ -54,9 +52,7 @@ def _load_nasa9_local(net):
     return coeffs
 
 
-# ---------------------------------------------------------------------------
 # apply_lowT_caps
-# ---------------------------------------------------------------------------
 
 
 def test_lowT_caps_fire_all_three():
@@ -138,9 +134,7 @@ def test_lowT_caps_no_op_when_T_above_thresholds():
     assert np.array_equal(k_out, k_in)
 
 
-# ---------------------------------------------------------------------------
 # apply_remove_list
-# ---------------------------------------------------------------------------
 
 
 def test_remove_list_zeros_only_listed_indices():
@@ -184,9 +178,7 @@ def test_remove_list_none_or_empty_is_noop():
     assert np.array_equal(rates.apply_remove_list(net, k_in, []), k_in)
 
 
-# ---------------------------------------------------------------------------
 # build_rate_array end-to-end
-# ---------------------------------------------------------------------------
 
 
 def test_build_rate_array_matches_legacy_hd189(hd189_state):

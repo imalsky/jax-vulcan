@@ -42,11 +42,6 @@ RUN IT, after `pip install vulcan-jax`:
     # Force the GPU backend (errors early if no GPU is visible to JAX):
     JAX_PLATFORM_NAME=gpu python gpu_benchmark.py
 
-PBS:   qsub supercomputer_cmds/run_gpu_benchmark.pbs
-SLURM: sbatch supercomputer_cmds/run_gpu_benchmark.sh
-For a throughput-vs-batch-size sweep pass BATCHES="8 64 256 512" via
-qsub -v / sbatch --export=ALL.
-
 Watch "profiles/s" at the largest batch size: the GPU amortizes a fixed
 per-call overhead across the whole batch, so throughput should climb with
 batch size until the device saturates. On CPU it will be roughly flat
@@ -88,9 +83,7 @@ def log(msg: str) -> None:
     print(f"[{time.perf_counter() - _T0:8.1f}s] {msg}", flush=True)
 
 
-# ---------------------------------------------------------------------------
 # Config: a fast, fully-standalone, photo-off batched regime.
-# ---------------------------------------------------------------------------
 _HD189_ATM = "atm/atm_HD189_Kzz.txt"  # vendored in the vulcan_jax package
 
 
@@ -135,12 +128,10 @@ def make_tscales(n: int, spread: float, seed: int) -> np.ndarray:
     return scales * (1.0 + 0.005 * rng.standard_normal(n))
 
 
-# ---------------------------------------------------------------------------
 # Host-setup worker pool. Spawn (not fork) because the parent has CUDA
 # initialised; CPU-pinned so the workers never touch the GPU; each worker
 # gets a private FastChem tree so the package's cross-process fcntl.flock
 # never serialises the pool.
-# ---------------------------------------------------------------------------
 _WORKER_CFG = None  # set once per worker by _worker_init
 _WORKER_DIR = None  # private scratch dir (FastChem tree + scaled atm files)
 _WORKER_ATM = None  # parsed (header_lines, P, T, Kzz) of the vendored HD189 atm
@@ -250,9 +241,7 @@ def _resolve_workers(requested: int, n_jobs: int) -> int:
     return max(1, min(n, n_jobs))
 
 
-# ---------------------------------------------------------------------------
 # Device side
-# ---------------------------------------------------------------------------
 def build_integ(cfg):
     """Construct the OuterLoop runner (Ros2 solver + output sink)."""
     import vulcan_jax.legacy_io as legacy_io

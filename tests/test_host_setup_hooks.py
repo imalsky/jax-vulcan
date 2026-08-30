@@ -23,7 +23,7 @@ import warnings
 from pathlib import Path
 
 import numpy as np
-
+from _helpers import fast_cfg
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -31,28 +31,13 @@ warnings.filterwarnings("ignore")
 
 
 def _pin_cfg():
-    """Pin vulcan_cfg for a fast, photo-off, FastChem-free pre-loop setup."""
-    import vulcan_jax.legacy_io as op
+    """Pin vulcan_cfg for a fast, photo-off, FastChem-free pre-loop setup.
 
-    vulcan_cfg = op.default_config()
-
-    vulcan_cfg.count_max = 40
-    vulcan_cfg.count_min = 1
-    vulcan_cfg.use_print_prog = False
-    vulcan_cfg.use_live_plot = False
-    vulcan_cfg.use_live_flux = False
-    vulcan_cfg.use_photo = False
-    vulcan_cfg.use_ion = False
-    vulcan_cfg.atm_type = "isothermal"
-    vulcan_cfg.Kzz_prof = "Pfunc"
-    vulcan_cfg.Tiso = 1000.0
-    # These hooks are orthogonal to the initial-abundance solver, so use the
-    # in-process `const_lowT` Newton solver instead of the FastChem subprocess
-    # to keep the unit tests fast, quiet, and deterministic.
-    vulcan_cfg.ini_mix = "const_lowT"
-    return vulcan_cfg
-
-
+    These hooks are orthogonal to the initial-abundance solver, so use the
+    in-process `const_lowT` Newton solver instead of the FastChem subprocess
+    to keep the unit tests fast, quiet, and deterministic.
+    """
+    return fast_cfg(count_max=40, Tiso=1000.0, ini_mix="const_lowT")
 def _build_rs(vulcan_cfg, *, skip_chem_warmup=False):
     from vulcan_jax.state import RunState
 

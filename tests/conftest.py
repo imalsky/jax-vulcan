@@ -61,9 +61,7 @@ def _assert_testing_repo_checkout() -> None:
 _assert_testing_repo_checkout()
 
 
-# ---------------------------------------------------------------------------
 # vulcan_cfg snapshot/restore fixtures.
-# ---------------------------------------------------------------------------
 
 _MASTER_ONLY_MODULE_NAMES = (
     "op",
@@ -199,9 +197,7 @@ def _cfg_guard(request, _cfg_snapshot_session):
             _clear_jax_caches()
 
 
-# ---------------------------------------------------------------------------
 # Cross-process serialisation for master-touching tests.
-# ---------------------------------------------------------------------------
 
 _MASTER_LOCK = ROOT / "tests" / ".master_lock"
 

@@ -30,9 +30,7 @@ VULCAN_MASTER = oracle_dir_or_sentinel()
 warnings.filterwarnings("ignore")
 
 
-# ---------------------------------------------------------------------------
 # Helpers shared by every parametrized mode test.
-# ---------------------------------------------------------------------------
 
 
 @contextlib.contextmanager
@@ -79,9 +77,7 @@ def _build_hd189_atm():
     return data_var, data_atm, make_atm
 
 
-# ---------------------------------------------------------------------------
 # const_mix mode: algebraic, no FastChem, no scipy.
-# ---------------------------------------------------------------------------
 
 
 def test_const_mix_matches_reference():
@@ -115,9 +111,7 @@ def test_const_mix_matches_reference():
     np.testing.assert_allclose(ymix.sum(axis=1), 1.0, rtol=1e-13, atol=0.0)
 
 
-# ---------------------------------------------------------------------------
 # vulcan_ini mode: pickle round-trip against an existing `.vul` file.
-# ---------------------------------------------------------------------------
 
 
 def test_vulcan_ini_roundtrip(tmp_path):
@@ -152,9 +146,7 @@ def test_vulcan_ini_roundtrip(tmp_path):
         )
 
 
-# ---------------------------------------------------------------------------
 # table mode: synthesize a tiny mixing-ratio table on tmp_path.
-# ---------------------------------------------------------------------------
 
 
 def test_table_roundtrip(tmp_path):
@@ -205,9 +197,7 @@ def test_table_roundtrip(tmp_path):
     )
 
 
-# ---------------------------------------------------------------------------
 # const_lowT mode: JAX Newton vs scipy.fsolve.
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -240,9 +230,7 @@ def test_const_lowT_matches_scipy(O_H, C_H, He_H, N_H):
     np.testing.assert_allclose(scipy_root, jax_root, rtol=1e-13, atol=1e-15)
 
 
-# ---------------------------------------------------------------------------
 # charge_list invariants.
-# ---------------------------------------------------------------------------
 
 
 def test_charge_list_no_ions():
@@ -261,10 +249,8 @@ def test_charge_list_no_ions():
     assert cl == [], f"expected empty charge_list, got {cl}"
 
 
-# ---------------------------------------------------------------------------
 # EQ-mode HD189 fork against VULCAN-master (bit-exact gate). Mutates
 # sys.modules/sys.path, so the pytest wrapper runs it in a fresh process.
-# ---------------------------------------------------------------------------
 
 
 def main() -> int:

@@ -94,6 +94,3 @@ def test_per_step_kzz_forward_mode():
         f"coarse FD cross-check failed: fd={fd:.3e} jvp={g_jvp:.3e}"
     )
 
-
-def test_main():
-    test_per_step_kzz_forward_mode()

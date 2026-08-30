@@ -24,6 +24,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from _helpers import fast_cfg
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -32,27 +33,14 @@ warnings.filterwarnings("ignore")
 
 def _pin_cfg():
     """Fast, FastChem-free (const_mix), photo-off isothermal config."""
-    from vulcan_jax.config import default_config
-
-    vc = default_config()
-
-    vc.count_min = 1
-    vc.trun_min = 1e-30
-    vc.use_print_prog = False
-    vc.use_live_plot = False
-    vc.use_live_flux = False
-    vc.use_photo = False
-    vc.use_ion = False
-    vc.use_condense = False
-    vc.atm_type = "isothermal"
-    vc.Tiso = 1200.0
-    vc.Kzz_prof = "Pfunc"
-    vc.ini_mix = "const_mix"
-    vc.use_moldiff = True
-    vc.nz = 40
-    return vc
-
-
+    return fast_cfg(
+        trun_min=1e-30,
+        use_condense=False,
+        Tiso=1200.0,
+        ini_mix="const_mix",
+        use_moldiff=True,
+        nz=40,
+    )
 def _run(vc, *, use_vm, hybrid, count_max):
     import vulcan_jax.outer_loop as outer_loop
     import vulcan_jax.legacy_io as op

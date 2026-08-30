@@ -110,15 +110,13 @@ def _config_identity() -> dict:
     return out
 
 
-def run_generator(key: str, env_extra: dict | None = None) -> None:
+def run_generator(key: str) -> None:
     spec = GENERATORS[key]
     print(f"\n=== {key}: {spec['note']} ===", flush=True)
     env = dict(os.environ)
     # PYTHONSAFEPATH strips the cwd from sys.path in some sandboxes, which makes
     # the generators fail for reasons unrelated to the repo.
     env.pop("PYTHONSAFEPATH", None)
-    if env_extra:
-        env.update(env_extra)
     t0 = time.time()
     r = subprocess.run(spec["argv"], cwd=ROOT, env=env)
     if r.returncode != 0:

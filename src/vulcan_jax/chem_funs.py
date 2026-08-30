@@ -187,11 +187,9 @@ def s_R(T, a):
     )
 
 
-# NASA-9 low/high-T polynomial breakpoint and validity window
-# (NASA/TP-2002-211556); same breakpoint as gibbs._NASA9_BRANCH_T.
+# NASA-9 low/high-T polynomial breakpoint (NASA/TP-2002-211556);
+# same breakpoint as gibbs._NASA9_BRANCH_T.
 _NASA9_BRANCH_T = 1000.0
-_NASA9_T_MIN = 200.0
-_NASA9_T_MAX = 6000.0
 
 
 def g_RT(T, a_low, a_high):
