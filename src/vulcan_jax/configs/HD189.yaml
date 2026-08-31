@@ -180,7 +180,7 @@ adapt_rtol_inc: 1.25
 adapt_rtol_loss_mul: 2.0
 adapt_rtol_inc_loss_thresh: 0.0002
 # 110 (not 64) so `dt < dt_min` ends a reject chain, as master does — see C11 in
-# README.md (Parity & bug guide). Do not round down.
+# notes.md (Parity & bug guide). Do not round down.
 batch_max_retries: 110
 step_size_safety: 0.9
 step_size_zero_delta_frac: 0.01

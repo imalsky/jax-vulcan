@@ -69,7 +69,7 @@ oracles:
     commit: 897033769d62caa27ee44f7360dcaba1e947919c
     why: >-
       Current public master, kept as the reference for the FastChem P/S
-      element-ORDER correction (README.md, Parity & bug guide, C12). Upstream's own 2026-07-28
+      element-ORDER correction (notes.md, Parity & bug guide, C12). Upstream's own 2026-07-28
       "fix" (8970337) is INERT: it edited `fc_list` while the defect is the row
       order of the shipped .dat file, so the report must cite the .dat, not
       fc_list. Upstream has no W39 config, so the invariant test resolves the
@@ -193,7 +193,7 @@ intentional_divergences:
       applied to NCHO but left unapplied to the sulfur files: the base SNCHO and
       C3 files ship k0 = 1.00E-20 and the DMS Tsai2024 file ships k0/k_inf
       swapped. VULCAN-JAX corrects all three.
-    recorded_in: README.md (Parity & bug guide, C1)
+    recorded_in: notes.md (Parity & bug guide, C1)
 
   C4_epseri_flux_rescale:
     files: [atm/stellar_flux/sflux-epseri.txt]
@@ -202,7 +202,7 @@ intentional_divergences:
       Master's builder (atm/make_spectra_in_nm.py) multiplied by R_star where
       the surface-flux conversion divides, so the shipped eps Eri spectrum is
       low by exactly R_star^4.
-    recorded_in: README.md (Parity & bug guide, C4)
+    recorded_in: notes.md (Parity & bug guide, C4)
 
   C12_fastchem_ps_order:
     files: [fastchem_vulcan/input/solar_element_abundances.dat]
@@ -211,7 +211,7 @@ intentional_divergences:
       the element list FastChem reads. CONFIRMED still open at exoclime HEAD
       (introduced 604ca6e). Measured impact on a real W39b column: atomic S
       moves 2.6-3.1 dex; every molecule <= 0.004 dex.
-    recorded_in: README.md (Parity & bug guide, C12)
+    recorded_in: notes.md (Parity & bug guide, C12)
 
   C15_lodders2019_rocky_suppressed:
     files: [fastchem_vulcan/input/solar_element_abundances.dat]
@@ -221,15 +221,15 @@ intentional_divergences:
       species to hold the oxygen. Upstream ships Lodders 2009 at solar. This is
       a CONFIG CHOICE, not a correction: both files ship and
       `fastchem_solar_abundance_file` selects.
-    recorded_in: README.md (Validation)
+    recorded_in: notes.md (Validation)
 
   nh3_ice_mass:
     reason: NH3 condensate molar mass correction.
-    recorded_in: README.md (Parity & bug guide)
+    recorded_in: notes.md (Parity & bug guide)
 
   h2s_units:
     reason: H2S saturation-pressure unit correction.
-    recorded_in: README.md (Parity & bug guide)
+    recorded_in: notes.md (Parity & bug guide)
 
   controller_defaults:
     reason: >-

@@ -397,7 +397,12 @@ def test_pco_from_endpoints_matches_logspace_and_differentiates():
 
 
 def test_kzz_profile_jax_differentiates():
-    """dKzz/dK_deep is finite where the JM16 floor is not active."""
+    """dKzz/dK_deep is finite and nonzero where the K_deep floor binds.
+
+    The JM16 floor is max(K_deep, 1e5*sqrt(300/(P*1e-3))); on logspace(7,-1)
+    the profile term bottoms out at ~1.7e4 (P=1e7), so K_deep=1e6 binds on
+    the deep layers and the tangent must be nonzero there.
+    """
     pico_int = jnp.asarray(np.logspace(7, -1, 30))
 
     def total(K_deep):
@@ -412,8 +417,8 @@ def test_kzz_profile_jax_differentiates():
             )
         )
 
-    tangent = jax.jvp(total, (jnp.float64(1e3),), (jnp.float64(1.0),))[1]
-    assert np.isfinite(float(tangent))
+    tangent = jax.jvp(total, (jnp.float64(1e6),), (jnp.float64(1.0),))[1]
+    assert np.isfinite(float(tangent)) and float(tangent) != 0.0
 
 
 def test_kzz_profile_jax_defaults_per_branch():

@@ -84,7 +84,7 @@ correction, matrix-free LSQR) and a raw Neumann iteration on the body map all
 diverged or stagnated -- `df/dy` is both singular and severely
 ill-conditioned on closed columns (see the dev log, notes.md).
 
-Scope, accuracy, and the `body_dt` regime map: README.md (Differentiability)
+Scope, accuracy, and the `body_dt` regime map: notes.md (Differentiability)
 ("Reverse mode: the steady-state adjoint"). Worked recipe:
 `examples/grad_reverse_example.py`.
 """
@@ -353,8 +353,8 @@ def _clip_dead_mask(G, ymix_old, cfg) -> np.ndarray:
     if cfg is None:
         return np.zeros(G.shape, dtype=bool)
     pos_cut = float(getattr(cfg, "pos_cut", 0.0))
-    nega_cut = float(getattr(cfg, "nega_cut", 0.0))
-    mtol = float(getattr(cfg, "mtol", 0.0))
+    nega_cut = float(getattr(cfg, "nega_cut", -1.0))
+    mtol = float(getattr(cfg, "mtol", 1.0e-22))
     dead = (G < pos_cut) & (G >= nega_cut)
     return dead | ((np.asarray(ymix_old) < mtol) & (G < 0.0))
 
@@ -1027,7 +1027,7 @@ def steady_state_reaction_sensitivity(
     # map holds the captured reservoir / saturation tables fixed, so this is
     # dL/d ln k AT the frozen reservoir, excluding how the rate set it. Rates
     # do not move the saturation curve directly, so label it, do not forbid
-    # it. See README.md (Differentiability, F2).
+    # it. See notes.md (Differentiability, F2).
     _conden_pinned = body_terms is not None and body_terms.fix_mask is not None
     _conden_in_window = body_terms is not None and body_terms.conden_static is not None
     if _conden_pinned or _conden_in_window:
@@ -1042,7 +1042,7 @@ def steady_state_reaction_sensitivity(
             + "; it does not include how the rate changes what condenses. It is "
             "a valid conditional ranking, not the total rate sensitivity "
             "(info['conditional_on_fixed_reservoir']). See "
-            "README.md (Differentiability).",
+            "notes.md (Differentiability).",
             stacklevel=2,
         )
 
@@ -1211,7 +1211,7 @@ def steady_state_input_sensitivity(
       dG/dp and, post-pin, the captured reservoir is held fixed, so the result
       is O(1)-unreliable vs FD (0.91 relative). Opt in with
       `allow_frozen_condensation_input_grad=True` only for the known
-      leading-order number. See README.md (Differentiability).
+      leading-order number. See notes.md (Differentiability).
     * Also frozen by design (p-derivative omitted): the photolysis
       T-cross-section interpolation and the atm-refresh geometry cascade
       (dz/Hp/g, second-order; rebuild what you need on-graph in `atm_p`).
@@ -1224,7 +1224,7 @@ def steady_state_input_sensitivity(
     # tables frozen (d(sat)/dT dropped) and, post-pin, the captured reservoir
     # held fixed; the pinned-species tangent disagrees with re-converged FD at
     # O(1) (0.91 relative). Refuse by default -- the same contract Fisher /
-    # retrieval follow project-wide. See README.md (Differentiability, F1).
+    # retrieval follow project-wide. See notes.md (Differentiability, F1).
     _conden_in_window = body_terms is not None and body_terms.conden_static is not None
     _conden_pinned = body_terms is not None and body_terms.fix_mask is not None
     if _conden_in_window or _conden_pinned:
@@ -1932,7 +1932,7 @@ def audit_adjoint_scope(
     # layer can sit orders inside the clip window at ymix 1e-16. Detect them
     # mechanistically from where the clip WOULD fire.
     _pos_cut = float(getattr(cfg, "pos_cut", 0.0)) if cfg is not None else 0.0
-    _nega_cut = float(getattr(cfg, "nega_cut", 0.0)) if cfg is not None else 0.0
+    _nega_cut = float(getattr(cfg, "nega_cut", -1.0)) if cfg is not None else 0.0
     clip_dead = _clip_dead_mask(G_np, ymix, cfg)
 
     mask = (y_np > 0.0) & (ymix >= min_ymix) & ~clip_dead

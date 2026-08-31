@@ -228,6 +228,7 @@ def _interp_T_log_pair(
 
 
 def _bin_cross_and_branches(
+    sp: str,
     cross_raw: np.ndarray,
     ratio_raw: np.ndarray,
     n_branch: int,
@@ -250,7 +251,7 @@ def _bin_cross_and_branches(
         except Exception:
             print(
                 "The branches in the network file do not match the "
-                "branching ratio file for "
+                f"branching ratio file for {sp} ({br_key})"
             )
             raise
         branches[i] = disso_at_bins * ratio_at_bins
@@ -503,6 +504,7 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
 
     for sp in photo_sp:
         cross_at_bins, cross_J_at_bins = _bin_cross_and_branches(
+            sp,
             cross_raw[sp],
             ratio_raw[sp],
             var.n_branch[sp],

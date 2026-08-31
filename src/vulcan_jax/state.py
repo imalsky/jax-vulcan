@@ -572,7 +572,7 @@ def runstate_to_store(state: RunState, var, atm, para) -> None:
         fs = state.fix_species
         fix_y_np = np.asarray(fs.fix_y, dtype=np.float64)
         var.fix_y = {sp: fix_y_np[i].copy() for i, sp in enumerate(fs.fix_species)}
-        if bool(getattr(_cfg, "fix_species_from_coldtrap_lev", False)):
+        if bool(getattr(_cfg, "fix_species_from_coldtrap_lev", True)):
             cm = np.asarray(fs.conden_min_lev, dtype=np.int32)
             for i, sp in enumerate(fs.fix_species):
                 if not hasattr(atm, "conden_min_lev") or atm.conden_min_lev is None:

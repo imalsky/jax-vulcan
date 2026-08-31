@@ -51,11 +51,11 @@ def _parse(rel: str) -> tuple[dict[str, float], list[str]]:
     return values, order
 
 
-def _validate(rel: str) -> list[str]:
+def _validate(rel: str, root: Path = PKG) -> list[str]:
     from vulcan_jax.runtime_validation import _validate_fastchem_input_vs_network
 
     cfg = SimpleNamespace(ini_mix="EQ", fastchem_solar_abundance_file=rel)
-    return _validate_fastchem_input_vs_network(cfg, PKG)
+    return _validate_fastchem_input_vs_network(cfg, root)
 
 
 # Both presets exist and are accepted
@@ -129,19 +129,17 @@ def test_a_hand_edited_file_is_rejected_naming_both_presets(tmp_path):
     values, order = _parse(DEFAULT_REL)
     values["O"] = 8.9  # a plausible-looking edit
     rel = "fastchem_vulcan/input/_test_edited_abundances.dat"
-    target = PKG / rel
+    target = tmp_path / rel
+    target.parent.mkdir(parents=True)
     target.write_text(
         "# test fixture\n" + "".join(f"{e}  {values[e]}\n" for e in order)
     )
-    try:
-        errors = _validate(rel)
-        assert len(errors) == 1, "an unrecognised composition must be an error"
-        msg = errors[0]
-        assert "solar_element_abundances.dat" in msg
-        assert "solar_element_abundances_lodders2009.dat" in msg
-        assert "O=+8.9000" in msg
-    finally:
-        target.unlink()
+    errors = _validate(rel, root=tmp_path)
+    assert len(errors) == 1, "an unrecognised composition must be an error"
+    msg = errors[0]
+    assert "solar_element_abundances.dat" in msg
+    assert "solar_element_abundances_lodders2009.dat" in msg
+    assert "O=+8.9000" in msg
 
 
 # Every config states its choice

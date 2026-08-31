@@ -24,7 +24,7 @@ from vulcan_jax.config import Config, default_config, load_config
 _EXPECTED_GS = {
     # default.yaml is HD189-flavored and must reproduce the adopted 2140
     # (an earlier 2139.770515 pin enshrined a raw-literature-Mp slip that
-    # shifted photolysis J up to ~7%; see README.md, Validation).
+    # shifted photolysis J up to ~7%; see notes.md, Validation).
     "default": 2140.0,
     "HD189": 2140.0,
     "HD209": 936.0,
@@ -164,6 +164,47 @@ def test_frozen_env_overrides_yaml():
     )
     assert r.returncode == 0, r.stderr
     assert "OK" in r.stdout
+
+
+def test_getattr_fallback_literals_match_default_yaml():
+    """Every scalar `getattr(cfg, key, literal)` default in src/ must equal
+    default.yaml's value: a config omitting the key must not silently run a
+    different model. Sentinels are exempt (None/''/[]/{} presence checks;
+    `use_photo` safe-off in validators that see partial configs).
+    """
+    import ast
+    import re
+    from pathlib import Path
+
+    pkg = Path(__file__).resolve().parent.parent / "src" / "vulcan_jax"
+    defaults = yaml.safe_load(open(pkg / "configs" / "default.yaml"))
+    pat = re.compile(
+        r'getattr\(\s*(?:cfg|_cfg|self\._cfg|self\.cfg)\s*,\s*"(\w+)"\s*,'
+        r"\s*([^()]*?)\s*\)"
+    )
+    scalar = (bool, int, float)
+    mismatches = []
+    for f in sorted(pkg.glob("*.py")):
+        for lineno, line in enumerate(open(f), 1):
+            for m in pat.finditer(line):
+                key, lit = m.groups()
+                if key not in defaults or key == "use_photo":
+                    continue
+                try:
+                    val = ast.literal_eval(lit)
+                except (SyntaxError, ValueError):
+                    continue  # dynamic default, not a literal
+                want = defaults[key]
+                if not (isinstance(val, scalar) and isinstance(want, scalar)):
+                    continue  # sentinel or non-scalar key
+                if isinstance(val, bool) != isinstance(want, bool):
+                    continue
+                if float(val) != float(want):
+                    mismatches.append(
+                        f"{f.name}:{lineno} {key}: literal {val!r} != "
+                        f"default.yaml {want!r}"
+                    )
+    assert not mismatches, "\n".join(mismatches)
 
 
 if __name__ == "__main__":

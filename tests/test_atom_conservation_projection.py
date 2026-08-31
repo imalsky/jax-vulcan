@@ -3,7 +3,8 @@
 XLA's FMA fusion breaks the exact stoichiometric nullspace of the codegen RHS;
 the projection distributes the residual across the reservoir species
 (H2, H2O, CO, N2) so each layer conserves H/O/C/N exactly. A VULCAN-JAX
-correctness feature with no master analogue (README "Correctness fixes").
+correctness feature with no master analogue (notes.md, atom-conservation
+projection record).
 
 Runs on the always-available HD189 pre-loop state (the HD209 fixture-based
 projection test skips on a fresh checkout). Pins:

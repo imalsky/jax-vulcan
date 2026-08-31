@@ -95,8 +95,6 @@ def main():
     print("\nBatched timing:")
     print(f"  Per vmap call (batch of {BATCH}): {t_per_call:.1f} ms")
     print(f"  Per atmosphere:                  {t_per_call / BATCH:.1f} ms")
-    print("  Single-atmosphere reference:     ~160 ms")
-    print(f"  Speedup factor (batched):        {160 * BATCH / t_per_call:.2f}x")
 
     print("\nNote: on multi-CPU machines, set XLA_FLAGS to expose more devices:")
     print(
