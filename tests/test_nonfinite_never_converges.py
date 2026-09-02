@@ -95,6 +95,45 @@ def test_nonfinite_ymix_alone_is_caught():
     assert longdy == np.inf, f"NaN in ymix alone gave longdy={longdy}"
 
 
+def _delta(sol, delta_arr, ymix_old, *, atol=1e-2, mtol=1e-22):
+    """The shipped step-acceptance reduction (same import rule as `_longdy`)."""
+    from vulcan_jax.outer_loop import _make_aggregate_delta_fn
+
+    agg = _make_aggregate_delta_fn(mtol, atol, False, jnp.zeros(sol.shape, dtype=bool))
+    return agg(sol, delta_arr, ymix_old)
+
+
+def test_sub_atol_cell_gives_a_finite_batch_independent_tangent():
+    """A density that is positive but below atol (and above the 1e-300 floor)
+    is masked out of both maxima, yet its cell passes the `> 0` guard. If the
+    masked numerator is divided by the raw tiny denominator, the division's
+    tangent is `0 * den**-2 = 0 * inf = NaN` there, and the `jnp.max` JVP
+    multiplies tangents by a 0/1 indicator (it does not select), so the max's
+    tangent is NaN -- except that XLA rewrites the unbatched multiply into a
+    select and hides it. The reductions must not rely on that: plain and
+    vmapped tangents are finite and equal (TOI-7169 b, S8 at 1e-160 cm^-3)."""
+    y, ymix, y_old, n_0 = _mk()
+    y = y.at[0, 1].set(1e-160)
+    t = jnp.ones_like(y)
+
+    def longdy_of(y_):
+        ymix_ = y_ / jnp.sum(y_, axis=1, keepdims=True)
+        return _longdy(y_, ymix_, y_old, n_0)
+
+    def delta_of(sol):
+        return _delta(sol, jnp.abs(sol - y_old) * 1e-3, ymix)
+
+    def tangents(f):
+        plain = jax.jvp(f, (y,), (t,))[1]
+        batched = jax.vmap(lambda tt: jax.jvp(f, (y,), (tt,))[1])(t[None])[0]
+        return float(plain), float(batched)
+
+    for f in (longdy_of, delta_of):
+        plain, batched = tangents(f)
+        assert np.isfinite(plain) and np.isfinite(batched), (f.__name__, plain, batched)
+        np.testing.assert_allclose(batched, plain, rtol=1e-12, err_msg=f.__name__)
+
+
 def test_end_case_is_not_success_for_a_frozen_or_yielded_lane():
     """`termination_reason` 0 (chunk yield) and 5 (non-finite freeze) both
     stop below both caps, so neither cap fires and the fall-through used to

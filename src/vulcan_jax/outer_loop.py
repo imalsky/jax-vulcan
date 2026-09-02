@@ -403,9 +403,12 @@ def _make_aggregate_delta_fn(
             zb = zb | zero_bot
         masked = jnp.where(zb, masked.at[0].set(0.0), masked)
         masked = jnp.where(cond_zero, 0.0, masked)
-        ratio = jnp.where(
-            sol > 0, masked / jnp.maximum(jnp.abs(sol), _UNDERFLOW_DENOM), 0.0
-        )
+        # A zeroed numerator takes denominator 1: dividing it by a sub-atol
+        # density gives a `0 * den**-2 = 0 * inf` NaN tangent that the
+        # `jnp.max` JVP (a multiply by 0/1, not a select) propagates. Primal
+        # unchanged (0/x == 0/1); a live numerator implies den >= atol.
+        den = jnp.where(masked == 0.0, 1.0, jnp.maximum(jnp.abs(sol), _UNDERFLOW_DENOM))
+        ratio = jnp.where(sol > 0, masked / den, 0.0)
         return jnp.max(ratio)
 
     return agg
@@ -1720,7 +1723,11 @@ def _longdy_reduce(
     if condense_mask is not None:
         longdy_arr = jnp.where(condense_mask, 0.0, longdy_arr)
 
-    ratio = jnp.where(ymix > 0, longdy_arr / jnp.maximum(ymix, _UNDERFLOW_DENOM), 0.0)
+    # Zeroed numerator -> denominator 1, for the same reason as in
+    # `_make_aggregate_delta_fn`: a sub-mtol_conv ymix would make the tangent
+    # `0 * inf` and the max JVP does not discard it. Primal unchanged.
+    den = jnp.where(longdy_arr == 0.0, 1.0, jnp.maximum(ymix, _UNDERFLOW_DENOM))
+    ratio = jnp.where(ymix > 0, longdy_arr / den, 0.0)
     longdy = jnp.max(ratio)
     # NaN guard: the masks above are all False for NaN, so an all-NaN state
     # would read longdy == 0.0 ("converged"). Force +inf so a poisoned run can
