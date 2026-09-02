@@ -26,6 +26,10 @@ plot_dir: plot/
 movie_dir: plot/movie/
 out_name: W39b.vul
 use_solar: false
+# C/N/O/S: Lodders 2020 Table 8 present-day solar (log eps C 8.47, N 7.85,
+# O 8.73, S 7.15; arXiv:1912.00844) times 10, the set upstream vulcan_cfg.py
+# carries as "Table 8. K.Lodders 2019". He_H 0.0838 (10.924 dex) is the same
+# table; on the FastChem path the .dat file's He row supplies it.
 O_H: 0.00537
 C_H: 0.00295
 N_H: 0.000708

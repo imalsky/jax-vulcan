@@ -1,4 +1,8 @@
-# Lodders 2019 solar abundances (Wogan & Tsai 2023). DO NOT REORDER ROWS:
+# FastChem element reference. C, N, O rows are the values of upstream VULCAN's
+# Lodders 2009 file (overwritten by the config's C_H/N_H/O_H/S_H whenever
+# use_solar is false, i.e. every shipped config); S and He are the Lodders 2019
+# Table 8 values (S 7.15, He 10.924 = 0.0838), He being the one row FastChem
+# takes from here. DO NOT REORDER ROWS:
 # FastChem's vendored mass_action_constant.cpp hard-codes element slots
 #   C=0 H=1 He=2 N=3 O=4 P=5 S=6 Si=7 Ti=8 V=9 Cl=10 K=11 Na=12 Mg=13 F=14
 #   Ca=15 Fe=16 e-=17
