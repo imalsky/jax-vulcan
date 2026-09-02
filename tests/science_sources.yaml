@@ -153,11 +153,14 @@ supported_inputs:
     oracle: vulcan3_vm_branch
 
   fastchem_vulcan/input/solar_element_abundances.dat:
-    sha256: 77448a1956937a233e6bf6c03c7713389dd93143b07958da5ced51bb9ec9e329
+    sha256: 5f33aebb69678937f51706bcd945ff3d558d0c0593cb6b729bb381f7b5c988a0
     oracle: vulcan2_fastchem_ps_order
     diverges: [C12_fastchem_ps_order, C15_lodders2019_rocky_suppressed]
     note: >-
-      DEFAULT preset: Lodders 2019 with rocky elements suppressed to -3.0.
+      DEFAULT preset: rocky elements suppressed to -3.0; S and He rows are
+      Lodders 2019 Table 8, the C/N/O rows are upstream's Lodders 2009 file
+      values (every shipped config overwrites them, use_solar false). The
+      header says so; the hash covers header and rows alike.
       The leading comment block is REQUIRED: FastChem discards line 1 as a
       header, so an element on the first row is silently dropped along with
       every species containing it. Guarded by test_fastchem_element_order.py.
