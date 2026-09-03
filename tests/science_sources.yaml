@@ -123,6 +123,16 @@ supported_inputs:
     diverges: [C1_ch2cn_falloff]
     note: Selected by W39b.yaml.
 
+  thermo/SNCHO_photo_network_2025.txt:
+    sha256: a82daa92494fad81b5ead2f9251a3ed7f7ed27e6d810a8b543fe8fd8d0267b6e
+    oracle: vulcan2_ncho
+    diverges: [C13_2025_reaction_index_gap]
+    note: >-
+      Current upstream's W39b network (93 species). Selectable by
+      jwst-transit-authority as network="sncho2025"; the shipped W39b.yaml
+      still selects the 89-species file above. Already carries upstream's own
+      10.2025 CH2CN falloff fix, so it needs no C1 entry.
+
   thermo/all_compose.txt:
     sha256: 35377a47c7233eaa4f9d7ebde4d603e69ffe19e1956f37bd2a5949d3e425b462
     oracle: vulcan2_ncho
@@ -184,6 +194,18 @@ supported_inputs:
 # Exact documentation and a test for each deliberate difference IS. Anything
 # not listed here that differs is drift, and the audit fails on it.
 intentional_divergences:
+
+  C13_2025_reaction_index_gap:
+    files:
+      - thermo/SNCHO_photo_network_2025.txt
+    reaction: CH3 + C2H2 -> CH2CCH2 + H
+    reason: >-
+      Upstream numbers this row 1039, breaking the otherwise strictly
+      increasing odd-numbered forward-reaction sequence, and then continues
+      at 861. VULCAN-JAX renumbers the run from 861 so the indices stay
+      monotonic. Stripping the leading index makes the file byte-identical to
+      the oracle copy: rates, reactions and references are unchanged.
+    recorded_in: notes.md
 
   C1_ch2cn_falloff:
     files:

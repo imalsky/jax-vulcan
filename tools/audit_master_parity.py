@@ -15,6 +15,7 @@ import argparse
 import hashlib
 import math
 import os
+import re
 import runpy
 import sys
 from pathlib import Path
@@ -95,6 +96,15 @@ KNOWN_THERMO_DIVERGENCES: dict[str, tuple[str, ...]] = {
     "SNCHO_photo_network_C3.txt": ("CH2CN + H + M -> CH3CN + M",),
     "SNCHO_DMS_photo_network_Tsai2024.txt": ("CH2CN + H + M -> CH3CN + M",),
 }
+
+# Vendored network files where the ONLY allowed drift is the leading reaction
+# INDEX. Upstream's 2025 SNCHO file numbers one row 1039, breaking the
+# otherwise increasing odd-numbered forward sequence, and then continues at
+# 861; JAX renumbers the run so the indices stay monotonic. Every field after
+# the index must still match, so a rate change is still real drift.
+KNOWN_THERMO_RENUMBERED: frozenset[str] = frozenset(
+    {"SNCHO_photo_network_2025.txt"}
+)
 
 # Vendored stellar-flux files where JAX intentionally diverges from master by a
 # uniform flux rescale. Master's builder (atm/make_spectra_in_nm.py) multiplied
@@ -370,6 +380,27 @@ def _known_divergence_only(
     return errors
 
 
+def _index_renumber_only(master_path: Path, jax_path: Path) -> list[str]:
+    """Return errors for any drift beyond the leading reaction index."""
+    master_lines = master_path.read_text().splitlines()
+    jax_lines = jax_path.read_text().splitlines()
+    if len(master_lines) != len(jax_lines):
+        return [
+            f"line-count drift ({len(master_lines)} master vs {len(jax_lines)} jax)"
+        ]
+    errors: list[str] = []
+    for lineno, (m_line, j_line) in enumerate(zip(master_lines, jax_lines), start=1):
+        if m_line == j_line:
+            continue
+        strip = re.compile(r"^\s*\d+\s+")
+        if strip.sub("", m_line) == strip.sub("", j_line) and strip.match(m_line):
+            continue  # leading reaction index only
+        errors.append(
+            f"unexpected drift at line {lineno}: master={m_line!r}, jax={j_line!r}"
+        )
+    return errors
+
+
 def _known_sflux_rescale_only(
     master_path: Path, jax_path: Path, factor: float
 ) -> list[str]:
@@ -511,7 +542,15 @@ def _compare_runtime_data(
                 continue
             known = KNOWN_THERMO_DIVERGENCES.get(rel_path.name)
             rescale = KNOWN_SFLUX_RESCALES.get(rel_path.name)
-            if known is not None:
+            if rel_path.name in KNOWN_THERMO_RENUMBERED:
+                errors.extend(
+                    f"{rel_dir}/{rel_path}: {msg}"
+                    for msg in _index_renumber_only(
+                        master_root / rel_dir / rel_path,
+                        jax_root / rel_dir / rel_path,
+                    )
+                )
+            elif known is not None:
                 sub = _known_divergence_only(
                     master_root / rel_dir / rel_path,
                     jax_root / rel_dir / rel_path,
