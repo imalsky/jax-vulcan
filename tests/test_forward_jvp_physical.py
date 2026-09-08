@@ -67,7 +67,11 @@ def test_per_step_kzz_forward_mode():
     atm = _synthetic_atm(net, nz)
     prof = jnp.linspace(1.0, 3.0, nz)[:, None]  # vertical gradient -> diffusion acts
     y = jnp.full((nz, net.ni), 1e10) * prof
-    k_arr = jnp.full((net.nr + 1, nz), 1e-15)  # near-zero chem -> isolate transport
+    # Near-zero chemistry isolates transport: three-body rates multiply M = 1e15,
+    # so 1e-15 would give a 1e-10 s chemistry timescale (a stiff garbage step
+    # with |k| ~ 1e6 |y| whose derivative is ill-conditioned); 1e-30 keeps the
+    # Jacobian ~1e-5 s^-1 against c0 ~ 1 s^-1.
+    k_arr = jnp.full((net.nr + 1, nz), 1e-30)
     dt = jnp.float64(5e-1)
     ch = nz // 2
 

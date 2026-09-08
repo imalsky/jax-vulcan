@@ -157,3 +157,54 @@ def test_main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+def _hd189_step_inputs():
+    """(y, k_arr, atm_static, net_jax) from the HD189 pre-loop state."""
+    from vulcan_jax.config import default_config
+    import vulcan_jax.chem_funs as chem_funs
+    import vulcan_jax.jax_step as jax_step
+    from vulcan_jax.state import RunState, legacy_view
+
+    cfg = default_config()
+    rs = RunState.with_pre_loop_setup(cfg)
+    data_var, data_atm, _ = legacy_view(rs)
+    y = np.asarray(data_var.y, dtype=np.float64)
+    nz, ni = y.shape
+    atm_static = jax_step.make_atm_static(data_atm, ni, nz, cfg=cfg)
+    return y, np.asarray(data_var.k_arr, dtype=np.float64), atm_static, chem_funs._NET_JAX
+
+
+def test_stage_vectors_satisfy_the_per_layer_element_identity():
+    """Both Ros2 stage vectors satisfy `c0 a^T k - a^T T k = a^T b_tr` in every
+    layer at every dt (the identity the stage system implies once the
+    chemistry terms are projected), and with transport off a step conserves
+    every layer's element content. Before the stage repair the identity
+    failed by 6e-4 (dt 1e11), 6e-2 (1e13) and 3 (1e15) of the layer's own
+    c0 |a^T y| on this column, which is what drained elements from long
+    large-dt runs (notes.md §1.13). Ratios here are against the absolute
+    size of the terms, so the floor is float64 roundoff."""
+    import jax
+    import jax.numpy as jnp
+    import vulcan_jax.jax_step as jax_step
+
+    y, k_arr, atm, net = _hd189_step_inputs()
+    y, k_arr = jnp.asarray(y), jnp.asarray(k_arr)
+    ac = jax_step._CHEM_ATOM_COUNTS
+    zero = atm._replace(
+        Kzz=0 * atm.Kzz, Dzz=0 * atm.Dzz, vz=0 * atm.vz, vm=0 * atm.vm, vs=0 * atm.vs
+    )
+    defects = jax.jit(jax_step._stage_defects)
+    identity, closed = {}, {}
+    for dt in (1e-6, 1e8, 1e11, 1e13, 1e15):
+        k1, k2, rel1, rel2 = defects(y, k_arr, jnp.float64(dt), atm, net)
+        assert bool(jnp.all(jnp.isfinite(k1)) & jnp.all(jnp.isfinite(k2))), dt
+        identity[dt] = max(float(jnp.max(jnp.abs(rel1))), float(jnp.max(jnp.abs(rel2))))
+        sol, _ = jax_step.jax_ros2_step(y, k_arr, jnp.float64(dt), zero, net)
+        closed[dt] = float(
+            jnp.max(jnp.abs(sol @ ac - y @ ac) / (jnp.abs(sol) @ ac + jnp.abs(y) @ ac))
+        )
+    print("identity residual / |terms|:", {f"{d:g}": f"{v:.1e}" for d, v in identity.items()})
+    print("closed-layer element change / |content|:", {f"{d:g}": f"{v:.1e}" for d, v in closed.items()})
+    assert all(v < 1e-12 for v in identity.values()), identity
+    assert all(v < 1e-12 for v in closed.values()), closed

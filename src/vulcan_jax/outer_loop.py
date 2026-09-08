@@ -19,7 +19,7 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
-from .config import default_config
+from .config import default_config, DT_MAX_S
 from . import phy_const as _phy_const
 
 from . import network as _net_mod
@@ -1749,6 +1749,12 @@ class OuterLoop:
         # state._cfg_overlay). The import-locked network is the one knob cfg
         # cannot change here.
         self._cfg = cfg if cfg is not None else default_config()
+        if float(self._cfg.dt_max) > DT_MAX_S:
+            raise ValueError(
+                f"dt_max={float(self._cfg.dt_max):g} s exceeds config.DT_MAX_S="
+                f"{DT_MAX_S:g} s, the largest step the Ros2 stage repair resolves; "
+                "lower it or drop the key so it is derived."
+            )
         self.mtol = float(self._cfg.mtol)
         self.atol = float(self._cfg.atol)
         self.output = output

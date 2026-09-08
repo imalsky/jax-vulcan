@@ -12,6 +12,7 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+from jax.lax.linalg import tridiagonal_solve
 import numpy as np
 
 from .chem import chem_jac_analytical, NetworkArrays
@@ -139,6 +140,73 @@ def _projected_chem_rhs(
 ) -> jnp.ndarray:
     """Evaluate and conservatively project the generated chemistry RHS."""
     return _project_chem_rhs(_chem_rhs(y, M, k_arr))
+
+
+def _stage_defect(k, b_tr, c0, diag_d, sup_d, sub_d, with_scale=False):
+    """Per-layer element defect `c0 a^T k - a^T (T k) - a^T b_tr` of a Ros2
+    stage vector, shape (nz, n_atoms); zero for the exact solution of the
+    stage system because the projected chemistry terms carry no element
+    residual. `T` is the species-diagonal transport tridiagonal of the
+    matrix (bands `diag_d`, `sup_d`, `sub_d`). With `with_scale` also
+    returns the atom-weighted sum of the terms' absolute sizes, the scale
+    against which the defect's roundoff floor is set."""
+    Tk = diag_d * k
+    Tk = Tk.at[:-1].add(sup_d * k[1:])
+    Tk = Tk.at[1:].add(sub_d * k[:-1])
+    defect = (c0 * k - Tk - b_tr) @ _CHEM_ATOM_COUNTS
+    if not with_scale:
+        return defect
+    parts = jnp.abs(c0 * k) + jnp.abs(diag_d * k) + jnp.abs(b_tr)
+    parts = parts.at[:-1].add(jnp.abs(sup_d * k[1:]))
+    parts = parts.at[1:].add(jnp.abs(sub_d * k[:-1]))
+    return defect, parts @ _CHEM_ATOM_COUNTS
+
+
+# Roundoff floor of the stage element defect relative to the absolute size of
+# its terms: ~500 float64 ulps. Measured residual of an exact stage 1e-16 to
+# 2e-15, of a leaking one 1e-7 to 1e-6 (§1.13).
+_DEFECT_FLOOR = 1e-13
+
+
+def _repair_stage(k, b_tr, c0, diag_d, sup_d, sub_d, fix_mask):
+    """Put the element content of a Ros2 stage vector back where its own
+    linear system says it belongs.
+
+    The exact solution of the stage system satisfies the per-layer identity
+    of `_stage_defect`. The pivoted LU stops returning it once
+    `c0 = 1/(gamma dt)` is small against the chemistry (cond ~1e23 at
+    dt 1e11 s): `k` comes back with the wrong element content, ~1e-3 per step
+    at dt 1e11 and 1e-2 to 1e-1 at 1e13-1e15 while the column still moves,
+    and a run that takes thousands of such steps drains an element
+    (notes.md §1.13). The defect goes onto the reservoir species; `T` is
+    diagonal in species, so that is one scalar tridiagonal solve
+    `(c0 - T_rho) c = g` per reservoir. Layers holding a pinned cell are left
+    alone (a pin opens the layer's budget by construction). Resolvable while
+    `c0` is not negligible against `T`, i.e. dt <= config.DT_MAX_S. Not in
+    VULCAN 2.0 (op.py:2914 and :2929 solve and move on).
+    """
+    if not _CHEM_PROJECTION_ENABLED:
+        return k
+    ridx = _CHEM_RESERVOIR_IDX
+    defect, scale = _stage_defect(k, b_tr, c0, diag_d, sup_d, sub_d, with_scale=True)
+    # Only a defect that stands above the roundoff of its own terms is real;
+    # below the floor the solve was exact and a correction would only move
+    # float64 noise onto the reservoir cells (1e-5 cm^-3 at the bottom, a
+    # visible change in a trace cell).
+    defect = jnp.where(jnp.abs(defect) > _DEFECT_FLOOR * scale, defect, 0.0)
+    g = -(defect @ _CHEM_INV_RESERVOIR_COUNTS)  # (nz, n_reservoir)
+    pad = jnp.zeros((1, ridx.shape[0]))
+    d = c0 - diag_d[:, ridx]
+    du = jnp.concatenate([-sup_d[:, ridx], pad])
+    dl = jnp.concatenate([pad, -sub_d[:, ridx]])
+    if fix_mask is not None:
+        pinned = jnp.any(fix_mask, axis=1, keepdims=True)
+        d = jnp.where(pinned, c0, d)
+        du = jnp.where(pinned, 0.0, du)
+        dl = jnp.where(pinned, 0.0, dl)
+        g = jnp.where(pinned, 0.0, g)
+    c = tridiagonal_solve(dl.T, d.T, du.T, g.T[:, :, None])[:, :, 0].T
+    return k.at[:, ridx].add(c)
 
 
 class AtmStatic(NamedTuple):
@@ -512,14 +580,11 @@ def _apply_diffusion_jax(
 _ROS2_GAMMA = 1.0 + 2.0**-0.5
 
 
-@jax.jit
-def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=None):
-    """One 2nd-order Rosenbrock step.
-
-    Returns (sol, delta_arr), both (nz, ni). `fix_mask` (nz, ni) optionally
-    pins selected (layer, species) entries by zeroing the corresponding
-    rows/cols of the LHS and RHS.
-    """
+def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask):
+    """The two Ros2 stage solves. Returns (k1, k2, yk2, ident) with `ident` =
+    (c0, diag_d, sup_d, sub_d, b_tr1, b_tr2): the matrix's transport bands and
+    the transport part of each stage RHS, which is what the per-layer element
+    identity of a stage vector needs (`_stage_defect`)."""
     r = _ROS2_GAMMA
     c0 = 1.0 / (r * dt)
     ni = atm.ms.shape[0]
@@ -598,6 +663,7 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
 
     factors = factor_block_thomas_diag_offdiag(diag, sup_neg, sub_neg)
     k1 = solve_block_thomas_diag_offdiag(factors, rhs_y)
+    k1 = _repair_stage(k1, diff_at_y, c0, diag_d, sup_d, sub_d, fix_mask)
 
     yk2 = y + k1 / r
     A_eddy2, B_eddy2, C_eddy2, A_mol2, B_mol2, C_mol2, _ = _build_diff_coeffs_jax(
@@ -612,10 +678,43 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
 
     rhs2 = rhs_yk2 - (2.0 / (r * dt)) * k1
     k2 = solve_block_thomas_diag_offdiag(factors, rhs2)
+    # Transport part of the stage-2 RHS (the projected chemistry term carries
+    # no element content; the k1 term does).
+    b_tr2 = diff_at_yk2 - (2.0 / (r * dt)) * k1
+    k2 = _repair_stage(k2, b_tr2, c0, diag_d, sup_d, sub_d, fix_mask)
+    return k1, k2, yk2, (c0, diag_d, sup_d, sub_d, diff_at_y, b_tr2)
 
+
+@jax.jit
+def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=None):
+    """One 2nd-order Rosenbrock step.
+
+    Returns (sol, delta_arr), both (nz, ni). `fix_mask` (nz, ni) optionally
+    pins selected (layer, species) entries by zeroing the corresponding
+    rows/cols of the LHS and RHS.
+    """
+    r = _ROS2_GAMMA
+    k1, k2, yk2, _ = _ros2_stages(y, k_arr, dt, atm, net, fix_mask)
     sol = y + (3.0 / (2.0 * r)) * k1 + (1.0 / (2.0 * r)) * k2
     delta_arr = jnp.abs(sol - yk2)
     return sol, delta_arr
+
+
+def _stage_defects(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays):
+    """Test surface: per-layer, per-atom defect of each stage vector against
+    its element identity, divided by the sum of the absolute sizes of the
+    identity's terms (`c0 |k|`, `|T k|` contributions, `|b_tr|`, each atom
+    weighted), so the ratio floors at float64 roundoff whatever the step.
+    Returns (k1, k2, rel1, rel2)."""
+    k1, k2, _, (c0, diag_d, sup_d, sub_d, b1, b2) = _ros2_stages(
+        y, k_arr, dt, atm, net, None
+    )
+
+    def rel(k, b):
+        defect, scale = _stage_defect(k, b, c0, diag_d, sup_d, sub_d, with_scale=True)
+        return defect / scale
+
+    return k1, k2, rel(k1, b1), rel(k2, b2)
 
 
 def make_atm_static(atm, ni: int, nz: int, cfg=None) -> AtmStatic:

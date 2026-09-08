@@ -17,7 +17,7 @@ import pytest
 import yaml
 
 from vulcan_jax.atm_setup import surface_gravity
-from vulcan_jax.config import Config, default_config, load_config
+from vulcan_jax.config import DT_MAX_S, Config, default_config, load_config
 
 # Adopted surface gravity (cm/s^2) each shipped config must reproduce via
 # g = G*Mp/Rp^2. default reproduces the historical HD189 Mp=1.118 m_jup value.
@@ -61,7 +61,7 @@ def test_shipped_config_loads_and_resolves(name):
     assert surface_gravity(cfg) == pytest.approx(_EXPECTED_GS[name], rel=1e-9)
 
     # Derived values are filled by the loader.
-    assert cfg.dt_max == cfg.runtime * 1e-5
+    assert cfg.dt_max == min(cfg.runtime * 1e-5, DT_MAX_S)
     assert cfg.photo_switch_longdy_thresh == cfg.yconv_min * 10.0
     assert cfg.save_movie_rate == cfg.live_plot_frq
     assert cfg.para_anaTP == cfg.para_warm
@@ -74,10 +74,10 @@ def test_shipped_config_loads_and_resolves(name):
 
 
 def test_overrides_win_over_yaml_and_derived():
-    cfg = load_config("default", nz=99, runtime=1.0e20)
+    cfg = load_config("default", nz=99, runtime=1.0e19)
     assert cfg.nz == 99
     # dt_max derives from the overridden runtime (derived fills after overrides).
-    assert cfg.dt_max == 1.0e20 * 1e-5
+    assert cfg.dt_max == 1.0e19 * 1e-5
     # An explicit derived key in the overrides is not clobbered.
     cfg2 = load_config("default", dt_max=123.0)
     assert cfg2.dt_max == 123.0
@@ -92,7 +92,7 @@ def test_cwd_configs_override(tmp_path, monkeypatch):
     (cfgdir / "mine.yaml").write_text(
         textwrap.dedent(
             """
-            runtime: 5.0e21
+            runtime: 5.0e19
             yconv_min: 0.2
             live_plot_frq: 7
             para_warm: [1, 2, 3]
@@ -105,8 +105,8 @@ def test_cwd_configs_override(tmp_path, monkeypatch):
     )
     monkeypatch.chdir(tmp_path)
     cfg = load_config("mine")
-    assert cfg.runtime == 5.0e21
-    assert cfg.dt_max == 5.0e21 * 1e-5  # derived from the CWD file
+    assert cfg.runtime == 5.0e19
+    assert cfg.dt_max == 5.0e19 * 1e-5  # derived from the CWD file
     assert cfg.count_max == 10000 and isinstance(cfg.count_max, int)
     assert cfg.para_anaTP == [1, 2, 3]
 
@@ -209,3 +209,14 @@ def test_getattr_fallback_literals_match_default_yaml():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_dt_max_is_capped_where_the_stage_repair_is_resolvable():
+    """Derived dt_max saturates at DT_MAX_S; an explicit larger value is refused
+    at OuterLoop construction (the Ros2 stage repair is unresolvable there)."""
+    from vulcan_jax.outer_loop import OuterLoop
+
+    assert load_config("default").dt_max == DT_MAX_S == 1.0e15
+    assert load_config("default", runtime=1e18).dt_max == 1.0e13
+    with pytest.raises(ValueError, match="DT_MAX_S"):
+        OuterLoop(None, None, cfg=load_config("default", dt_max=1e17))

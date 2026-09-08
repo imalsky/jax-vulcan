@@ -20,8 +20,10 @@ upward. Eq. (1) is the zero-total-flux steady state of
 WHY THIS BENCHMARK. VULCAN-JAX carries two discretizations of the molecular
 drift term D f (1/H_i - 1/H_atm), and each has one failure mode:
   * central "gravity" scheme (use_vm_mol=False) -- 2nd-order ACCURATE (matches
-    Eq. 1), but UNSTABLE: for cell Peclet number |vm| dz / D > 2 it develops a
-    spurious sign-alternating mode and the steady state goes negative;
+    Eq. 1), but UNSTABLE: as the cell Peclet number |vm| dz / D approaches the
+    classical threshold of 2 it develops a spurious sign-alternating mode and
+    the steady state goes negative (measured onset on panel B's sweep: between
+    Pe = 1.55 and Pe = 1.88);
   * 1st-order upwind "vm" scheme (use_vm_mol=True) -- unconditionally STABLE but
     dissipative (numerical diffusion ~ |vm| dz / 2, so it under-separates).
 Both target the same continuous flux (vm = -D (1/H_i - 1/H_atm)), so they are
@@ -38,8 +40,9 @@ isothermal, constant-gravity column, solving the discrete steady state directly
      operator (op.diffdf / op.diffdf_vm, via the validated transcription in
      tests/diffusion_numpy_ref.py) to show VULCAN-JAX-vs-upstream port fidelity.
   B. Stability (pure molecular, K=0, grid resolution swept): most-negative mole
-     fraction vs cell Peclet. Central goes negative for Pe > 2; upwind stays
-     positive at every Pe -- which is exactly why the hybrid needs it.
+     fraction vs cell Peclet. Central goes negative from Pe ~ 1.9 upward (the
+     dotted guide marks the classical Pe = 2); upwind stays positive at every
+     Pe -- which is exactly why the hybrid needs it.
 
 Run (in the `vulcan` conda env):
     python benchmarks/zhang2013_moldiff_benchmark.py
@@ -322,7 +325,8 @@ def stability_sweep(nz_values, n_scale_heights):
     """Pure-molecular-diffusion (K=0) stability scan across grid resolutions.
 
     The undamped drift gives cell Peclet number Pe = |vm| dz / D = kappa*dz.
-    Central differencing develops a spurious sign-alternating mode for Pe > 2,
+    Central differencing develops a spurious sign-alternating mode near the
+    classical Pe = 2 threshold (measured onset here between Pe = 1.55 and 1.88),
     so its steady state goes negative (unphysical); upwind stays positive at any
     Pe. Returns (peclet, central_min, upwind_min), the minima normalised by the
     base mole fraction.
@@ -400,10 +404,11 @@ def main(argv=None) -> int:
         flag = "  <-- central UNSTABLE (negative)" if c < 0 else ""
         print(f"  Pe={p:5.2f}:  central {c:+.2e}   upwind {u:+.2e}{flag}")
     print()
-    print("central alone: accurate but goes negative (spurious oscillation) at cell")
-    print("Peclet > 2. upwind alone: unconditionally stable but dissipative. The")
-    print("production HYBRID converges under upwind (stable), then finishes in central")
-    print("(accurate) -> it reproduces the analytic curve without the instability.")
+    print("central alone: accurate, but goes negative (spurious oscillation) once the")
+    print("cell Peclet number approaches 2. upwind alone: unconditionally stable but")
+    print("dissipative. The production HYBRID converges under upwind (stable), then")
+    print("finishes in central (accurate) -> it reproduces the analytic curve without")
+    print("the instability.")
 
     # ---- Figure -------------------------------------------------------------
     # Match the jax_paper figure style (see jax_paper/scripts/_common.py):

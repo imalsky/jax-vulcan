@@ -78,8 +78,13 @@ _FROZEN_ENV = {
 
 # Values that are functions of other knobs. Authored YAML omits them; an
 # explicit YAML/override value always wins (they are only filled when absent).
+# Largest step the Ros2 stage repair (jax_step._repair_stage) can resolve: its
+# correction system `(c0 - T) c = g`, c0 = 1/(gamma dt), is as singular as the
+# stage system it corrects by dt = 1e17 s (notes.md §1.13). Upstream derives
+# runtime*1e-5 = 1e17 s; no shipped run steps past 1.3e6 s.
+DT_MAX_S = 1.0e15
 _DERIVED = (
-    ("dt_max", lambda d: d["runtime"] * 1e-5),
+    ("dt_max", lambda d: min(d["runtime"] * 1e-5, DT_MAX_S)),
     ("photo_switch_longdy_thresh", lambda d: d["yconv_min"] * 10.0),
     ("save_movie_rate", lambda d: d["live_plot_frq"]),
     ("para_anaTP", lambda d: copy.deepcopy(d["para_warm"])),

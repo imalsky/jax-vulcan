@@ -79,6 +79,7 @@ INTENTIONAL_JAX_DELTAS = {
     "conver_ignore",
     "top_BC_flux_file",
     "bot_BC_flux_file",
+    "dt_max",  # capped at config.DT_MAX_S = 1e15 s (C19); master derives 1e17
 }
 
 # Vendored network files where JAX intentionally diverges from master by a known,
