@@ -83,6 +83,14 @@ _FROZEN_ENV = {
 # stage system it corrects by dt = 1e17 s (notes.md §1.13). Upstream derives
 # runtime*1e-5 = 1e17 s; no shipped run steps past 1.3e6 s.
 DT_MAX_S = 1.0e15
+# Smallest step at which the repair is applied. Below it the pivoted LU
+# returns the stage's element content to within 2e-6 of a layer's own
+# (1e-9 at 1e4 s, 3e-7 at 1e6, 2e-6 at 1e7; 1e-5 at 1e8, 1.4e-4 at 1e9,
+# 6e-3 at 1e11 and order unity from 1e12, notes.md §1.13), and a repair
+# that keeps moving the reservoirs by that little stalls a small-dt column
+# below its certificate (the JWST tool's HD 189733 b preset never steps
+# past 1e6 s and certifies only with the repair off there).
+REPAIR_DT_MIN_S = 1.0e7
 _DERIVED = (
     ("dt_max", lambda d: min(d["runtime"] * 1e-5, DT_MAX_S)),
     ("photo_switch_longdy_thresh", lambda d: d["yconv_min"] * 10.0),

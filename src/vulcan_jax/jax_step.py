@@ -23,7 +23,7 @@ from .solver import (
     factor_block_thomas_diag_offdiag,
     solve_block_thomas_diag_offdiag,
 )
-from .config import default_config
+from .config import default_config, REPAIR_DT_MIN_S
 
 jax.config.update("jax_enable_x64", True)
 
@@ -182,8 +182,10 @@ def _repair_stage(k, b_tr, c0, diag_d, sup_d, sub_d, fix_mask):
     diagonal in species, so that is one scalar tridiagonal solve
     `(c0 - T_rho) c = g` per reservoir. Layers holding a pinned cell are left
     alone (a pin opens the layer's budget by construction). Resolvable while
-    `c0` is not negligible against `T`, i.e. dt <= config.DT_MAX_S. Not in
-    VULCAN 2.0 (op.py:2914 and :2929 solve and move on).
+    `c0` is not negligible against `T`, i.e. dt <= config.DT_MAX_S; applied
+    only from config.REPAIR_DT_MIN_S up, where the LU's element error is
+    measurable (the caller gates on dt). Not in VULCAN 2.0 (op.py:2914 and
+    :2929 solve and move on).
     """
     if not _CHEM_PROJECTION_ENABLED:
         return k
@@ -663,7 +665,8 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask):
 
     factors = factor_block_thomas_diag_offdiag(diag, sup_neg, sub_neg)
     k1 = solve_block_thomas_diag_offdiag(factors, rhs_y)
-    k1 = _repair_stage(k1, diff_at_y, c0, diag_d, sup_d, sub_d, fix_mask)
+    repair = dt >= REPAIR_DT_MIN_S
+    k1 = jnp.where(repair, _repair_stage(k1, diff_at_y, c0, diag_d, sup_d, sub_d, fix_mask), k1)
 
     yk2 = y + k1 / r
     A_eddy2, B_eddy2, C_eddy2, A_mol2, B_mol2, C_mol2, _ = _build_diff_coeffs_jax(
@@ -681,7 +684,7 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask):
     # Transport part of the stage-2 RHS (the projected chemistry term carries
     # no element content; the k1 term does).
     b_tr2 = diff_at_yk2 - (2.0 / (r * dt)) * k1
-    k2 = _repair_stage(k2, b_tr2, c0, diag_d, sup_d, sub_d, fix_mask)
+    k2 = jnp.where(repair, _repair_stage(k2, b_tr2, c0, diag_d, sup_d, sub_d, fix_mask), k2)
     return k1, k2, yk2, (c0, diag_d, sup_d, sub_d, diff_at_y, b_tr2)
 
 

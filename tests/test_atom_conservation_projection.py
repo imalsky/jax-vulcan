@@ -201,7 +201,7 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity():
     )
     defects = jax.jit(jax_step._stage_defects)
     identity, closed = {}, {}
-    for dt in (1e-6, 1e8, 1e11, 1e13, 1e15):
+    for dt in (1e8, 1e11, 1e13, 1e15):
         k1, k2, rel1, rel2 = defects(y, k_arr, jnp.float64(dt), atm, net)
         assert bool(jnp.all(jnp.isfinite(k1)) & jnp.all(jnp.isfinite(k2))), dt
         identity[dt] = max(float(jnp.max(jnp.abs(rel1))), float(jnp.max(jnp.abs(rel2))))
@@ -213,3 +213,13 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity():
     print("closed-layer element change / |content|:", {f"{d:g}": f"{v:.1e}" for d, v in closed.items()})
     assert all(v < 1e-10 for v in identity.values()), identity
     assert all(v < 1e-12 for v in closed.values()), closed
+    # Below config.REPAIR_DT_MIN_S the stages are left as the LU returned
+    # them: the closed-layer change is the LU's own element error, measured
+    # 1e-9 at dt 1e4 and 3e-7 at 1e6 (notes.md §1.13), under the 2e-6 at
+    # the gate; a repair there stalls small-dt columns.
+    from vulcan_jax.config import REPAIR_DT_MIN_S
+    assert REPAIR_DT_MIN_S == 1e7
+    for dt in (1e4, 1e6):
+        sol, _ = jax_step.jax_ros2_step(y, k_arr, jnp.float64(dt), zero, net)
+        ch = float(jnp.max(jnp.abs(sol @ ac - y @ ac) / (jnp.abs(sol) @ ac + jnp.abs(y) @ ac)))
+        assert 1e-13 < ch < 1e-6, (dt, ch)
