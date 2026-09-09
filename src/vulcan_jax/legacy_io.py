@@ -285,15 +285,15 @@ class ReadRate(object):
                             -7544.0 / Tco
                         ) + 5.109e-11 * Tco**-6.25 * np.exp(-1433.0 / Tco)
                         k_inf = 1.031e-10 * Tco**-0.018 * np.exp(16.74 / Tco)
-                        # the pressure dependence from Jasper 2017
+                        # Troe width in log10 (Visscher & Moses 2011 eq 14; C20)
                         Fc = (
                             0.1855 * np.exp(-Tco / 155.8)
                             + 0.8145 * np.exp(-Tco / 1675.0)
                             + np.exp(-4531.0 / Tco)
                         )
-                        nn = 0.75 - 1.27 * np.log(Fc)
-                        ff = np.exp(
-                            np.log(Fc) / (1.0 + (np.log(k[i] * M / k_inf) / nn) ** 2)
+                        nn = 0.75 - 1.27 * np.log10(Fc)
+                        ff = Fc ** (
+                            1.0 / (1.0 + (np.log10(k[i] * M / k_inf) / nn) ** 2)
                         )
 
                         k[i] = k[i] / (1 + k[i] * M / k_inf) * ff

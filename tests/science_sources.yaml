@@ -38,6 +38,9 @@ schema_version: 1
 # `VULCAN_MASTER_DIR` must point at a clean checkout of the named repository at
 # EXACTLY the named commit. There is deliberately no default sibling path: an
 # arbitrary `../VULCAN-master` is what this manifest exists to stop.
+# A confirmed upstream defect corrected on BOTH sides is a declared code delta
+# in tests/oracle.py::ORACLE_CODE_DELTAS, applied to the disposable copy only
+# (never to a pinned checkout); see `intentional_divergences` below.
 oracles:
 
   vulcan2_ncho:
@@ -194,6 +197,17 @@ supported_inputs:
 # Exact documentation and a test for each deliberate difference IS. Anything
 # not listed here that differs is drift, and the audit fails on it.
 intentional_divergences:
+
+  C20_ch3oh_troe_log10:
+    reaction: OH + CH3 + M -> CH3OH + M
+    reason: >-
+      Upstream op.py:204-205 takes the Troe width and log(Pr) in natural log;
+      Visscher & Moses 2011 eq 14 uses log10 (rate 1.19-1.21x high in the
+      falloff wings at 1000-1500 K). VULCAN-JAX uses log10, and the same
+      two-line correction is applied to the DISPOSABLE oracle copy by
+      tests/oracle.py::apply_code_deltas so the 1e-10 rate/Gibbs/step
+      comparisons stay 1-1; pinned checkouts are never edited.
+    recorded_in: notes.md (Parity & bug guide, C20)
 
   C13_2025_reaction_index_gap:
     files:

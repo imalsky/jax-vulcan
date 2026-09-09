@@ -183,7 +183,12 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity():
     failed by 6e-4 (dt 1e11), 6e-2 (1e13) and 3 (1e15) of the layer's own
     c0 |a^T y| on this column, which is what drained elements from long
     large-dt runs (notes.md §1.13). Ratios here are against the absolute
-    size of the terms, so the floor is float64 roundoff."""
+    size of the terms, so the floor is float64 roundoff for the closed-layer
+    change; the identity residual after the repair is set by the correction
+    tridiagonal's conditioning (~T/c0, growing with dt) and measured
+    1e-13 at dt <= 1e11, 2e-13 to 1e-11 at the 1e15 cap depending on the
+    rate table (2026-09-08, C20), so its bar sits 1e6 below the leak it
+    guards, not at roundoff."""
     import jax
     import jax.numpy as jnp
     import vulcan_jax.jax_step as jax_step
@@ -206,5 +211,5 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity():
         )
     print("identity residual / |terms|:", {f"{d:g}": f"{v:.1e}" for d, v in identity.items()})
     print("closed-layer element change / |content|:", {f"{d:g}": f"{v:.1e}" for d, v in closed.items()})
-    assert all(v < 1e-12 for v in identity.values()), identity
+    assert all(v < 1e-10 for v in identity.values()), identity
     assert all(v < 1e-12 for v in closed.values()), closed

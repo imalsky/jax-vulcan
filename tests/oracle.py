@@ -16,6 +16,13 @@ Three rules (each guards against a failure that actually happened):
    fastchem_vulcan/). `oracle_worktree()` hands out a temporary COPY and
    proves the original unchanged afterwards.
 
+4. DECLARED DELTAS ON THE COPY ONLY. A confirmed upstream defect corrected on
+   BOTH sides (notes.md §3.1) is listed once in `ORACLE_CODE_DELTAS` and
+   applied to the temporary copy by `apply_code_deltas()`; the pinned checkout
+   and `../VULCAN-master` are never edited. Each delta must match the pinned
+   text exactly once, so a re-pin to an upstream that changed the block fails
+   loudly here instead of silently comparing two different formulas.
+
 Local runs may skip when no oracle is configured; a release CI job must set
 `VULCAN_JAX_REQUIRE_ORACLE=1` so a missing oracle FAILS instead of skipping
 (skipped != passed).
@@ -225,6 +232,38 @@ def tree_fingerprint(path: Path) -> str:
     return hashlib.sha256(f"{head}\n{dirty}".encode()).hexdigest()
 
 
+# Rule 4. {relative file: ((OLD, NEW, tag), ...)}; OLD/NEW are exact upstream
+# text (24-space indent, LF).
+ORACLE_CODE_DELTAS: dict[str, tuple[tuple[str, str, str], ...]] = {
+    "op.py": ((
+        ("                        nn = 0.75 - 1.27*np.log(Fc)\n"
+         "                        ff = np.exp( np.log(Fc)/(1.+ (np.log(k[i]*M/k_inf)/nn)**2 ) )\n"),
+        ("                        nn = 0.75 - 1.27*np.log10(Fc)\n"
+         "                        ff = Fc**( 1./(1.+ (np.log10(k[i]*M/k_inf)/nn)**2 ) )\n"),
+        "C20 OH+CH3+M Troe width in log10 (Visscher & Moses 2011 eq 14)",
+    ),),
+}
+
+
+def apply_code_deltas(root: Path) -> list[str]:
+    """Apply `ORACLE_CODE_DELTAS` to the COPY at `root`; return the applied tags."""
+    applied: list[str] = []
+    for rel, deltas in ORACLE_CODE_DELTAS.items():
+        path = root / rel
+        text = path.read_bytes().decode("utf-8")
+        for old, new, tag in deltas:
+            n = text.count(old)
+            if n != 1:
+                raise RuntimeError(
+                    f"{path}: delta {tag!r} expects its OLD block exactly once, "
+                    f"found {n}; the pinned upstream no longer matches "
+                    "ORACLE_CODE_DELTAS -- re-derive or delete the entry")
+            text = text.replace(old, new)
+            applied.append(tag)
+        path.write_bytes(text.encode("utf-8"))
+    return applied
+
+
 @contextmanager
 def oracle_worktree(
     family: str,
@@ -235,7 +274,7 @@ def oracle_worktree(
 
     Upstream data-generation code mutates its own checkout, so every test that
     runs it must work on a copy. The copy is deleted on exit and the original is
-    proven unchanged.
+    proven unchanged. The copy carries `ORACLE_CODE_DELTAS` (rule 4).
     """
     src = require_oracle(family)
     before = tree_fingerprint(src)
@@ -244,6 +283,7 @@ def oracle_worktree(
         # copy2 preserves mtimes; skip .git (large, and the copy is disposable)
         shutil.copytree(src, dst, symlinks=True,
                         ignore=shutil.ignore_patterns(".git", "__pycache__"))
+        apply_code_deltas(dst)
         if config_rel is not None:
             config_source = dst / config_rel
             if not config_source.is_file():

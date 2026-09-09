@@ -60,7 +60,9 @@ def _arrhenius(a, n, E, T):
 
 
 def _troe_OH_CH3(T, M):
-    """Hardcoded Troe form for OH + CH3 + M -> CH3OH + M (Jasper 2017)."""
+    """Hardcoded Troe form for OH + CH3 + M -> CH3OH + M: Visscher & Moses 2011
+    eqs 13-14 (log10 width, notes C20) with the eq 24-26 fits of Jasper et al.
+    2007. Mirrors rates.py operation for operation."""
     k0 = 1.932e3 * T**-9.88 * jnp.exp(-7544.0 / T) + 5.109e-11 * T**-6.25 * jnp.exp(
         -1433.0 / T
     )
@@ -70,8 +72,8 @@ def _troe_OH_CH3(T, M):
         + 0.8145 * jnp.exp(-T / 1675.0)
         + jnp.exp(-4531.0 / T)
     )
-    nn = 0.75 - 1.27 * jnp.log(Fc)
-    ff = jnp.exp(jnp.log(Fc) / (1.0 + (jnp.log(k0 * M / kinf) / nn) ** 2))
+    nn = 0.75 - 1.27 * jnp.log10(Fc)
+    ff = Fc ** (1.0 / (1.0 + (jnp.log10(k0 * M / kinf) / nn) ** 2))
     return k0 / (1.0 + k0 * M / kinf) * ff
 
 

@@ -37,6 +37,9 @@ def fake_oracle(tmp_path):
     repo = tmp_path / "VULCAN-oracle"
     (repo / "thermo").mkdir(parents=True)
     (repo / "thermo" / "NCHO_photo_network.txt").write_text("# network v1\n")
+    # the declared code delta must find its OLD block exactly once
+    (repo / "op.py").write_text("def read_rate():\n"
+                                + orc.ORACLE_CODE_DELTAS["op.py"][0][0])
     _git_init = subprocess.run(
         ["git", "init", "-q", str(repo)], capture_output=True, text=True)
     assert _git_init.returncode == 0, _git_init.stderr
@@ -159,13 +162,25 @@ def test_worktree_gives_a_copy_and_proves_the_original_is_untouched(
     monkeypatch.setitem(orc.manifest()["oracles"]["vulcan2_ncho"], "commit",
                         _git(fake_oracle, "rev-parse", "HEAD"))
     original = (fake_oracle / "thermo" / "NCHO_photo_network.txt").read_bytes()
+    old, new, _tag = orc.ORACLE_CODE_DELTAS["op.py"][0]
     try:
         with orc.oracle_worktree("vulcan2_ncho") as work:
             assert work != fake_oracle
+            # the declared delta landed on the copy ...
+            copy_op = (work / "op.py").read_text()
+            assert old not in copy_op and new in copy_op
             # simulate make_chem_funs renumbering the network IN PLACE
             (work / "thermo" / "NCHO_photo_network.txt").write_text("renumbered\n")
         assert (fake_oracle / "thermo"
                 / "NCHO_photo_network.txt").read_bytes() == original
+        # ... and never on the original
+        assert old in (fake_oracle / "op.py").read_text()
+        # a re-pinned upstream whose block no longer matches fails loudly
+        repinned = fake_oracle.parent / "repinned"
+        repinned.mkdir()
+        (repinned / "op.py").write_text("nothing\n")
+        with pytest.raises(RuntimeError, match="ORACLE_CODE_DELTAS"):
+            orc.apply_code_deltas(repinned)
         # ... and the before/after fingerprint actually catches a mutation
         with pytest.raises(AssertionError, match="CHANGED during the test"):
             with orc.oracle_worktree("vulcan2_ncho"):

@@ -84,6 +84,8 @@ for P in "${PLANETS[@]}"; do
   W="$OUT/master_$P"; mkdir -p "$W/output" "$W/plot"
   for d in atm thermo fastchem_vulcan; do ln -sfn "$MASTER/$d" "$W/$d"; done
   cp "$MASTER"/*.py "$W/" 2>/dev/null || true
+  # declared upstream correction(s) on this scratch copy only (tests/oracle.py ORACLE_CODE_DELTAS, C20)
+  PYTHONPATH="$JAX_REPO/tests" "$PY" -c 'import sys, pathlib, oracle; print("oracle deltas:", oracle.apply_code_deltas(pathlib.Path(sys.argv[1])), file=sys.stderr)' "$W"
   "$PY" - "$W/vulcan_cfg.py" "$(net_for "$P")" <<'PYEOF'
 import re, sys, pathlib
 p, net = pathlib.Path(sys.argv[1]), sys.argv[2]

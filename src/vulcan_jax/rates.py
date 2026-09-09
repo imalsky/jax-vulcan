@@ -40,7 +40,9 @@ def _arrhenius(a: float, n: float, E: float, T: np.ndarray) -> np.ndarray:
 
 
 def _troe_OH_CH3(T: np.ndarray, M: np.ndarray) -> np.ndarray:
-    """Hardcoded Troe form for `OH + CH3 + M -> CH3OH + M` (Jasper 2017).
+    """Hardcoded Troe form for `OH + CH3 + M -> CH3OH + M`: Visscher & Moses
+    2011 eqs 13-14 (log10 width, notes C20) with the eq 24-26 fits of Jasper
+    et al. 2007.
 
     Returns k of shape [nz] in cm^3/s.
     """
@@ -51,8 +53,8 @@ def _troe_OH_CH3(T: np.ndarray, M: np.ndarray) -> np.ndarray:
     Fc = (
         0.1855 * np.exp(-T / 155.8) + 0.8145 * np.exp(-T / 1675.0) + np.exp(-4531.0 / T)
     )
-    nn = 0.75 - 1.27 * np.log(Fc)
-    ff = np.exp(np.log(Fc) / (1.0 + (np.log(k0 * M / kinf) / nn) ** 2))
+    nn = 0.75 - 1.27 * np.log10(Fc)
+    ff = Fc ** (1.0 / (1.0 + (np.log10(k0 * M / kinf) / nn) ** 2))
     return k0 / (1.0 + k0 * M / kinf) * ff
 
 

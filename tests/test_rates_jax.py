@@ -9,6 +9,7 @@ NumPy build, T-profile sensitivities are silently wrong.
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import jax
 import jax.numpy as jnp
 
@@ -132,6 +133,30 @@ def main() -> int:
 
 def test_main():
     assert main() == 0
+
+
+@pytest.mark.parametrize(
+    "T, Pr", [(1000.0, 0.1), (1500.0, 0.1), (1000.0, 1.0), (1500.0, 10.0)]
+)
+def test_troe_oh_ch3_is_visscher_moses_eq14(T, Pr):
+    """The OH+CH3+M row follows Visscher & Moses 2011 eqs 13-14 (log10 Troe
+    width, C20) with the eq 24-26 fits, in both the NumPy and JAX twins. The
+    only guard against a transcription error: the oracle comparison carries
+    the same declared correction on its side."""
+    from vulcan_jax import rates, rates_jax
+
+    k0 = 1.932e3 * T**-9.88 * np.exp(-7544.0 / T) + 5.109e-11 * T**-6.25 * np.exp(
+        -1433.0 / T
+    )
+    kinf = 1.031e-10 * T**-0.018 * np.exp(16.74 / T)
+    Fc = 0.1855 * np.exp(-T / 155.8) + 0.8145 * np.exp(-T / 1675.0) + np.exp(-4531.0 / T)
+    beta = 1.0 / (1.0 + (np.log10(Pr) / (0.75 - 1.27 * np.log10(Fc))) ** 2)
+    want = k0 / (1.0 + Pr) * 10.0 ** (beta * np.log10(Fc))
+    Tz, M = np.array([T]), np.array([Pr * kinf / k0])
+    got_np = float(rates._troe_OH_CH3(Tz, M)[0])
+    got_jx = float(rates_jax._troe_OH_CH3(jnp.asarray(Tz), jnp.asarray(M))[0])
+    assert abs(got_np - want) <= 1e-12 * want
+    assert abs(got_jx - want) <= 1e-12 * want
 
 
 if __name__ == "__main__":
