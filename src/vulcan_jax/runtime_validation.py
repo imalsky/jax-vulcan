@@ -479,6 +479,14 @@ def _validate_numerical_bounds(cfg) -> list[str]:
     # a deliberate idiom ("run exactly count_max steps") used by the parity
     # harness and benchmarks; an ordering constraint would reject those runs.
 
+    # The refresh counter is int32 and used as a modulo divisor in the runner.
+    for key in ("ini_update_photo_frq", "final_update_photo_frq"):
+        if not hasattr(cfg, key):
+            continue
+        v = float(getattr(cfg, key))
+        if not (math.isfinite(v) and v.is_integer() and 1 <= v < 2**31):
+            errors.append(f"{key}={v:g} must be a positive int32 integer.")
+
     # Wavelength bins for the photolysis grid
     for key in ("dbin1", "dbin2"):
         if not hasattr(cfg, key):

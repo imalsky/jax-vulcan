@@ -18,7 +18,7 @@ import numpy as np
 from .config import default_config
 from .phy_const import G_grav, Navo, au, kb, r_sun
 from ._paths import resolve_data_path
-from .atm_refresh import recompute_vm_jax
+from .atm_refresh import hydrostatic_step, recompute_vm_jax
 
 # x64 is required for the rate-constant dynamic range.
 jax.config.update("jax_enable_x64", True)
@@ -393,8 +393,7 @@ def _scan_up_mu_dz_g(
         i, T_i, mu_i, p_lo, p_hi = scan_in
         is_first = i == 0
         gz_i = jnp.where(is_first, gs, gs * (Rp / (Rp + z_prev)) ** 2)
-        Hp_i = kb * T_i / (mu_i / Navo * gz_i)
-        dz_i = Hp_i * jnp.log(p_lo / p_hi)
+        Hp_i, dz_i = hydrostatic_step(T_i, mu_i, gz_i, p_lo, p_hi, kb, Navo)
         z_next = z_prev + dz_i
         return (z_next, gz_i, Hp_i), (gz_i, Hp_i, dz_i, z_next)
 
@@ -431,8 +430,7 @@ def _scan_down_mu_dz_g(
         z_above = carry
         T_i, mu_i, p_lo, p_hi = scan_in
         gz_i = gs * (Rp / (Rp + z_above)) ** 2
-        Hp_i = kb * T_i / (mu_i / Navo * gz_i)
-        dz_i = Hp_i * jnp.log(p_lo / p_hi)
+        Hp_i, dz_i = hydrostatic_step(T_i, mu_i, gz_i, p_lo, p_hi, kb, Navo)
         z_here = z_above - dz_i
         return z_here, (gz_i, Hp_i, dz_i, z_here)
 

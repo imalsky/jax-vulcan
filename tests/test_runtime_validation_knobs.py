@@ -45,7 +45,7 @@ def _checked_knobs() -> set[str]:
     for block in re.findall(r"for key, unit in \((.*?)\n    \):", src, re.S):
         names |= set(re.findall(r'\("([a-z_]+)",', block))
     for block in re.findall(
-            r'for key in \("count_min".*?\):', src, re.S):
+            r'for key in \("(?:count_min|ini_update_photo_frq)".*?\):', src, re.S):
         names |= set(re.findall(r'"([a-z_]+)"', block))
     assert len(names) > 25, f"knob scrape found only {len(names)}; parser broke"
     return names
@@ -100,3 +100,13 @@ def test_the_validator_carries_no_literal_config_defaults():
         "numeric literal config defaults are back in runtime_validation.py:\n  "
         + "\n  ".join(offenders)
         + "\nUse _declared(cfg, key) and skip an undeclared knob instead.")
+
+
+@pytest.mark.parametrize("key", ["ini_update_photo_frq", "final_update_photo_frq"])
+@pytest.mark.parametrize("value", [0, -1, 1.5, float("nan"), float("inf"), 2**31])
+def test_invalid_photolysis_cadence_is_refused(key, value):
+    from types import SimpleNamespace
+    from vulcan_jax.runtime_validation import _validate_numerical_bounds
+
+    errors = _validate_numerical_bounds(SimpleNamespace(**{key: value}))
+    assert any(key in error for error in errors)

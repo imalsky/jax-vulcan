@@ -16,6 +16,21 @@ import jax.numpy as jnp
 _UNDERFLOW_DENOM = 1e-300
 
 
+def hydrostatic_step(T, mu, g, p_lo, p_hi, kb, Navo):
+    """Pressure scale height `Hp` and layer thickness `dz` for one layer.
+
+    The single definition of the formula: `atm_setup._scan_up_mu_dz_g` and
+    `_scan_down_mu_dz_g` call it too. It lives here because `atm_setup`
+    imports `atm_refresh`, not the other way round. The two integrations had
+    drifted -- only this one clamped the denominator -- and `_UNDERFLOW_DENOM`
+    binds only when `mu*g` underflows to zero (a layer with no gas), so it is
+    a no-op on any physical column.
+    """
+    denom = jnp.maximum(mu / Navo * g, _UNDERFLOW_DENOM)
+    Hp = kb * T / denom
+    return Hp, Hp * jnp.log(p_lo / p_hi)
+
+
 class AtmRefreshStatic(NamedTuple):
     """Closed-over static inputs to the atm-refresh kernels."""
 
@@ -64,9 +79,9 @@ def update_mu_dz_jax(ymix: jnp.ndarray, st: AtmRefreshStatic):
         # the inverse-square law from Rp+zco[i].
         is_pref = i == pref_indx
         g_i = jnp.where(is_pref, gs, gs * (Rp / (Rp + zco_i)) ** 2)
-        denom = jnp.maximum(mu[i] / Navo * g_i, _UNDERFLOW_DENOM)
-        Hp_i = kb * Tco[i] / denom
-        dz_i = Hp_i * jnp.log(pico[i] / pico[i + 1])
+        Hp_i, dz_i = hydrostatic_step(
+            Tco[i], mu[i], g_i, pico[i], pico[i + 1], kb, Navo
+        )
         zco_ip1 = zco_i + dz_i
         return zco_ip1, (g_i, Hp_i, dz_i, zco_ip1)
 
@@ -81,9 +96,9 @@ def update_mu_dz_jax(ymix: jnp.ndarray, st: AtmRefreshStatic):
     def bwd_step(zco_ip1, i):
         # The layer sits below zco[i+1], so g uses Rp+zco[i+1].
         g_i = gs * (Rp / (Rp + zco_ip1)) ** 2
-        denom = jnp.maximum(mu[i] / Navo * g_i, _UNDERFLOW_DENOM)
-        Hp_i = kb * Tco[i] / denom
-        dz_i = Hp_i * jnp.log(pico[i] / pico[i + 1])
+        Hp_i, dz_i = hydrostatic_step(
+            Tco[i], mu[i], g_i, pico[i], pico[i + 1], kb, Navo
+        )
         zco_i = zco_ip1 - dz_i
         return zco_i, (g_i, Hp_i, dz_i, zco_i)
 

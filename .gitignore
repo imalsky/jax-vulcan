@@ -4,11 +4,11 @@
 *$py.class
 *.so
 
-# Internal working documents (3-doc policy: README.md is the tracked
-# consumer-facing reference; notes.md and CLAUDE.md are local-only).
-# notes.md is the narrative dev log: useful locally, not consumer content.
+# Internal working documents (4-doc policy: README.md is the tracked
+# consumer-facing reference; CLAUDE.md, notes.md and todo.md are local-only).
 CLAUDE.md
 notes.md
+todo.md
 
 # Distribution / packaging
 build/

@@ -23,7 +23,7 @@ from .solver import (
     factor_block_thomas_diag_offdiag,
     solve_block_thomas_diag_offdiag,
 )
-from .config import default_config, REPAIR_DT_MIN_S
+from .config import default_config, REPAIR_ABS_FLOOR
 
 jax.config.update("jax_enable_x64", True)
 
@@ -168,9 +168,9 @@ def _stage_defect(k, b_tr, c0, diag_d, sup_d, sub_d, with_scale=False):
 _DEFECT_FLOOR = 1e-13
 
 
-def _repair_stage(k, b_tr, c0, diag_d, sup_d, sub_d, fix_mask):
+def _repair_stage(k, b_tr, c0, diag_d, sup_d, sub_d, fix_mask, n_tot):
     """Put the element content of a Ros2 stage vector back where its own
-    linear system says it belongs.
+    linear system says it belongs. `n_tot` is the (nz, 1) layer density.
 
     The exact solution of the stage system satisfies the per-layer identity
     of `_stage_defect`. The pivoted LU stops returning it once
@@ -182,10 +182,16 @@ def _repair_stage(k, b_tr, c0, diag_d, sup_d, sub_d, fix_mask):
     diagonal in species, so that is one scalar tridiagonal solve
     `(c0 - T_rho) c = g` per reservoir. Layers holding a pinned cell are left
     alone (a pin opens the layer's budget by construction). Resolvable while
-    `c0` is not negligible against `T`, i.e. dt <= config.DT_MAX_S; applied
-    only from config.REPAIR_DT_MIN_S up, where the LU's element error is
-    measurable (the caller gates on dt). Not in VULCAN 2.0 (op.py:2914 and
-    :2929 solve and move on).
+    `c0` is not negligible against `T`, i.e. dt <= config.DT_MAX_S. Applied
+    at every dt: a defect is corrected only above two floors, the roundoff
+    of its own terms (`_DEFECT_FLOOR`) and `config.REPAIR_ABS_FLOOR` of the
+    layer's density. The second is what lets the repair run at small dt:
+    near a steady state the terms vanish with the defect, so the ratio floor
+    never fires, and a roundoff-sized defect (1e-21 of the layer) put on a
+    reservoir that is itself a trace (H2S at 1e-21 in a cool upper
+    atmosphere) is a 10% kick on that cell every stage, which stalls the
+    column (notes.md §1.13). Real leaks are >= 1e-7 of the layer per stage.
+    Not in VULCAN 2.0 (op.py:2914 and :2929 solve and move on).
     """
     if not _CHEM_PROJECTION_ENABLED:
         return k
@@ -195,7 +201,8 @@ def _repair_stage(k, b_tr, c0, diag_d, sup_d, sub_d, fix_mask):
     # below the floor the solve was exact and a correction would only move
     # float64 noise onto the reservoir cells (1e-5 cm^-3 at the bottom, a
     # visible change in a trace cell).
-    defect = jnp.where(jnp.abs(defect) > _DEFECT_FLOOR * scale, defect, 0.0)
+    floor = jnp.maximum(_DEFECT_FLOOR * scale, REPAIR_ABS_FLOOR * c0 * n_tot)
+    defect = jnp.where(jnp.abs(defect) > floor, defect, 0.0)
     g = -(defect @ _CHEM_INV_RESERVOIR_COUNTS)  # (nz, n_reservoir)
     pad = jnp.zeros((1, ridx.shape[0]))
     d = c0 - diag_d[:, ridx]
@@ -665,8 +672,8 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask):
 
     factors = factor_block_thomas_diag_offdiag(diag, sup_neg, sub_neg)
     k1 = solve_block_thomas_diag_offdiag(factors, rhs_y)
-    repair = dt >= REPAIR_DT_MIN_S
-    k1 = jnp.where(repair, _repair_stage(k1, diff_at_y, c0, diag_d, sup_d, sub_d, fix_mask), k1)
+    n_tot = jnp.sum(y, axis=1, keepdims=True)
+    k1 = _repair_stage(k1, diff_at_y, c0, diag_d, sup_d, sub_d, fix_mask, n_tot)
 
     yk2 = y + k1 / r
     A_eddy2, B_eddy2, C_eddy2, A_mol2, B_mol2, C_mol2, _ = _build_diff_coeffs_jax(
@@ -684,7 +691,7 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask):
     # Transport part of the stage-2 RHS (the projected chemistry term carries
     # no element content; the k1 term does).
     b_tr2 = diff_at_yk2 - (2.0 / (r * dt)) * k1
-    k2 = jnp.where(repair, _repair_stage(k2, b_tr2, c0, diag_d, sup_d, sub_d, fix_mask), k2)
+    k2 = _repair_stage(k2, b_tr2, c0, diag_d, sup_d, sub_d, fix_mask, n_tot)
     return k1, k2, yk2, (c0, diag_d, sup_d, sub_d, diff_at_y, b_tr2)
 
 
@@ -705,19 +712,22 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
 
 def _stage_defects(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays):
     """Test surface: per-layer, per-atom defect of each stage vector against
-    its element identity, divided by the sum of the absolute sizes of the
-    identity's terms (`c0 |k|`, `|T k|` contributions, `|b_tr|`, each atom
-    weighted), so the ratio floors at float64 roundoff whatever the step.
-    Returns (k1, k2, rel1, rel2)."""
+    its element identity, and the bound the repair leaves it under:
+    `max(_DEFECT_FLOOR * scale, REPAIR_ABS_FLOOR * c0 * n_tot)` with
+    `scale` the atom-weighted sum of the identity's terms (`c0 |k|`, `|T k|`
+    contributions, `|b_tr|`). Returns (k1, k2, defect1, defect2, bound)."""
     k1, k2, _, (c0, diag_d, sup_d, sub_d, b1, b2) = _ros2_stages(
         y, k_arr, dt, atm, net, None
     )
+    n_tot = jnp.sum(y, axis=1, keepdims=True)
 
-    def rel(k, b):
-        defect, scale = _stage_defect(k, b, c0, diag_d, sup_d, sub_d, with_scale=True)
-        return defect / scale
+    def parts(k, b):
+        return _stage_defect(k, b, c0, diag_d, sup_d, sub_d, with_scale=True)
 
-    return k1, k2, rel(k1, b1), rel(k2, b2)
+    d1, s1 = parts(k1, b1)
+    d2, s2 = parts(k2, b2)
+    bound = jnp.maximum(_DEFECT_FLOOR * jnp.maximum(s1, s2), REPAIR_ABS_FLOOR * c0 * n_tot)
+    return k1, k2, d1, d2, bound
 
 
 def make_atm_static(atm, ni: int, nz: int, cfg=None) -> AtmStatic:

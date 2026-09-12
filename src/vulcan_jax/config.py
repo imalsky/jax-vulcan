@@ -83,14 +83,17 @@ _FROZEN_ENV = {
 # stage system it corrects by dt = 1e17 s (notes.md §1.13). Upstream derives
 # runtime*1e-5 = 1e17 s; no shipped run steps past 1.3e6 s.
 DT_MAX_S = 1.0e15
-# Smallest step at which the repair is applied. Below it the pivoted LU
-# returns the stage's element content to within 2e-6 of a layer's own
-# (1e-9 at 1e4 s, 3e-7 at 1e6, 2e-6 at 1e7; 1e-5 at 1e8, 1.4e-4 at 1e9,
-# 6e-3 at 1e11 and order unity from 1e12, notes.md §1.13), and a repair
-# that keeps moving the reservoirs by that little stalls a small-dt column
-# below its certificate (the JWST tool's HD 189733 b preset never steps
-# past 1e6 s and certifies only with the repair off there).
-REPAIR_DT_MIN_S = 1.0e7
+# Smallest stage element defect the repair corrects, as a fraction of the
+# layer's number density (times c0, the defect's units). Measured
+# corrections: a real leak is >= 1e-7 of the layer per stage (1e-7 to 1.7 in
+# a 3500 K bottom); the roundoff that stalled the JWST tool's HD 189733 b
+# column was 1e-21 of the layer, and that column is bit-identical to its
+# unrepaired solve for any floor from 1e-11 up (2911 steps instead of 1506
+# at 1e-12: sub-1e-11 LU errors on minor elements get corrected and cost
+# steps without changing the certificate). notes.md §1.13. Below the floor a
+# defect is left alone, so the uncorrected element error per step is
+# bounded by this fraction of the layer (a few times it over two stages).
+REPAIR_ABS_FLOOR = 1.0e-11
 _DERIVED = (
     ("dt_max", lambda d: min(d["runtime"] * 1e-5, DT_MAX_S)),
     ("photo_switch_longdy_thresh", lambda d: d["yconv_min"] * 10.0),

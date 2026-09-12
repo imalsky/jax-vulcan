@@ -11,8 +11,8 @@ the float64 cancellation floor (verified: FD swings sign as eps shrinks). The
 robust correctness check is forward-vs-reverse-mode agreement, which is immune to
 that cancellation; a coarse FD is kept only as an independent sign/magnitude
 sanity. Tight FD validation of Kzz is intrinsically *end-to-end* (the cumulative
-effect on a converged column is O(1) relative) and lives in
-`jax_paper/scripts/fig_kzz_jvp_validate.py` (<0.1% vs re-converged FD).
+effect on a converged column is O(1) relative) and is covered by
+`test_forward_jvp_integration.py` (<0.1% vs re-converged FD).
 """
 
 from __future__ import annotations

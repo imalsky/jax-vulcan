@@ -37,7 +37,8 @@ jobs:
       # the coarse one-step FINITE-DIFFERENCE probe it cross-checks against
       # swings with CPU/XLA (-7.0e13 to -8.0e13 on x86 linux vs in-bounds on
       # arm64 macOS), overshooting the test's 30% sanity bound. The tight
-      # end-to-end FD validation of forward mode lives in the paper scripts.
+      # end-to-end FD validation runs in test_forward_jvp_integration below,
+      # with cold setup and no saved-fixture dependency.
       - name: Run tests
         env:
           VULCAN_JAX_ALLOW_MISSING_FIXTURES: "1"
