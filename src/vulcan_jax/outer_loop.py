@@ -838,16 +838,8 @@ def _make_runner(
             vs=jnp.zeros_like(s_in.vs),
         )
 
-    def _conv_jax(
-        s: JaxIntegState, accept_count_after: jnp.ndarray
-    ) -> "tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]":
-        """Compute longdy diagnostics against the ring-buffer lookback target.
-
-        Looks up the ring entry closest in time to `t * st_factor`, but
-        excludes the most-recent slot to avoid comparing against itself.
-        On the first iteration the ring is all-zero, which yields
-        longdy ≈ |y/n_0| ~ O(1); the `ready` gate prevents acting on it.
-        """
+    def _lookback_index(s: JaxIntegState, accept_count_after: jnp.ndarray):
+        """Ring slot closest in time to `t * st_factor`, never the newest."""
         target_t = s.t * st_factor
         diffs = jnp.abs(s.t_time_ring - target_t)
         # Bump the most-recent slot to +inf so argmin can never pick it,
@@ -858,7 +850,19 @@ def _make_runner(
         )
         big = jnp.float64(jnp.inf)
         diffs_guarded = diffs.at[last_idx].set(big)
-        indx = jnp.argmin(diffs_guarded)
+        return jnp.argmin(diffs_guarded)
+
+    def _conv_jax(
+        s: JaxIntegState, accept_count_after: jnp.ndarray
+    ) -> "tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]":
+        """Compute longdy diagnostics against the ring-buffer lookback target.
+
+        Looks up the ring entry closest in time to `t * st_factor`, but
+        excludes the most-recent slot to avoid comparing against itself.
+        On the first iteration the ring is all-zero, which yields
+        longdy ≈ |y/n_0| ~ O(1); the `ready` gate prevents acting on it.
+        """
+        indx = _lookback_index(s, accept_count_after)
 
         longdy_new, ratio = _longdy_reduce(
             s.y,
@@ -873,6 +877,19 @@ def _make_runner(
         dt_lookback = jnp.maximum(s.t - s.t_time_ring[indx], _UNDERFLOW_DENOM)
         longdydt_new = longdy_new / dt_lookback
         return longdy_new, longdydt_new, ratio
+
+    def _slope_min(s: JaxIntegState):
+        slope_min = jnp.minimum(
+            jnp.min(s.pv.Kzz / (0.1 * s.Hp[:-1]) ** 2),
+            jnp.float64(1e-8),
+        )
+        return jnp.maximum(slope_min, jnp.float64(1e-10))
+
+    def _two_branch(longdy, longdydt, slope_min):
+        """Tight (yconv_cri, slope_cri) OR loose (yconv_min, slope_min)."""
+        return (
+            (longdy < jnp.float64(yconv_cri)) & (longdydt < jnp.float64(slope_cri))
+        ) | ((longdy < jnp.float64(yconv_min)) & (longdydt < slope_min))
 
     def _convergence_ok(s: JaxIntegState):
         """Convergence predicate shared by `_real_terminate` and the hybrid
@@ -889,15 +906,7 @@ def _make_runner(
         0.01. The identical two-branch predicate is upstream's
         (.oracles/vulcan2_ncho/op.py:1056), so this is inherited.
         """
-        slope_min = jnp.minimum(
-            jnp.min(s.pv.Kzz / (0.1 * s.Hp[:-1]) ** 2),
-            jnp.float64(1e-8),
-        )
-        slope_min = jnp.maximum(slope_min, jnp.float64(1e-10))
-
-        conv_normal = (
-            (s.longdy < jnp.float64(yconv_cri)) & (s.longdydt < jnp.float64(slope_cri))
-        ) | ((s.longdy < jnp.float64(yconv_min)) & (s.longdydt < slope_min))
+        conv_normal = _two_branch(s.longdy, s.longdydt, _slope_min(s))
         conv_normal = conv_normal & (s.aflux_change < jnp.float64(flux_cri))
 
         # Stall fallback: no >=5% longdy improvement for conv_stall_window
@@ -917,13 +926,16 @@ def _make_runner(
             is_stalled = jnp.zeros_like(conv_normal)
         return (conv_normal | is_stalled), conv_normal, is_stalled
 
-    def _real_terminate(s: JaxIntegState):
+    def _real_terminate(s: JaxIntegState, tangent_ok=True):
         """Real (non-chunk) termination predicate + reason code.
 
         Reason priority matches master's stop() (op.py:1065-1085): converged
         over runtime over step-count, so a step that is both converged and at
         a cap reports success. Codes: 0 running, 1 converged, 2 runtime
         exceeded, 3 step-count exceeded, 4 stalled-convergence.
+
+        `tangent_ok` is the sensitivity certificate of `runner_jvp`; the
+        primal runner passes the default, which folds away at trace time.
         """
         # Live budget (equals the static count_max/runtime for non-hybrid runs;
         # the hybrid phase flip resets it for phase 1).
@@ -935,7 +947,7 @@ def _make_runner(
         ready = (s.t > jnp.float64(trun_min)) & (s.accept_count > s.count_min_dyn)
         # `geom_ok` is written by the body on the candidate step (see
         # there): the refreshed geometry agreed with the composition.
-        conv_term = ready & is_converged & s.geom_ok
+        conv_term = ready & is_converged & s.geom_ok & tangent_ok
         real_term = too_long | too_many | conv_term
         if hybrid_vm_static:
             # Phase 0 (upwind) NEVER terminates here: the body flips to phase 1
@@ -1615,6 +1627,110 @@ def _make_runner(
         _real_term, reason = _real_terminate(final)
         return final._replace(termination_reason=reason)
 
+    def _tangent_conv(s_next: JaxIntegState, ds_next: JaxIntegState):
+        """The primal's longdy reduction on the tangent: `dy - dy_lookback`
+        over `y`, on the cells the primal certifies on. Per cell and
+        absolute, so the tangent direction is read in the units of a
+        finite-difference step and 1% of y means what it means for the
+        state. A zero tangent reads 0 (settled)."""
+        indx = _lookback_index(s_next, s_next.accept_count)
+        tl, _ = _longdy_reduce(
+            s_next.y,
+            s_next.ymix,
+            s_next.y_time_ring[indx],
+            s_next.pv.n_0,
+            atol=statics.atol,
+            mtol_conv=mtol_conv,
+            ignore_mask=conver_ignore_mask[None, :],
+            condense_mask=condense_zero_conv_mask,
+            diff=ds_next.y - ds_next.y_time_ring[indx],
+        )
+        dt_lookback = jnp.maximum(
+            s_next.t - s_next.t_time_ring[indx], _UNDERFLOW_DENOM
+        )
+        return tl, tl / dt_lookback
+
+    def _make_runner_jvp(active_state, active_atm):
+        """The forward-mode runner: integrates (state, tangent) together and
+        stops only when the tangent has settled by the primal's own rule.
+
+        `active_*` are tuples of bools over the flattened leaves of the state
+        and AtmStatic: True where the caller supplies a float tangent. Those
+        leaves go through `jax.jvp` of `body_fn`; every other leaf (ints,
+        bools, flags) rides as `has_aux` output, so no float0 tangents exist
+        inside the loop. Carry: (state, active tangent leaves,
+        tangent_longdy, tangent_longdydt); the two scalars are refreshed on
+        accepted steps exactly as `longdy` is."""
+        n_active = sum(active_state)
+
+        def _merge(flat, leaves, active):
+            it = iter(flat)
+            return [next(it) if a else x for x, a in zip(leaves, active)]
+
+        @jax.jit
+        def runner_jvp(state, atm_static, dstate_active, datm_active):
+            s_leaves, s_def = jax.tree_util.tree_flatten(state)
+            a_leaves, a_def = jax.tree_util.tree_flatten(atm_static)
+
+            def _step(s, ds_active):
+                def f(s_act, a_act):
+                    s_in = s_def.unflatten(_merge(s_act, jax.tree_util.tree_leaves(s), active_state))
+                    a_in = a_def.unflatten(_merge(a_act, a_leaves, active_atm))
+                    o_leaves = jax.tree_util.tree_leaves(body_fn(s_in, a_in))
+                    act = [x for x, a in zip(o_leaves, active_state) if a]
+                    rest = [x for x, a in zip(o_leaves, active_state) if not a]
+                    return act, rest
+
+                s_act = [x for x, a in zip(jax.tree_util.tree_leaves(s), active_state) if a]
+                a_act = [x for x, a in zip(a_leaves, active_atm) if a]
+                act_out, dact_out, rest_out = jax.jvp(
+                    f, (s_act, a_act), (list(ds_active), list(datm_active)), has_aux=True
+                )
+                it_a, it_r = iter(act_out), iter(rest_out)
+                s_next = s_def.unflatten(
+                    [next(it_a) if a else next(it_r) for a in active_state]
+                )
+                # Tangent tree for the reduction: inactive leaves borrow the
+                # primal (never read there).
+                ds_next = s_def.unflatten(
+                    _merge(dact_out, jax.tree_util.tree_leaves(s_next), active_state)
+                )
+                return s_next, dact_out, ds_next
+
+            def body(carry):
+                s, ds_active, tl, tldt = carry
+                s_next, dact_out, ds_next = _step(s, ds_active)
+                tl_new, tldt_new = _tangent_conv(s_next, ds_next)
+                accepted = s_next.retry_count == jnp.int32(0)
+                return (
+                    s_next,
+                    dact_out,
+                    jnp.where(accepted, tl_new, tl),
+                    jnp.where(accepted, tldt_new, tldt),
+                )
+
+            def cond(carry):
+                s, _ds, tl, tldt = carry
+                real_term, _ = _real_terminate(
+                    s, _two_branch(tl, tldt, _slope_min(s))
+                )
+                return jnp.logical_not(real_term)
+
+            inf = jnp.float64(jnp.inf)
+            final, dfinal_active, tl, tldt = jax.lax.while_loop(
+                cond, body, (state, list(dstate_active), inf, inf)
+            )
+            tangent_ok = _two_branch(tl, tldt, _slope_min(final))
+            _real_term, reason = _real_terminate(final, tangent_ok)
+            return (
+                final._replace(termination_reason=reason),
+                dfinal_active,
+                tl,
+                tangent_ok,
+            )
+
+        return runner_jvp
+
     def cond_fn_batch(s: JaxIntegState):
         # Per-lane stop predicate: gates ONLY on carry flags, never re-derives
         # `real_term` -- the body must run one final (frozen, no-op) iteration
@@ -1663,7 +1779,7 @@ def _make_runner(
             state,
         )
 
-    return runner, runner_batch
+    return runner, runner_batch, _make_runner_jvp
 
 
 # in_axes for vmapping the batched runner over AtmStatic: array leaves batch
@@ -1754,14 +1870,19 @@ def stack_atm_statics(atms: "list[AtmStatic]") -> AtmStatic:
 
 
 def _longdy_reduce(
-    y, ymix, y_old, n_0, *, atol, mtol_conv, ignore_mask=None, condense_mask=None
+    y, ymix, y_old, n_0, *, atol, mtol_conv, ignore_mask=None, condense_mask=None,
+    diff=None,
 ):
     """The `longdy` convergence reduction. Returns (longdy, ratio).
+
+    `diff` replaces `y - y_old` while every mask still reads the primal
+    (`y`, `ymix`): the tangent certificate passes `dy - dy_old` here, so the
+    sensitivity is held to the same per-cell tolerance as the state.
 
     Module level so the regression guards exercise the shipped code rather
     than an in-test copy of it.
     """
-    longdy_arr = jnp.abs((y - y_old) / n_0[:, None])
+    longdy_arr = jnp.abs(((y - y_old) if diff is None else diff) / n_0[:, None])
     longdy_arr = jnp.where(ymix < mtol_conv, 0.0, longdy_arr)
     longdy_arr = jnp.where(y < atol, 0.0, longdy_arr)
     if ignore_mask is not None:
@@ -1780,6 +1901,8 @@ def _longdy_reduce(
     # never converge and exits via the count/runtime ladder, matching master's
     # raise on an empty amax (op.py:1055).
     state_is_bad = ~jnp.all(jnp.isfinite(y)) | ~jnp.all(jnp.isfinite(ymix))
+    if diff is not None:
+        state_is_bad = state_is_bad | ~jnp.all(jnp.isfinite(diff))
     return jnp.where(state_is_bad, jnp.inf, longdy), ratio
 
 
@@ -1840,6 +1963,8 @@ class OuterLoop:
 
         # Lazy runner cache; populated on first call and reused thereafter.
         self._runner = None
+        self._make_runner_jvp = None
+        self._runner_jvp_cache = {}
         # Un-jitted freeze-on-done while_loop for the vmapped batched path,
         # and its jax.vmap+jax.jit wrapper (`run_batch`). Both ride the same
         # (nz, toggle-combo) closure as `_runner`.
@@ -1861,6 +1986,8 @@ class OuterLoop:
         a possibly-mutated `self._cfg` (notebooks, parameter sweeps).
         Without this, the runner closure pins the original config."""
         self._runner = None
+        self._make_runner_jvp = None
+        self._runner_jvp_cache = {}
         self._runner_batch = None
         self._vrunner = None
         self._statics = None
@@ -2107,7 +2234,7 @@ class OuterLoop:
         self._photo_static = self._build_photo_static(var, atm)
         self._refresh_static = self._build_refresh_static(atm)
         self._conden_static = self._build_conden_static(var, atm, gas_mask_jnp)
-        self._runner, self._runner_batch = _make_runner(
+        self._runner, self._runner_batch, self._make_runner_jvp = _make_runner(
             _NET_JAX,
             self._statics,
             self._non_gas_present,
@@ -2121,6 +2248,65 @@ class OuterLoop:
             refresh_static=self._refresh_static,
             conden_static=self._conden_static,
         )
+
+    def run_jvp(self, state, atm_static, dstate, datm):
+        """Forward-mode integration certified on the tangent.
+
+        `dstate` / `datm` mirror `state` / `atm_static` leaf for leaf, as
+        `jax.jvp` hands them back: a leaf with a float tangent is
+        differentiated, every other leaf (float0, ints, flags) is held
+        constant. Returns `(final, dfinal, tangent_longdy, tangent_ok)`:
+        `dfinal` mirrors `final` the same way (float0 on constant leaves),
+        so downstream maps continue with `jax.jvp(g, (final.y,), (dfinal.y,))`.
+
+        The run stops when the state certifies AND the tangent's change over
+        the same lookback, per cell over `y`, passes the same two-branch
+        test (`_tangent_conv`); the tangent direction is therefore read in
+        the units of a finite-difference step. `termination_reason` 1 means
+        both certified; 3 means the count cap hit before they did.
+        """
+        def _mask(dtree, tree):
+            leaves = jax.tree_util.tree_leaves(tree)
+            dleaves = jax.tree_util.tree_leaves(dtree)
+            if len(leaves) != len(dleaves):
+                raise ValueError(
+                    f"tangent tree has {len(dleaves)} leaves, primal {len(leaves)}"
+                )
+
+            def _is_float(x):
+                return (getattr(x, "dtype", None) is not None
+                        and x.dtype != jax.dtypes.float0
+                        and jnp.issubdtype(x.dtype, jnp.floating))
+
+            act = tuple(_is_float(d) for d in dleaves)
+            # Every float leaf integrates a tangent (a zero seed grows one),
+            # so a float primal without a float tangent would be silently
+            # held constant and read as primal history by the certificate.
+            bad = [i for i, (x, a) in enumerate(zip(leaves, act))
+                   if _is_float(x) and not a]
+            if bad:
+                raise TypeError(
+                    f"float primal leaves {bad} carry no float tangent; pass "
+                    "zeros (as jax.jvp does), never float0 or ints")
+            return act
+
+        act_s, act_a = _mask(dstate, state), _mask(datm, atm_static)
+        key = (act_s, act_a)
+        if key not in self._runner_jvp_cache:
+            self._runner_jvp_cache[key] = self._make_runner_jvp(act_s, act_a)
+        pick = lambda dtree, act: [
+            d for d, a in zip(jax.tree_util.tree_leaves(dtree), act) if a
+        ]
+        final, dfinal_active, tl, ok = self._runner_jvp_cache[key](
+            state, atm_static, pick(dstate, act_s), pick(datm, act_a)
+        )
+        leaves, tdef = jax.tree_util.tree_flatten(final)
+        it = iter(dfinal_active)
+        dfinal = tdef.unflatten([
+            next(it) if a else np.zeros(np.shape(x), dtype=jax.dtypes.float0)
+            for x, a in zip(leaves, act_s)
+        ])
+        return final, dfinal, tl, ok
 
     def _build_photo_static(self, var, atm) -> Optional[_PhotoStatic]:
         """Pack photo cross sections + scalar configs into a `_PhotoStatic`.
