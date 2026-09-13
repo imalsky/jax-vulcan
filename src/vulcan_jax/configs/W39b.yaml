@@ -34,12 +34,14 @@ O_H: 0.00537
 C_H: 0.00295
 N_H: 0.000708
 S_H: 0.000141
+# EQ ignores He_H for the shipped atom_list; const_lowT reads it.
 He_H: 0.0838
 ini_mix: EQ
 fastchem_met_scale: 10.0
 # Elemental abundances FastChem starts from. Two files ship:
 #   solar_element_abundances.dat            rocky elements suppressed to -3.0,
-#                                           Lodders 2019. The default. Correct
+#                                           hybrid C/N/O (2009), He/S (2019).
+#                                           The default, intended
 #                                           for the C-H-N-O and S-C-H-N-O
 #                                           networks, which have no Mg/Si/Fe
 #                                           species to hold the oxygen.

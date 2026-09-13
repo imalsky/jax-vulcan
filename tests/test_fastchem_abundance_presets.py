@@ -155,3 +155,50 @@ def test_every_config_declares_an_existing_abundance_file():
             f"{cfg_path} does not declare fastchem_solar_abundance_file")
         rel = cfg["fastchem_solar_abundance_file"]
         assert (PKG / rel).exists(), f"{cfg_path} points at missing {rel}"
+
+
+@pytest.mark.parametrize('name', ['default', 'HD189', 'HD209', 'HD189_vulcan3', 'W39b'])
+def test_eq_writer_reports_ignored_settings_without_changing_input(name, tmp_path, monkeypatch, capsys):
+    """An ignored request must be visible; active overrides must still work."""
+    import shutil
+    import warnings
+    import numpy as np
+    from vulcan_jax import ini_abun, load_config
+
+    cfg = load_config(str(PKG / 'configs' / f'{name}.yaml'))
+    inp = tmp_path / 'input'
+    inp.mkdir()
+    shutil.copyfile(PKG / 'fastchem_vulcan/input/parameters_wo_ion.dat',
+                    inp / 'parameters_wo_ion.dat')
+    monkeypatch.setattr(ini_abun, '_CFG', cfg)
+    monkeypatch.setattr(ini_abun, '_FC_INPUT', inp)
+    monkeypatch.setattr(ini_abun, '_FC_VULCAN_TP', tmp_path / 'TP.dat')
+    monkeypatch.setattr(ini_abun, '_FC_OUTPUT', tmp_path / 'output')
+    monkeypatch.setattr(ini_abun, '_ensure_fastchem_binary', lambda: None)
+    monkeypatch.setattr(ini_abun.subprocess, 'check_call', lambda *a, **k: None)
+    atm = SimpleNamespace(pco=np.array([1e6]), Tco=np.array([1000.]))
+
+    def write():
+        with warnings.catch_warnings(record=True) as seen:
+            warnings.simplefilter('always')
+            ini_abun._run_fastchem_locked(atm)
+        return (inp / 'element_abundances_vulcan.dat').read_bytes(), seen
+
+    baseline, _ = write()
+    cfg.He_H = 0.2
+    actual, seen = write()
+    assert actual == baseline
+    assert len(seen) == 1
+    message = str(seen[0].message)
+    assert 'He_H=0.2' in message and 'ignored' in message
+    assert '0.0837915' in message and 'solar_element_abundances.dat' in message
+    assert 'FastChem input ratios' in capsys.readouterr().out
+
+    cfg.S_H = 0.001
+    sulfur, seen = write()
+    sulfur_active = not cfg.use_solar and 'S' in cfg.atom_list
+    assert (sulfur != baseline) == sulfur_active
+    assert ('S_H=0.001' in str(seen[0].message)) == (not sulfur_active)
+    cfg.C_H *= 2
+    carbon, _ = write()
+    assert (carbon != sulfur) == (not cfg.use_solar)

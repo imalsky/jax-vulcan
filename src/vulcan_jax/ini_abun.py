@@ -21,6 +21,7 @@ import fcntl
 import os
 import pickle
 import subprocess
+import warnings
 from pathlib import Path
 from shutil import copyfile
 
@@ -269,6 +270,35 @@ def _run_fastchem_locked(data_atm) -> None:
 
         with open(_FC_INPUT / "element_abundances_vulcan.dat", "w") as fout:
             fout.write(new_str)
+
+    # Report the generated input, not the potentially inactive config values.
+    effective = {}
+    for line in new_str.splitlines():
+        fields = line.split()
+        if fields and not line.lstrip().startswith("#"):
+            effective[fields[0]] = 10.0 ** (float(fields[1]) - 12.0)
+    print("FastChem input ratios (to H): " + ", ".join(
+        f"{sp}/H={effective[sp]:.8g}" for sp in ("He", "C", "N", "O", "S")
+        if sp in effective
+    ))
+    ignored = [
+        f"{sp}_H={getattr(_CFG, sp + '_H')} (effective {effective[sp]:.8g})"
+        for sp in effective
+        if hasattr(_CFG, sp + "_H") and (_CFG.use_solar or sp not in ele_list)
+    ]
+    if _CFG.use_solar and hasattr(_CFG, "fastchem_met_scale"):
+        ignored.append(f"fastchem_met_scale={_CFG.fastchem_met_scale}")
+    if ignored:
+        warnings.warn(
+            "EQ initialization ignored settings: " + "; ".join(ignored)
+            + f". Abundance preset: {solar_ele}. "
+            + ("use_solar=True uses the file unchanged; select use_solar=False "
+               "to customize network elements. " if _CFG.use_solar else
+               "Only atom_list elements other than H use <X>_H; other metals "
+               "use the file scaled by fastchem_met_scale. ")
+            + "For the shipped atom lists, helium comes from the selected preset.",
+            UserWarning, stacklevel=2,
+        )
 
     _FC_VULCAN_TP.parent.mkdir(parents=True, exist_ok=True)
     _FC_OUTPUT.mkdir(parents=True, exist_ok=True)

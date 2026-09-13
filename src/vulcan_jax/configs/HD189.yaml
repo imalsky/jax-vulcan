@@ -24,17 +24,22 @@ output_dir: output/
 plot_dir: plot/
 movie_dir: plot/movie/
 out_name: HD189.vul
+# EQ takes the selected abundance file unchanged; *_H and fastchem_met_scale
+# below are inactive unless the initialization mode/settings change.
 use_solar: true
 O_H: 0.00060618
 C_H: 0.00027761
 N_H: 8.1853e-05
+# EQ ignores S_H when S is absent from atom_list.
 S_H: 1.3183e-05
+# EQ ignores He_H for the shipped atom_list; const_lowT reads it.
 He_H: 0.09692
 ini_mix: EQ
 fastchem_met_scale: 1.0
 # Elemental abundances FastChem starts from. Two files ship:
 #   solar_element_abundances.dat            rocky elements suppressed to -3.0,
-#                                           Lodders 2019. The default. Correct
+#                                           hybrid C/N/O (2009), He/S (2019).
+#                                           The default, intended
 #                                           for the C-H-N-O and S-C-H-N-O
 #                                           networks, which have no Mg/Si/Fe
 #                                           species to hold the oxygen.

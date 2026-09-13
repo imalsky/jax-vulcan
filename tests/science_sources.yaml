@@ -166,13 +166,14 @@ supported_inputs:
     oracle: vulcan3_vm_branch
 
   fastchem_vulcan/input/solar_element_abundances.dat:
-    sha256: 5f33aebb69678937f51706bcd945ff3d558d0c0593cb6b729bb381f7b5c988a0
+    sha256: 7c38fceaa0e358e62cde61ebdb416a08e248957c56cb2d301c270be2a45c2126
     oracle: vulcan2_fastchem_ps_order
     diverges: [C12_fastchem_ps_order, C15_lodders2019_rocky_suppressed]
     note: >-
-      DEFAULT preset: rocky elements suppressed to -3.0; S and He rows are
-      Lodders 2019 Table 8, the C/N/O rows are upstream's Lodders 2009 file
-      values (every shipped config overwrites them, use_solar false). The
+      DEFAULT hybrid preset: rocky elements suppressed to -3.0; S and He rows
+      approximate Lodders 2019 Table 8, the C/N/O rows are upstream's Lodders 2009 file
+      values. default/HD189/HD189_vulcan3 use the file unchanged; HD209/W39b
+      override network elements other than H in custom mode. The
       header says so; the hash covers header and rows alike.
       The leading comment block is REQUIRED: FastChem discards line 1 as a
       header, so an element on the first row is silently dropped along with
@@ -255,8 +256,9 @@ intentional_divergences:
   C15_lodders2019_rocky_suppressed:
     files: [fastchem_vulcan/input/solar_element_abundances.dat]
     reason: >-
-      The DEFAULT preset uses Lodders 2019 with rocky elements suppressed to
-      -3.0, which is correct for NCHO/SNCHO networks that carry no Mg/Si/Fe
+      The DEFAULT hybrid preset keeps upstream C/N/O and uses approximately
+      Lodders 2019 He/S, with rocky elements suppressed to -3.0 for NCHO/SNCHO
+      networks that carry no Mg/Si/Fe
       species to hold the oxygen. Upstream ships Lodders 2009 at solar. This is
       a CONFIG CHOICE, not a correction: both files ship and
       `fastchem_solar_abundance_file` selects.
