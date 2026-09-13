@@ -165,6 +165,7 @@ class JaxIntegState(NamedTuple):
     loss_criteria: jnp.ndarray  # ()                  float64
     update_photo_frq: jnp.ndarray  # ()                  int32
     is_final_photo_frq: jnp.ndarray  # ()                  bool
+    geom_ok: jnp.ndarray  # ()  bool — refreshed geometry agreed at the last certificate candidate
 
     # Post-condensation fixed-species state.
     fix_species_started: jnp.ndarray  # ()                  bool
@@ -625,6 +626,7 @@ class _Statics(NamedTuple):
     yconv_min: float
     slope_cri: float
     flux_cri: float
+    geom_conv_tol: float  # certificate: max relative move of the refreshed geometry
     mtol_conv: float
     conver_ignore_mask: jnp.ndarray  # (ni,) bool — species to drop from longdy
     condense_zero_conv_mask: jnp.ndarray  # (nz, ni) bool — non_gas_sp columns
@@ -758,6 +760,7 @@ def _make_runner(
     slope_cri = statics.slope_cri
     flux_cri = statics.flux_cri
     mtol_conv = statics.mtol_conv
+    geom_conv_tol = statics.geom_conv_tol
     conver_ignore_mask = statics.conver_ignore_mask
     condense_zero_conv_mask = statics.condense_zero_conv_mask
     use_photo_static = statics.use_photo
@@ -930,7 +933,9 @@ def _make_runner(
         is_converged, conv_normal, is_stalled = _convergence_ok(s)
 
         ready = (s.t > jnp.float64(trun_min)) & (s.accept_count > s.count_min_dyn)
-        conv_term = ready & is_converged
+        # `geom_ok` is written by the body on the candidate step (see
+        # there): the refreshed geometry agreed with the composition.
+        conv_term = ready & is_converged & s.geom_ok
         real_term = too_long | too_many | conv_term
         if hybrid_vm_static:
             # Phase 0 (upwind) NEVER terminates here: the body flips to phase 1
@@ -1161,69 +1166,6 @@ def _make_runner(
             vs_next = s.vs
             trigger_fix = jnp.bool_(False)
 
-        # Atm refresh (op.py:905-907): after conden, before hydrostatic
-        # balance, on accepted steps only. `s.accept_count` is pre-increment,
-        # matching master's `count % update_frq == 0` cadence.
-        if refresh_static is not None:
-            refresh_due = (
-                do_accept
-                & (jnp.mod(s.accept_count, jnp.int32(update_frq)) == jnp.int32(0))
-                & jnp.bool_(use_atm_refresh_static)
-            )
-            # Splice this lane's per-profile atmosphere from the carry into
-            # the closure-baked refresh static (vmap batches the carry, not
-            # closures). `pref_indx` stays baked and must be batch-constant
-            # (prepare_runstate rejects a mismatch).
-            refresh_lane = refresh_static._replace(
-                Tco=s.pv.r_Tco,
-                pico=s.pv.r_pico,
-                Dzz_top=s.pv.r_Dzz_top,
-                gs=s.pv.r_gs,
-                zco_pref=s.pv.r_zco_pref,
-                Rp=s.pv.r_Rp,
-            )
-
-            def _do_refresh(_):
-                mu_n, g_n, Hp_n, dz_n, zco_n, dzi_n, Hpi_n = (
-                    _atm_refresh_mod.update_mu_dz_jax(ymix_new, refresh_lane)
-                )
-                top_flux_n = _atm_refresh_mod.update_phi_esc_jax(
-                    sol_clip,
-                    g_n,
-                    Hp_n,
-                    s.top_flux,
-                    refresh_lane,
-                )
-                return mu_n, g_n, Hp_n, dz_n, zco_n, dzi_n, Hpi_n, top_flux_n
-
-            def _no_refresh(_):
-                return (s.mu, s.g, s.Hp, s.dz, s.zco, s.dzi, s.Hpi, s.top_flux)
-
-            (
-                mu_next,
-                g_next,
-                Hp_next,
-                dz_next,
-                zco_next,
-                dzi_next,
-                Hpi_next,
-                top_flux_next,
-            ) = jax.lax.cond(
-                refresh_due,
-                _do_refresh,
-                _no_refresh,
-                operand=None,
-            )
-        else:
-            mu_next = s.mu
-            g_next = s.g
-            Hp_next = s.Hp
-            dz_next = s.dz
-            zco_next = s.zco
-            dzi_next = s.dzi
-            Hpi_next = s.Hpi
-            top_flux_next = s.top_flux
-
         n_0 = atm_step.M[:, None]
         sol_balanced_full = n_0 * ymix_new
         if hydro_partial:
@@ -1355,6 +1297,109 @@ def _make_runner(
                 s.count_since_new_min,
             ),
         )
+
+        # Certificate candidate: the chemistry certificate holds on the state
+        # this step produced (`_convergence_ok` on the post-step longdy; the
+        # stall exit counts too). The atm refresh below fires on that step
+        # whatever the cadence says, and `geom_ok` records whether it moved
+        # mu/g/Hp/dzi/Hpi by less than geom_conv_tol; `_real_terminate`
+        # requires it, so a run may end only on geometry consistent with its
+        # own composition (no VULCAN 2 counterpart, notes §3.1 C21). Below
+        # count_min the candidate is never true, so matched-step oracle runs
+        # are unchanged. Hp here is the pre-refresh value; the certificate
+        # itself re-reads the refreshed one next iteration.
+        s_cand = s._replace(longdy=longdy_next, longdydt=longdydt_next,
+                            t=t_next, accept_count=accept_count_next,
+                            longdy_seen_min=longdy_seen_min_next,
+                            count_since_new_min=count_since_new_min_next)
+        is_conv_cand, _, _ = _convergence_ok(s_cand)
+        candidate = (
+            do_accept
+            & is_conv_cand
+            & (t_next > jnp.float64(trun_min))
+            & (accept_count_next > s.count_min_dyn)
+        )
+
+        # Atm refresh (op.py:905-907): after conden, before hydrostatic
+        # balance, on accepted steps only. `s.accept_count` is pre-increment,
+        # matching master's `count % update_frq == 0` cadence.
+        if refresh_static is not None:
+            refresh_due = (
+                do_accept
+                & (
+                    (jnp.mod(s.accept_count, jnp.int32(update_frq)) == jnp.int32(0))
+                    | candidate
+                )
+                & jnp.bool_(use_atm_refresh_static)
+            )
+            # Splice this lane's per-profile atmosphere from the carry into
+            # the closure-baked refresh static (vmap batches the carry, not
+            # closures). `pref_indx` stays baked and must be batch-constant
+            # (prepare_runstate rejects a mismatch).
+            refresh_lane = refresh_static._replace(
+                Tco=s.pv.r_Tco,
+                pico=s.pv.r_pico,
+                Dzz_top=s.pv.r_Dzz_top,
+                gs=s.pv.r_gs,
+                zco_pref=s.pv.r_zco_pref,
+                Rp=s.pv.r_Rp,
+            )
+
+            def _do_refresh(_):
+                mu_n, g_n, Hp_n, dz_n, zco_n, dzi_n, Hpi_n = (
+                    _atm_refresh_mod.update_mu_dz_jax(ymix_new, refresh_lane)
+                )
+                top_flux_n = _atm_refresh_mod.update_phi_esc_jax(
+                    sol_clip,
+                    g_n,
+                    Hp_n,
+                    s.top_flux,
+                    refresh_lane,
+                )
+                return mu_n, g_n, Hp_n, dz_n, zco_n, dzi_n, Hpi_n, top_flux_n
+
+            def _no_refresh(_):
+                return (s.mu, s.g, s.Hp, s.dz, s.zco, s.dzi, s.Hpi, s.top_flux)
+
+            (
+                mu_next,
+                g_next,
+                Hp_next,
+                dz_next,
+                zco_next,
+                dzi_next,
+                Hpi_next,
+                top_flux_next,
+            ) = jax.lax.cond(
+                refresh_due,
+                _do_refresh,
+                _no_refresh,
+                operand=None,
+            )
+            geom_rel = jnp.max(
+                jnp.stack([
+                    jnp.max(jnp.abs(new - old) / jnp.maximum(jnp.abs(new), _UNDERFLOW_DENOM))
+                    for new, old in (
+                        (mu_next, s.mu), (g_next, s.g), (Hp_next, s.Hp),
+                        (dzi_next, s.dzi), (Hpi_next, s.Hpi),
+                    )
+                ])
+            )
+            # With the refresh disabled there is nothing to check against.
+            geom_ok_next = candidate & (
+                (geom_rel < jnp.float64(geom_conv_tol))
+                | jnp.bool_(not use_atm_refresh_static)
+            )
+        else:
+            mu_next = s.mu
+            g_next = s.g
+            Hp_next = s.Hp
+            dz_next = s.dz
+            zco_next = s.zco
+            dzi_next = s.dzi
+            Hpi_next = s.Hpi
+            top_flux_next = s.top_flux
+            geom_ok_next = candidate
 
         # Hybrid vm_mol phase flip: when phase 0 (upwind) ends -- convergence,
         # runtime, or step-count -- switch to central difference, reset the
@@ -1533,6 +1578,7 @@ def _make_runner(
             loss_criteria=loss_criteria_after_dec,
             update_photo_frq=update_photo_frq_next,
             is_final_photo_frq=is_final_next,
+            geom_ok=geom_ok_next,
             mu=mu_next,
             g=g_next,
             Hp=Hp_next,
@@ -1948,6 +1994,7 @@ class OuterLoop:
             yconv_min=float(self._cfg.yconv_min),
             slope_cri=float(self._cfg.slope_cri),
             flux_cri=float(self._cfg.flux_cri),
+            geom_conv_tol=float(getattr(self._cfg, "geom_conv_tol", 1e-3)),
             mtol_conv=float(self._cfg.mtol_conv),
             conver_ignore_mask=jnp.asarray(conver_ignore_np),
             condense_zero_conv_mask=jnp.asarray(cond_zero_conv_np),
@@ -2337,6 +2384,7 @@ class OuterLoop:
             loss_criteria=jnp.float64(float(getattr(self, "loss_criteria", 0.0005))),
             update_photo_frq=jnp.int32(ini_frq),
             is_final_photo_frq=jnp.bool_(False),
+            geom_ok=jnp.bool_(False),
         )
 
     def _profile_vars_from_runstate(self, rs) -> ProfileVars:
