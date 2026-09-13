@@ -166,6 +166,7 @@ yconv_min: 0.1
 flux_cri: 0.1
 flux_atol: 1.0
 geom_conv_tol: 1.0e-3
+element_budget_tol: 1.0e-2
 # VULCAN 2 parity: the HD189 example the oracle tests pin
 # (exoclime/VULCAN@80f75b9 cfg_examples/vulcan_cfg_HD189.py:148) ships the
 # empty list. That revision's ROOT vulcan_cfg.py:153 -- and current exoclime

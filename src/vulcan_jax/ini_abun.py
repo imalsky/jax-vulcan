@@ -182,8 +182,9 @@ def column_atom_loss(y, y_ini, dz, compo_arr=compo_array):
     Relative change, between `y_ini` and `y`, of the column integral
     `Σ_z w_z * compo[i,a] * y[z,i]` with `w = operator_column_weights(dz)` —
     the quantity the discretized transport actually conserves on a
-    nonuniform grid. Diagnostic only: step acceptance uses the unweighted
-    `atom_loss` (master parity), and this never gates anything. The weights
+    nonuniform grid. Step acceptance uses the unweighted `atom_loss`
+    (master parity); this is the certificate's `budget_ok` term (C23) and
+    the `report_column_atom_loss` print. The weights
     are evaluated on the `dz` passed in; the run's grid measures the budget
     on its own geometry, the initial grid isolates solver drift from the
     mu/dz refresh.

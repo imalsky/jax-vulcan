@@ -18,6 +18,7 @@ from pathlib import Path
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -161,3 +162,44 @@ def test_end_case_is_not_success_for_a_frozen_or_yielded_lane():
     at_cap.accept_count = at_cap.count_max_dyn + 1
     assert clf(None, at_cap) == 1, "converged at count_max must be a success"
     assert clf(None, _S(3)) == 3 and clf(None, _S(2)) == 2
+
+
+_COUNT_MAX = 8  # small: the control run must exhaust it in seconds
+
+
+@pytest.mark.strict_isolation
+@pytest.mark.parametrize("poison,want_reason", [(False, 3), (True, 5)])
+def test_single_profile_run_stops_on_a_nonfinite_state(poison, want_reason):
+    """End to end: the single-profile `cond_fn` must bail on a non-finite
+    state with the batched path's reason 5 (`body_fn_batch`) instead of
+    burning the whole step budget. The finite case is the control: unchanged
+    predicate, so it still runs out its budget (reason 3).
+    """
+    from _helpers import fast_cfg
+
+    from vulcan_jax import legacy_io, op_jax
+    from vulcan_jax.outer_loop import OuterLoop
+    from vulcan_jax.state import RunState
+
+    cfg = fast_cfg(
+        count_max=_COUNT_MAX, Tiso=900.0, use_vm_mol=False, use_hybrid_vm_mol=False
+    )
+    integ = OuterLoop(op_jax.Ros2JAX(), legacy_io.Output())
+    state, atm_static = integ.prepare_runstate(RunState.with_pre_loop_setup(cfg))
+    if poison:
+        # Poison y AND y_prev: a rejected Ros2 step reverts y to y_prev, so
+        # poisoning y alone self-heals (same trick as test_vmap_while_loop).
+        state = state._replace(
+            y=state.y.at[0, 0].set(jnp.nan),
+            y_prev=state.y_prev.at[0, 0].set(jnp.nan),
+        )
+    final = integ._runner(state, atm_static)
+    steps = int(final.accept_count)
+    assert int(final.termination_reason) == want_reason, (
+        f"poison={poison}: reason {int(final.termination_reason)} after "
+        f"{steps} steps (want {want_reason})"
+    )
+    assert (steps <= 1) if poison else (steps > _COUNT_MAX), (
+        f"poison={poison}: {steps} accepted steps against count_max "
+        f"{_COUNT_MAX}"
+    )

@@ -170,6 +170,14 @@ flux_atol: 1.0
 # reference (1.56 without the term, 2e-2 at 1e-2); 1e-4 never certifies
 # HD189_vulcan3, whose top drifts 0.03-0.3% between candidates.
 geom_conv_tol: 1.0e-3
+# Certificate term with no VULCAN 2 counterpart (notes §3.1 C23): the run may
+# end only if the operator-weighted column of every element is within this
+# relative distance of the column it started from. `loss_eps` bounds the
+# PER-STEP change of the unweighted atom sum, so a slow drain passes it (§1.12:
+# a column certified having lost 21% of its sulfur). 1e-2 measured (§1.13):
+# HD189 2.7e-5, HD209 2.4e-5, W39b 2.9e-7, HD189_vulcan3 2.7e-5, W39b
+# photo-off 2.2e-3; the drained columns it must reject are 2.2e-1 and 9.8e-1.
+element_budget_tol: 1.0e-2
 # VULCAN 2 parity: the HD189 example the oracle tests pin
 # (exoclime/VULCAN@80f75b9 cfg_examples/vulcan_cfg_HD189.py:148) ships the
 # empty list. That revision's ROOT vulcan_cfg.py:153 -- and current exoclime

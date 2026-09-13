@@ -53,7 +53,8 @@ def _seed_stall_eligible(state, c, *, count_since_new_min=None, longdy=None):
       longdy_seen_min     < yconv_min
       longdy              < yconv_min
       aflux_change        < flux_cri
-      geom_ok             (the geometry term every certificate exit needs)
+      geom_ok, budget_ok  (the geometry and element-budget terms every
+                           certificate exit needs)
       ready: t > trun_min and accept_count > count_min_dyn
     `longdydt` is left large so neither `conv_normal` branch can fire.
     """
@@ -74,6 +75,7 @@ def _seed_stall_eligible(state, c, *, count_since_new_min=None, longdy=None):
         longdydt=jnp.float64(1.0),
         aflux_change=jnp.float64(0.0),
         geom_ok=jnp.bool_(True),
+        budget_ok=jnp.bool_(True),
     )
 
 

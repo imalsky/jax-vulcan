@@ -431,6 +431,7 @@ def _validate_numerical_bounds(cfg) -> list[str]:
         ("yconv_min", "loose-branch convergence gate"),
         ("slope_cri", "slope criterion"),
         ("geom_conv_tol", "geometry certificate tolerance"),
+        ("element_budget_tol", "column element-budget certificate tolerance"),
         ("r_star", "stellar radius, Rsun"),
         ("orbit_radius", "orbital distance, AU"),
     ):

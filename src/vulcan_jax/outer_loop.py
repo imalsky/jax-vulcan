@@ -28,6 +28,7 @@ from . import photo as _photo_mod
 from . import atm_refresh as _atm_refresh_mod
 from . import conden as _conden_mod
 from . import state as _state_mod
+from .ini_abun import column_atom_loss
 from .jax_step import AtmStatic, jax_ros2_step, make_atm_static
 from .runtime_validation import validate_runtime_config
 from ._paths import resolve_data_path
@@ -70,6 +71,7 @@ class ProfileVars(NamedTuple):
     n_0: jnp.ndarray  # (nz,)              total number density
     Kzz: jnp.ndarray  # (nz-1,)            eddy diffusion (cond_fn slope_min)
     atom_ini: jnp.ndarray  # (n_atoms,)    initial atom abundances (atom_loss)
+    y_ini: jnp.ndarray  # (nz, ni)         initial column (element-budget term)
     bottom_n: jnp.ndarray  # (ni,)         fix-all-bot pin (ymix[0]*n_0[0])
     fix_species_sat_mix: jnp.ndarray  # (n_fix_species, nz)
     # from AtmRefreshStatic
@@ -166,6 +168,7 @@ class JaxIntegState(NamedTuple):
     update_photo_frq: jnp.ndarray  # ()                  int32
     is_final_photo_frq: jnp.ndarray  # ()                  bool
     geom_ok: jnp.ndarray  # ()  bool — refreshed geometry agreed at the last certificate candidate
+    budget_ok: jnp.ndarray  # () bool  column element budget held at the last candidate (C23)
 
     # Post-condensation fixed-species state.
     fix_species_started: jnp.ndarray  # ()                  bool
@@ -268,19 +271,19 @@ def _compute_atom_loss(
 def _print_column_atom_loss(cfg, y, y_ini, dz) -> None:
     """Opt-in end-of-run operator-weighted column budget (`report_column_atom_loss`).
 
-    Reported, never gated: step acceptance keeps the unweighted
-    master-parity `atom_loss`; this prints the operator-weighted column
-    drift (`ini_abun.column_atom_loss`) — the quantity the discretized
-    transport actually conserves on a nonuniform grid.
+    Per-atom print of the quantity the certificate's `budget_ok` term gates
+    on (C23): step acceptance keeps the unweighted master-parity
+    `atom_loss`; this is the operator-weighted column drift
+    (`ini_abun.column_atom_loss`) — what the discretized transport actually
+    conserves on a nonuniform grid.
     """
     if not bool(getattr(cfg, "report_column_atom_loss", False)):
         return
     from .composition import atom_list as _compo_atoms
-    from .ini_abun import column_atom_loss
 
     drift = np.asarray(column_atom_loss(y, y_ini, dz))
     loss_ex = list(getattr(cfg, "loss_ex", []) or [])
-    print("column atom budget (operator-weighted; diagnostic, not a gate):")
+    print("column atom budget (operator-weighted; the certificate's C23 term):")
     # Mirror print_end_msg: only the atoms this config tracks, minus loss_ex.
     for name in getattr(cfg, "atom_list", []):
         if name in _compo_atoms and name not in loss_ex:
@@ -627,6 +630,7 @@ class _Statics(NamedTuple):
     slope_cri: float
     flux_cri: float
     geom_conv_tol: float  # certificate: max relative move of the refreshed geometry
+    element_budget_tol: float  # certificate: max cumulative column element drift
     mtol_conv: float
     conver_ignore_mask: jnp.ndarray  # (ni,) bool — species to drop from longdy
     condense_zero_conv_mask: jnp.ndarray  # (nz, ni) bool — non_gas_sp columns
@@ -761,6 +765,7 @@ def _make_runner(
     flux_cri = statics.flux_cri
     mtol_conv = statics.mtol_conv
     geom_conv_tol = statics.geom_conv_tol
+    element_budget_tol = statics.element_budget_tol
     conver_ignore_mask = statics.conver_ignore_mask
     condense_zero_conv_mask = statics.condense_zero_conv_mask
     use_photo_static = statics.use_photo
@@ -932,7 +937,8 @@ def _make_runner(
         Reason priority matches master's stop() (op.py:1065-1085): converged
         over runtime over step-count, so a step that is both converged and at
         a cap reports success. Codes: 0 running, 1 converged, 2 runtime
-        exceeded, 3 step-count exceeded, 4 stalled-convergence.
+        exceeded, 3 step-count exceeded, 4 stalled-convergence, 5 non-finite
+        (which outranks the rest).
 
         `tangent_ok` is the sensitivity certificate of `runner_jvp`; the
         primal runner passes the default, which folds away at trace time.
@@ -945,28 +951,39 @@ def _make_runner(
         is_converged, conv_normal, is_stalled = _convergence_ok(s)
 
         ready = (s.t > jnp.float64(trun_min)) & (s.accept_count > s.count_min_dyn)
-        # `geom_ok` is written by the body on the candidate step (see
-        # there): the refreshed geometry agreed with the composition.
-        conv_term = ready & is_converged & s.geom_ok & tangent_ok
+        # `geom_ok` / `budget_ok` are written by the body on the candidate
+        # step (see there): the refreshed geometry agreed with the
+        # composition, and the column kept its elements since t=0.
+        conv_term = ready & is_converged & s.geom_ok & s.budget_ok & tangent_ok
         real_term = too_long | too_many | conv_term
         if hybrid_vm_static:
             # Phase 0 (upwind) NEVER terminates here: the body flips to phase 1
             # (central difference) and extends the budget instead (vm_branch
             # stop()). A run stopping through this predicate is in phase 1 --
             # a central-difference fixed point only if phase 1 converged
-            # (reason 1/4). Bypass exits (host wall-clock bail-out, batched
-            # non-finite freeze) can still return in phase 0.
+            # (reason 1/4). Bypass exits (host wall-clock bail-out, the
+            # non-finite exit below) can still return in phase 0.
             real_term = real_term & (s.hybrid_use_vm < jnp.float64(0.5))
+        # A non-finite state can never recover, so stop at once with the
+        # batched path's reason 5 (`body_fn_batch`) instead of burning the
+        # step budget. A bypass exit: OR'd after the hybrid gate, and it
+        # outranks every other code (nothing NaN converged or timed out).
+        non_finite = jnp.logical_not(jnp.all(jnp.isfinite(s.y)))
+        real_term = real_term | non_finite
         reason = jnp.where(
-            conv_term & conv_normal,
-            jnp.int32(1),
+            non_finite,
+            jnp.int32(5),
             jnp.where(
-                conv_term & is_stalled,
-                jnp.int32(4),
+                conv_term & conv_normal,
+                jnp.int32(1),
                 jnp.where(
-                    too_long,
-                    jnp.int32(2),
-                    jnp.where(too_many, jnp.int32(3), jnp.int32(0)),
+                    conv_term & is_stalled,
+                    jnp.int32(4),
+                    jnp.where(
+                        too_long,
+                        jnp.int32(2),
+                        jnp.where(too_many, jnp.int32(3), jnp.int32(0)),
+                    ),
                 ),
             ),
         )
@@ -1413,6 +1430,20 @@ def _make_runner(
             top_flux_next = s.top_flux
             geom_ok_next = candidate
 
+        # Cumulative element budget (notes §3.1 C23, no VULCAN 2 counterpart):
+        # `loss_eps` rejects a per-step jump in the unweighted atom sum, so a
+        # slow drain passes it (§1.12: a column certified having lost 21% of
+        # its sulfur). This measures the operator-weighted column of the state
+        # the step RETURNS (`y_next`: after the hydrostatic renormalisation and
+        # the bottom pins) against the state the run started from, on the
+        # refreshed grid; the tolerance and its calibration sit in default.yaml.
+        budget_ok_next = candidate & (
+            jnp.max(
+                jnp.abs(column_atom_loss(y_next, s.pv.y_ini, dz_next, compo_arr))
+            )
+            < jnp.float64(element_budget_tol)
+        )
+
         # Hybrid vm_mol phase flip: when phase 0 (upwind) ends -- convergence,
         # runtime, or step-count -- switch to central difference, reset the
         # convergence trackers, and extend the budget the vm_branch stop() way:
@@ -1591,6 +1622,7 @@ def _make_runner(
             update_photo_frq=update_photo_frq_next,
             is_final_photo_frq=is_final_next,
             geom_ok=geom_ok_next,
+            budget_ok=budget_ok_next,
             mu=mu_next,
             g=g_next,
             Hp=Hp_next,
@@ -2122,6 +2154,7 @@ class OuterLoop:
             slope_cri=float(self._cfg.slope_cri),
             flux_cri=float(self._cfg.flux_cri),
             geom_conv_tol=float(getattr(self._cfg, "geom_conv_tol", 1e-3)),
+            element_budget_tol=float(getattr(self._cfg, "element_budget_tol", 1e-2)),
             mtol_conv=float(self._cfg.mtol_conv),
             conver_ignore_mask=jnp.asarray(conver_ignore_np),
             condense_zero_conv_mask=jnp.asarray(cond_zero_conv_np),
@@ -2571,6 +2604,7 @@ class OuterLoop:
             update_photo_frq=jnp.int32(ini_frq),
             is_final_photo_frq=jnp.bool_(False),
             geom_ok=jnp.bool_(False),
+            budget_ok=jnp.bool_(False),
         )
 
     def _profile_vars_from_runstate(self, rs) -> ProfileVars:
@@ -2634,6 +2668,7 @@ class OuterLoop:
             n_0=jnp.asarray(statics.n_0, dtype=jnp.float64),
             Kzz=jnp.asarray(statics.Kzz, dtype=jnp.float64),
             atom_ini=jnp.asarray(statics.atom_ini_arr, dtype=jnp.float64),
+            y_ini=jnp.asarray(rs.metadata.y_ini, dtype=jnp.float64),
             bottom_n=jnp.asarray(statics.bottom_n, dtype=jnp.float64),
             fix_species_sat_mix=jnp.asarray(
                 statics.fix_species_sat_mix, dtype=jnp.float64
