@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import pickle
+import platform
 import sys
 import warnings
 from pathlib import Path
@@ -32,6 +33,15 @@ from oracle import oracle_dir_or_sentinel  # noqa: E402
 # temporary COPY; the per-test is_dir() skips below handle "not configured".
 VULCAN_MASTER = oracle_dir_or_sentinel()
 PROJECT_ROOT = ROOT.parent
+
+# Roundoff allowance for an atom residual, as a fraction of the summed
+# magnitude of the terms that residual cancels. float64 eps is 2.2e-16 and the
+# cancelled sums run over hundreds of species and reaction terms, so this is a
+# few thousand ulps. Measured worst elementwise ratio on the HD209 state:
+# projected RHS 3.3e-17, unjitted RHS 3.3e-16, projected Jacobian 1.6e-16 --
+# four decades under the floor, while the arm64 raw jitted RHS sits at 2.9e-10,
+# i.e. above it.
+_ATOM_RESIDUAL_EPS = 1.0e-12
 
 
 def _atom_count_matrix(net: object, atoms: tuple[str, ...]) -> np.ndarray:
@@ -252,7 +262,15 @@ def _hd209_repeated_final_layer_fixture() -> tuple[
 
 
 def test_hd209_jit_rhs_projection_removes_atom_residual() -> None:
-    """HD209 C drift is the raw JIT RHS residual, not source stoichiometry."""
+    """Projected HD209 RHS carries no atom residual above float64 roundoff.
+
+    HD209 C drift is the raw JIT RHS residual, not source stoichiometry: the
+    unjitted evaluation is exact to roundoff, the jitted one need not be. HOW
+    MUCH drift there is to remove is a compiler property -- XLA fuses the
+    multiply chains into FMA on macOS/arm64 (C residual 3e9-1.2e10, 2.9e-10 of
+    the row scale) and does not on the ubuntu x86-64 runner (197.4, already
+    roundoff) -- so only the post-projection state is asserted.
+    """
     import jax
     import jax.numpy as jnp
     import vulcan_jax.chem as chem_mod
@@ -277,17 +295,21 @@ def test_hd209_jit_rhs_projection_removes_atom_residual() -> None:
     c_idx = atoms.index("C")
     raw_residual = out_jit @ atom_counts  # shape: (nz, n_atoms)
     nojit_residual = out_nojit @ atom_counts
-    # State-robust floor for the raw JIT FMA drift: its magnitude varies with
-    # the captured HD209 state, so assert it sits far above the < 1e4 corrected
-    # value instead of pinning an exact number. Measured on both shipped
-    # fixtures: 7.7e9 (jax_paper/data/jax_HD209.vul) and 1.4e9
-    # (output/HD209.vul), so 1e8 keeps a >10x margin on the lower one.
-    assert abs(float(raw_residual[0, c_idx])) > 1.0e8
-    assert abs(float(nojit_residual[0, c_idx])) < 1.0e4
-
     projected = np.asarray(jax_step._project_chem_rhs(jnp.asarray(out_jit)))
     projected_residual = projected @ atom_counts
-    assert abs(float(projected_residual[0, c_idx])) < 1.0e4
+    # Floor from the state itself: the magnitude the residual cancels.
+    floor = _ATOM_RESIDUAL_EPS * (np.abs(out_jit) @ np.abs(atom_counts))
+    print(
+        f"HD209 C residual: raw jit {raw_residual[0, c_idx]:.3e}, "
+        f"unjitted {nojit_residual[0, c_idx]:.3e}, "
+        f"projected {projected_residual[0, c_idx]:.3e}, "
+        f"floor {floor[0, c_idx]:.3e} ({platform.machine()})"
+    )
+
+    # The projection zeroes the residual to roundoff whatever the raw one was,
+    # so this also says it is no worse than the raw residual beyond roundoff.
+    assert np.all(np.abs(projected_residual) <= floor)
+    assert np.all(np.abs(nojit_residual) <= floor)
 
     reservoir_idx = [net.species_idx[sp] for sp in ("H2", "H2O", "CO", "N2")]
     non_reservoir_delta = np.delete(projected - out_jit, reservoir_idx, axis=1)
@@ -295,7 +317,13 @@ def test_hd209_jit_rhs_projection_removes_atom_residual() -> None:
 
 
 def test_hd209_jacobian_projection_uses_same_reservoir_rows() -> None:
-    """Projected chemistry Jacobian mutates only reservoir rows."""
+    """Projected chemistry Jacobian: residual at roundoff, reservoir rows only.
+
+    "The projection shrinks the raw residual" is not an invariant: the raw
+    Jacobian residual is already at roundoff on both platforms (C rows 1.2e-4
+    of a 1.3e12 row scale on macOS/arm64, 3.8e-5 on the ubuntu x86-64 runner),
+    so on x86 the projection's own roundoff (2.1e-4) exceeds what it removes.
+    """
     import jax
     import jax.numpy as jnp
     import vulcan_jax.chem as chem_mod
@@ -312,10 +340,16 @@ def test_hd209_jacobian_projection_uses_same_reservoir_rows() -> None:
 
     before = np.einsum("ia,zij->zaj", atom_counts, chem_jac)
     after = np.einsum("ia,zij->zaj", atom_counts, projected)
-    c_idx = atoms.index("C")
-    assert float(np.max(np.abs(after[:, c_idx, :]))) < float(
-        np.max(np.abs(before[:, c_idx, :]))
+    floor = _ATOM_RESIDUAL_EPS * np.einsum(
+        "ia,zij->zaj", np.abs(atom_counts), np.abs(chem_jac)
     )
+    c_idx = atoms.index("C")
+    print(
+        f"HD209 Jacobian C residual: raw {np.abs(before[:, c_idx, :]).max():.3e}, "
+        f"projected {np.abs(after[:, c_idx, :]).max():.3e}, "
+        f"floor {floor[:, c_idx, :].max():.3e} ({platform.machine()})"
+    )
+    assert np.all(np.abs(after) <= floor)
 
     reservoir_idx = [net.species_idx[sp] for sp in ("H2", "H2O", "CO", "N2")]
     non_reservoir_delta = np.delete(projected - chem_jac, reservoir_idx, axis=1)
