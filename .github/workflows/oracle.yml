@@ -81,6 +81,18 @@ jobs:
       - name: Build the numerical-regression fixtures
         run: python tests/gen_fixtures.py --all
 
+      # test_chem_rhs_codegen.py's two HD209 projection cases read a CONVERGED
+      # HD209 state from output/HD209.vul (or a sibling jax_paper checkout,
+      # which CI does not have) and fail without it, since the release gate may
+      # not take the ALLOW_MISSING_FIXTURES skip. Converge it here instead: the
+      # CLI writes output/<out_name> relative to the cwd, so running from the
+      # checkout puts it exactly where the test looks. 1211 steps, ~45 s on the
+      # reference laptop plus a cold XLA compile; ncho only (the other family
+      # does not select that file).
+      - name: Converge HD209 (the codegen tests' steady-state oracle)
+        if: matrix.family == 'vulcan2_ncho'
+        run: python -m vulcan_jax.vulcan_jax_cli --config HD209
+
       - name: Run the ${{ matrix.family }} comparisons
         env:
           VULCAN_MASTER_DIR: ${{ runner.temp }}/oracle-${{ matrix.family }}
