@@ -1,14 +1,11 @@
 """Unit tests for the host-setup parallelism hooks.
 
 These back the GPU-batched emulator's parallel host setup (one spawn worker per
-profile, each with a private FastChem tree). Three independent, additive hooks:
+profile, each with a private FastChem tree). Two independent, additive hooks:
 
-  1. RATE-PARSE CACHE — `ReadRate.read_rate` memoises the network parse per
-     process. A cache hit must reproduce the no-cache RunState bit-for-bit
-     (the parse output depends only on the network file + `use_ion`).
-  2. skip_chem_warmup — skipping the chem-RHS JIT warmup must leave the
+  1. skip_chem_warmup — skipping the chem-RHS JIT warmup must leave the
      returned RunState byte-identical (the warmup result is discarded).
-  3. $VULCAN_JAX_FASTCHEM_DIR — redirects FastChem's working tree when set
+  2. $VULCAN_JAX_FASTCHEM_DIR — redirects FastChem's working tree when set
      before import (checked in a subprocess; no FastChem run needed).
 
 All CPU; mirror `test_vmap_while_loop` for the fast photo-off setup.
@@ -42,48 +39,6 @@ def _build_rs(vulcan_cfg, *, skip_chem_warmup=False):
     from vulcan_jax.state import RunState
 
     return RunState.with_pre_loop_setup(vulcan_cfg, skip_chem_warmup=skip_chem_warmup)
-
-
-def _rate_fields(rs) -> dict:
-    """The rate-parse-derived fields that a cache miss-restore would corrupt."""
-    return {
-        "k": np.asarray(rs.rate.k, dtype=np.float64),
-        "Rf": dict(rs.metadata.Rf),
-        "n_branch": dict(rs.metadata.n_branch),
-        "photo_sp": frozenset(rs.metadata.photo_sp),
-    }
-
-
-def _assert_rate_fields_equal(a: dict, b: dict) -> None:
-    np.testing.assert_array_equal(a["k"], b["k"])
-    assert a["Rf"] == b["Rf"]
-    assert a["n_branch"] == b["n_branch"]
-    assert a["photo_sp"] == b["photo_sp"]
-
-
-def test_rate_parse_cache_matches_no_cache():
-    """A warm cache hit reproduces the no-cache RunState's rate metadata."""
-    import vulcan_jax.legacy_io as lio
-
-    cfg = _pin_cfg()
-
-    # Reference: cache OFF.
-    os.environ["VULCAN_JAX_RATE_CACHE"] = "0"
-    lio._RATE_PARSE_CACHE.clear()
-    assert not lio._rate_cache_enabled()
-    ref = _rate_fields(_build_rs(cfg))
-
-    # Cache ON: first build fills the cache (miss), second restores it (hit).
-    os.environ["VULCAN_JAX_RATE_CACHE"] = "1"
-    lio._RATE_PARSE_CACHE.clear()
-    assert lio._rate_cache_enabled()
-    cold = _rate_fields(_build_rs(cfg))
-    assert len(lio._RATE_PARSE_CACHE) == 1  # the parse got memoised
-    warm = _rate_fields(_build_rs(cfg))
-
-    _assert_rate_fields_equal(cold, ref)
-    _assert_rate_fields_equal(warm, ref)  # the decisive one: restore == parse
-    os.environ.pop("VULCAN_JAX_RATE_CACHE", None)
 
 
 def test_skip_chem_warmup_runstate_identical():

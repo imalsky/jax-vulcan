@@ -1571,7 +1571,7 @@ def make_body_terms(integ, converged_state, atm_static):
     terms = BodyTerms(
         conden_static=conden_static,
         gas_mask=gas_mask,
-        hydro_partial=bool(integ._hydro_partial),
+        hydro_partial=bool(cfg.use_condense),
         fix_mask=fix_mask,
         fix_y=fix_y,
         bot_idx=bot_idx,

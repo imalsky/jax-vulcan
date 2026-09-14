@@ -106,6 +106,13 @@ class Network:
     # either VULCAN implementation enforces these at runtime.
     temp_ranges: dict | None = None
 
+    # (position, written id, reaction text) for every photo/ion row whose id
+    # column disagrees with its parser position. Rates are indexed by
+    # position, so the parse is correct either way, but a `cfg.remove_list`
+    # written from a stale id column selects the WRONG reaction; the setup
+    # path announces it via `legacy_io._warn_stale_reaction_ids`.
+    stale_ids: tuple[tuple[int, int, str], ...] = ()
+
 
 _RE_LINE = re.compile(r"^\s*(\d*)\s*\[\s*([^\]]+)\s*\]\s*(.*)$")
 
@@ -259,6 +266,7 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
     forward_records: list[dict] = []
     Rf_text: dict[int, str] = {}
     temp_ranges: dict[int, tuple[tuple[float, float], ...]] = {}
+    stale_ids: list[tuple[int, int, str]] = []
 
     def _intern_species(sp: str) -> int:
         if sp == "M":
@@ -374,6 +382,9 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
             Rf_text[parser_i] = eq
             if section in _THERMAL_SECTIONS:
                 temp_ranges[parser_i] = _parse_temp_ranges(cols[len(num_cols):])
+
+            if section in (_SECTION_PHOTO, _SECTION_ION) and file_id != parser_i:
+                stale_ids.append((parser_i, file_id, eq))
 
             if section == _SECTION_PHOTO:
                 target_sp = cols[0] if cols else eq.split()[0]
@@ -548,4 +559,5 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
         Rf=dict(Rf_text),
         network_path=network_path,
         temp_ranges=dict(temp_ranges),
+        stale_ids=tuple(stale_ids),
     )

@@ -2000,10 +2000,9 @@ class OuterLoop:
             dtype=np.float64,
         )
 
-        self._non_gas_present = bool(self._cfg.non_gas_sp)
-        self._zero_bot_row = bool(self._cfg.use_botflux or self._cfg.use_fix_sp_bot)
-
         # Lazy runner cache; populated on first call and reused thereafter.
+        # The closure pins the config read at build time; there is no reset --
+        # a changed config means a new runner object.
         self._runner = None
         self._make_runner_jvp = None
         self._runner_jvp_cache = {}
@@ -2019,24 +2018,6 @@ class OuterLoop:
         self._live_ui = None
         # First batched photo profile's TOA stellar flux; prepare_runstate
         # rejects later profiles with a different star (see the guard there).
-        self._sflux_top_ref = None
-        # When use_condense=True, only gas columns get rebalanced after Ros2.
-        self._hydro_partial = bool(self._cfg.use_condense)
-
-    def reset(self) -> None:
-        """Drop the cached JIT'd runner so the next call re-traces against
-        a possibly-mutated `self._cfg` (notebooks, parameter sweeps).
-        Without this, the runner closure pins the original config."""
-        self._runner = None
-        self._make_runner_jvp = None
-        self._runner_jvp_cache = {}
-        self._runner_batch = None
-        self._vrunner = None
-        self._statics = None
-        self._photo_static = None
-        self._refresh_static = None
-        self._conden_static = None
-        self._live_ui = None
         self._sflux_top_ref = None
 
     def _build_statics(self, var, atm) -> _Statics:
@@ -2258,9 +2239,9 @@ class OuterLoop:
         nz = atm.Tco.shape[0]
         ni = _NETWORK.ni
 
-        # Gas index mask (ni,) — used only when non_gas_present is True.
+        # Gas index mask (ni,) — used only when non_gas_sp is non-empty.
         gas_mask_np = np.zeros(ni, dtype=bool)
-        if self._non_gas_present and hasattr(atm, "gas_indx"):
+        if self._cfg.non_gas_sp and hasattr(atm, "gas_indx"):
             gas_mask_np[np.asarray(atm.gas_indx, dtype=int)] = True
         else:
             gas_mask_np[:] = True
@@ -2281,11 +2262,12 @@ class OuterLoop:
         self._runner, self._runner_batch, self._make_runner_jvp = _make_runner(
             _NET_JAX,
             self._statics,
-            self._non_gas_present,
+            bool(self._cfg.non_gas_sp),
             gas_mask_jnp,
-            self._zero_bot_row,
+            bool(self._cfg.use_botflux or self._cfg.use_fix_sp_bot),
             jnp.asarray(cond_mask_np),
-            self._hydro_partial,
+            # When use_condense=True, only gas columns get rebalanced after Ros2.
+            bool(self._cfg.use_condense),
             float(getattr(self._cfg, "start_conden_time", 0.0)),
             float(getattr(self._cfg, "stop_conden_time", 100000.0)),
             photo_static=self._photo_static,
@@ -2634,7 +2616,7 @@ class OuterLoop:
         ni = _NETWORK.ni
         nz = int(atm.Tco.shape[0])
         gas_mask_np = np.zeros(ni, dtype=bool)
-        if self._non_gas_present and hasattr(atm, "gas_indx"):
+        if self._cfg.non_gas_sp and hasattr(atm, "gas_indx"):
             gas_mask_np[np.asarray(atm.gas_indx, dtype=int)] = True
         else:
             gas_mask_np[:] = True

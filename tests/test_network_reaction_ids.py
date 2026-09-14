@@ -37,9 +37,9 @@ _SECTION_RE = re.compile(r"^(\d*)\s*\[")
 def _file_ids_by_position(path: str) -> list[tuple[int, int, str]]:
     """Return (position, written_id, section) for every reaction row in `path`.
 
-    Mirrors the section tracking in `legacy_io.ReadRate.read_rate` and
-    `network.parse_network`: forward reactions occupy the odd positions
-    1, 3, 5, ... and each row consumes two slots (forward + reverse).
+    Mirrors the section tracking in `network.parse_network` independently:
+    forward reactions occupy the odd positions 1, 3, 5, ... and each row
+    consumes two slots (forward + reverse).
     """
     out: list[tuple[int, int, str]] = []
     section = "thermal"
@@ -118,12 +118,12 @@ def test_photo_rate_index_is_positional_and_in_range(net_path):
     )
 
 
-def test_legacy_io_and_network_agree_on_photo_indices():
-    """The two parsers must produce identical photo/ion index maps.
+def test_photo_indices_are_parser_positions():
+    """`pho_rate_index` must hold parser positions, not the file's id column.
 
-    `network.parse_network` feeds `k_arr`; `legacy_io.ReadRate.read_rate` feeds
-    `op_jax.compute_J`, which writes into that same `k_arr`. If they disagree,
-    photolysis lands in the wrong row.
+    `network.parse_network` feeds `k_arr` and, via `legacy_io.ReadRate`, the
+    `var.pho_rate_index` that `op_jax.compute_J` writes into that same
+    `k_arr`. A row keyed by anything but its position lands in the wrong slot.
     """
     from vulcan_jax import network as netmod
     from vulcan_jax.config import default_config

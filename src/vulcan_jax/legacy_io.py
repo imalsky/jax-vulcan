@@ -1,9 +1,10 @@
-"""Vendored I/O classes from VULCAN-master/op.py.
+"""Legacy I/O surface matching VULCAN-master/op.py's entry points.
 
-`ReadRate` is the network parser + rate-coef builder, vendored with
-upstream structure intact (do not restyle it); it populates host-side
-metadata dicts (`var.Rf`, `var.pho_rate_index`, ...). Rate *values* are
-recomputed by `rates.build_rate_array` after this runs.
+`ReadRate` keeps upstream's call signature (`ReadRate().read_rate(var,
+atm)`) but is no longer a parser: `network.parse_network` is the one
+network parser, and this copies the host-side metadata the runtime reads
+off `var` (`var.Rf`, `var.pho_rate_index`, ...) from it. Rate *values*
+come from `rates.build_rate_array`.
 
 `Output` writes the `.vul` pickle with the same public schema upstream
 plotting tools read; photo cross-section dicts, the per-reaction `var.k`
@@ -11,7 +12,6 @@ dict, and parameter fields are synthesised at pickle time from the typed
 `RunState`.
 """
 
-import copy
 import numpy as np
 import os
 import pickle
@@ -21,69 +21,10 @@ import warnings
 from .config import default_config
 from . import chem_funs
 from .chem_funs import ni, nr
-from ._paths import resolve_data_path
 from .live_ui import import_plt, master_tableau20
 
 _CFG = default_config()
 species = chem_funs.spec_list
-
-
-# Rate-parse cache
-# `ReadRate.read_rate` writes only metadata onto `var` (its scratch `k` dict
-# is discarded; `rates.build_rate_array` recomputes `var.k_arr`), so the parse
-# is memoised per process, keyed by (resolved network path, use_ion). A cache
-# hit restores DEEP COPIES onto the fresh `var` so later in-place mutation
-# cannot poison the cache. Disable with $VULCAN_JAX_RATE_CACHE=0.
-#
-# The exact set of `var` attributes `read_rate` writes; everything else it
-# touches is local scratch.
-_RATE_PARSE_VAR_ATTRS = (
-    "Rf",
-    "Rindx",
-    "a",
-    "n",
-    "E",
-    "a_inf",
-    "n_inf",
-    "E_inf",
-    "pho_rate_index",
-    "ion_rate_index",
-    "conden_indx",
-    "recomb_indx",
-    "photo_indx",
-    "ion_indx",
-    "stop_rev_indx",
-    "special_re",
-    "conden_re_list",
-    "n_branch",
-    "ion_branch",
-    "photo_sp",
-    "ion_sp",
-)
-
-_RATE_PARSE_CACHE: dict[tuple[str, bool], dict] = {}
-
-
-def _rate_cache_enabled() -> bool:
-    """Rate-parse memoisation is on unless $VULCAN_JAX_RATE_CACHE=0."""
-    return os.environ.get("VULCAN_JAX_RATE_CACHE", "1") != "0"
-
-
-def _snapshot_rate_parse(var) -> dict:
-    """Deep-copy the post-parse rate metadata off `var` for the cache."""
-    return {
-        name: copy.deepcopy(getattr(var, name))
-        for name in _RATE_PARSE_VAR_ATTRS
-        if hasattr(var, name)
-    }
-
-
-def _restore_rate_parse(var, snap: dict) -> None:
-    """Deep-copy cached rate metadata back onto a fresh `var` (cache hit)."""
-    for name, value in snap.items():
-        setattr(var, name, copy.deepcopy(value))
-
-
 
 
 def _warn_stale_reaction_ids(
@@ -118,265 +59,38 @@ def _warn_stale_reaction_ids(
 
 
 class ReadRate(object):
-    """Network parser + rate-coef builder. Populates host-side metadata
-    dicts on `var`; rate values are discarded (recomputed downstream)."""
+    """Upstream's rate-setup entry point, backed by `network.parse_network`.
 
-    def __init__(self):
-
-        self.i = 1
-        self.re_tri, self.re_tri_k0 = False, False
-        self.list_tri = []
+    Upstream's ``op.ReadRate`` re-parsed the network file and built rate
+    coefficients; both are done elsewhere here (``network.parse_network``
+    owns the parse, ``rates.build_rate_array`` owns ``var.k_arr``). What is
+    left is publishing the host-side metadata the runtime reads off the
+    legacy ``var``.
+    """
 
     def read_rate(self, var, atm):
-        """Parse the reaction-rate file and populate `var`'s host-side metadata dicts.
+        """Copy the parsed network's host-side metadata onto `var`.
 
-        Sets `var.Rf` (1-based reaction text), `var.pho_rate_index`,
-        `var.n_branch`, `var.photo_sp`, `var.ion_sp`, etc. Rate values
-        are scratch — `rates.setup_var_k` recomputes them.
-
-        Parse output depends only on the network file + `use_ion`, so it is
-        memoised per process (see `_RATE_PARSE_CACHE`): a cache hit restores
-        the metadata onto `var` and skips the file read + line parse entirely.
+        Sets exactly the attributes something reads: `Rf` (reaction text by
+        parser position), the photo/ion branch indices, and
+        `conden_re_list`. The Arrhenius columns and the section markers are
+        read off the `Network` everywhere, never off `var`, so they are not
+        republished here.
         """
-        cache_key = None
-        if _rate_cache_enabled():
-            cache_key = (
-                str(resolve_data_path(_CFG.network)),
-                bool(_CFG.use_ion),
-            )
-            snap = _RATE_PARSE_CACHE.get(cache_key)
-            if snap is not None:
-                _restore_rate_parse(var, snap)
-                return var
-
-        # `k` here is parser scratch; rates.setup_var_k overwrites var.k_arr
-        # immediately after this method returns.
-        k = {}
-        Rf, Rindx, a, n, E, a_inf, n_inf, E_inf, pho_rate_index = (
-            var.Rf,
-            var.Rindx,
-            var.a,
-            var.n,
-            var.E,
-            var.a_inf,
-            var.n_inf,
-            var.E_inf,
-            var.pho_rate_index,
-        )
-        ion_rate_index = var.ion_rate_index
-
-        i = self.i
-        re_tri, re_tri_k0 = self.re_tri, self.re_tri_k0
-        list_tri = self.list_tri
-
-        Tco = atm.Tco.copy()
-        M = atm.M.copy()
-
-        # (position, file_id, reaction_text) for every photo/ion row whose written
-        # id disagrees with its parser position. Reported once at the end of the
-        # parse by _warn_stale_reaction_ids; see the pho_rate_index comment below.
-        stale_ids: list[tuple[int, int, str]] = []
-
-        special_re = False
-        conden_re = False
-        photo_re = False
-        ion_re = False
-
-        photo_sp = []
-        ion_sp = []
-
-        with open(resolve_data_path(_CFG.network)) as f:
-            all_lines = f.readlines()
-            for line_indx, line in enumerate(all_lines):
-                # switch to 3-body and dissociation reations
-                if line.startswith("# 3-body"):
-                    re_tri = True
-
-                if line.startswith("# 3-body reactions without high-pressure rates"):
-                    re_tri_k0 = True
-
-                elif line.startswith("# special"):
-                    re_tri = False
-                    re_tri_k0 = False
-                    special_re = (
-                        True  # switch to reactions with special forms (hard coded)
-                    )
-
-                elif line.startswith("# condensation"):
-                    re_tri = False
-                    re_tri_k0 = False
-                    special_re = False
-                    conden_re = True
-                    var.conden_indx = i
-
-                elif line.startswith("# radiative"):
-                    re_tri = False
-                    re_tri_k0 = False
-                    special_re = False
-                    conden_re = False
-                    var.recomb_indx = i
-
-                elif line.startswith("# photo"):
-                    re_tri = False
-                    re_tri_k0 = False
-                    special_re = False  # turn off reading in the special form
-                    conden_re = False
-                    photo_re = True
-                    var.photo_indx = i
-
-                elif line.startswith("# ionisation"):
-                    re_tri = False
-                    re_tri_k0 = False
-                    special_re = False  # turn off reading in the special form
-                    conden_re = False
-                    photo_re = False
-                    ion_re = True
-                    var.ion_indx = i
-
-                elif line.startswith("# reverse stops"):
-                    var.special_re = False
-                    var.stop_rev_indx = i
-
-                # skip common lines and blank lines
-                if (
-                    not line.startswith("#")
-                    and line.strip()
-                    and not special_re
-                    and not conden_re
-                    and not photo_re
-                    and not ion_re
-                ):  # if not starts
-                    Rf[i] = line.partition("[")[-1].rpartition("]")[0].strip()
-                    li = line.partition("]")[-1].strip()
-                    columns = li.split()
-                    Rindx[i] = int(line.partition("[")[0].strip() or 0)
-                    a[i] = float(columns[0])
-                    n[i] = float(columns[1])
-                    E[i] = float(columns[2])
-
-                    # switching to trimolecular reactions (len(columns) > 3 for those with high-P limit rates)
-                    if re_tri and not re_tri_k0:
-                        a_inf[i] = float(columns[3])
-                        n_inf[i] = float(columns[4])
-                        E_inf[i] = float(columns[5])
-                        list_tri.append(i)
-
-                    k0 = a[i] * Tco ** n[i] * np.exp(-E[i] / Tco)
-                    if not re_tri:
-                        k[i] = k0
-                    elif re_tri and len(columns) >= 6:
-                        # 3-body with high-pressure limit (Lindemann)
-                        k_inf_val = a_inf[i] * Tco ** n_inf[i] * np.exp(-E_inf[i] / Tco)
-                        k[i] = k0 / (1 + k0 * M / k_inf_val)
-                    else:
-                        # 3-body without high-pressure rates
-                        k[i] = k0
-
-                    i += 2
-                    # end if not
-                elif special_re and line.strip() and not line.startswith("#"):
-                    Rindx[i] = int(line.partition("[")[0].strip() or 0)
-                    Rf[i] = line.partition("[")[-1].rpartition("]")[0].strip()
-
-                    if Rf[i] == "OH + CH3 + M -> CH3OH + M":
-                        print("Using special form for the reaction: " + Rf[i])
-
-                        k[i] = 1.932e3 * Tco**-9.88 * np.exp(
-                            -7544.0 / Tco
-                        ) + 5.109e-11 * Tco**-6.25 * np.exp(-1433.0 / Tco)
-                        k_inf = 1.031e-10 * Tco**-0.018 * np.exp(16.74 / Tco)
-                        # Troe width in log10 (Visscher & Moses 2011 eq 14; C20)
-                        Fc = (
-                            0.1855 * np.exp(-Tco / 155.8)
-                            + 0.8145 * np.exp(-Tco / 1675.0)
-                            + np.exp(-4531.0 / Tco)
-                        )
-                        nn = 0.75 - 1.27 * np.log10(Fc)
-                        ff = Fc ** (
-                            1.0 / (1.0 + (np.log10(k[i] * M / k_inf) / nn) ** 2)
-                        )
-
-                        k[i] = k[i] / (1 + k[i] * M / k_inf) * ff
-
-                    i += 2
-
-                # Testing condensation
-                elif conden_re and line.strip() and not line.startswith("#"):
-                    Rindx[i] = int(line.partition("[")[0].strip() or 0)
-                    Rf[i] = line.partition("[")[-1].rpartition("]")[0].strip()
-
-                    var.conden_re_list.append(i)
-                    k[i] = np.zeros(_CFG.nz)
-                    k[i + 1] = np.zeros(_CFG.nz)
-
-                    i += 2
-
-                # setting photo dissociation reactions to zeros
-                elif photo_re and line.strip() and not line.startswith("#"):
-                    k[i] = np.zeros(_CFG.nz)
-                    Rf[i] = line.partition("[")[-1].rpartition("]")[0].strip()
-
-                    # adding the photo species
-                    photo_sp.append(Rf[i].split()[0])
-
-                    li = line.partition("]")[-1].strip()
-                    columns = li.split()
-                    Rindx[i] = int(line.partition("[")[0].strip() or 0)
-                    if Rindx[i] != i:
-                        stale_ids.append((i, Rindx[i], Rf[i]))
-                    # columns[0]: the species being dissocited; branch index: columns[1]
-                    # Index by the PARSER POSITION `i`, not the file's id column.
-                    # `var.k_arr` is built by rates.build_rate_array on positional
-                    # 1-based slots (network.py `parser_i`), and cfg.remove_list is
-                    # applied positionally too, so the position is the canonical
-                    # index. The id column is only self-consistent in files that
-                    # upstream's make_chem_funs.py has renumbered in place; 6 of the
-                    # 18 vendored networks are not renumbered, and using their ids
-                    # here pointed photolysis rates at the wrong reaction slot (or
-                    # off the end of k_arr). See _warn_stale_reaction_ids.
-                    pho_rate_index[(columns[0], int(columns[1]))] = i
-
-                    # store the number of branches
-                    var.n_branch[columns[0]] = int(columns[1])
-
-                    i += 2
-
-                # setting photo ionization reactions to zeros
-                elif ion_re and line.strip() and not line.startswith("#"):
-                    k[i] = np.zeros(_CFG.nz)
-                    Rf[i] = line.partition("[")[-1].rpartition("]")[0].strip()
-
-                    ion_sp.append(Rf[i].split()[0])
-
-                    li = line.partition("]")[-1].strip()
-                    columns = li.split()
-                    Rindx[i] = int(line.partition("[")[0].strip() or 0)
-                    if Rindx[i] != i:
-                        stale_ids.append((i, Rindx[i], Rf[i]))
-                    # columns[0]: the species being dissocited; branch index: columns[1]
-                    # Positional index, for the same reason as pho_rate_index above.
-                    ion_rate_index[(columns[0], int(columns[1]))] = i
-
-                    # store the number of branches
-                    var.ion_branch[columns[0]] = int(columns[1])
-
-                    i += 2
-
-        # The local `k` dict is not assigned to `var` — `rates.build_rate_array`
-        # writes the canonical dense `var.k_arr` from scratch. The parser is
-        # kept only for the metadata side-effects (var.Rf, var.Rindx,
-        # var.pho_rate_index, var.n_branch, var.photo_sp, var.ion_sp,
-        # var.conden_re_list, var.special_re, var.stop_rev_indx).
-
-        var.photo_sp = set(photo_sp)
+        del atm  # upstream signature; the metadata is temperature-free
+        net = chem_funs._NETWORK
+        var.Rf = dict(net.Rf)
+        var.pho_rate_index = dict(net.pho_rate_index)
+        var.ion_rate_index = dict(net.ion_rate_index)
+        var.n_branch = dict(net.n_branch)
+        var.ion_branch = dict(net.ion_branch)
+        var.photo_sp = set(net.photo_sp)
         if _CFG.use_ion:
-            var.ion_sp = set(ion_sp)
-
-        _warn_stale_reaction_ids(str(resolve_data_path(_CFG.network)), stale_ids)
-
-        if cache_key is not None:
-            _RATE_PARSE_CACHE[cache_key] = _snapshot_rate_parse(var)
-
+            var.ion_sp = set(net.ion_sp)
+        var.conden_re_list = [
+            int(i) for i in np.flatnonzero(net.is_conden & net.is_forward)
+        ]
+        _warn_stale_reaction_ids(net.network_path, list(net.stale_ids))
         return var
 
     # `make_bins_read_cross` is intentionally not vendored. The dense
