@@ -249,7 +249,7 @@ class ReadRate(object):
                     Rf[i] = line.partition("[")[-1].rpartition("]")[0].strip()
                     li = line.partition("]")[-1].strip()
                     columns = li.split()
-                    Rindx[i] = int(line.partition("[")[0].strip())
+                    Rindx[i] = int(line.partition("[")[0].strip() or 0)
                     a[i] = float(columns[0])
                     n[i] = float(columns[1])
                     E[i] = float(columns[2])
@@ -275,7 +275,7 @@ class ReadRate(object):
                     i += 2
                     # end if not
                 elif special_re and line.strip() and not line.startswith("#"):
-                    Rindx[i] = int(line.partition("[")[0].strip())
+                    Rindx[i] = int(line.partition("[")[0].strip() or 0)
                     Rf[i] = line.partition("[")[-1].rpartition("]")[0].strip()
 
                     if Rf[i] == "OH + CH3 + M -> CH3OH + M":
@@ -302,7 +302,7 @@ class ReadRate(object):
 
                 # Testing condensation
                 elif conden_re and line.strip() and not line.startswith("#"):
-                    Rindx[i] = int(line.partition("[")[0].strip())
+                    Rindx[i] = int(line.partition("[")[0].strip() or 0)
                     Rf[i] = line.partition("[")[-1].rpartition("]")[0].strip()
 
                     var.conden_re_list.append(i)
@@ -321,7 +321,7 @@ class ReadRate(object):
 
                     li = line.partition("]")[-1].strip()
                     columns = li.split()
-                    Rindx[i] = int(line.partition("[")[0].strip())
+                    Rindx[i] = int(line.partition("[")[0].strip() or 0)
                     if Rindx[i] != i:
                         stale_ids.append((i, Rindx[i], Rf[i]))
                     # columns[0]: the species being dissocited; branch index: columns[1]
@@ -350,7 +350,7 @@ class ReadRate(object):
 
                     li = line.partition("]")[-1].strip()
                     columns = li.split()
-                    Rindx[i] = int(line.partition("[")[0].strip())
+                    Rindx[i] = int(line.partition("[")[0].strip() or 0)
                     if Rindx[i] != i:
                         stale_ids.append((i, Rindx[i], Rf[i]))
                     # columns[0]: the species being dissocited; branch index: columns[1]

@@ -37,6 +37,7 @@ For development:
 git clone https://github.com/imalsky/jax-vulcan.git
 cd jax-vulcan
 python -m pip install -e ".[dev,plot]"
+python tests/gen_fixtures.py --all   # the four .npz oracles are gitignored (~3.5 min)
 python -m pytest tests -q
 ```
 

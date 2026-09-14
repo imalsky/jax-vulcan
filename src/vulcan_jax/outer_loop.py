@@ -1968,8 +1968,6 @@ class OuterLoop:
                 f"{DT_MAX_S:g} s, the largest step the Ros2 stage repair resolves; "
                 "lower it or drop the key so it is derived."
             )
-        self.mtol = float(self._cfg.mtol)
-        self.atol = float(self._cfg.atol)
         self.output = output
         self.odesolver = odesolver
         self.loss_criteria = float(getattr(self._cfg, "loss_criteria", 0.0005))
@@ -2144,8 +2142,8 @@ class OuterLoop:
             loss_eps=float(self._cfg.loss_eps),
             pos_cut=float(self._cfg.pos_cut),
             nega_cut=float(self._cfg.nega_cut),
-            mtol=float(self.mtol),
-            atol=float(self.atol),
+            mtol=float(self._cfg.mtol),
+            atol=float(self._cfg.atol),
             dt_var_min=float(self._cfg.dt_var_min),
             dt_var_max=float(self._cfg.dt_var_max),
             dt_min=float(self._cfg.dt_min),
@@ -3067,7 +3065,6 @@ class OuterLoop:
         if L <= 0:
             var.y_time = []
             var.t_time = []
-            var.atom_loss_time = []
             return
 
         ring_y = np.asarray(state.y_time_ring, dtype=np.float64)
@@ -3078,10 +3075,6 @@ class OuterLoop:
         order = [(start + i) % conv_step for i in range(L)]
         var.y_time = [ring_y[i] for i in order]
         var.t_time = [ring_t[i] for i in order]
-        # Only the FINAL atom_loss is in the carry; pad it over L entries so
-        # plot scripts indexing the list don't error.
-        final_atom_loss = list(np.asarray(state.atom_loss).tolist())
-        var.atom_loss_time = [final_atom_loss for _ in range(L)]
 
     def _classify_end_case(self, state: JaxIntegState, wall_clock_hit=False):
         """Classify end-of-run (op.py:1069-1085) from the in-loop reason.
@@ -3502,8 +3495,9 @@ class OuterLoop:
 
         Lanes run with freeze-on-done: each profile's converged result is
         identical to running it alone, and the call returns once the slowest
-        lane finishes (or every lane hits its `chunk_target` yield, which the
-        host-side compaction loop uses to refill finished lanes).
+        lane finishes (or every lane hits its `chunk_target` yield, which a
+        host driver can use to observe progress between device calls;
+        no lane compaction or refill is implemented).
         """
         if self._runner_batch is None:
             raise RuntimeError(

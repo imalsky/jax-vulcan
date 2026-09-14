@@ -82,7 +82,7 @@ Do not re-walk the failed routes: direct adjoints of the residual
 `f = chem_rhs + diffusion` (frozen-coefficient block-Thomas with defect
 correction, matrix-free LSQR) and a raw Neumann iteration on the body map all
 diverged or stagnated -- `df/dy` is both singular and severely
-ill-conditioned on closed columns (see the dev log, notes.md).
+ill-conditioned on closed columns (notes.md §1.5).
 
 Scope, accuracy, and the `body_dt` regime map: notes.md (Differentiability)
 ("Reverse mode: the steady-state adjoint"). Worked recipe:
@@ -261,7 +261,7 @@ def _warn_poor_convergence(
             f"exceeds {_ADJOINT_RESID_WARN:.0e}: the solve is in the stagnation "
             "regime observed on closed columns (dominant-reaction magnitudes "
             "bounce ~+/-25% around FD there; sign and ranking remain robust — "
-            "README.md, Differentiability). Treat magnitudes as "
+            "README.md, Limits). Treat magnitudes as "
             "ranking weights only. More cycles do not reliably reduce the "
             "residual; scan body_dt for a lower-residual regime (see "
             "BODY_MAP_DT) and check null_quality.",
@@ -1241,7 +1241,7 @@ def steady_state_input_sensitivity(
                 "disagrees with re-converged finite differences at O(1) (0.91 "
                 "relative; tests/test_condensation_guards.py) -- the same reason "
                 "Fisher / retrieval-inference through condensation is refused "
-                "project-wide (README.md, Differentiability). Use "
+                "project-wide (README.md, Limits). Use "
                 "forward-mode jvp on a single switch-free direction and validate "
                 "it against FD, or disable condensation. Set "
                 "allow_frozen_condensation_input_grad=True ONLY to obtain the "

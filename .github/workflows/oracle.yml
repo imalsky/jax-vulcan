@@ -17,7 +17,7 @@ name: oracle
 on:
   workflow_dispatch:        # release gate: run it deliberately before tagging
   schedule:
-    - cron: "17 5 * * 1"    # and weekly, so upstream drift is noticed early
+    - cron: "17 5 * * 1"    # and weekly, against the pinned revisions
 
 jobs:
   oracle:
@@ -38,6 +38,7 @@ jobs:
               tests/test_oracle_pinning.py tests/test_outer_loop_atm_refresh.py
               tests/test_photo.py tests/test_rates.py tests/test_ros2_step.py
               tests/test_w39b_fastchem_invariant.py
+              tests/test_photo_setup.py tests/test_stage_repair_guard.py
           - family: vulcan2_fastchem_ps_order
             commit: 897033769d62caa27ee44f7360dcaba1e947919c
             select: tests/test_fastchem_element_order.py
@@ -49,8 +50,8 @@ jobs:
           python-version: "3.12"
           cache: pip
 
-      # Same pin as tests.yml: newer jax breaks the batch-vs-solo bit-identity
-      # contract in test_vmap_photo_batch.
+      # Same pin as tests.yml: the version the suite's tolerances are
+      # calibrated against.
       - name: Install
         run: python -m pip install -e ".[dev,plot]" "jax==0.6.2"
 
@@ -71,11 +72,19 @@ jobs:
           make -C src/vulcan_jax/fastchem_vulcan
           test -x src/vulcan_jax/fastchem_vulcan/fastchem
 
+      # The four .npz oracles are gitignored and conftest.py fails collection
+      # when one is missing, so the release gate GENERATES them instead of
+      # setting VULCAN_JAX_ALLOW_MISSING_FIXTURES: that switch is the developer
+      # escape hatch and conftest.py says release CI must not set it (a skipped
+      # numerical oracle still reports green). No sibling checkout is needed,
+      # but both generator configs use ini_mix='EQ', hence after the build.
+      - name: Build the numerical-regression fixtures
+        run: python tests/gen_fixtures.py --all
+
       - name: Run the ${{ matrix.family }} comparisons
         env:
           VULCAN_MASTER_DIR: ${{ runner.temp }}/oracle-${{ matrix.family }}
           VULCAN_JAX_REQUIRE_ORACLE: "1"
-          VULCAN_JAX_ALLOW_MISSING_FIXTURES: "1"
         run: python -m pytest ${{ matrix.select }} -q --tb=short -ra
 
       # The oracle must come back byte-clean: upstream setup rewrites files in

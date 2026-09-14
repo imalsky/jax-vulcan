@@ -48,18 +48,21 @@ def _cfg():
 
 
 @pytest.mark.parametrize(
-    "drain, reason, why",
+    "drain, scale, reason, why",
     [
-        (1.0, 1, "an intact column certifies on its first candidate step"),
-        (4.0, 3, "a column that lost 75% of its carbon may not certify"),
+        (1.0, 1.0, 1, "an intact column certifies on its first candidate step"),
+        (4.0, 1.0, 3, "a column that lost 75% of its carbon may not certify"),
+        (1.0, 0.9, 1, "a column whose every element moved by one factor certifies"),
     ],
 )
-def test_certificate_requires_the_column_element_budget(drain, reason, why):
+def test_certificate_requires_the_column_element_budget(drain, scale, reason, why):
     """A drained column must fall through to the step-count exit, not certify.
 
     `drain` scales the CH4 rows of the reference column `pv.y_ini`, i.e. the
     run behaves as if it had lost that much carbon since t=0 (-0.73 of the C
-    column at 4x, against `element_budget_tol` 1e-2).
+    column at 4x, against `element_budget_tol` 1e-2). `scale` multiplies the
+    whole reference column: the term is measured relative to H (0.10.1), so a
+    common factor (the hydrostatic renormalisation) must still certify.
     """
     import vulcan_jax.legacy_io as op
     from vulcan_jax import op_jax, outer_loop
@@ -81,14 +84,14 @@ def test_certificate_requires_the_column_element_budget(drain, reason, why):
         aflux_change=jnp.float64(0.0),
         geom_ok=jnp.bool_(False),
         budget_ok=jnp.bool_(False),
-        pv=state.pv._replace(y_ini=state.y.at[:, ch4].multiply(drain)),
+        pv=state.pv._replace(y_ini=(state.y * scale).at[:, ch4].multiply(drain)),
     )
     final = integ._runner(seeded, atm_static)
     assert int(final.termination_reason) == reason, (
         f"{why}; got reason {int(final.termination_reason)}, budget_ok "
         f"{bool(final.budget_ok)}, geom_ok {bool(final.geom_ok)}"
     )
-    assert bool(final.budget_ok) is (drain == 1.0)
+    assert bool(final.budget_ok) is (reason == 1)
     # The geometry term is satisfied in both cases: the budget is the only
     # thing that changed the outcome.
     assert bool(final.geom_ok)

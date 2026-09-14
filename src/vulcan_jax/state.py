@@ -1027,7 +1027,6 @@ def legacy_view(rs: RunState, cfg=None):
     var.t_time = []
     var.dy_time = []
     var.dydt_time = []
-    var.atom_loss_time = []
     var.dt_time = []
     var.aflux_change = (
         float(rs.photo_runtime.aflux_change) if rs.photo_runtime is not None else 0.0
@@ -1142,7 +1141,6 @@ class _Variables(object):
         self.y_time = []
         self.t_time = []
         self.dt_time = []
-        self.atom_loss_time = []
 
         self.atom_ini = {}
         self.atom_sum = {}

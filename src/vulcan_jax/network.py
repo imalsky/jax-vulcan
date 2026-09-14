@@ -332,9 +332,10 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
                     species_idx[sp], 0.0
                 ) + float(stoich)
 
-            # Asymmetric dissociation (e.g. HNCO + M → H + NCO) has M only
-            # on the reactant side; forward and reverse get different
-            # M-factors. Track each side independently.
+            # M is tracked per side: a row with M on one side only gets
+            # different M-factors forward and reverse. The only such row in
+            # the shipped networks is the inherited HNCO + M -> H + NCO
+            # typo, kept at parity (notes.md §3.2).
             has_M_reac = any(sp == "M" for _, sp in reactants)
             has_M_prod = any(sp == "M" for _, sp in products)
             has_M = has_M_reac or has_M_prod
@@ -480,9 +481,8 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
             product_idx[ir, k_slot] = sp_idx
             product_stoich[ir, k_slot] = stoich
 
-        # Asymmetric dissociation: forward and reverse can differ in M
-        # (e.g. `HNCO + M → H + NCO` has M on the LHS only, so the reverse
-        # is bimolecular without M).
+        # Per side: a row with M on the LHS only (the inherited HNCO + M
+        # -> H + NCO typo, notes.md §3.2) gets a reverse without M.
         is_three_body[i] = rec["has_M_reac"]
         is_three_body[ir] = rec["has_M_prod"]
 

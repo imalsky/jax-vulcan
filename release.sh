@@ -5,7 +5,7 @@ set -x
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$SCRIPT_DIR"
-LOG="${HOME}/Desktop/vulcan_jax_testpypi_release_$(date +'%Y-%m-%d_%H%M%S').log"
+LOG="${TMPDIR:-/tmp}/vulcan_jax_testpypi_release_$(date +'%Y-%m-%d_%H%M%S').log"
 
 exec > >(tee -a "$LOG") 2>&1
 
@@ -29,6 +29,13 @@ find . -name "*.pyc" -delete
 find . -name "*.pyo" -delete
 find . -name "*.egg-info" -prune -exec rm -rf {} +
 find . -name ".DS_Store" -delete
+
+# 1b) Refuse to release from a dirty tree (untracked files such as the
+# gitignored fixtures' manifest are fine): the release commit below must carry
+# the version bump and nothing else. Test BEFORE the bump so a red suite
+# leaves the tree clean.
+test -z "$(git status --porcelain --untracked-files=no)" || { echo "dirty tree"; exit 1; }
+python -m pytest tests -q
 
 # 2) Bump patch version in src/vulcan_jax/_version.py
 VER="$(
@@ -55,13 +62,12 @@ PY
 )"
 echo "Releasing version: $VER"
 
-# 3) Build first to catch errors before committing
+# 3) Build before anything is committed or pushed.
 python -m pip install --upgrade pip build twine
 python -m build
 
 # 4) Commit + push (only after build succeeds)
 git status
-git add -u
 git add src/vulcan_jax/_version.py
 git commit -m "Release v$VER"
 git tag -a "v$VER" -m "Release v$VER"

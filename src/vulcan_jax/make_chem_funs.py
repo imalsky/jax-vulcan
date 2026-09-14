@@ -179,12 +179,15 @@ def build_chem_rhs(net: Network) -> Callable:
         src = path.read_text()
     else:
         src = emit_chem_rhs_source(net)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Publish atomically: a concurrent pytest-xdist worker must never
-        # exec a half-written file.
-        tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        tmp.write_text(src)
-        os.replace(tmp, path)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # Publish atomically: a concurrent pytest-xdist worker must never
+            # exec a half-written file.
+            tmp = path.with_name(f"{path.name}.{os.getpid()}.tmp")
+            tmp.write_text(src)
+            os.replace(tmp, path)
+        except OSError:
+            pass  # read-only install: the file is for inspection only
     ns: dict = {}
     exec(compile(src, str(path), "exec"), ns)
     raw_fn = ns["chem_rhs_codegen"]
