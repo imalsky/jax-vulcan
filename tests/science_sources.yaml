@@ -71,7 +71,8 @@ oracles:
     repo: https://github.com/exoclime/VULCAN
     commit: 897033769d62caa27ee44f7360dcaba1e947919c
     why: >-
-      Current public master, kept as the reference for the FastChem P/S
+      The last VULCAN 2 master revision (master now carries VULCAN 3), kept
+      as the reference for the FastChem P/S
       element-ORDER correction (notes.md, Parity & bug guide, C12). Upstream's own 2026-07-28
       "fix" (8970337) is INERT: it edited `fc_list` while the defect is the row
       order of the shipped .dat file, so the report must cite the .dat, not
