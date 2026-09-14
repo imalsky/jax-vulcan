@@ -1155,12 +1155,13 @@ def _make_runner(
                 & ~s.fix_species_started
                 & jnp.bool_(use_conden_static)
             )
-            s_post = jax.lax.cond(
-                fire_conden,
-                conden_branch,
-                lambda ss: ss,
-                s_post,
-            )
+            # The pin activates BEFORE the relax, so `fix_y` freezes the
+            # post-solve reservoir master freezes: op.py:871-873 snapshots
+            # `fix_y` (and :882 reads the cold-trap level) from the same y,
+            # then op.py:898-902 relaxes inside the same block (C24). Order is
+            # free on every other step: `trigger_fix` implies `fire_conden`,
+            # and `conden_branch` reads none of the fields the activation sets
+            # (it touches k_arr/y/ymix from y, ymix, dt).
             if use_fix_species_static:
                 trigger_fix = (
                     do_accept
@@ -1177,6 +1178,12 @@ def _make_runner(
                 )
             else:
                 trigger_fix = jnp.bool_(False)
+            s_post = jax.lax.cond(
+                fire_conden,
+                conden_branch,
+                lambda ss: ss,
+                s_post,
+            )
             sol_clip = s_post.y
             ymix_new = s_post.ymix
             k_arr_next = s_post.k_arr

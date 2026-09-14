@@ -175,7 +175,7 @@ def _hd189_step_inputs():
     return y, np.asarray(data_var.k_arr, dtype=np.float64), atm_static, chem_funs._NET_JAX
 
 
-def test_stage_vectors_satisfy_the_per_layer_element_identity():
+def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch):
     """Both Ros2 stage vectors satisfy `c0 a^T k - a^T T k = a^T b_tr` in every
     layer at every dt (the identity the stage system implies once the
     chemistry terms are projected), and with transport off a step conserves
@@ -199,7 +199,16 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity():
     zero = atm._replace(
         Kzz=0 * atm.Kzz, Dzz=0 * atm.Dzz, vz=0 * atm.vz, vm=0 * atm.vm, vs=0 * atm.vs
     )
+    # Both contracts below are the REPAIR's, so the trace-carrier guard is
+    # LIFTED: `jax_step._REPAIR_MAX_CELL_FRAC` (pinned by
+    # test_stage_repair_guard.py) deliberately leaves a layer's identity open
+    # where the fixed reservoir is a trace -- on this column the 1e-24-VMR H2O
+    # of the 6000 K top, where the correction is 1e10 to 1e16 times the cell.
+    # Both callees are jitted HERE so they trace after the lift; the
+    # module-level `jax_ros2_step` may already be cached with the shipped value.
+    monkeypatch.setattr(jax_step, "_REPAIR_MAX_CELL_FRAC", float("inf"))
     defects = jax.jit(jax_step._stage_defects)
+    step = jax.jit(jax_step.jax_ros2_step.__wrapped__)
     identity, closed = {}, {}
     for dt in (1e8, 1e11, 1e13, 1e15):
         k1, k2, d1, d2, bound = defects(y, k_arr, jnp.float64(dt), atm, net)
@@ -209,7 +218,7 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity():
         # 1e3 x roundoff covers the correction tridiagonal's conditioning
         # at the 1e15 cap (1e-11 of the terms measured, 2026-09-08).
         identity[dt] = max(float(jnp.max(jnp.abs(d1) / bound)), float(jnp.max(jnp.abs(d2) / bound)))
-        sol, _ = jax_step.jax_ros2_step(y, k_arr, jnp.float64(dt), zero, net)
+        sol, _ = step(y, k_arr, jnp.float64(dt), zero, net)
         closed[dt] = float(
             jnp.max(jnp.abs(sol @ ac - y @ ac) / (jnp.abs(sol) @ ac + jnp.abs(y) @ ac))
         )
@@ -227,7 +236,7 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity():
     # 1e6 s relative to content, both corrected now).
     from vulcan_jax.config import REPAIR_ABS_FLOOR
     for dt in (1e4, 1e6, 1e8, 1e11, 1e13, 1e15):
-        sol, _ = jax_step.jax_ros2_step(y, k_arr, jnp.float64(dt), zero, net)
+        sol, _ = step(y, k_arr, jnp.float64(dt), zero, net)
         change = jnp.abs(sol @ ac - y @ ac)                       # (nz, n_atoms)
         n_lay = jnp.sum(jnp.abs(sol), axis=1) + jnp.sum(jnp.abs(y), axis=1)
         worst = float(jnp.max(change / n_lay[:, None]))

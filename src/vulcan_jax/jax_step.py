@@ -167,10 +167,27 @@ def _stage_defect(k, b_tr, c0, diag_d, sup_d, sub_d, with_scale=False):
 # 2e-15, of a leaking one 1e-7 to 1e-6 (§1.13).
 _DEFECT_FLOOR = 1e-13
 
+# Largest correction the repair may put on a carrier cell, as a fraction of
+# what that cell has to work with: `max(cell content, |raw stage change|)`.
+# Above it the FIXED reservoir is a trace in that layer and the correction
+# damages the cell instead of healing the layer. Measured over dt 1e4-1e15 on
+# both converged fixtures and the HD189 pre-loop column (§1.13): with transport
+# on, every ratio above 1 is a carrier that is no longer the carrier there --
+# VMR <= 1e-4, H2 dissociated above 5000 K, W39b H2S 13-24 across layers 83-94
+# at dt 1e11 (the cells the repair drives negative) -- while a real carrier
+# stays under 1e-2 and reaches 1 only at the 1e15 cap. The cell content
+# alone is the wrong denominator (§2.1): with transport off the correction is
+# `defect * gamma * dt` and exceeds a 5.6e-4-by-volume H2O cell by 1e2-1e10
+# while staying of order the stage vector, which would switch the repair off
+# where it is doing its job.
+_REPAIR_MAX_CELL_FRAC = 1.0
 
-def _repair_stage(k, b_tr, c0, diag_d, sup_d, sub_d, fix_mask, n_tot):
+
+def _repair_stage(k, b_tr, c0, diag_d, sup_d, sub_d, fix_mask, n_tot, y):
     """Put the element content of a Ros2 stage vector back where its own
-    linear system says it belongs. `n_tot` is the (nz, 1) layer density.
+    linear system says it belongs. `n_tot` is the (nz, 1) layer density; the
+    reservoir cells of `y`, the state the step starts from, bound the
+    correction.
 
     The exact solution of the stage system satisfies the per-layer identity
     of `_stage_defect`. The pivoted LU stops returning it once
@@ -191,6 +208,9 @@ def _repair_stage(k, b_tr, c0, diag_d, sup_d, sub_d, fix_mask, n_tot):
     reservoir that is itself a trace (H2S at 1e-21 in a cool upper
     atmosphere) is a 10% kick on that cell every stage, which stalls the
     column (notes.md §1.13). Real leaks are >= 1e-7 of the layer per stage.
+    A correction over `_REPAIR_MAX_CELL_FRAC` of its carrier cell is skipped:
+    there the fixed reservoir is a trace and the repair damages the cell
+    instead of healing the layer (notes.md §1.13, §2.1).
     Not in VULCAN 2.0 (op.py:2914 and :2929 solve and move on).
     """
     if not _CHEM_PROJECTION_ENABLED:
@@ -215,6 +235,12 @@ def _repair_stage(k, b_tr, c0, diag_d, sup_d, sub_d, fix_mask, n_tot):
         dl = jnp.where(pinned, 0.0, dl)
         g = jnp.where(pinned, 0.0, g)
     c = tridiagonal_solve(dl.T, d.T, du.T, g.T[:, :, None])[:, :, 0].T
+    # Per layer and atom: drop a correction the carrier cell cannot carry --
+    # one larger than BOTH the cell's own content and the carrier's raw stage
+    # change -- and leave the raw solve there. That layer's element budget
+    # stays open, which the certificate's cumulative term (C23) sees.
+    cap = _REPAIR_MAX_CELL_FRAC * jnp.maximum(y[:, ridx], jnp.abs(k[:, ridx]))
+    c = jnp.where(jnp.abs(c) > cap, 0.0, c)
     return k.at[:, ridx].add(c)
 
 
@@ -673,7 +699,7 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask):
     factors = factor_block_thomas_diag_offdiag(diag, sup_neg, sub_neg)
     k1 = solve_block_thomas_diag_offdiag(factors, rhs_y)
     n_tot = jnp.sum(y, axis=1, keepdims=True)
-    k1 = _repair_stage(k1, diff_at_y, c0, diag_d, sup_d, sub_d, fix_mask, n_tot)
+    k1 = _repair_stage(k1, diff_at_y, c0, diag_d, sup_d, sub_d, fix_mask, n_tot, y)
 
     yk2 = y + k1 / r
     A_eddy2, B_eddy2, C_eddy2, A_mol2, B_mol2, C_mol2, _ = _build_diff_coeffs_jax(
@@ -691,7 +717,7 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask):
     # Transport part of the stage-2 RHS (the projected chemistry term carries
     # no element content; the k1 term does).
     b_tr2 = diff_at_yk2 - (2.0 / (r * dt)) * k1
-    k2 = _repair_stage(k2, b_tr2, c0, diag_d, sup_d, sub_d, fix_mask, n_tot)
+    k2 = _repair_stage(k2, b_tr2, c0, diag_d, sup_d, sub_d, fix_mask, n_tot, y)
     return k1, k2, yk2, (c0, diag_d, sup_d, sub_d, diff_at_y, b_tr2)
 
 

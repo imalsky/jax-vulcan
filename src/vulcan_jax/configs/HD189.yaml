@@ -92,6 +92,8 @@ Kzz_prof: file
 K_max: 100000.0
 K_p_lev: 0.1
 vz_prof: const
+# VULCAN 2's adopted gs = 2140 cm/s^2 (Tsai+2017 sec 3.1) back-solved as
+# 2140*Rp^2/G; vm_branch ships 1.118 M_Jup (gs 2139.77), the VULCAN 2 value is kept.
 Mp: 2.1223033871582308e+30
 Tiso: 1000
 para_warm:

@@ -1,7 +1,9 @@
-"""Default HD189 parity checks against VULCAN-master.
+"""Matched-step, whole-model parity checks against VULCAN-master.
 
-The test stages VULCAN-master only inside subprocesses and restores any
-changed config/FastChem files before returning.
+The default HD189 config for 20 and 200 steps, plus the condensing column that
+pins the `fix_species` reservoir (C24). Every test stages VULCAN-master only
+inside subprocesses and restores any changed config/FastChem files before
+returning.
 """
 
 from __future__ import annotations
@@ -534,3 +536,326 @@ def test_default_hd189_preloop_and_matched_steps_match_master(
             f"longdy_master={float(master['longdy']):.3e}, "
             f"atom_jax={_atom_dict(jax)}, atom_master={_atom_dict(master)}"
         )
+
+
+# --- condensation: the `fix_species` pin snapshot (C24) ----------------------
+# `fix_species` + `use_relax` is upstream's own Earth methodology
+# (cfg_examples/vulcan_cfg_Earth.py:107-120) and no shipped VULCAN-JAX config
+# sets `use_condense`, so this matched-step run is the only guard on the order
+# of the pin snapshot and the relax. `CHO_photo_network_lowT.txt` is the
+# smallest vendored network carrying a condensation reaction
+# (`299 [ H2O -> H2O_l_s ]`) and is byte-identical in both trees; isothermal
+# 250 K + const_mix + no photo needs neither FastChem nor cross sections, so
+# the only moving parts beyond the shared Ros2 core are the condensation
+# kernels, the saturation table and the relaxation path. 51 steps: the pin
+# fires at `t > stop_conden_time` on step 45, leaving the frozen reservoir six
+# steps to show.
+CONDEN_STEPS = 50
+CONDEN_KNOBS = {
+    "atom_list": ["H", "O", "C"],
+    "network": "thermo/CHO_photo_network_lowT.txt",
+    "use_lowT_limit_rates": False,
+    "atm_type": "isothermal",
+    "Tiso": 250.0,
+    "nz": 40,
+    "P_b": 1.0e6,
+    "P_t": 1.0e2,
+    "atm_base": "H2",
+    "ini_mix": "const_mix",
+    "const_mix": {"H2": 0.9878, "H2O": 1.0e-2, "CH4": 1.0e-3,
+                  "CO": 1.0e-3, "CO2": 2.0e-4},
+    "use_photo": False,
+    "use_ion": False,
+    "use_Kzz": True,
+    "Kzz_prof": "const",
+    "const_Kzz": 1.0e5,
+    "use_moldiff": True,
+    "use_vz": False,
+    "use_condense": True,
+    "condense_sp": ["H2O"],
+    "non_gas_sp": ["H2O_l_s"],
+    "use_settling": True,
+    "r_p": {"H2O_l_s": 1.0e-2},
+    "rho_p": {"H2O_l_s": 0.9},
+    "use_relax": ["H2O"],
+    "humidity": 1.0,
+    "start_conden_time": 0.0,
+    "stop_conden_time": 1.0e3,
+    "fix_species": ["H2O", "H2O_l_s"],
+    "fix_species_from_coldtrap_lev": True,
+    "use_sat_surfaceH2O": False,
+    "use_ini_cold_trap": False,
+    "use_topflux": False,
+    "use_botflux": False,
+    "use_fix_sp_bot": {},
+    "diff_esc": [],
+    "remove_list": [],
+    "use_adapt_rtol": False,
+    "count_max": CONDEN_STEPS,
+    "count_min": CONDEN_STEPS + 1,
+    "trun_min": 1.0e22,
+    "use_print_prog": False,
+    "use_live_plot": False,
+    "use_live_flux": False,
+    "use_plot_end": False,
+    "use_plot_evo": False,
+    "use_save_movie": False,
+    "use_flux_movie": False,
+    "save_evolution": False,
+    "plot_TP": False,
+}
+# Master's HD189 example does not define these; JAX's default.yaml does not
+# carry `use_print_delta`. The vm knobs are the same PRE-FLIP baseline as the
+# HD189 cases above: the pinned VULCAN 2 oracle has no refreshed-interface vm,
+# and the hybrid phase flip breaks the matched-count contract.
+CONDEN_MASTER_ONLY = {"use_print_delta": False}
+CONDEN_JAX_ONLY = {
+    "use_vm_mol": False, "use_hybrid_vm_mol": False, "high_temp_cut": False,
+}
+# Machine-tolerance bar: the realised max is 8.5e-16 over the masked cells and
+# 0.0 on the H2O_l_s column. Snapshotting the POST-relax y instead scores 1.0
+# on the mask, 7.3e-3 on the column and 11 nonzero condensate layers against
+# master's 18 (measured 2026-09-13, notes.md 1.10).
+CONDEN_RTOL = 1.0e-12
+
+
+def _cfg_lines(prefix: str, *tables: dict) -> str:
+    """Render the knob tables as `<prefix><name> = <repr>` lines.
+
+    One table, two renderings ('' for master's cfg module, 'cfg.' for the JAX
+    config object), so the two sides of the comparison cannot drift apart.
+    """
+    return "\n".join(
+        f"{prefix}{name} = {value!r}"
+        for table in tables for name, value in table.items()
+    )
+
+
+_CONDEN_MASTER_SCRIPT = r'''
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+master_root = Path(sys.argv[1])
+out_npz = Path(sys.argv[2])
+
+(master_root / "vulcan_cfg.py").write_text(
+    (master_root / "cfg_examples" / "vulcan_cfg_HD189.py").read_text()
+    + "\n# === condensation pin parity overrides ===\n"
+    + """%(master_cfg)s\n"""
+)
+
+# make_chem_funs.py writes chem_funs.py BEFORE its own post-codegen
+# check_conserv(), which raises under numpy>=1.24; master's vulcan.py ignores
+# its exit code too, so only the generated module's importability matters.
+res = subprocess.run([sys.executable, "make_chem_funs.py"], cwd=str(master_root),
+                     capture_output=True, text=True, timeout=1800)
+probe = subprocess.run(
+    [sys.executable, "-c", "import chem_funs as c; assert c.ni > 0 and c.nr > 0"],
+    cwd=str(master_root), capture_output=True, text=True, timeout=120)
+if probe.returncode != 0:
+    print(res.stdout[-2000:], res.stderr[-2000:], probe.stderr[-2000:])
+    sys.exit(2)
+
+os.chdir(master_root)
+sys.path.insert(0, str(master_root))
+
+import build_atm
+import chem_funs
+import op
+import store
+
+data_var = store.Variables()
+data_atm = store.AtmData()
+data_para = store.Parameters()
+data_para.start_time = time.time()
+make_atm = build_atm.Atm()
+output = op.Output()
+
+data_atm = make_atm.f_pico(data_atm)
+data_atm = make_atm.load_TPK(data_atm)
+make_atm.sp_sat(data_atm)
+rate = op.ReadRate()
+data_var = rate.read_rate(data_var, data_atm)
+data_var = rate.rev_rate(data_var, data_atm)
+data_var = rate.remove_rate(data_var)
+ini_abun = build_atm.InitialAbun()
+data_var = ini_abun.ini_y(data_var, data_atm)
+data_var = ini_abun.ele_sum(data_var)
+
+y_ini = np.asarray(data_var.y_ini, dtype=np.float64).copy()
+pco = np.asarray(data_atm.pco, dtype=np.float64).copy()
+Tco = np.asarray(data_atm.Tco, dtype=np.float64).copy()
+
+data_atm = make_atm.f_mu_dz(data_var, data_atm, output)
+make_atm.mol_diff(data_atm)
+make_atm.BC_flux(data_atm)
+
+solver = op.Ros2()
+solver.naming_solver(data_para)
+op.Integration(solver, output)(data_var, data_atm, data_para, make_atm)
+
+np.savez_compressed(
+    out_npz,
+    species=np.array(list(chem_funs.spec_list), dtype=object),
+    y_ini=y_ini, pco=pco, Tco=Tco,
+    y=np.asarray(data_var.y, dtype=np.float64),
+    ymix=np.asarray(data_var.ymix, dtype=np.float64),
+    t=np.float64(data_var.t), dt=np.float64(data_var.dt),
+    count=np.int64(data_para.count),
+    rejections=np.array([data_para.nega_count, data_para.loss_count,
+                         data_para.delta_count], dtype=np.int64),
+)
+print("MASTER_OK")
+'''
+
+
+_CONDEN_JAX_SCRIPT = r'''
+import os
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
+
+package_root = Path(sys.argv[1])
+out_npz = Path(sys.argv[2])
+
+# `network` and `atom_list` are import-frozen: they must be selected before
+# the first `import vulcan_jax`, which is why the JAX side needs a cold process.
+os.environ["VULCAN_JAX_NETWORK"] = %(network)r
+os.environ["VULCAN_JAX_ATOM_LIST"] = "H,O,C"
+os.environ["JAX_PLATFORM_NAME"] = "cpu"
+sys.path.insert(0, str(package_root.parent))
+os.chdir(package_root)
+
+import vulcan_jax  # noqa: F401
+import vulcan_jax.chem_funs as chem_funs
+import vulcan_jax.legacy_io as op
+import vulcan_jax.op_jax as op_jax
+import vulcan_jax.outer_loop as outer_loop
+from vulcan_jax.atm_setup import Atm
+from vulcan_jax.config import default_config
+from vulcan_jax.state import RunState, legacy_view
+
+cfg = default_config()
+%(jax_cfg)s
+
+rs = RunState.with_pre_loop_setup(cfg)
+data_var, data_atm, data_para = legacy_view(rs)
+data_para.start_time = time.time()
+y_ini = np.asarray(data_var.y_ini, dtype=np.float64).copy()
+pco = np.asarray(data_atm.pco, dtype=np.float64).copy()
+Tco = np.asarray(data_atm.Tco, dtype=np.float64).copy()
+
+solver = op_jax.Ros2JAX()
+solver.naming_solver(data_para)
+outer_loop.OuterLoop(solver, op.Output(cfg=cfg), cfg=cfg)(
+    data_var, data_atm, data_para, Atm())
+
+np.savez_compressed(
+    out_npz,
+    species=np.array(list(chem_funs.spec_list), dtype=object),
+    y_ini=y_ini, pco=pco, Tco=Tco,
+    y=np.asarray(data_var.y, dtype=np.float64),
+    ymix=np.asarray(data_var.ymix, dtype=np.float64),
+    t=np.float64(data_var.t), dt=np.float64(data_var.dt),
+    count=np.int64(data_para.count),
+    rejections=np.array([data_para.nega_count, data_para.loss_count,
+                         data_para.delta_count], dtype=np.int64),
+)
+print("JAX_OK")
+'''
+
+
+@pytest.mark.master_serial
+def test_conden_fix_species_pin_matches_master() -> None:
+    """The `fix_species` pin freezes the reservoir master freezes (C24).
+
+    On the trigger step master snapshots `fix_y` from the post-solve y BEFORE
+    the H2O relaxation (op.py:871-873, then op.py:898-902 relaxes inside the
+    same block), so `_activate_fix_species` must run before `conden_branch`.
+    Snapshotting the post-relax y pins a reservoir the relax has already
+    drained, and the pin then holds that column for the rest of the run.
+    """
+    from oracle import oracle_worktree
+
+    fmt = {
+        "network": CONDEN_KNOBS["network"],
+        "master_cfg": _cfg_lines("", CONDEN_KNOBS, CONDEN_MASTER_ONLY),
+        "jax_cfg": _cfg_lines("cfg.", CONDEN_KNOBS, CONDEN_JAX_ONLY),
+    }
+    with tempfile.TemporaryDirectory(prefix="conden_parity_") as tmp, \
+            oracle_worktree("vulcan2_ncho") as master_root:
+        # Both sides must read the SAME network file: the condensation rows are
+        # indexed positionally off `299 [ H2O -> H2O_l_s ]`.
+        network_rel = CONDEN_KNOBS["network"]
+        assert (master_root / network_rel).read_bytes() == (
+            PACKAGE_ROOT / network_rel
+        ).read_bytes(), f"{network_rel} differs between the oracle and this tree"
+
+        tmp_path = Path(tmp)
+        master_npz = tmp_path / "master_conden.npz"
+        jax_npz = tmp_path / "jax_conden.npz"
+
+        master_res = _run_script(
+            _CONDEN_MASTER_SCRIPT % fmt, [master_root, master_npz],
+            python=_master_python(), timeout=900.0,
+        )
+        assert master_res.returncode == 0 and "MASTER_OK" in master_res.stdout, (
+            f"master subprocess failed {master_res.returncode}\n"
+            f"--- stdout ---\n{master_res.stdout}\n"
+            f"--- stderr ---\n{master_res.stderr}"
+        )
+        jax_res = _run_script(
+            _CONDEN_JAX_SCRIPT % fmt, [PACKAGE_ROOT, jax_npz], timeout=900.0,
+        )
+        assert jax_res.returncode == 0 and "JAX_OK" in jax_res.stdout, (
+            f"JAX subprocess failed {jax_res.returncode}\n"
+            f"--- stdout ---\n{jax_res.stdout}\n"
+            f"--- stderr ---\n{jax_res.stderr}"
+        )
+        # dict() forces the lazy npz reads before the temp dir goes away.
+        master = dict(np.load(master_npz, allow_pickle=True))
+        jax = dict(np.load(jax_npz, allow_pickle=True))
+
+    # With use_photo=False master's codegen drops the photolysis rows and their
+    # photo-only species (make_chem_funs.py:74), so its species list is a
+    # subset of the port's; those extra columns must be exactly zero.
+    sp_master = [str(name) for name in master["species"]]
+    sp_jax = [str(name) for name in jax["species"]]
+    cols = [sp_jax.index(name) for name in sp_master]
+    extra = [i for i, name in enumerate(sp_jax) if name not in sp_master]
+    assert np.all(np.asarray(jax["y"])[:, extra] == 0.0)
+    y_jax = np.asarray(jax["y"])[:, cols]
+    ymix_jax = np.asarray(jax["ymix"])[:, cols]
+
+    np.testing.assert_array_equal(np.asarray(jax["y_ini"])[:, cols], master["y_ini"])
+    np.testing.assert_array_equal(jax["pco"], master["pco"])
+    np.testing.assert_array_equal(jax["Tco"], master["Tco"])
+    np.testing.assert_array_equal(jax["rejections"], master["rejections"])
+    assert int(jax["count"]) == int(master["count"]) == CONDEN_STEPS + 1
+
+    # Trace cells clip to zero on different steps once dt has grown, so the
+    # metric is read over master's resolved cells (as in the HD189 cases).
+    sig = np.asarray(master["ymix"]) > 1.0e-10
+    cond = sp_master.index("H2O_l_s")
+    col_master = np.asarray(master["y"])[:, cond]
+    col_jax = y_jax[:, cond]
+    scores = {
+        "y": _safe_relerr(y_jax, master["y"], mask=sig),
+        "ymix": _safe_relerr(ymix_jax, master["ymix"], mask=sig),
+        "H2O_l_s column": abs(col_jax.sum() - col_master.sum()) / col_master.sum(),
+        "t": abs(float(jax["t"]) - float(master["t"])) / float(master["t"]),
+        "dt": abs(float(jax["dt"]) - float(master["dt"])) / float(master["dt"]),
+    }
+    assert max(scores.values()) <= CONDEN_RTOL, (
+        "condensation pin parity: "
+        + ", ".join(f"{name}={value:.3e}" for name, value in scores.items())
+        + f" > {CONDEN_RTOL:.1e}; nonzero H2O_l_s layers "
+        f"master {int((col_master > 0).sum())} jax {int((col_jax > 0).sum())}"
+    )
