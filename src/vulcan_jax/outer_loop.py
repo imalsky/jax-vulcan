@@ -631,6 +631,7 @@ class _Statics(NamedTuple):
     flux_cri: float
     geom_conv_tol: float  # certificate: max relative move of the refreshed geometry
     element_budget_tol: float  # certificate: max cumulative column element drift
+    budget_ref_atom: int  # column of compo_arr the budget is measured against (H)
     mtol_conv: float
     conver_ignore_mask: jnp.ndarray  # (ni,) bool — species to drop from longdy
     condense_zero_conv_mask: jnp.ndarray  # (nz, ni) bool — non_gas_sp columns
@@ -766,6 +767,7 @@ def _make_runner(
     mtol_conv = statics.mtol_conv
     geom_conv_tol = statics.geom_conv_tol
     element_budget_tol = statics.element_budget_tol
+    budget_ref_atom = statics.budget_ref_atom
     conver_ignore_mask = statics.conver_ignore_mask
     condense_zero_conv_mask = statics.condense_zero_conv_mask
     use_photo_static = statics.use_photo
@@ -1443,12 +1445,15 @@ def _make_runner(
         # its sulfur). This measures the operator-weighted column of the state
         # the step RETURNS (`y_next`: after the hydrostatic renormalisation and
         # the bottom pins) against the state the run started from, on the
-        # refreshed grid; the tolerance and its calibration sit in default.yaml.
+        # refreshed grid, RELATIVE TO H: the renormalisation pins each layer's
+        # total density, so dissociation shifts every atom column by the same
+        # factor (WASP-107 b: -1.04% on H, He, O, N, C and S alike, 2e-6 as
+        # X/H) and only the ratio to H is the conserved quantity. The
+        # tolerance and its calibration sit in default.yaml.
+        _drift = column_atom_loss(y_next, s.pv.y_ini, dz_next, compo_arr)
+        _rel = (1.0 + _drift) / (1.0 + _drift[budget_ref_atom]) - 1.0
         budget_ok_next = candidate & (
-            jnp.max(
-                jnp.abs(column_atom_loss(y_next, s.pv.y_ini, dz_next, compo_arr))
-            )
-            < jnp.float64(element_budget_tol)
+            jnp.max(jnp.abs(_rel)) < jnp.float64(element_budget_tol)
         )
 
         # Hybrid vm_mol phase flip: when phase 0 (upwind) ends -- convergence,
@@ -2162,6 +2167,7 @@ class OuterLoop:
             flux_cri=float(self._cfg.flux_cri),
             geom_conv_tol=float(getattr(self._cfg, "geom_conv_tol", 1e-3)),
             element_budget_tol=float(getattr(self._cfg, "element_budget_tol", 1e-2)),
+            budget_ref_atom=self._atom_order.index("H"),
             mtol_conv=float(self._cfg.mtol_conv),
             conver_ignore_mask=jnp.asarray(conver_ignore_np),
             condense_zero_conv_mask=jnp.asarray(cond_zero_conv_np),
