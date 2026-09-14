@@ -359,6 +359,8 @@ def _validate_numerical_bounds(cfg) -> list[str]:
     # loss_ex must be a subset of atom_list
     atom_list = list(getattr(cfg, "atom_list", []))
     loss_ex = list(getattr(cfg, "loss_ex", []))
+    if "H" in loss_ex:
+        errors.append("loss_ex must not contain H: the element budget is measured relative to H.")
     extras = [a for a in loss_ex if a not in atom_list]
     if extras:
         errors.append(

@@ -204,11 +204,13 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch):
     # test_stage_repair_guard.py) deliberately leaves a layer's identity open
     # where the fixed reservoir is a trace -- on this column the 1e-24-VMR H2O
     # of the 6000 K top, where the correction is 1e10 to 1e16 times the cell.
-    # Both callees are jitted HERE so they trace after the lift; the
-    # module-level `jax_ros2_step` may already be cached with the shipped value.
+    # Both callees are jitted HERE through fresh lambdas so they trace after
+    # the lift: jax caches the traced jaxpr per Python function, so re-jitting
+    # `jax_ros2_step.__wrapped__` itself would reuse a trace made with the
+    # shipped value if anything compiled it earlier in this process.
     monkeypatch.setattr(jax_step, "_REPAIR_MAX_CELL_FRAC", float("inf"))
-    defects = jax.jit(jax_step._stage_defects)
-    step = jax.jit(jax_step.jax_ros2_step.__wrapped__)
+    defects = jax.jit(lambda *a: jax_step._stage_defects(*a))
+    step = jax.jit(lambda *a: jax_step.jax_ros2_step.__wrapped__(*a))
     identity, closed = {}, {}
     for dt in (1e8, 1e11, 1e13, 1e15):
         k1, k2, d1, d2, bound = defects(y, k_arr, jnp.float64(dt), atm, net)
@@ -223,7 +225,8 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch):
             jnp.max(jnp.abs(sol @ ac - y @ ac) / (jnp.abs(sol) @ ac + jnp.abs(y) @ ac))
         )
     print("identity residual / bound:", {f"{d:g}": f"{v:.1e}" for d, v in identity.items()})
-    print("closed-layer element change / |content|:", {f"{d:g}": f"{v:.1e}" for d, v in closed.items()})
+    print("closed-layer element change / |content|:",
+          {f"{d:g}": f"{v:.1e}" for d, v in closed.items()})
     assert all(v < 1e3 for v in identity.values()), identity
     # The repair runs at every dt (no gate since 0.6.0) and leaves alone a
     # defect under config.REPAIR_ABS_FLOOR of the layer's density (roundoff

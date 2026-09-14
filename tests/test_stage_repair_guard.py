@@ -81,6 +81,7 @@ repo = sys.argv[1]
 sys.path.insert(0, os.path.join(repo, "tests"))
 import numpy as np
 from test_stage_repair_guard import BAND, stage_arrays, step_solution
+from vulcan_jax import jax_step
 
 for dt in (1e8, 1e11):
     y, k1, k2 = stage_arrays("adj_state_w39b.npz", "W39b", dt, 0.0)
@@ -88,7 +89,8 @@ for dt in (1e8, 1e11):
     import vulcan_jax.chem_funs as cf
     h2s = cf.spec_list.index("H2S")
     counts = {}
-    for tag, frac in (("guarded", 1.0), ("unguarded", float("inf"))):
+    guarded = jax_step._REPAIR_MAX_CELL_FRAC
+    for tag, frac in (("guarded", guarded), ("unguarded", float("inf"))):
         y, k1, k2 = stage_arrays("adj_state_w39b.npz", "W39b", dt, frac)
         sol = step_solution(y, k1, k2)
         flipped = (sol[BAND, h2s] < 0.0) & (raw[BAND, h2s] > 0.0)
@@ -119,8 +121,9 @@ def test_guard_is_a_no_op_on_the_healthy_hd189_column():
     """At dt 1e6 every correction on this column is <= 7e-6 of its carrier
     cell (notes.md §1.13), so the guard must be invisible: bit-identical
     stages to the unguarded repair, which itself is not the raw solve."""
+    import vulcan_jax.jax_step as jax_step
     args = ("adj_state_hd189.npz", "default", 1e6)
-    _, g1, g2 = stage_arrays(*args, 1.0)
+    _, g1, g2 = stage_arrays(*args, jax_step._REPAIR_MAX_CELL_FRAC)
     _, u1, u2 = stage_arrays(*args, float("inf"))
     _, r1, _ = stage_arrays(*args, 0.0)
     assert np.array_equal(g1, u1) and np.array_equal(g2, u2), (
