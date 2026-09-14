@@ -39,6 +39,12 @@ warnings.filterwarnings("ignore")
 COUNT_MAX = 30
 RTOL = 1e-9
 YMIX_FLOOR = 1e-15
+# ymix is judged by SCALE, not bit identity: |lane - its own solo| against
+# |soloA - soloB|. A closure-baked per-profile photo field makes lane 1 BE
+# soloA (ratio ~1); bit identity is a property of the XLA version, not of the
+# code (holds through jax 0.9.2, breaks from 0.10 by a 6.4e-7 step-controller
+# time offset; measured ratio 6.5e-7 at 0.11.1, ~1e-22 at 0.9.2; notes 1.8).
+SCALE_TOL = 1e-4
 
 
 def _pin_cfg():
@@ -85,6 +91,11 @@ def _max_rel_diff(b, r, floor=YMIX_FLOOR):
     if not np.any(mask):
         return 0.0
     return float(np.max(np.abs(b[mask] - r[mask]) / np.abs(r[mask])))
+
+
+def _scale_ratio(bat, sol, other):
+    bat, sol, other = (np.asarray(x, dtype=np.float64) for x in (bat, sol, other))
+    return float(np.max(np.abs(bat - sol))) / float(np.max(np.abs(sol - other)))
 
 
 def main() -> int:
@@ -138,9 +149,15 @@ def main() -> int:
         ("tau", lambda s: s.tau, 0.0),
     ]
     for name, get, floor in checks:
-        relA = _max_rel_diff(get(out[0]), get(soloA), floor=floor)
-        relB = _max_rel_diff(get(out[1]), get(soloB), floor=floor)
-        if relA > RTOL or relB > RTOL:
+        if name == "ymix":
+            relA = _scale_ratio(get(out[0]), get(soloA), get(soloB))
+            relB = _scale_ratio(get(out[1]), get(soloB), get(soloA))
+            tol = SCALE_TOL
+        else:
+            relA = _max_rel_diff(get(out[0]), get(soloA), floor=floor)
+            relB = _max_rel_diff(get(out[1]), get(soloB), floor=floor)
+            tol = RTOL
+        if relA > tol or relB > tol:
             print(
                 f"FAIL[solo-vs-batch] {name}: laneA rel={relA:.2e} laneB rel={relB:.2e}"
             )
