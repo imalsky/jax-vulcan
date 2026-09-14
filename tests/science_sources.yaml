@@ -129,7 +129,7 @@ supported_inputs:
   thermo/SNCHO_photo_network_2025.txt:
     sha256: a82daa92494fad81b5ead2f9251a3ed7f7ed27e6d810a8b543fe8fd8d0267b6e
     oracle: vulcan2_ncho
-    diverges: [C13_2025_reaction_index_gap]
+    diverges: [renumber_2025_reaction_index_gap]
     note: >-
       Current upstream's W39b network (93 species). Selectable by
       jwst-transit-authority as network="sncho2025"; the shipped W39b.yaml
@@ -168,7 +168,7 @@ supported_inputs:
   fastchem_vulcan/input/solar_element_abundances.dat:
     sha256: 7c38fceaa0e358e62cde61ebdb416a08e248957c56cb2d301c270be2a45c2126
     oracle: vulcan2_fastchem_ps_order
-    diverges: [C12_fastchem_ps_order, C15_lodders2019_rocky_suppressed]
+    diverges: [C12_fastchem_ps_order, lodders2019_rocky_suppressed]
     note: >-
       DEFAULT hybrid preset: rocky elements suppressed to -3.0; S and He rows
       approximate Lodders 2019 Table 8, the C/N/O rows are upstream's Lodders 2009 file
@@ -210,7 +210,7 @@ intentional_divergences:
       comparisons stay 1-1; pinned checkouts are never edited.
     recorded_in: notes.md (Parity & bug guide, C20)
 
-  C13_2025_reaction_index_gap:
+  renumber_2025_reaction_index_gap:
     files:
       - thermo/SNCHO_photo_network_2025.txt
     reaction: CH3 + C2H2 -> CH2CCH2 + H
@@ -253,7 +253,7 @@ intentional_divergences:
       moves 2.6-3.1 dex; every molecule <= 0.004 dex.
     recorded_in: notes.md (Parity & bug guide, C12)
 
-  C15_lodders2019_rocky_suppressed:
+  lodders2019_rocky_suppressed:
     files: [fastchem_vulcan/input/solar_element_abundances.dat]
     reason: >-
       The DEFAULT hybrid preset keeps upstream C/N/O and uses approximately
