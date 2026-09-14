@@ -2,17 +2,21 @@
 
 Solves `[A_j; B_{j-1}, C_j] @ k = rhs` for nz layers of size ni each. The
 forward elimination computes `A'_j = A_j - C_j @ inv(A'_{j-1}) @ B_{j-1}`
-via `lu_factor`/`lu_solve` per block. Cost is O(nz * ni^3);
+via an LU factorization and solve per block. Cost is O(nz * ni^3);
 differentiable, JIT-friendly, GPU-ready.
 
-Both routines below materialize `inv(A'_{j-1})` explicitly via
-`lu_solve(..., eye_ni)`. The reference `block_thomas` needs it because its
-off-blocks are dense. The hot-path `block_thomas_diag_offdiag` needs it too:
+Both routines below materialize `inv(A'_{j-1})` explicitly by solving against
+`eye_ni`. The reference `block_thomas` needs it because its off-blocks are
+dense. The hot-path `block_thomas_diag_offdiag` needs it too:
 with diagonal off-blocks the update becomes the ELEMENTWISE product
 `A_j - (c[:, None] * b[None, :]) * inv(A'_{j-1})`, which reads every one of
 the ni^2 entries. What the diagonal structure buys is replacing an O(ni^3)
 matmul with an O(ni^2) elementwise scaling; it does NOT avoid the inversion,
 and forming the inverse keeps the sweep O(nz * ni^3) either way.
+
+The hot path factors with `lax.linalg.lu` and keeps the row permutation in the
+factors. `block_thomas` stays on `jax.scipy.linalg.lu_factor`/`lu_solve` so it
+remains an independent oracle for the tests.
 """
 
 from __future__ import annotations
@@ -25,13 +29,28 @@ import jax.numpy as jnp
 jax.config.update("jax_enable_x64", True)
 
 
+def _lu_solve_perm(lu, perm, b):
+    """lu_solve with the row permutation already materialized.
+
+    `jax.scipy.linalg.lu_solve` (jax 0.6.2) rebuilds it from the pivots on
+    every call; `lax.linalg.lu` returns it once per factorization and the
+    factors keep it. Mirrors jax/_src/lax/linalg.py `_lu_solve_core`
+    (trans=0). `b` may be (ni,) or (ni, n).
+    """
+    x = b[perm]
+    x = jax.lax.linalg.triangular_solve(
+        lu, x, left_side=True, lower=True, unit_diagonal=True
+    )
+    return jax.lax.linalg.triangular_solve(lu, x, left_side=True, lower=False)
+
+
 class BlockThomasDiagFactors(NamedTuple):
-    """LU factors of the forward-eliminated diagonal blocks plus the
-    diagonal off-diagonal vectors, so a new RHS can be solved without
-    refactorising."""
+    """LU factors of the forward-eliminated diagonal blocks, their row
+    permutations, and the diagonal off-diagonal vectors, so a new RHS can be
+    solved without refactorising."""
 
     diag_lu: jnp.ndarray
-    diag_piv: jnp.ndarray
+    diag_perm: jnp.ndarray
     sup_d: jnp.ndarray
     sub_d: jnp.ndarray
 
@@ -50,31 +69,29 @@ def factor_block_thomas_diag_offdiag(diag, sup_d, sub_d):
     """
     ni = diag.shape[1]
 
-    lu_factor = jax.scipy.linalg.lu_factor
-    lu_solve = jax.scipy.linalg.lu_solve
-    eye_ni = jnp.eye(ni)
+    eye_ni = jnp.eye(ni, dtype=diag.dtype)
 
-    A0_lu, A0_piv = lu_factor(diag[0])
+    A0_lu, _, A0_perm = jax.lax.linalg.lu(diag[0])
 
     def fwd_step(carry, inputs):
-        A_prev_lu, A_prev_piv = carry
+        A_prev_lu, A_prev_perm = carry
         A_j, b_jm1, c_j = inputs
-        A_prev_inv = lu_solve((A_prev_lu, A_prev_piv), eye_ni)
+        A_prev_inv = _lu_solve_perm(A_prev_lu, A_prev_perm, eye_ni)
         A_new = A_j - (c_j[:, None] * b_jm1[None, :]) * A_prev_inv
-        A_new_lu, A_new_piv = lu_factor(A_new)
-        return (A_new_lu, A_new_piv), (A_new_lu, A_new_piv)
+        A_new_lu, _, A_new_perm = jax.lax.linalg.lu(A_new)
+        return (A_new_lu, A_new_perm), (A_new_lu, A_new_perm)
 
-    _, (diag_lu_tail, diag_piv_tail) = jax.lax.scan(
+    _, (diag_lu_tail, diag_perm_tail) = jax.lax.scan(
         fwd_step,
-        (A0_lu, A0_piv),
+        (A0_lu, A0_perm),
         (diag[1:], sup_d, sub_d),
     )
 
     diag_lu_full = jnp.concatenate([A0_lu[None], diag_lu_tail], axis=0)
-    diag_piv_full = jnp.concatenate([A0_piv[None], diag_piv_tail], axis=0)
+    diag_perm_full = jnp.concatenate([A0_perm[None], diag_perm_tail], axis=0)
     return BlockThomasDiagFactors(
         diag_lu=diag_lu_full,
-        diag_piv=diag_piv_full,
+        diag_perm=diag_perm_full,
         sup_d=sup_d,
         sub_d=sub_d,
     )
@@ -82,13 +99,11 @@ def factor_block_thomas_diag_offdiag(diag, sup_d, sub_d):
 
 def solve_block_thomas_diag_offdiag(factors: BlockThomasDiagFactors, rhs):
     """Solve a diagonal-offdiag block-tridiagonal system for a new RHS."""
-    lu_solve = jax.scipy.linalg.lu_solve
-
     rhs0 = rhs[0]
 
     def fwd_rhs_step(rhs_prev, inputs):
-        A_prev_lu, A_prev_piv, c_j, rhs_j = inputs
-        invA_r = lu_solve((A_prev_lu, A_prev_piv), rhs_prev)
+        A_prev_lu, A_prev_perm, c_j, rhs_j = inputs
+        invA_r = _lu_solve_perm(A_prev_lu, A_prev_perm, rhs_prev)
         rhs_new = rhs_j - c_j * invA_r
         return rhs_new, rhs_new
 
@@ -97,22 +112,23 @@ def solve_block_thomas_diag_offdiag(factors: BlockThomasDiagFactors, rhs):
         rhs0,
         (
             factors.diag_lu[:-1],
-            factors.diag_piv[:-1],
+            factors.diag_perm[:-1],
             factors.sub_d,
             rhs[1:],
         ),
     )
     rhs_mod_full = jnp.concatenate([rhs0[None], rhs_mod_tail], axis=0)
 
-    k_last = lu_solve(
-        (factors.diag_lu[-1], factors.diag_piv[-1]),
+    k_last = _lu_solve_perm(
+        factors.diag_lu[-1],
+        factors.diag_perm[-1],
         rhs_mod_full[-1],
     )
 
     def bwd_step(k_next, inputs):
-        A_lu, A_piv, rhs_mod, b_j = inputs
+        A_lu, A_perm, rhs_mod, b_j = inputs
         rhs_local = rhs_mod - b_j * k_next
-        k_curr = lu_solve((A_lu, A_piv), rhs_local)
+        k_curr = _lu_solve_perm(A_lu, A_perm, rhs_local)
         return k_curr, k_curr
 
     _, k_rev = jax.lax.scan(
@@ -120,7 +136,7 @@ def solve_block_thomas_diag_offdiag(factors: BlockThomasDiagFactors, rhs):
         k_last,
         (
             factors.diag_lu[:-1][::-1],
-            factors.diag_piv[:-1][::-1],
+            factors.diag_perm[:-1][::-1],
             rhs_mod_full[:-1][::-1],
             factors.sup_d[::-1],
         ),
