@@ -24,6 +24,8 @@ import argparse
 import hashlib
 import json
 import os
+import platform
+import re
 import subprocess
 import sys
 import time
@@ -73,7 +75,8 @@ def _git_head() -> str | None:
         if r.returncode != 0 or not head:
             return None
         dirty = subprocess.run(
-            ["git", "-C", str(ROOT), "status", "--porcelain"],
+            ["git", "-C", str(ROOT), "status", "--porcelain",
+             "--untracked-files=no"],
             capture_output=True, text=True, timeout=10).stdout.strip()
         return head + ("-dirty" if dirty else "")
     except Exception:
@@ -88,8 +91,12 @@ def _versions() -> dict:
         except Exception:
             out[mod] = None
     try:
-        from importlib.metadata import version
-        out["vulcan_jax"] = version("vulcan-jax")
+        # Read the source of truth, not the installed dist metadata: under an
+        # editable install importlib.metadata reports whatever version was
+        # current at `pip install -e`, which silently mislabels every fixture.
+        src = (ROOT / "src" / "vulcan_jax" / "_version.py").read_text()
+        out["vulcan_jax"] = re.search(
+            r"__version__\s*=\s*[\"']([^\"']+)", src).group(1)
     except Exception:
         out["vulcan_jax"] = None
     return out
@@ -143,6 +150,10 @@ def write_manifest() -> dict:
     manifest = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "vulcan_jax_commit": _git_head(),
+        # The adjoint states are a converged solve, so a consumer that pins a
+        # machine-dependent number off them can tell whether it is reading the
+        # column that number was measured on.
+        "platform_machine": platform.machine(),
         "versions": _versions(),
         "config_sha256_16": _config_identity(),
         "fixtures": entries,
