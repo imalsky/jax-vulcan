@@ -178,12 +178,14 @@ def run() -> None:
         os.chdir(master_root)
         sys.path.insert(0, str(master_root))
 
+        # Master's OWN codegen and the cfg this script just wrote: importing
+        # the port here would make the saved species list and the pre-loop
+        # branches below read the side under test.
         import build_atm
-        import vulcan_jax.chem_funs as chem_funs
+        import chem_funs
         import op
         import store
-        from vulcan_jax.config import default_config
-        vulcan_cfg = default_config()
+        import vulcan_cfg
 
         data_var = store.Variables()
         data_atm = store.AtmData()

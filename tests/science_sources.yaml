@@ -166,6 +166,15 @@ supported_inputs:
     sha256: 7746f9c874101975f4bd33717f8b1fabd47498cf0e19f20f87a7175e8f6c6de0
     oracle: vulcan3_vm_branch
 
+  atm/stellar_flux/sflux-GJ1214.txt:
+    sha256: b8c52774e2ce3114e2921e0f0cda952fc9db97a240c6f9c96e73f8df3fc2302a
+    oracle: null
+    diverges: [P18_gj1214_upstream_regenerated]
+    note: >-
+      Taken from upstream bb9255b1, which is NEWER than every pinned oracle, so
+      `oracle` is null and the audit's oracle comparison does not cover it; the
+      hash pin above is the whole guard. No shipped config selects it.
+
   fastchem_vulcan/input/solar_element_abundances.dat:
     sha256: 7c38fceaa0e358e62cde61ebdb416a08e248957c56cb2d301c270be2a45c2126
     oracle: vulcan2_fastchem_ps_order
@@ -244,6 +253,20 @@ intentional_divergences:
       the surface-flux conversion divides, so the shipped eps Eri spectrum is
       low by exactly R_star^4.
     recorded_in: notes.md (Parity & bug guide, C4)
+
+  P18_gj1214_upstream_regenerated:
+    files: [atm/stellar_flux/sflux-GJ1214.txt]
+    reason: >-
+      The pinned vulcan2_ncho copy pads 133.75-181.55 nm with 464 zero-flux
+      rows that bin into the FUV photolysis drive as real zeros (P18). Upstream
+      deleted those rows when it regenerated the file (bb9255b1); the same
+      regeneration lowers every flux by a constant 1.392 (median ratio old/new;
+      the 1.385-1.399 spread is the old file's three-significant-digit
+      rounding) and prints seven digits. The wavelength grid is otherwise
+      identical to 2e-11 nm. The (distance/R_star) upstream used is not in
+      either tree: the shipped builder read_muscles_spectra_in_nm.py still
+      encodes 47.5 ly / 0.2064 r_sun and reproduces the OLD normalisation.
+    recorded_in: notes.md (Parity & bug guide, P18)
 
   C12_fastchem_ps_order:
     files: [fastchem_vulcan/input/solar_element_abundances.dat]
