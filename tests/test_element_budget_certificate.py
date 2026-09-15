@@ -2,10 +2,11 @@
 
 `loss_eps` rejects a step whose unweighted atom sum JUMPS; a slow drain walks
 past it (notes §1.12: a column certified having lost 21% of its sulfur).
-`budget_ok` closes that: on the certificate candidate the run compares the
-operator-weighted column of every element against `budget_ref` -- the column
-the run started from, shifted on every geometry refresh by what the refresh
-alone does to the integral -- and may end only within `element_budget_tol`.
+`budget_ok` closes that: the run accumulates the per-step change of every
+element's operator-weighted column, each step measured on the grid in force
+during it, normalised by the fixed t=0 column (`budget_ref`), and may end only
+within `element_budget_tol`. A geometry refresh moves no atom, so it never
+enters the sum, and it cannot rescale a deficit already accumulated.
 
 The carry is seeded directly (the stall-gate idiom): the chemistry criteria
 are opened up so `conv_normal` holds on the first accepted step, leaving the
@@ -59,11 +60,13 @@ def _cfg():
 def test_certificate_requires_the_column_element_budget(drain, scale, reason, why):
     """A drained column must fall through to the step-count exit, not certify.
 
-    `drain` scales the CH4 rows of the state `budget_ref` is built from, i.e.
-    the run behaves as if it had lost that much carbon since t=0 (-0.73 of the
-    C column at 4x, against `element_budget_tol` 1e-2). `scale` multiplies the
-    whole reference column: the term is measured relative to H (0.10.1), so a
-    common factor (the hydrostatic renormalisation) must still certify.
+    `drain` scales the CH4 rows of the column the run is treated as having
+    started from, and `budget_err` is seeded with the relative change from
+    that column to the present one: the run behaves as if it had lost that
+    much carbon since t=0 (-0.73 of the C column at 4x, against
+    `element_budget_tol` 1e-2). `scale` multiplies the whole starting column:
+    the term is measured relative to H (0.10.1), so a common factor (the
+    hydrostatic renormalisation) must still certify.
     """
     import vulcan_jax.legacy_io as op
     from vulcan_jax import op_jax, outer_loop
@@ -75,6 +78,10 @@ def test_certificate_requires_the_column_element_budget(drain, scale, reason, wh
     state, atm_static = integ.prepare_runstate(RunState.with_pre_loop_setup(c))
     t0 = 10.0 * float(c.trun_min)
     ch4 = outer_loop._NETWORK.species_idx["CH4"]
+    started_from = column_atoms(
+        (state.y * scale).at[:, ch4].multiply(drain), state.dz, integ._compo_arr
+    )
+    now = column_atoms(state.y, state.dz, integ._compo_arr)
     seeded = state._replace(
         t=jnp.float64(t0),
         accept_count=jnp.int32(int(c.count_min) + 5),
@@ -86,11 +93,7 @@ def test_certificate_requires_the_column_element_budget(drain, scale, reason, wh
         aflux_change=jnp.float64(0.0),
         geom_ok=jnp.bool_(False),
         budget_ok=jnp.bool_(False),
-        budget_ref=column_atoms(
-            (state.y * scale).at[:, ch4].multiply(drain),
-            state.dz,
-            integ._compo_arr,
-        ),
+        budget_err=now / started_from - 1.0,
     )
     final = integ._runner(seeded, atm_static)
     assert int(final.termination_reason) == reason, (
@@ -103,21 +106,31 @@ def test_certificate_requires_the_column_element_budget(drain, scale, reason, wh
     assert bool(final.geom_ok)
 
 
-def test_a_geometry_refresh_alone_never_moves_the_budget():
-    """A refresh keeps y and changes dz. Under a y_ini-anchored term (both
-    columns weighted on the refreshed grid) a column whose carbon has
-    redistributed vertically since t=0 reads a spurious drift once the grid
-    changes non-uniformly; the running reference absorbs the grid change and
-    the column certifies."""
+@pytest.mark.parametrize(
+    "err_c, reason, why",
+    [
+        (0.0, 1, "a refresh alone may not manufacture a budget error"),
+        (-0.012, 3, "a refresh may not dilute an accumulated deficit into tolerance"),
+    ],
+)
+def test_a_geometry_refresh_alone_never_moves_the_budget(err_c, reason, why):
+    """A refresh keeps y and changes dz, so it moves no atom and the budget
+    term must not move either -- in either direction.
+
+    The carry enters on a stale grid, compressed where the column's mass sits;
+    the refresh at the certificate candidate rebuilds the true dz and the
+    discrete integral grows by roughly 3x. `err_c` is the carbon error
+    accumulated before that refresh, stated twice: in `budget_err` (what the
+    shipped fixed-denominator term reads) and as the matching offset of
+    `budget_ref` (what a running reference would read at entry). A design that
+    shifts the reference on the refresh rescales the deficit by the geometry
+    factor -- -0.012 dilutes to -0.004 and certifies; the shipped term cannot.
+    """
     import numpy as np
 
     import vulcan_jax.legacy_io as op
     from vulcan_jax import op_jax, outer_loop
-    from vulcan_jax.ini_abun import (
-        column_atom_loss,
-        column_atoms,
-        operator_column_weights,
-    )
+    from vulcan_jax.ini_abun import column_atoms
     from vulcan_jax.state import RunState
 
     c = _cfg()
@@ -125,28 +138,12 @@ def test_a_geometry_refresh_alone_never_moves_the_budget():
     integ = outer_loop.OuterLoop(op_jax.Ros2JAX(), op.Output(cfg=c), cfg=c)
     state, atm_static = integ.prepare_runstate(RunState.with_pre_loop_setup(c))
     nz = state.y.shape[0]
-    ch4 = outer_loop._NETWORK.species_idx["CH4"]
-    # A stale, non-uniformly stretched grid: the refresh at the candidate
-    # rebuilds the true dz from ymix, so w_true/w_seed varies with height.
-    dz_seed = state.dz * jnp.linspace(1.0, 3.0, nz)
-    w_seed = operator_column_weights(dz_seed)
-    # The reference state: same CH4 column as state.y on the SEEDED grid,
-    # different shape (half the CH4 below mid-column moved above it).
-    lo = jnp.arange(nz) < nz // 2
-    ch4_col = state.y[:, ch4]
-    moved = 0.5 * jnp.sum(w_seed * ch4_col * lo)
-    top_w = jnp.sum(w_seed * ch4_col * ~lo)
-    y_ini = state.y.at[:, ch4].set(
-        jnp.where(lo, 0.5 * ch4_col, ch4_col * (1.0 + moved / top_w))
-    )
-    # Anchored on y_ini and the true grid this reads well past
-    # element_budget_tol, else the test does not discriminate.
     h = integ._atom_order.index("H")
-    old_drift = column_atom_loss(state.y, y_ini, state.dz, integ._compo_arr)
-    old_rel = (1.0 + old_drift) / (1.0 + old_drift[h]) - 1.0
-    assert float(jnp.max(jnp.abs(old_rel))) > float(c.element_budget_tol), float(
-        jnp.max(jnp.abs(old_rel))
-    )
+    ci = integ._atom_order.index("C")
+    dz_seed = state.dz / jnp.linspace(3.0, 1.0, nz)
+    budget_err = jnp.zeros((integ._compo_arr.shape[1],)).at[ci].set(err_c)
+    col_seed = column_atoms(state.y, dz_seed, integ._compo_arr)
+    budget_ref = col_seed.at[ci].divide(1.0 + err_c)
 
     t0 = 10.0 * float(c.trun_min)
     seeded = state._replace(
@@ -160,19 +157,23 @@ def test_a_geometry_refresh_alone_never_moves_the_budget():
         geom_ok=jnp.bool_(False),
         budget_ok=jnp.bool_(False),
         dz=dz_seed,
-        budget_ref=column_atoms(y_ini, dz_seed, integ._compo_arr),
-        pv=state.pv._replace(y_ini=y_ini),
+        budget_ref=budget_ref,
+        budget_err=budget_err,
     )
     final = integ._runner(seeded, atm_static)
-    assert int(final.termination_reason) == 1 and bool(final.budget_ok), (
-        int(final.termination_reason),
-        np.asarray(final.budget_drift),
+    assert int(final.termination_reason) == reason and bool(final.budget_ok) is (
+        reason == 1
+    ), (why, int(final.termination_reason), np.asarray(final.budget_drift))
+    # The deficit survives the refresh undiluted.
+    assert float(final.budget_drift[ci]) == pytest.approx(err_c, rel=0.05, abs=1e-4), (
+        float(final.budget_drift[ci])
     )
-    # The stored drift is reproducible from the exit state and its reference.
-    col = column_atoms(final.y, final.dz, integ._compo_arr)
-    drift = col / final.budget_ref - 1.0
-    rel = (1.0 + drift) / (1.0 + drift[h]) - 1.0
-    assert np.allclose(np.asarray(rel), np.asarray(final.budget_drift), rtol=0, atol=1e-12)
+    # The reference is fixed, and the stored drift is its accumulator read
+    # relative to H.
+    assert np.array_equal(np.asarray(final.budget_ref), np.asarray(budget_ref))
+    err = np.asarray(final.budget_err)
+    rel = (1.0 + err) / (1.0 + err[h]) - 1.0
+    assert np.allclose(rel, np.asarray(final.budget_drift), rtol=0, atol=1e-12)
 
 
 def test_shipped_configs_declare_the_budget_tolerance():

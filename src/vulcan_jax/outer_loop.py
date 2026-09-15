@@ -169,8 +169,9 @@ class JaxIntegState(NamedTuple):
     is_final_photo_frq: jnp.ndarray  # ()                  bool
     geom_ok: jnp.ndarray  # ()  bool — refreshed geometry agreed at the last certificate candidate
     budget_ok: jnp.ndarray  # () bool  column element budget held at the last candidate (C23)
-    budget_ref: jnp.ndarray  # (n_atoms,) reference atom column, carried across grid refreshes (C23)
-    budget_drift: jnp.ndarray  # (n_atoms,) last relative-to-H column drift against budget_ref (C23)
+    budget_ref: jnp.ndarray  # (n_atoms,) the t=0 operator-weighted atom column on the t=0 grid (fixed; C23 denominator)
+    budget_err: jnp.ndarray  # (n_atoms,) accumulated per-step column change / budget_ref, each step on its own grid (C23)
+    budget_drift: jnp.ndarray  # (n_atoms,) budget_err relative to H: the certificate's C23 operand
 
     # Post-condensation fixed-species state.
     fix_species_started: jnp.ndarray  # ()                  bool
@@ -277,8 +278,8 @@ def _print_column_atom_loss(cfg, y, y_ini, dz) -> None:
     the final grid (`ini_abun.column_atom_loss`) — what the discretized
     transport actually conserves on a nonuniform grid. Step acceptance keeps
     the unweighted master-parity `atom_loss`; the certificate's term (C23) is
-    `budget_drift`, measured against a reference carried across grid
-    refreshes.
+    `budget_drift`, the per-step column changes accumulated on each step's own
+    grid over the fixed t=0 column.
     """
     if not bool(getattr(cfg, "report_column_atom_loss", False)):
         return
@@ -1445,29 +1446,31 @@ def _make_runner(
         # Cumulative element budget (notes §3.1 C23, no VULCAN 2 counterpart):
         # `loss_eps` rejects a per-step jump in the unweighted atom sum, so a
         # slow drain passes it (§1.12: a column certified having lost 21% of
-        # its sulfur). This measures the operator-weighted column of the state
-        # the step RETURNS (`y_next`: after the hydrostatic renormalisation and
-        # the bottom pins) against `budget_ref`, RELATIVE TO H: the
+        # its sulfur). This accumulates what the solver failed to conserve in
+        # the state each step RETURNS (`y_next`: after the hydrostatic
+        # renormalisation and the bottom pins) and reads it RELATIVE TO H: the
         # renormalisation pins each layer's total density, so dissociation
         # shifts every atom column by the same factor (WASP-107 b: -1.04% on
         # H, He, O, N, C and S alike, 2e-6 as X/H) and only the ratio to H is
         # the conserved quantity. The tolerance and its calibration sit in
         # default.yaml.
-        # `budget_ref` is the column the run started from, shifted on every
-        # refresh by what the refresh alone does to the CURRENT column's
-        # integral (a refresh keeps y and changes dz, so Σ w y moves without
-        # any atom moving), so the drift is the sum of the per-step changes
-        # each measured on its own grid — what the solver failed to conserve.
-        # On a rejected step y_next is s.y_prev and dz_next is s.dz, so the
-        # shift is zero and the reference stands.
-        _col_old = column_atoms(y_next, s.dz, compo_arr)
-        _col_new = column_atoms(y_next, dz_next, compo_arr)
-        budget_ref_next = s.budget_ref + (_col_new - _col_old)
-        _safe = jnp.where(budget_ref_next == 0.0, 1.0, budget_ref_next)
-        _drift = jnp.where(
-            budget_ref_next == 0.0, 0.0, (_col_new - budget_ref_next) / _safe
+        # Per-step change of the operator-weighted column, measured on the grid
+        # in force during the step (s.dz): chemistry conserves atoms per layer
+        # and flux-form transport conserves Σ w(s.dz) y, so this is the solver
+        # defect of the step and nothing else. A refresh (y kept, dz changed)
+        # never enters; on a rejected step y_next is s.y_prev, so the change is
+        # zero. Normalised by the fixed t=0 column so a later grid change
+        # cannot dilute an accumulated deficit.
+        _safe = jnp.where(s.budget_ref == 0.0, 1.0, s.budget_ref)
+        _dcol = column_atoms(y_next, s.dz, compo_arr) - column_atoms(
+            s.y_prev, s.dz, compo_arr
         )
-        budget_drift_next = (1.0 + _drift) / (1.0 + _drift[budget_ref_atom]) - 1.0
+        budget_err_next = s.budget_err + jnp.where(
+            s.budget_ref == 0.0, 0.0, _dcol / _safe
+        )
+        budget_drift_next = (
+            (1.0 + budget_err_next) / (1.0 + budget_err_next[budget_ref_atom]) - 1.0
+        )
         budget_ok_next = candidate & (
             jnp.max(jnp.abs(budget_drift_next)) < jnp.float64(element_budget_tol)
         )
@@ -1651,7 +1654,7 @@ def _make_runner(
             is_final_photo_frq=is_final_next,
             geom_ok=geom_ok_next,
             budget_ok=budget_ok_next,
-            budget_ref=budget_ref_next,
+            budget_err=budget_err_next,
             budget_drift=budget_drift_next,
             mu=mu_next,
             g=g_next,
@@ -2621,6 +2624,7 @@ class OuterLoop:
                 jnp.asarray(rs.atm.dz, dtype=jnp.float64),
                 jnp.asarray(self._compo_arr),
             ),
+            budget_err=jnp.zeros((self._compo_arr.shape[1],), dtype=jnp.float64),
             budget_drift=jnp.zeros((self._compo_arr.shape[1],), dtype=jnp.float64),
         )
 

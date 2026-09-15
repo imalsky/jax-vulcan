@@ -172,10 +172,12 @@ flux_atol: 1.0
 geom_conv_tol: 1.0e-3
 # Certificate term with no VULCAN 2 counterpart (notes §3.1 C23): the run may
 # end only if the operator-weighted column of every element is within this
-# relative distance of the column it started from. That reference is carried
-# across geometry refreshes (a refresh changes the discrete integral without
-# moving an atom), so the term measures only what the solver failed to
-# conserve. `loss_eps` bounds the PER-STEP change of the unweighted atom sum,
+# relative distance of the column it started from: the change of that column
+# accumulated per step on the grid in force during the step, normalised by the
+# t=0 column, so a geometry refresh (which changes the discrete integral
+# without moving an atom) neither adds to the term nor rescales it, and what
+# is left is what the solver failed to conserve.
+# `loss_eps` bounds the PER-STEP change of the unweighted atom sum,
 # so a slow drain passes it (§1.12: a column certified having lost 21% of its
 # sulfur). 1e-2 measured (§1.13):
 # HD189 2.7e-5, HD209 2.4e-5, W39b 2.9e-7, HD189_vulcan3 2.7e-5, W39b

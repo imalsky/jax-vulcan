@@ -195,8 +195,8 @@ def column_atom_loss(y, y_ini, dz, compo_arr=compo_array):
     nonuniform grid. Step acceptance uses the unweighted `atom_loss`
     (master parity); this is the `report_column_atom_loss` print. Both
     columns are weighted on the `dz` passed in, so a grid refresh moves the
-    result; the certificate's C23 term carries its own reference across
-    refreshes instead (`outer_loop`, `budget_ref`).
+    result; the certificate's C23 term accumulates the per-step change
+    instead, each step on its own grid (`outer_loop`, `budget_err`).
     """
     col = column_atoms(y, dz, compo_arr)
     col0 = column_atoms(y_ini, dz, compo_arr)
