@@ -3,8 +3,9 @@
 `loss_eps` rejects a step whose unweighted atom sum JUMPS; a slow drain walks
 past it (notes §1.12: a column certified having lost 21% of its sulfur).
 `budget_ok` closes that: on the certificate candidate the run compares the
-operator-weighted column of every element against the column it started from
-and may end only within `element_budget_tol`.
+operator-weighted column of every element against `budget_ref` -- the column
+the run started from, shifted on every geometry refresh by what the refresh
+alone does to the integral -- and may end only within `element_budget_tol`.
 
 The carry is seeded directly (the stall-gate idiom): the chemistry criteria
 are opened up so `conv_normal` holds on the first accepted step, leaving the
@@ -58,14 +59,15 @@ def _cfg():
 def test_certificate_requires_the_column_element_budget(drain, scale, reason, why):
     """A drained column must fall through to the step-count exit, not certify.
 
-    `drain` scales the CH4 rows of the reference column `pv.y_ini`, i.e. the
-    run behaves as if it had lost that much carbon since t=0 (-0.73 of the C
-    column at 4x, against `element_budget_tol` 1e-2). `scale` multiplies the
+    `drain` scales the CH4 rows of the state `budget_ref` is built from, i.e.
+    the run behaves as if it had lost that much carbon since t=0 (-0.73 of the
+    C column at 4x, against `element_budget_tol` 1e-2). `scale` multiplies the
     whole reference column: the term is measured relative to H (0.10.1), so a
     common factor (the hydrostatic renormalisation) must still certify.
     """
     import vulcan_jax.legacy_io as op
     from vulcan_jax import op_jax, outer_loop
+    from vulcan_jax.ini_abun import column_atoms
     from vulcan_jax.state import RunState
 
     c = _cfg()
@@ -84,7 +86,11 @@ def test_certificate_requires_the_column_element_budget(drain, scale, reason, wh
         aflux_change=jnp.float64(0.0),
         geom_ok=jnp.bool_(False),
         budget_ok=jnp.bool_(False),
-        pv=state.pv._replace(y_ini=(state.y * scale).at[:, ch4].multiply(drain)),
+        budget_ref=column_atoms(
+            (state.y * scale).at[:, ch4].multiply(drain),
+            state.dz,
+            integ._compo_arr,
+        ),
     )
     final = integ._runner(seeded, atm_static)
     assert int(final.termination_reason) == reason, (
@@ -95,6 +101,78 @@ def test_certificate_requires_the_column_element_budget(drain, scale, reason, wh
     # The geometry term is satisfied in both cases: the budget is the only
     # thing that changed the outcome.
     assert bool(final.geom_ok)
+
+
+def test_a_geometry_refresh_alone_never_moves_the_budget():
+    """A refresh keeps y and changes dz. Under a y_ini-anchored term (both
+    columns weighted on the refreshed grid) a column whose carbon has
+    redistributed vertically since t=0 reads a spurious drift once the grid
+    changes non-uniformly; the running reference absorbs the grid change and
+    the column certifies."""
+    import numpy as np
+
+    import vulcan_jax.legacy_io as op
+    from vulcan_jax import op_jax, outer_loop
+    from vulcan_jax.ini_abun import (
+        column_atom_loss,
+        column_atoms,
+        operator_column_weights,
+    )
+    from vulcan_jax.state import RunState
+
+    c = _cfg()
+    c.geom_conv_tol = 1.0e9  # the geometry term is not under test here
+    integ = outer_loop.OuterLoop(op_jax.Ros2JAX(), op.Output(cfg=c), cfg=c)
+    state, atm_static = integ.prepare_runstate(RunState.with_pre_loop_setup(c))
+    nz = state.y.shape[0]
+    ch4 = outer_loop._NETWORK.species_idx["CH4"]
+    # A stale, non-uniformly stretched grid: the refresh at the candidate
+    # rebuilds the true dz from ymix, so w_true/w_seed varies with height.
+    dz_seed = state.dz * jnp.linspace(1.0, 3.0, nz)
+    w_seed = operator_column_weights(dz_seed)
+    # The reference state: same CH4 column as state.y on the SEEDED grid,
+    # different shape (half the CH4 below mid-column moved above it).
+    lo = jnp.arange(nz) < nz // 2
+    ch4_col = state.y[:, ch4]
+    moved = 0.5 * jnp.sum(w_seed * ch4_col * lo)
+    top_w = jnp.sum(w_seed * ch4_col * ~lo)
+    y_ini = state.y.at[:, ch4].set(
+        jnp.where(lo, 0.5 * ch4_col, ch4_col * (1.0 + moved / top_w))
+    )
+    # Anchored on y_ini and the true grid this reads well past
+    # element_budget_tol, else the test does not discriminate.
+    h = integ._atom_order.index("H")
+    old_drift = column_atom_loss(state.y, y_ini, state.dz, integ._compo_arr)
+    old_rel = (1.0 + old_drift) / (1.0 + old_drift[h]) - 1.0
+    assert float(jnp.max(jnp.abs(old_rel))) > float(c.element_budget_tol), float(
+        jnp.max(jnp.abs(old_rel))
+    )
+
+    t0 = 10.0 * float(c.trun_min)
+    seeded = state._replace(
+        t=jnp.float64(t0),
+        accept_count=jnp.int32(int(c.count_min) + 5),
+        count_min_dyn=jnp.int32(int(c.count_min)),
+        count_max_dyn=jnp.int32(int(c.count_min) + 10),
+        runtime_dyn=jnp.float64(float(c.runtime)),
+        t_time_ring=jnp.full((int(c.conv_step),), float(c.st_factor) * t0),
+        aflux_change=jnp.float64(0.0),
+        geom_ok=jnp.bool_(False),
+        budget_ok=jnp.bool_(False),
+        dz=dz_seed,
+        budget_ref=column_atoms(y_ini, dz_seed, integ._compo_arr),
+        pv=state.pv._replace(y_ini=y_ini),
+    )
+    final = integ._runner(seeded, atm_static)
+    assert int(final.termination_reason) == 1 and bool(final.budget_ok), (
+        int(final.termination_reason),
+        np.asarray(final.budget_drift),
+    )
+    # The stored drift is reproducible from the exit state and its reference.
+    col = column_atoms(final.y, final.dz, integ._compo_arr)
+    drift = col / final.budget_ref - 1.0
+    rel = (1.0 + drift) / (1.0 + drift[h]) - 1.0
+    assert np.allclose(np.asarray(rel), np.asarray(final.budget_drift), rtol=0, atol=1e-12)
 
 
 def test_shipped_configs_declare_the_budget_tolerance():
