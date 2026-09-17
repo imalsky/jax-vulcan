@@ -3,6 +3,7 @@
 *.py[codz]
 *$py.class
 *.so
+*.dylib
 
 # Internal working documents (4-doc policy: README.md is the tracked
 # consumer-facing reference; CLAUDE.md, notes.md and todo.md are local-only).
