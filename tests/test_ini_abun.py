@@ -455,3 +455,32 @@ def test_column_atom_loss_uses_the_operator_invariant():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+# eq_column with explicit ratios: the per-lane seed the retrieval's cold start
+# uses. Same ratios as the config -> the config path's column, bit-exact;
+# doubled C/H -> the carbon carriers move, the rest of the input is untouched.
+
+
+def test_eq_column_ratios_match_config_path_and_move_carbon():
+    from vulcan_jax import ini_abun
+    from vulcan_jax import composition
+    from vulcan_jax.config import default_config
+
+    cfg = default_config()
+    if cfg.ini_mix != "EQ":
+        pytest.skip("default config is not EQ-initialized")
+    _, data_atm, _ = _build_hd189_atm()
+    y_cfg, _ = ini_abun._load_eq_y(data_atm)
+    elems = [a for a in cfg.atom_list if a != "H"]
+    ratios = {a: float(getattr(cfg, a + "_H")) for a in elems}
+    y_same = ini_abun.eq_column(data_atm.pco, data_atm.Tco, data_atm.M, ratios)
+    np.testing.assert_array_equal(y_same, y_cfg)
+
+    y_c2 = ini_abun.eq_column(data_atm.pco, data_atm.Tco, data_atm.M,
+                              {**ratios, "C": 2.0 * ratios["C"]})
+    sp = composition.species
+    ch4 = sp.index("CH4")
+    assert np.all(y_c2[:, ch4] > y_cfg[:, ch4])
+    he = sp.index("He")
+    np.testing.assert_allclose(y_c2[:, he], y_cfg[:, he], rtol=2e-2)

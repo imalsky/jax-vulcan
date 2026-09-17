@@ -181,7 +181,7 @@ def test_eq_writer_reports_ignored_settings_without_changing_input(name, tmp_pat
     def write():
         with warnings.catch_warnings(record=True) as seen:
             warnings.simplefilter('always')
-            ini_abun._run_fastchem_locked(atm)
+            ini_abun._run_fastchem_locked(atm.pco, atm.Tco)
         return (inp / 'element_abundances_vulcan.dat').read_bytes(), seen
 
     baseline, _ = write()

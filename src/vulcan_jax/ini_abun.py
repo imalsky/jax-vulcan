@@ -205,8 +205,47 @@ def column_atom_loss(y, y_ini, dz, compo_arr=compo_array):
     return jnp.where(col0 == 0.0, 0.0, (col - col0) / jnp.where(col0 == 0.0, 1.0, col0))
 
 
-def _run_fastchem_locked(data_atm) -> None:
-    """Inner FastChem driver. Caller must already hold the flock."""
+def _effective_ratios(new_str: str) -> dict:
+    """Element -> ratio to H as written into the FastChem input."""
+    effective = {}
+    for line in new_str.splitlines():
+        fields = line.split()
+        if fields and not line.lstrip().startswith("#"):
+            effective[fields[0]] = 10.0 ** (float(fields[1]) - 12.0)
+    return effective
+
+
+def _report_fastchem_input(effective: dict, ele_list: list, solar_ele) -> None:
+    print("FastChem input ratios (to H): " + ", ".join(
+        f"{sp}/H={effective[sp]:.8g}" for sp in ("He", "C", "N", "O", "S")
+        if sp in effective
+    ))
+    ignored = [
+        f"{sp}_H={getattr(_CFG, sp + '_H')} (effective {effective[sp]:.8g})"
+        for sp in effective
+        if hasattr(_CFG, sp + "_H") and (_CFG.use_solar or sp not in ele_list)
+    ]
+    if _CFG.use_solar and hasattr(_CFG, "fastchem_met_scale"):
+        ignored.append(f"fastchem_met_scale={_CFG.fastchem_met_scale}")
+    if ignored:
+        warnings.warn(
+            "EQ initialization ignored settings: " + "; ".join(ignored)
+            + f". Abundance preset: {solar_ele}. "
+            + ("use_solar=True uses the file unchanged; select use_solar=False "
+               "to customize network elements. " if _CFG.use_solar else
+               "Only atom_list elements other than H use <X>_H; other metals "
+               "use the file scaled by fastchem_met_scale. ")
+            + "For the shipped atom lists, helium comes from the selected preset.",
+            UserWarning, stacklevel=3,
+        )
+
+
+def _run_fastchem_locked(pco, Tco, ratios=None) -> None:
+    """Inner FastChem driver. Caller must already hold the flock.
+
+    ``ratios`` (element -> number ratio to H) overrides the config's ``<X>_H``
+    for the elements it names; every other element follows the config path.
+    """
     solar_ele = _fastchem_solar_abundance_path()
     if _CFG.use_ion is True:
         copyfile(
@@ -247,20 +286,25 @@ def _run_fastchem_locked(data_atm) -> None:
             "Fe",
         ]
 
-        if _CFG.use_solar is True:
+        if _CFG.use_solar is True and not ratios:
             new_str = f.read()
             print("Initializing with the default solar abundance.")
         else:
-            print("Initializing with the customized elemental abundance:")
-            print("{:4}".format("H") + str("1."))
+            quiet = bool(ratios)   # per-lane seeds: no per-call banner
+            if not quiet:
+                print("Initializing with the customized elemental abundance:")
+                print("{:4}".format("H") + str("1."))
             for line in f.readlines():
                 li = line.split()
                 sp = li[0].strip()
-                if sp in ele_list:
+                if ratios and sp in ratios:
+                    line = sp + "\t" + "{0:.4f}".format(12.0 + np.log10(ratios[sp])) + "\n"
+                elif sp in ele_list:
                     sp_abun = getattr(_CFG, sp + "_H")
                     fc_abun = 12.0 + np.log10(sp_abun)
                     line = sp + "\t" + "{0:.4f}".format(fc_abun) + "\n"
-                    print("{:4}".format(sp) + "{0:.4E}".format(sp_abun))
+                    if not quiet:
+                        print("{:4}".format(sp) + "{0:.4E}".format(sp_abun))
                 elif sp in fc_list:
                     sol_ratio = li[1].strip()
                     if hasattr(_CFG, "fastchem_met_scale"):
@@ -279,43 +323,21 @@ def _run_fastchem_locked(data_atm) -> None:
             fout.write(new_str)
 
     # Report the generated input, not the potentially inactive config values.
-    effective = {}
-    for line in new_str.splitlines():
-        fields = line.split()
-        if fields and not line.lstrip().startswith("#"):
-            effective[fields[0]] = 10.0 ** (float(fields[1]) - 12.0)
-    print("FastChem input ratios (to H): " + ", ".join(
-        f"{sp}/H={effective[sp]:.8g}" for sp in ("He", "C", "N", "O", "S")
-        if sp in effective
-    ))
-    ignored = [
-        f"{sp}_H={getattr(_CFG, sp + '_H')} (effective {effective[sp]:.8g})"
-        for sp in effective
-        if hasattr(_CFG, sp + "_H") and (_CFG.use_solar or sp not in ele_list)
-    ]
-    if _CFG.use_solar and hasattr(_CFG, "fastchem_met_scale"):
-        ignored.append(f"fastchem_met_scale={_CFG.fastchem_met_scale}")
-    if ignored:
-        warnings.warn(
-            "EQ initialization ignored settings: " + "; ".join(ignored)
-            + f". Abundance preset: {solar_ele}. "
-            + ("use_solar=True uses the file unchanged; select use_solar=False "
-               "to customize network elements. " if _CFG.use_solar else
-               "Only atom_list elements other than H use <X>_H; other metals "
-               "use the file scaled by fastchem_met_scale. ")
-            + "For the shipped atom lists, helium comes from the selected preset.",
-            UserWarning, stacklevel=2,
-        )
+    # A ratios call is a per-lane seed: the report and the ignored-settings
+    # warning describe the config path only.
+    effective = {} if ratios else _effective_ratios(new_str)
+    if effective:
+        _report_fastchem_input(effective, ele_list, solar_ele)
 
     _FC_VULCAN_TP.parent.mkdir(parents=True, exist_ok=True)
     _FC_OUTPUT.mkdir(parents=True, exist_ok=True)
     with open(_FC_VULCAN_TP, "w") as fout:
         ost = "#p (bar)    T (K)\n"
-        for n, p in enumerate(data_atm.pco):
+        for n, p in enumerate(pco):
             ost += (
                 "{:.3e}".format(p / 1.0e6)
                 + "\t"
-                + "{:.1f}".format(data_atm.Tco[n])
+                + "{:.1f}".format(Tco[n])
                 + "\n"
             )
         ost = ost[:-1]
@@ -342,8 +364,12 @@ def _build_charge_list_if_ion(charge_list: list[str]) -> None:
             charge_list.append(sp)
 
 
-def _load_eq_y(data_atm) -> tuple[np.ndarray, list[str]]:
-    """Run FastChem and parse `vulcan_EQ.dat` into `(nz, ni)`.
+def eq_column(pco, Tco, M, ratios=None) -> np.ndarray:
+    """FastChem equilibrium column ``(nz, ni)`` in absolute densities at the
+    given pressure (dyne/cm^2) and temperature columns, ``M`` the gas density.
+    ``ratios`` (element -> number ratio to H) overrides the config's ``<X>_H``.
+    Species FastChem does not know stay zero. Host-side, one subprocess per
+    call, serialized on the flock; a batched caller pays one call per lane.
 
     Invoke + read + cleanup all happen inside one flock so a concurrent
     worker can't clobber the output mid-read.
@@ -353,7 +379,7 @@ def _load_eq_y(data_atm) -> tuple[np.ndarray, list[str]]:
     with open(_FC_SENTINEL, "r") as lock_f:
         fcntl.flock(lock_f, fcntl.LOCK_EX)
         try:
-            _run_fastchem_locked(data_atm)
+            _run_fastchem_locked(np.asarray(pco), np.asarray(Tco), ratios)
             fc = np.genfromtxt(
                 _FC_VULCAN_EQ,
                 names=True,
@@ -368,22 +394,24 @@ def _load_eq_y(data_atm) -> tuple[np.ndarray, list[str]]:
                 pass
         finally:
             fcntl.flock(lock_f, fcntl.LOCK_UN)
-    nz_ = len(data_atm.pco)
-    y = np.zeros((nz_, chem_funs.ni), dtype=np.float64)
-    gas_tot = np.asarray(data_atm.M)
-    charge_list: list[str] = []
-    for sp in species:
-        sp_idx = species.index(sp)
+    y = np.zeros((len(pco), chem_funs.ni), dtype=np.float64)
+    gas_tot = np.asarray(M)
+    for sp_idx, sp in enumerate(species):
         if sp == "P":
             y[:, sp_idx] = fc["P_1"] * gas_tot
-            continue
-        if sp in fc.dtype.names:
+        elif sp in fc.dtype.names:
             y[:, sp_idx] = fc[sp] * gas_tot
         else:
             print(sp + " not included in fastchem.")
-        if _CFG.use_ion is True:
-            if compo[compo_row.index(sp)]["e"] != 0:
-                charge_list.append(sp)
+    return y
+
+
+def _load_eq_y(data_atm) -> tuple[np.ndarray, list[str]]:
+    """Run FastChem at the atmosphere's own T-P and the config's abundances."""
+    y = eq_column(data_atm.pco, data_atm.Tco, data_atm.M)
+    charge_list: list[str] = []
+    if _CFG.use_ion is True:
+        _build_charge_list_if_ion(charge_list)
     return y, charge_list
 
 
