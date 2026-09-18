@@ -20,13 +20,15 @@ from .chem import chem_jac_analytical, NetworkArrays
 from .chem_funs import chem_rhs_codegen as _chem_rhs, spec_list as _SPEC_LIST
 from . import composition as _composition
 from .phy_const import kb, Navo
-from .solver import (
-    factor_block_thomas_diag_offdiag,
-    solve_block_thomas_diag_offdiag,
-)
 from .config import default_config, REPAIR_ABS_FLOOR
 
-if os.environ.get("VULCAN_JAX_SOLVER"):  # import-frozen opt-in, see solver_fast.py
+_SOLVER = os.environ.get("VULCAN_JAX_SOLVER", "fast")  # import-frozen: reference | fast | ffi
+if _SOLVER == "reference":
+    from .solver import (
+        factor_block_thomas_diag_offdiag,
+        solve_block_thomas_diag_offdiag,
+    )
+else:  # see solver_fast.py
     from .solver_fast import factor as factor_block_thomas_diag_offdiag
     from .solver_fast import solve as solve_block_thomas_diag_offdiag
 

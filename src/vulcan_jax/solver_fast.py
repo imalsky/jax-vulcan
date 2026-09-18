@@ -1,8 +1,8 @@
-"""Opt-in block-Thomas path (`VULCAN_JAX_SOLVER=fast|ffi`, import-frozen).
+"""Default block-Thomas path (`VULCAN_JAX_SOLVER=fast|ffi`, import-frozen).
 
 Same call shape as `solver.py`: `factor(diag, sup_d, sub_d)` once, then
-`solve(factors, rhs)` for each Ros2 stage. Two things differ from the default
-path:
+`solve(factors, rhs)` for each Ros2 stage. Two things differ from the plain
+`solver.py` pair:
 
 1. `solve` is a `lax.custom_linear_solve`. Its tangent is `A dx = db - dA x`
    on the PRIMAL factors, so both stages and every tangent direction share one
@@ -17,10 +17,12 @@ path:
    makes a non-differentiable FFI call differentiable here. Reverse mode
    through `ffi` is not a supported route: the steady-state sensitivity's
    LGMRES is roundoff-marginal and the C++ factors' roundoff moves its HD189
-   null_quality over the test's bar (notes §1.4.1); use default or `fast`.
+   null_quality over the test's bar (notes §1.4.1); use `fast` or `reference`.
 
-Unset, `jax_step` never imports this module. Removal: delete this file,
-`csrc/`, `tests/test_solver_fast.py` and the three-line switch in `jax_step.py`.
+`jax_step` imports this module by default; `VULCAN_JAX_SOLVER=reference`
+restores the plain `solver.py` pair for A/B, and `ffi` selects the C++ kernel.
+Removal: delete this file, `csrc/`, `tests/test_solver_fast.py` and the switch
+in `jax_step.py`.
 """
 
 from __future__ import annotations
@@ -43,7 +45,8 @@ jax.config.update("jax_enable_x64", True)
 BACKEND = os.environ.get("VULCAN_JAX_SOLVER", "fast")
 if BACKEND not in ("fast", "ffi"):
     raise ValueError(
-        f"VULCAN_JAX_SOLVER={BACKEND!r}: expected 'fast' or 'ffi' (unset = default solver)"
+        f"VULCAN_JAX_SOLVER={BACKEND!r}: expected 'fast' (default), 'ffi', "
+        "or 'reference' (handled in jax_step)"
     )
 
 

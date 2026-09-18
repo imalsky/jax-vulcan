@@ -125,23 +125,26 @@ def solve_block_thomas_diag_offdiag(factors: BlockThomasDiagFactors, rhs):
         rhs_mod_full[-1],
     )
 
+    # The back sweep is a reverse scan: the `[::-1]` idiom it replaces copied
+    # the whole LU stack twice per solve.
     def bwd_step(k_next, inputs):
         A_lu, A_perm, rhs_mod, b_j = inputs
         rhs_local = rhs_mod - b_j * k_next
         k_curr = _lu_solve_perm(A_lu, A_perm, rhs_local)
         return k_curr, k_curr
 
-    _, k_rev = jax.lax.scan(
+    _, k_head = jax.lax.scan(
         bwd_step,
         k_last,
         (
-            factors.diag_lu[:-1][::-1],
-            factors.diag_perm[:-1][::-1],
-            rhs_mod_full[:-1][::-1],
-            factors.sup_d[::-1],
+            factors.diag_lu[:-1],
+            factors.diag_perm[:-1],
+            rhs_mod_full[:-1],
+            factors.sup_d,
         ),
+        reverse=True,
     )
-    return jnp.concatenate([k_rev[::-1], k_last[None]], axis=0)
+    return jnp.concatenate([k_head, k_last[None]], axis=0)
 
 
 def block_thomas_diag_offdiag(diag, sup_d, sub_d, rhs):
@@ -198,6 +201,7 @@ def block_thomas(diag, sup, sub, rhs):
 
     k_last = lu_solve(jax.tree.map(lambda x: x[-1], A_lu_full), rhs_mod_full[-1])
 
+    # Back sweep as a reverse scan, as in `solve_block_thomas_diag_offdiag`.
     def bwd_step(carry, inputs):
         k_next = carry
         A_lu, rhs_mod, B = inputs
@@ -206,10 +210,10 @@ def block_thomas(diag, sup, sub, rhs):
         return k_curr, k_curr
 
     bwd_inputs = (
-        jax.tree.map(lambda x: x[:-1][::-1], A_lu_full),
-        rhs_mod_full[:-1][::-1],
-        sup[::-1],
+        jax.tree.map(lambda x: x[:-1], A_lu_full),
+        rhs_mod_full[:-1],
+        sup,
     )
-    _, k_rev = jax.lax.scan(bwd_step, k_last, bwd_inputs)
+    _, k_head = jax.lax.scan(bwd_step, k_last, bwd_inputs, reverse=True)
 
-    return jnp.concatenate([k_rev[::-1], k_last[None]], axis=0)
+    return jnp.concatenate([k_head, k_last[None]], axis=0)

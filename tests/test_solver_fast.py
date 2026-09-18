@@ -1,5 +1,5 @@
-"""The opt-in solver path (`vulcan_jax.solver_fast`, `VULCAN_JAX_SOLVER=fast|ffi`)
-against the production `solver.block_thomas_diag_offdiag`.
+"""The default solver path (`vulcan_jax.solver_fast`, `VULCAN_JAX_SOLVER=fast|ffi`)
+against the reference `solver.block_thomas_diag_offdiag`.
 
 What must hold, for both backends: the primal is the same solution (bit-identical
 for `fast`, which runs the same scans; residual-matched for the C++ `ffi` kernel),
@@ -193,8 +193,36 @@ def check_real_blocks(fixture: str, cfg_name: str, backend: str):
     return rows
 
 
+@pytest.mark.skipif(
+    not (ROOT / "tests" / "data" / "adj_state_hd189.npz").exists(),
+    reason="HD189 adjoint fixture missing",
+)
 def test_fast_on_real_hd189_blocks(fast):
     check_real_blocks("adj_state_hd189.npz", "HD189", fast.BACKEND)
+
+
+_DEFAULT_CHILD = r"""
+import os, sys
+os.environ.pop("VULCAN_JAX_SOLVER", None)
+sys.path.insert(0, os.path.join(sys.argv[1], "tests"))
+from vulcan_jax import jax_step
+import vulcan_jax.solver_fast as fast_mod
+print("solve_is_fast", jax_step.solve_block_thomas_diag_offdiag is fast_mod.solve)
+print("factor_is_fast", jax_step.factor_block_thomas_diag_offdiag is fast_mod.factor)
+"""
+
+
+def test_fast_is_the_default_solver():
+    """With the switch unset, `jax_step` binds the `solver_fast` entry points."""
+    from _helpers import run_child
+
+    res = run_child(
+        _DEFAULT_CHILD,
+        network="thermo/NCHO_photo_network.txt",
+        label="solver_fast default wiring",
+    )
+    assert "solve_is_fast True" in res.stdout, res.stdout
+    assert "factor_is_fast True" in res.stdout, res.stdout
 
 
 _CHILD = r"""
