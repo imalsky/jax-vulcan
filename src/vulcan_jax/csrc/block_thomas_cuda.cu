@@ -5,8 +5,10 @@
 // the JAX sweep on these factors. One thread block per lane (a batch element):
 // the ni x ni block and inv(A'_{j-1}) live in dynamic shared memory, pivoting
 // happens in-block, and the whole nz loop runs inside the kernel, so a Ros2
-// step is one factor launch and two solve launches. A zero pivot gives inf/nan
-// like lax.linalg.lu, not an error.
+// step is one factor launch and two solve launches. Each layer's triangular
+// substitutions are column-oriented, so the whole thread block works on them
+// instead of one thread. A zero pivot gives inf/nan like lax.linalg.lu, not an
+// error.
 // Build: python -m vulcan_jax.solver_fast --cuda (nvcc, on the GPU host); the
 // library registers under platform="CUDA".
 #include <cmath>
@@ -19,22 +21,30 @@
 
 namespace ffi = xla::ffi;
 
-// x <- A^{-1} b from one block's LU and perm, serial over ni on one thread:
-// the substitutions are sequential for a single right-hand side. Mirrors
-// lu_solve in block_thomas_cpu.cc, including b being allowed to alias x (b is
-// consumed into tmp before x is written).
-__device__ void bt_lu_solve(const double* lu, const int32_t* perm, int ni,
-                            const double* b, double* x, double* tmp) {
-  for (int i = 0; i < ni; ++i) tmp[i] = b[perm[i]];
-  for (int i = 0; i < ni; ++i) {
-    double s = tmp[i];
-    for (int j = 0; j < i; ++j) s -= lu[i * ni + j] * tmp[j];
-    tmp[i] = s;
+// x <- A^{-1} b from one block's LU and perm, by the whole thread block.
+// Column-oriented: once x_i is final every thread updates its own rows. Each
+// element takes exactly the subtractions the row-oriented lu_solve in
+// block_thomas_cpu.cc gives it, in the same order forward (increasing i) and
+// in reverse backward (decreasing i), so only the back substitution differs
+// from the CPU reference, by that reassociation. tmp must be shared, x may be
+// shared or global, and b may alias x: b is consumed into tmp before x is
+// written. Every barrier is reached by all threads (uniform loop bounds, no
+// early return) and no thread reads what another writes in the same phase.
+__device__ void bt_lu_solve_block(const double* lu, const int32_t* perm, int ni,
+                                  const double* b, double* x, double* tmp,
+                                  int tid, int nt) {
+  for (int i = tid; i < ni; i += nt) tmp[i] = b[perm[i]];
+  __syncthreads();
+  for (int i = 0; i < ni; ++i) {  // unit-lower L: tmp[i] is final
+    const double xi = tmp[i];
+    for (int r = i + 1 + tid; r < ni; r += nt) tmp[r] -= lu[r * ni + i] * xi;
+    __syncthreads();
   }
-  for (int i = ni - 1; i >= 0; --i) {
-    double s = tmp[i];
-    for (int j = i + 1; j < ni; ++j) s -= lu[i * ni + j] * x[j];
-    x[i] = s / lu[i * ni + i];
+  for (int i = ni - 1; i >= 0; --i) {  // upper U
+    const double xi = tmp[i] / lu[i * ni + i];
+    if (tid == 0) x[i] = xi;
+    for (int r = tid; r < i; r += nt) tmp[r] -= lu[r * ni + i] * xi;
+    __syncthreads();
   }
 }
 
@@ -190,8 +200,7 @@ __global__ void bt_solve_kernel(const double* lu, const int32_t* perm, const dou
   for (int j = 1; j < nz; ++j) {
     bt_load_block(A, sp, L + static_cast<int64_t>(j - 1) * blk,
                   P + static_cast<int64_t>(j - 1) * ni, ni, tid, nt);
-    if (tid == 0) bt_lu_solve(A, sp, ni, X + static_cast<int64_t>(j - 1) * ni, t, u);
-    __syncthreads();
+    bt_lu_solve_block(A, sp, ni, X + static_cast<int64_t>(j - 1) * ni, t, u, tid, nt);
     for (int i = tid; i < ni; i += nt) {
       const int64_t o = static_cast<int64_t>(j) * ni + i;
       X[o] = R[o] - C[static_cast<int64_t>(j - 1) * ni + i] * t[i];
@@ -200,11 +209,8 @@ __global__ void bt_solve_kernel(const double* lu, const int32_t* perm, const dou
   }
   bt_load_block(A, sp, L + static_cast<int64_t>(nz - 1) * blk,
                 P + static_cast<int64_t>(nz - 1) * ni, ni, tid, nt);
-  if (tid == 0) {
-    double* Xl = X + static_cast<int64_t>(nz - 1) * ni;
-    bt_lu_solve(A, sp, ni, Xl, Xl, u);  // b aliases x, as in the CPU sweep
-  }
-  __syncthreads();
+  double* Xl = X + static_cast<int64_t>(nz - 1) * ni;
+  bt_lu_solve_block(A, sp, ni, Xl, Xl, u, tid, nt);  // b aliases x, as in the CPU sweep
   for (int j = nz - 2; j >= 0; --j) {
     for (int i = tid; i < ni; i += nt) {
       const int64_t o = static_cast<int64_t>(j) * ni + i;
@@ -212,8 +218,7 @@ __global__ void bt_solve_kernel(const double* lu, const int32_t* perm, const dou
     }
     bt_load_block(A, sp, L + static_cast<int64_t>(j) * blk,
                   P + static_cast<int64_t>(j) * ni, ni, tid, nt);
-    if (tid == 0) bt_lu_solve(A, sp, ni, t, X + static_cast<int64_t>(j) * ni, u);
-    __syncthreads();
+    bt_lu_solve_block(A, sp, ni, t, X + static_cast<int64_t>(j) * ni, u, tid, nt);
   }
 }
 
