@@ -1003,7 +1003,14 @@ def _make_runner(
         chunk_done = s.accept_count >= s.chunk_target
         return jnp.logical_not(real_term | chunk_done)
 
-    def body_fn(s: JaxIntegState, atm_static_):
+    def body_fn(s: JaxIntegState, atm_static_, lane_axis=None):
+        # `lane_axis=None` is the single-profile trace, unchanged. A string
+        # means the body runs under `jax.vmap(..., axis_name=lane_axis)`: the
+        # photo and refresh conds then take a lane-uniform predicate (a psum
+        # over the lanes, which vmap returns unmapped) so they lower to a real
+        # `case` instead of both sides running on every lane, and each lane
+        # keeps its own gate as a `where` inside the taken branch.
+        #
         # Gate photo on `retry_count==0` so reject loops don't re-fire it.
         # Cadence is `accept_count % update_photo_frq == 0`; the dynamic
         # update_photo_frq lives in the carry for the ini→final switch.
@@ -1013,7 +1020,25 @@ def _make_runner(
                 & (jnp.mod(s.accept_count, s.update_photo_frq) == jnp.int32(0))
                 & jnp.bool_(use_photo_static)
             )
-            s = jax.lax.cond(photo_due, photo_branch, lambda ss: ss, s)
+            if lane_axis is None:
+                s = jax.lax.cond(photo_due, photo_branch, lambda ss: ss, s)
+            else:
+                # `live` is the freeze test of `body_fn_batch`: a lane whose
+                # advance is discarded must not pull the branch in.
+                live = jnp.logical_not(
+                    s.is_done | (s.accept_count >= s.chunk_target)
+                )
+                lane_take = photo_due & live
+                any_photo = jax.lax.psum(lane_take.astype(jnp.int32), lane_axis) > 0
+
+                def _photo_gated(ss):
+                    p = photo_branch(ss)
+                    return ss._replace(**{
+                        f: jnp.where(lane_take, getattr(p, f), getattr(ss, f))
+                        for f in _PHOTO_FIELDS
+                    })
+
+                s = jax.lax.cond(any_photo, _photo_gated, lambda ss: ss, s)
 
         # Splice the carry's refreshed geometry (op.py:905-907) into AtmStatic
         # for this step.
@@ -1403,6 +1428,29 @@ def _make_runner(
             def _no_refresh(_):
                 return (s.mu, s.g, s.Hp, s.dz, s.zco, s.dzi, s.Hpi, s.top_flux)
 
+            if lane_axis is None:
+                out = jax.lax.cond(
+                    refresh_due,
+                    _do_refresh,
+                    _no_refresh,
+                    operand=None,
+                )
+            else:
+                def _do_refresh_gated(_):
+                    new, old = _do_refresh(None), _no_refresh(None)
+                    return tuple(
+                        jnp.where(refresh_due, n, o) for n, o in zip(new, old)
+                    )
+
+                any_refresh = (
+                    jax.lax.psum(refresh_due.astype(jnp.int32), lane_axis) > 0
+                )
+                out = jax.lax.cond(
+                    any_refresh,
+                    _do_refresh_gated,
+                    _no_refresh,
+                    operand=None,
+                )
             (
                 mu_next,
                 g_next,
@@ -1412,12 +1460,7 @@ def _make_runner(
                 dzi_next,
                 Hpi_next,
                 top_flux_next,
-            ) = jax.lax.cond(
-                refresh_due,
-                _do_refresh,
-                _no_refresh,
-                operand=None,
-            )
+            ) = out
             geom_rel = jnp.max(
                 jnp.stack([
                     jnp.max(jnp.abs(new - old) / jnp.maximum(jnp.abs(new), _UNDERFLOW_DENOM))
@@ -1804,7 +1847,7 @@ def _make_runner(
         chunk_reached = s.accept_count >= s.chunk_target
         return jnp.logical_not(s.is_done | chunk_reached)
 
-    def body_fn_batch(s: JaxIntegState, atm_static_):
+    def body_fn_batch(s: JaxIntegState, atm_static_, lane_axis=None):
         # vmap applies the body to EVERY lane each iteration until the slowest
         # finishes, so finished lanes must be frozen: advance all lanes, then
         # keep the pre-step carry `s` for lanes that are done / terminate now /
@@ -1812,7 +1855,7 @@ def _make_runner(
         # lane bit-identical to its solo run.
         real_term, reason = _real_terminate(s)
         chunk_reached = s.accept_count >= s.chunk_target
-        s_adv = body_fn(s, atm_static_)
+        s_adv = body_fn(s, atm_static_, lane_axis=lane_axis)
         nan_now = jnp.logical_not(jnp.all(jnp.isfinite(s_adv.y)))
 
         already_done = s.is_done
@@ -1835,17 +1878,44 @@ def _make_runner(
         )
         return frozen._replace(is_done=is_done_next, termination_reason=reason_next)
 
-    def runner_batch(state: JaxIntegState, atm_static: AtmStatic):
-        # Freeze-on-done while_loop; NOT jitted here -- run_batch wraps it in
-        # jax.vmap + jax.jit with the right in_axes.
+    def runner_batch(state_b: JaxIntegState, atm_b: AtmStatic):
+        # Freeze-on-done loop on STACKED inputs (lane axis on every array
+        # leaf); the caller jits it, nobody vmaps it. The while loop sits
+        # ABOVE the vmap, so its predicate is a scalar and the photo /
+        # refresh conds in `body_fn` keep real branches.
+        step = jax.vmap(
+            lambda s, a: body_fn_batch(s, a, lane_axis=_LANE_AXIS),
+            in_axes=(0, _ATM_STATIC_BATCH_AXES),
+            axis_name=_LANE_AXIS,
+        )
         return jax.lax.while_loop(
-            cond_fn_batch,
-            lambda s: body_fn_batch(s, atm_static),
-            state,
+            lambda s: jnp.any(cond_fn_batch(s)),
+            lambda s: step(s, atm_b),
+            state_b,
         )
 
     return runner, runner_batch, _make_runner_jvp
 
+
+# vmap axis name of the batched runner. `body_fn` psums over it to build the
+# lane-uniform predicates its photo / refresh conds need.
+_LANE_AXIS = "lane"
+
+# The JaxIntegState fields `photo_branch` writes. Under vmap the batched photo
+# cond re-applies each lane's own gate to exactly these.
+_PHOTO_FIELDS = (
+    "k_arr",
+    "tau",
+    "aflux",
+    "sflux",
+    "dflux_d",
+    "dflux_u",
+    "prev_aflux",
+    "aflux_change",
+    "J_br",
+    "J_br_T",
+    "Jion_br",
+)
 
 # in_axes for vmapping the batched runner over AtmStatic: array leaves batch
 # on axis 0; the four toggle flags broadcast (None) -- identical within a
@@ -2027,9 +2097,9 @@ class OuterLoop:
         self._runner = None
         self._make_runner_jvp = None
         self._runner_jvp_cache = {}
-        # Un-jitted freeze-on-done while_loop for the vmapped batched path,
-        # and its jax.vmap+jax.jit wrapper (`run_batch`). Both ride the same
-        # (nz, toggle-combo) closure as `_runner`.
+        # Un-jitted freeze-on-done while_loop over a vmapped step (the
+        # batched path), and its jax.jit wrapper (`run_batch`). Both ride the
+        # same (nz, toggle-combo) closure as `_runner`.
         self._runner_batch = None
         self._vrunner = None
         self._statics = None
@@ -3498,10 +3568,12 @@ class OuterLoop:
 
         `states_batched` / `atm_static_batched` are the stacked outputs of
         `prepare_runstate` (leading batch axis on every array leaf; the four
-        AtmStatic toggle flags broadcast). Returns the batched final
-        `JaxIntegState`; read per-lane `termination_reason` / `ymix` after
-        unstacking with `unstack_integ_states`. Requires `_ensure_runner` to
-        have run (via `prepare_runstate`) for this batch's (nz, toggle-combo).
+        AtmStatic toggle flags broadcast). The runner takes them stacked --
+        the vmap is inside it, under the while loop -- so this only jits it.
+        Returns the batched final `JaxIntegState`; read per-lane
+        `termination_reason` / `ymix` after unstacking with
+        `unstack_integ_states`. Requires `_ensure_runner` to have run (via
+        `prepare_runstate`) for this batch's (nz, toggle-combo).
 
         Lanes run with freeze-on-done: each profile's converged result is
         identical to running it alone, and the call returns once the slowest
@@ -3515,9 +3587,7 @@ class OuterLoop:
                 "prepare_runstate on at least one profile first."
             )
         if self._vrunner is None:
-            self._vrunner = jax.jit(
-                jax.vmap(self._runner_batch, in_axes=(0, _ATM_STATIC_BATCH_AXES))
-            )
+            self._vrunner = jax.jit(self._runner_batch)
         return self._vrunner(states_batched, atm_static_batched)
 
     def _summary_shim(self, rs):
