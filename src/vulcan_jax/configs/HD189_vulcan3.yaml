@@ -13,7 +13,7 @@
 # Authored surface: edit values here (or a CWD ./configs/HD189_vulcan3.yaml).
 # Derived at load time (see config._DERIVED), do NOT add here:
 #   dt_max = runtime*1e-5, photo_switch_longdy_thresh = yconv_min*10,
-#   save_movie_rate = live_plot_frq, para_anaTP = para_warm.
+#   para_anaTP = para_warm.
 # Gravity is derived as gs = G*Mp/Rp^2 (set Mp + Rp, not gs).
 atom_list:
 - H
@@ -229,8 +229,6 @@ fastchem_newton_tol: 1.0e-12
 fastchem_newton_max_iter: 50
 use_fix_all_bot: false
 use_fix_H2He: false
-use_chunked_runner: false
-wall_clock_max: null
 plot_TP: false
 use_live_plot: false
 use_live_flux: false

@@ -556,16 +556,13 @@ class Output(object):
 
     def print_unconverged_msg(self, var, para, case):
         """Print the non-converged summary for termination `case` (2 = runtime
-        budget, 3 = max steps, 4 = wall-clock budget exceeded, 5 = stopped
-        without converging and without hitting a cap); any other case raises
-        RuntimeError. Also prints per-atom loss and rejection counters.
+        budget, 3 = max steps, 5 = stopped without converging and without
+        hitting a cap); any other case raises RuntimeError. Also prints
+        per-atom loss and rejection counters.
         """
         why = {
             2: f"Maximal allowed runtime exceeded ({self._cfg.runtime:.1e} sec)",
             3: f"Maximal allowed steps exceeded ({self._cfg.count_max} steps)",
-            4: "Wall-clock budget exceeded ("
-            + str(getattr(self._cfg, "wall_clock_max", None))
-            + " sec)",
             5: "Stopped without converging and without hitting a cap "
             f"(termination_reason {getattr(para, 'termination_reason', 0)}); "
             "the state may be non-finite",

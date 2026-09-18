@@ -63,7 +63,6 @@ def test_shipped_config_loads_and_resolves(name):
     # Derived values are filled by the loader.
     assert cfg.dt_max == min(cfg.runtime * 1e-5, DT_MAX_S)
     assert cfg.photo_switch_longdy_thresh == cfg.yconv_min * 10.0
-    assert cfg.save_movie_rate == cfg.live_plot_frq
     assert cfg.para_anaTP == cfg.para_warm
 
     # count_max is a plain int (accepts scientific-notation authoring).

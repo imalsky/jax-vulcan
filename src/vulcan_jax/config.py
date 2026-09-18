@@ -97,7 +97,6 @@ REPAIR_ABS_FLOOR = 1.0e-11
 _DERIVED = (
     ("dt_max", lambda d: min(d["runtime"] * 1e-5, DT_MAX_S)),
     ("photo_switch_longdy_thresh", lambda d: d["yconv_min"] * 10.0),
-    ("save_movie_rate", lambda d: d["live_plot_frq"]),
     ("para_anaTP", lambda d: copy.deepcopy(d["para_warm"])),
 )
 

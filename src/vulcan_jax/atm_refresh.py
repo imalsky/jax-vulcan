@@ -102,17 +102,16 @@ def update_mu_dz_jax(ymix: jnp.ndarray, st: AtmRefreshStatic):
         zco_i = zco_ip1 - dz_i
         return zco_i, (g_i, Hp_i, dz_i, zco_i)
 
-    bwd_indices = jnp.arange(pref_indx - 1, -1, -1, dtype=jnp.int32)
-    _, (g_bwd_rev, Hp_bwd_rev, dz_bwd_rev, zco_below_rev) = jax.lax.scan(
+    # `reverse=True` walks i from pref_indx-1 down to 0 and stacks each output
+    # at its own index, so the results come out in canonical 0..pref_indx-1
+    # order with no flips.
+    bwd_indices = jnp.arange(0, pref_indx, dtype=jnp.int32)
+    _, (g_bwd, Hp_bwd, dz_bwd, zco_below) = jax.lax.scan(
         bwd_step,
         zco_pref,
         bwd_indices,
+        reverse=True,
     )
-    # Backward outputs are in decreasing-i order; reverse to canonical 0..pref_indx-1.
-    g_bwd = g_bwd_rev[::-1]
-    Hp_bwd = Hp_bwd_rev[::-1]
-    dz_bwd = dz_bwd_rev[::-1]
-    zco_below = zco_below_rev[::-1]
 
     g = jnp.concatenate([g_bwd, g_fwd])
     Hp = jnp.concatenate([Hp_bwd, Hp_fwd])

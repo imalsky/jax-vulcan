@@ -54,7 +54,6 @@ JAX_ONLY_DEFAULTS: dict[str, Any] = {
     "fastchem_newton_max_iter": 50,
     "use_fix_all_bot": False,
     "use_fix_H2He": False,
-    "use_chunked_runner": False,
 }
 
 # Shared config keys where VULCAN-JAX deliberately differs from master. These are

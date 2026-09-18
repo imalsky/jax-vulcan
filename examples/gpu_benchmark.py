@@ -20,10 +20,7 @@ Design rules (do not revert):
 3.  The GPU never waits for the CPU: builds for ALL batch sizes are
     submitted up front; integration starts on the smallest batch while the
     pool keeps building the rest.
-4.  Live progress: the batched integration is driven in chunks (default 250
-    accepted steps per device call) via the carry's `chunk_target` yield, so
-    a timestamped status line appears every chunk.
-5.  Device-batch tiling: the on-device batch is capped (default 128 via
+4.  Device-batch tiling: the on-device batch is capped (default 128 via
     `--device-batch`); larger sweep batches run as sequential sub-tiles
     sharing one XLA compile. The vmapped Jacobian-assembly transient grows
     linearly in the on-device batch and OOMs an untiled batch 512 on a
@@ -113,7 +110,6 @@ def build_cfg(nz: int, count_max: int):
         use_live_flux=False,
         use_save_movie=False,
         use_flux_movie=False,
-        use_chunked_runner=False,
     )
 
 
@@ -337,48 +333,34 @@ def _reason_breakdown(reasons: np.ndarray) -> str:
     return " ".join(parts) if parts else "none"
 
 
-def integrate_chunked(integ, states_b, atm_b, n, count_max, chunk, label):
-    """Drive `run_batch` to per-lane termination in `chunk`-step device calls.
+def integrate_batch(integ, states_b, atm_b, n, count_max, label):
+    """Run every lane of one tile to termination in ONE `run_batch` call.
 
-    Each call returns when every live lane has either terminated (recorded in
-    `termination_reason`) or advanced `chunk` accepted steps past its previous
-    yield (the carry's `chunk_target` mechanism). Finished lanes stay frozen,
-    so the final state of each lane is identical to one uninterrupted
-    `run_batch` call; the chunking only buys the host a place to log progress.
+    The call returns when the slowest lane terminates; finished lanes stay
+    frozen meanwhile.
 
     Returns (final_state, total_s, call_times).
     """
     import jax
-    import jax.numpy as jnp
 
-    cap = jnp.int32(count_max + 1)  # matches the single-profile chunked driver
-    t_start = time.perf_counter()
-    call_times = []
-    while True:
-        states_b = states_b._replace(
-            chunk_target=jnp.minimum(states_b.accept_count + jnp.int32(chunk), cap)
-        )
-        t0 = time.perf_counter()
-        states_b = integ.run_batch(states_b, atm_b)
-        jax.block_until_ready(states_b)
-        call_s = time.perf_counter() - t0
-        call_times.append(call_s)
+    t0 = time.perf_counter()
+    states_b = integ.run_batch(states_b, atm_b)
+    jax.block_until_ready(states_b)
+    call_s = time.perf_counter() - t0
 
-        done = np.asarray(states_b.is_done)
-        steps = np.asarray(states_b.accept_count)
-        reasons = np.asarray(states_b.termination_reason)
-        log(
-            f"{label}: {int(done.sum())}/{n} lanes done | steps "
-            f"min/med/max {int(steps.min())}/{int(np.median(steps))}/"
-            f"{int(steps.max())} of {count_max} | {_reason_breakdown(reasons)} | "
-            f"chunk {call_s:.1f}s"
-        )
-        if bool(done.all()):
-            break
-    return states_b, time.perf_counter() - t_start, call_times
+    done = np.asarray(states_b.is_done)
+    steps = np.asarray(states_b.accept_count)
+    reasons = np.asarray(states_b.termination_reason)
+    log(
+        f"{label}: {int(done.sum())}/{n} lanes done | steps "
+        f"min/med/max {int(steps.min())}/{int(np.median(steps))}/"
+        f"{int(steps.max())} of {count_max} | {_reason_breakdown(reasons)} | "
+        f"{call_s:.1f}s"
+    )
+    return states_b, call_s, [call_s]
 
 
-def benchmark_one(integ, run_states, count_max, chunk, label, device_batch):
+def benchmark_one(integ, run_states, count_max, label, device_batch):
     """Integrate every lane of one sweep batch to termination, tiled host-side.
 
     The on-device batch is capped at `device_batch` lanes: a sweep batch
@@ -388,7 +370,7 @@ def benchmark_one(integ, run_states, count_max, chunk, label, device_batch):
     copies of planet 0 (padded lanes are integrated but excluded from the
     stats) so it reuses the same compile too. Per-lane results are identical
     to the untiled call (lanes never interact), so tiling only bounds the
-    device's peak live memory (see design rule 5 in the module docstring).
+    device's peak live memory (see design rule 4 in the module docstring).
 
     Returns a result dict for the summary table.
     """
@@ -414,8 +396,8 @@ def benchmark_one(integ, run_states, count_max, chunk, label, device_batch):
             f"{tlabel}: stacked {len(lane_states)} planets onto the device in {stack_s:.1f}s"
         )
 
-        states_b, tile_s, tile_calls = integrate_chunked(
-            integ, states_b, atm_b, len(lane_states), count_max, chunk, tlabel
+        states_b, tile_s, tile_calls = integrate_batch(
+            integ, states_b, atm_b, len(lane_states), count_max, tlabel
         )
         total_s += tile_s
         call_times.extend(tile_calls)
@@ -486,12 +468,6 @@ def main() -> int:
         "of converging.",
     )
     parser.add_argument(
-        "--chunk",
-        type=int,
-        default=250,
-        help="Accepted steps per device call (progress-log cadence).",
-    )
-    parser.add_argument(
         "--device-batch",
         type=int,
         default=128,
@@ -529,8 +505,7 @@ def main() -> int:
     print(
         f"\nConfig: HD189-like planets (vendored {_HD189_ATM}, T(P) scaled "
         f"1±{args.t_spread:g})  ini_mix=EQ  use_photo=False  nz={args.nz}  "
-        f"count_max={args.count_max}  chunk={args.chunk}  "
-        f"device_batch={args.device_batch}"
+        f"count_max={args.count_max}  device_batch={args.device_batch}"
     )
     print(f"Batch sizes to sweep: {args.batches}\n", flush=True)
 
@@ -588,7 +563,6 @@ def main() -> int:
                     integ,
                     all_states[:bsz],
                     args.count_max,
-                    args.chunk,
                     label,
                     args.device_batch,
                 )

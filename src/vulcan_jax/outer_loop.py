@@ -191,11 +191,6 @@ class JaxIntegState(NamedTuple):
     t_evo: jnp.ndarray  # (save_evo_n_max,)        float64
     evo_idx: jnp.ndarray  # ()  int32  next slot to fill
 
-    # Cap for the chunked-runner path: the body terminates when
-    # `accept_count >= chunk_target`. Single-shot runs seed it to a large
-    # sentinel (2**30, well above any count_max) so the cap never trips.
-    chunk_target: jnp.ndarray  # ()  int32
-
     # Batched-runner termination state (unused by the single-profile path).
     # `is_done` freezes a finished lane while stragglers finish.
     # `termination_reason`: 0 running, 1 converged, 2 runtime, 3 step-count,
@@ -227,11 +222,7 @@ class JaxIntegState(NamedTuple):
 
 
 class _PhotoStatic(NamedTuple):
-    """Per-run static inputs closed over by the photo-branch closure.
-
-    `dz` is the initial photo-grid value only; the runner reads the
-    refreshed `JaxIntegState.dz` instead.
-    """
+    """Per-run static inputs closed over by the photo-branch closure."""
 
     photo_data: _photo_mod.PhotoData  # absp / scat cross sections
     photo_J_data: _photo_mod.PhotoJData  # J cross sections (passed for branch_keys)
@@ -247,7 +238,6 @@ class _PhotoStatic(NamedTuple):
     ion_branch_active: jnp.ndarray  # (n_ion_br,) bool
     bins: jnp.ndarray  # (nbin,)   wavelength grid (nm)
     sflux_top: jnp.ndarray  # (nbin,)   TOA stellar flux
-    dz: jnp.ndarray  # (nz,)     layer thickness
     din12_indx: int  # static — wavelength split index for J integration
     dbin1: float
     dbin2: float
@@ -535,37 +525,6 @@ def _make_photo_branch(photo_static: _PhotoStatic):
         )
 
     return photo_branch
-
-
-def _make_atm_refresh_branch(refresh_static: _atm_refresh_mod.AtmRefreshStatic):
-    """Standalone atm-refresh closure used only by the tests
-    (`tests/test_outer_loop_atm_refresh.py`, `tests/test_atm_refresh_gravity.py`);
-    production inlines these calls in `body_fn` after conden.
-    """
-
-    def atm_refresh(s: JaxIntegState) -> JaxIntegState:
-        mu_new, g_new, Hp_new, dz_new, zco_new, dzi_new, Hpi_new = (
-            _atm_refresh_mod.update_mu_dz_jax(s.ymix, refresh_static)
-        )
-        top_flux_new = _atm_refresh_mod.update_phi_esc_jax(
-            s.y,
-            g_new,
-            Hp_new,
-            s.top_flux,
-            refresh_static,
-        )
-        return s._replace(
-            mu=mu_new,
-            g=g_new,
-            Hp=Hp_new,
-            dz=dz_new,
-            zco=zco_new,
-            dzi=dzi_new,
-            Hpi=Hpi_new,
-            top_flux=top_flux_new,
-        )
-
-    return atm_refresh
 
 
 def _make_conden_branch(conden_static: _conden_mod.CondenStatic):
@@ -999,11 +958,7 @@ def _make_runner(
 
     def cond_fn(s: JaxIntegState):
         real_term, _ = _real_terminate(s)
-        # Chunk cap, used by the chunked driver to break for host
-        # callbacks. Single-shot runs seed it past count_max so it never
-        # trips.
-        chunk_done = s.accept_count >= s.chunk_target
-        return jnp.logical_not(real_term | chunk_done)
+        return jnp.logical_not(real_term)
 
     def body_fn(s: JaxIntegState, atm_static_, lane_axis=None, it=None):
         # `lane_axis=None` is the single-profile trace, unchanged. A string
@@ -1034,9 +989,7 @@ def _make_runner(
                 # a lane that rejected at the tick waits for the next tick.
                 # `live` is the freeze test of `body_fn_batch`: a lane whose
                 # advance is discarded must not pull the branch in.
-                live = jnp.logical_not(
-                    s.is_done | (s.accept_count >= s.chunk_target)
-                )
+                live = jnp.logical_not(s.is_done)
                 lane_take = (
                     (jnp.mod(it, s.update_photo_frq) == jnp.int32(0))
                     & (s.retry_count == jnp.int32(0))
@@ -1735,8 +1688,6 @@ def _make_runner(
             y_evo=y_evo_new,
             t_evo=t_evo_new,
             evo_idx=evo_idx_new,
-            # chunk_target: driver-set, never mutated in the body.
-            chunk_target=s.chunk_target,
         )
 
     @jax.jit
@@ -1787,7 +1738,6 @@ def _make_runner(
         inside the loop. Carry: (state, active tangent leaves,
         tangent_longdy, tangent_longdydt); the two scalars are refreshed on
         accepted steps exactly as `longdy` is."""
-        n_active = sum(active_state)
 
         def _merge(flat, leaves, active):
             it = iter(flat)
@@ -1795,7 +1745,7 @@ def _make_runner(
 
         @jax.jit
         def runner_jvp(state, atm_static, dstate_active, datm_active):
-            s_leaves, s_def = jax.tree_util.tree_flatten(state)
+            s_def = jax.tree_util.tree_structure(state)
             a_leaves, a_def = jax.tree_util.tree_flatten(atm_static)
 
             def _step(s, ds_active):
@@ -1862,25 +1812,23 @@ def _make_runner(
         # `real_term` -- the body must run one final (frozen, no-op) iteration
         # on the terminal state to record is_done / termination_reason.
         # Under vmap the loop runs while ANY lane is live.
-        chunk_reached = s.accept_count >= s.chunk_target
-        return jnp.logical_not(s.is_done | chunk_reached)
+        return jnp.logical_not(s.is_done)
 
     def body_fn_batch(s: JaxIntegState, atm_static_, lane_axis=None, it=None):
         # vmap applies the body to EVERY lane each iteration until the slowest
         # finishes, so finished lanes must be frozen: advance all lanes, then
         # keep the pre-step carry `s` for lanes that are done / terminate now /
-        # hit their chunk yield / went non-finite. Freezing on `s` makes each
-        # lane bit-identical to its solo run.
+        # went non-finite. Freezing on `s` makes each lane bit-identical to
+        # its solo run.
         real_term, reason = _real_terminate(s)
-        chunk_reached = s.accept_count >= s.chunk_target
         s_adv = body_fn(s, atm_static_, lane_axis=lane_axis, it=it)
         nan_now = jnp.logical_not(jnp.all(jnp.isfinite(s_adv.y)))
 
         already_done = s.is_done
         # Non-finite lanes freeze at the last good carry `s` (reason 5); the
         # bad `s_adv` is discarded.
-        became_nan = nan_now & ~already_done & ~real_term & ~chunk_reached
-        keep_old = already_done | real_term | chunk_reached | became_nan
+        became_nan = nan_now & ~already_done & ~real_term
+        keep_old = already_done | real_term | became_nan
         frozen = jax.tree_util.tree_map(
             lambda o, n: jnp.where(keep_old, o, n), s, s_adv
         )
@@ -2130,7 +2078,6 @@ class OuterLoop:
         self._photo_static = None
         self._refresh_static = None
         self._conden_static = None
-        self._live_ui = None
         # First batched photo profile's TOA stellar flux; prepare_runstate
         # rejects later profiles with a different star (see the guard there).
         self._sflux_top_ref = None
@@ -2524,7 +2471,6 @@ class OuterLoop:
             ion_branch_active=ion_branch_active,
             bins=bins_arr,
             sflux_top=jnp.asarray(var.sflux_top, dtype=jnp.float64),
-            dz=jnp.asarray(atm.dz, dtype=jnp.float64),
             din12_indx=din12_indx,
             dbin1=dbin1,
             dbin2=dbin2,
@@ -2878,9 +2824,6 @@ class OuterLoop:
                 dtype=jnp.float64,
             ),
             evo_idx=jnp.int32(0),
-            # chunk_target sentinel (2**30 >> any count_max) disables the
-            # chunk cap for single-shot runs; the chunked driver overwrites it.
-            chunk_target=jnp.int32(2**30),
             # Batched-runner flags; the single-profile path never reads them.
             is_done=jnp.bool_(False),
             termination_reason=jnp.int32(0),
@@ -3180,106 +3123,25 @@ class OuterLoop:
         var.y_time = [ring_y[i] for i in order]
         var.t_time = [ring_t[i] for i in order]
 
-    def _classify_end_case(self, state: JaxIntegState, wall_clock_hit=False):
+    def _classify_end_case(self, state: JaxIntegState):
         """Classify end-of-run (op.py:1069-1085) from the in-loop reason.
 
         `_real_terminate` applies master's priority (converged over runtime
         over step-count) against the live budget, so a step that converges
         while hitting a cap reads end_case=1, and so does a hybrid phase-1
-        convergence past the static count_max. Wall-clock exit (end_case=4)
-        is sticky -- the JIT'd loop has not actually terminated, only the
-        host bailed out.
+        convergence past the static count_max.
 
         end_case=5 is a VULCAN-JAX addition with no upstream counterpart: the
         run stopped without meeting the convergence criterion and without
         hitting either cap -- a lane frozen on non-finite state
-        (termination_reason 5), one that only yielded at a chunk boundary
-        (reason 0), or a "converged" state that is not finite.
+        (termination_reason 5) or a "converged" state that is not finite.
         """
-        if wall_clock_hit:
-            return 4
         reason = int(state.termination_reason)
         if reason in (2, 3):
             return reason
         if reason in (1, 4) and bool(jnp.all(jnp.isfinite(state.y))):
             return 1  # the JAX-only stall fallback (4) shares end_case=1
         return 5
-
-    def _run_chunked(self, init_state, atm_static, var, para, atm):
-        """Run the integration in chunks so the host can fire `print_prog`
-        and live-UI hooks between chunks.
-
-        Chunk size: `live_plot_frq` when any live flag is on (master's
-        cadence), else `print_prog_num`. Termination semantics are meant to
-        equal the single-shot path: the chunk cap is the only extra exit and
-        it is clamped to `count_max_dyn + 1`, so it cannot fire before a real
-        termination would. NOT COVERED BY A TEST — nothing in `tests/`
-        exercises `use_chunked_runner` / `_run_chunked`, so chunked-vs-single
-        bit-equivalence is an argument, not a measured result.
-
-        Returns ``(state, wall_clock_hit)``; wall_clock_hit=True means the
-        host wall-clock budget expired between chunks (end_case=4).
-        """
-        from .live_ui import any_live_flag_on, LiveUI
-
-        live_on = any_live_flag_on(self._cfg)
-        if live_on:
-            chunk_size = max(int(getattr(self._cfg, "live_plot_frq", 10)), 1)
-            if self._live_ui is None:
-                self._live_ui = LiveUI(self._cfg)
-        else:
-            chunk_size = max(int(getattr(self._cfg, "print_prog_num", 500)), 1)
-        use_print_prog = bool(getattr(self._cfg, "use_print_prog", True))
-        wall_clock_max = getattr(self._cfg, "wall_clock_max", None)
-        wall_clock_max = (
-            float(wall_clock_max)
-            if wall_clock_max is not None and float(wall_clock_max) > 0
-            else None
-        )
-        start_time = (
-            float(getattr(para, "start_time", _now())) if para is not None else _now()
-        )
-
-        state = init_state
-        while True:
-            target = int(state.accept_count) + chunk_size
-            # Cap the chunk at count_max + 1 so chunk_done never fires before
-            # count_max would. Read the LIVE budget off the carry: the hybrid
-            # flip extends it in-loop and static caps would truncate phase 1.
-            target = min(target, int(state.count_max_dyn) + 1)
-            state = state._replace(chunk_target=jnp.int32(target))
-            state = self._runner(state, atm_static)
-
-            count_now = int(state.accept_count)
-            t_now = float(state.t)
-
-            chunk_cap_hit = count_now >= target
-            count_max_hit = count_now > int(state.count_max_dyn)
-            runtime_hit = t_now > float(state.runtime_dyn)
-            terminated_for_real = count_max_hit or runtime_hit or (not chunk_cap_hit)
-
-            if terminated_for_real:
-                return state, False
-
-            # Sync state to host for the per-chunk hooks.
-            self._unpack_state(state, var, para, atm)
-            if use_print_prog:
-                if (
-                    not hasattr(para, "where_varies_most")
-                    or para.where_varies_most is None
-                ):
-                    para.where_varies_most = np.zeros_like(var.y)
-                self.output.print_prog(var, para)
-            if live_on:
-                self._live_ui.dispatch(var, atm, para)
-
-            if wall_clock_max is not None and (_now() - start_time) > wall_clock_max:
-                print(f"After ------- {_now() - start_time} seconds ------- s CPU time")
-                print(
-                    "Integration not completed...\n"
-                    f"Wall-clock budget exceeded ({wall_clock_max} sec)!"
-                )
-                return state, True
 
     def __call__(self, *args):
         """Run the integration to convergence / runtime / count cap.
@@ -3301,9 +3163,7 @@ class OuterLoop:
         """Legacy entry point: integrate while mutating `(var, atm, para)`.
 
         Everything happens inside the JIT'd runner; this method handles
-        setup, the device call(s), and post-run unpacking + diagnostics.
-        Runs chunked when `use_chunked_runner` or any live flag is on, else
-        single-shot; both paths are bit-equivalent on the final state.
+        setup, the device call, and post-run unpacking + diagnostics.
         """
         del make_atm  # captured into _refresh_static at OuterLoop init
         validate_runtime_config(self._cfg)
@@ -3317,24 +3177,7 @@ class OuterLoop:
         atm_static = make_atm_static(atm, ni, nz, cfg=self._cfg)
         init_state = self._pack_state(var, para, atm)
 
-        # Chunked when use_chunked_runner, any live flag, or wall_clock_max
-        # is set (host hooks fire between chunks); default is single-shot.
-        from .live_ui import any_live_flag_on
-
-        wall_clock_max = getattr(self._cfg, "wall_clock_max", None)
-        use_chunked = (
-            bool(getattr(self._cfg, "use_chunked_runner", False))
-            or any_live_flag_on(self._cfg)
-            or (wall_clock_max is not None and float(wall_clock_max) > 0)
-        )
-
-        wall_clock_hit = False
-        if use_chunked:
-            final_state, wall_clock_hit = self._run_chunked(
-                init_state, atm_static, var, para, atm
-            )
-        else:
-            final_state = self._runner(init_state, atm_static)
+        final_state = self._runner(init_state, atm_static)
         self._unpack_state(final_state, var, para, atm)
 
         # (op.Integration.f_dy is deliberately not ported: nothing reads its
@@ -3346,7 +3189,7 @@ class OuterLoop:
         # for master-shape compatibility.)
 
         # Determine end_case (op.py:1069-1085) for the final print.
-        para.end_case = self._classify_end_case(final_state, wall_clock_hit)
+        para.end_case = self._classify_end_case(final_state)
         para.termination_reason = int(final_state.termination_reason)
         if para.end_case == 3:
             print(
@@ -3384,10 +3227,10 @@ class OuterLoop:
             self.output.print_prog(var, para)
 
         # End-of-run summary (op.stop). Master only calls print_end_msg
-        # (end_case=1); we also call print_unconverged_msg for 2/3/4.
+        # (end_case=1); we also call print_unconverged_msg for 2/3/5.
         if para.end_case == 1:
             self.output.print_end_msg(var, para)
-        elif para.end_case in (2, 3, 4, 5):
+        elif para.end_case in (2, 3, 5):
             self.output.print_unconverged_msg(var, para, para.end_case)
         _print_column_atom_loss(self._cfg, var.y, var.y_ini, atm.dz)
 
@@ -3429,38 +3272,13 @@ class OuterLoop:
         atm_static = make_atm_static(atm, ni, nz, cfg=self._cfg)
         init_state = self._pack_state_from_runstate(rs)
 
-        from .live_ui import any_live_flag_on
-
-        wall_clock_max = getattr(self._cfg, "wall_clock_max", None)
-        use_chunked = (
-            bool(getattr(self._cfg, "use_chunked_runner", False))
-            or any_live_flag_on(self._cfg)
-            or (wall_clock_max is not None and float(wall_clock_max) > 0)
-        )
-        wall_clock_hit = False
-        if use_chunked:
-            # The chunked driver needs legacy (var, para, atm) for its hooks;
-            # reuse the caller's para (carries start_time). The final RunState
-            # is rebuilt on return regardless.
-            final_state, wall_clock_hit = self._run_chunked(
-                init_state, atm_static, var, para, atm
-            )
-        else:
-            final_state = self._runner(init_state, atm_static)
+        final_state = self._runner(init_state, atm_static)
 
         rs_out = self._unpack_state_to_runstate(final_state, rs)
-        if self._live_ui is not None and rs_out.params is not None:
-            rs_out = rs_out._replace(
-                params=rs_out.params._replace(pic_count=int(self._live_ui.pic_count))
-            )
 
-        # End-of-run printing, same predicates as the legacy path;
-        # wall-clock exit (end_case=4) is sticky (the loop never terminated).
+        # End-of-run printing, same predicates as the legacy path.
         count = int(rs_out.params.count)
-        end_case = self._classify_end_case(final_state, wall_clock_hit)
-        # Persist the authoritative end_case: _unpack_state_to_runstate cannot
-        # see a wall-clock bail and would mislabel a truncated run as
-        # converged (end_case=1).
+        end_case = self._classify_end_case(final_state)
         reason = int(final_state.termination_reason)
         if rs_out.params is not None:
             rs_out = rs_out._replace(
@@ -3484,7 +3302,7 @@ class OuterLoop:
                 f"without hitting a cap (termination_reason {reason}); the "
                 "state may be non-finite."
             )
-        elif end_case != 4:
+        else:
             # Reason 4 (JAX-only stall fallback) shares end_case=1 with a real
             # convergence; say so in the message.
             how = (
@@ -3519,7 +3337,7 @@ class OuterLoop:
 
         if end_case == 1:
             self.output.print_end_msg(var_shim, para_shim)
-        elif end_case in (2, 3, 4, 5):
+        elif end_case in (2, 3, 5):
             self.output.print_unconverged_msg(var_shim, para_shim, end_case)
         _print_column_atom_loss(
             self._cfg, rs_out.step.y, rs_out.metadata.y_ini, rs_out.atm.dz
@@ -3603,9 +3421,7 @@ class OuterLoop:
         matches running it alone at the convergence scale (the photo /
         geometry cadences follow the loop's iteration tick here, not the
         lane's accept count), and the call returns once the slowest
-        lane finishes (or every lane hits its `chunk_target` yield, which a
-        host driver can use to observe progress between device calls;
-        no lane compaction or refill is implemented).
+        lane finishes (no lane compaction or refill is implemented).
         """
         if self._runner_batch is None:
             raise RuntimeError(

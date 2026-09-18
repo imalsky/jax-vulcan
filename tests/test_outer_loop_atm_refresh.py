@@ -52,6 +52,7 @@ def main() -> int:
     os.chdir(ROOT)
     import vulcan_jax.op_jax as op_jax
     import vulcan_jax.outer_loop as outer_loop
+    from vulcan_jax import atm_refresh
     from vulcan_jax.atm_setup import Atm
     from vulcan_jax.state import RunState, legacy_view
 
@@ -100,26 +101,22 @@ def main() -> int:
     integ = outer_loop.OuterLoop(solver_B, output)
     integ._ensure_runner(data_var, data_atm)
 
-    # Use the standalone atm refresh branch on a packed initial state:
-    # this exercises update_mu_dz_jax + update_phi_esc_jax wiring without
+    # Drive the refresh kernels directly on a packed initial state: this
+    # exercises update_mu_dz_jax + update_phi_esc_jax wiring without
     # depending on the photo branch / chem step.
     init_state = integ._pack_state(data_var, data_para, data_atm)
-    refresh_branch = outer_loop._make_atm_refresh_branch(integ._refresh_static)
-    after_refresh_state = refresh_branch(init_state)
-
-    mu_B = np.asarray(after_refresh_state.mu)
-    g_B = np.asarray(after_refresh_state.g)
-    Hp_B = np.asarray(after_refresh_state.Hp)
-    dz_B = np.asarray(after_refresh_state.dz)
-    dzi_B = np.asarray(after_refresh_state.dzi)
-    Hpi_B = np.asarray(after_refresh_state.Hpi)
-    zco_B = np.asarray(after_refresh_state.zco)
-    top_flux_B = np.asarray(after_refresh_state.top_flux)
+    st = integ._refresh_static
+    mu_B, g_B, Hp_B, dz_B, zco_B, dzi_B, Hpi_B = atm_refresh.update_mu_dz_jax(
+        init_state.ymix, st
+    )
+    top_flux_B = atm_refresh.update_phi_esc_jax(
+        init_state.y, g_B, Hp_B, init_state.top_flux, st
+    )
 
     # Hydrostatic balance: y_B = n_0 * ymix. body_fn applies this after
     # the Ros2 step; here we exercise it standalone against atm.n_0
     # (a static quantity equal to atm.M).
-    y_B = data_atm.n_0[:, None] * np.asarray(after_refresh_state.ymix)
+    y_B = data_atm.n_0[:, None] * np.asarray(init_state.ymix)
 
     ok = True
 

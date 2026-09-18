@@ -36,6 +36,7 @@ def main() -> int:
     import vulcan_jax.legacy_io as op
     import vulcan_jax.op_jax as op_jax
     import vulcan_jax.outer_loop as outer_loop
+    from vulcan_jax import atm_refresh
     from vulcan_jax.config import default_config
 
     vulcan_cfg = default_config()
@@ -65,11 +66,12 @@ def main() -> int:
     pref_indx = int(st.pref_indx)
 
     init_state = integ._pack_state(data_var, data_para, data_atm)
-    refresh_branch = outer_loop._make_atm_refresh_branch(st)
-    after = refresh_branch(init_state)
+    _mu, g_j, _Hp, _dz, zco_j, _dzi, _Hpi = atm_refresh.update_mu_dz_jax(
+        init_state.ymix, st
+    )
 
-    g = np.asarray(after.g, dtype=np.float64)
-    zco = np.asarray(after.zco, dtype=np.float64)
+    g = np.asarray(g_j, dtype=np.float64)
+    zco = np.asarray(zco_j, dtype=np.float64)
     nz = g.shape[0]
 
     ok = True
@@ -103,7 +105,7 @@ def main() -> int:
     mol_mass = np.asarray(st.mol_mass, dtype=np.float64)
     Navo = float(st.Navo)
     kb = float(st.kb)
-    ymix = np.asarray(after.ymix, dtype=np.float64)
+    ymix = np.asarray(init_state.ymix, dtype=np.float64)
     mu = ymix @ mol_mass
 
     zco_const = np.zeros(nz, dtype=np.float64)
