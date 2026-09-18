@@ -32,6 +32,8 @@ DTS = (1e2, 3.8e4, 1e6, 1e11)
 
 @pytest.fixture(params=["fast", "ffi"])
 def fast(request, monkeypatch):
+    # On a CUDA device `ffi` runs libblock_thomas_cuda.so when it has been built
+    # (`--cuda`); the same assertions apply, so nothing here is platform-specific.
     if request.param == "ffi":
         try:
             fast_mod.build()

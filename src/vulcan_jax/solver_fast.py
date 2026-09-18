@@ -19,6 +19,15 @@ Same call shape as `solver.py`: `factor(diag, sup_d, sub_d)` once, then
    LGMRES is roundoff-marginal and the C++ factors' roundoff moves its HD189
    null_quality over the test's bar (notes §1.4.1); use `fast` or `reference`.
 
+On a CUDA device the `ffi` backend runs `csrc/block_thomas_cuda.cu`, the same
+math and layout with one thread block per lane: the `ni x ni` block and the
+previous layer's inverse sit in dynamic shared memory, pivoting is in-block and
+the whole `nz` loop stays in the kernel, so a Ros2 step costs one factor launch
+and two solve launches. It is built only by `python -m vulcan_jax.solver_fast
+--cuda` on a host with nvcc; without the library nothing changes here and a
+device call under `ffi` fails loudly at dispatch. Reverse mode is unaffected:
+`transpose_solve` runs the JAX sweep on whichever backend produced the factors.
+
 `jax_step` imports this module by default; `VULCAN_JAX_SOLVER=reference`
 restores the plain `solver.py` pair for A/B, and `ffi` selects the C++ kernel.
 Removal: delete this file, `csrc/`, `tests/test_solver_fast.py` and the switch
@@ -121,26 +130,36 @@ def solve(factors: Factors, rhs):
     )
 
 
-# --- C++ CPU kernel ---------------------------------------------------------
+# --- C++ CPU kernel and its CUDA twin ---------------------------------------
 
 _CSRC = Path(__file__).with_name("csrc")
 _LIB = _CSRC / (
     "libblock_thomas_cpu" + (".dylib" if platform.system() == "Darwin" else ".so")
 )
+_CUDA_LIB = _CSRC / "libblock_thomas_cuda.so"
 
 
-def build(force: bool = False) -> Path:
-    """Compile the CPU kernel with the system C++ compiler ($CXX or c++)."""
-    src = _CSRC / "block_thomas_cpu.cc"
-    if _LIB.exists() and not force and _LIB.stat().st_mtime >= src.stat().st_mtime:
-        return _LIB
-    cmd = [os.environ.get("CXX", "c++"), "-O2", "-std=c++17", "-shared", "-fPIC",
-           f"-I{jax.ffi.include_dir()}"]
-    if platform.system() == "Darwin":
-        cmd += ["-undefined", "dynamic_lookup"]
-    cmd += [str(src), "-o", str(_LIB)]
+def build(force: bool = False, cuda: bool = False) -> Path:
+    """Compile the CPU kernel with the system C++ compiler ($CXX or c++), or
+    with `cuda=True` the GPU twin with nvcc ($NVCC, $NVCC_ARCH; needs a CUDA
+    toolkit, hence an explicit `--cuda` build on the GPU host)."""
+    src = _CSRC / ("block_thomas_cuda.cu" if cuda else "block_thomas_cpu.cc")
+    lib = _CUDA_LIB if cuda else _LIB
+    if lib.exists() and not force and lib.stat().st_mtime >= src.stat().st_mtime:
+        return lib
+    if cuda:
+        cmd = [os.environ.get("NVCC", "nvcc"), "-O2", "-std=c++17", "-shared",
+               "-Xcompiler", "-fPIC",
+               f"-arch={os.environ.get('NVCC_ARCH', 'sm_90')}",
+               f"-I{jax.ffi.include_dir()}"]
+    else:
+        cmd = [os.environ.get("CXX", "c++"), "-O2", "-std=c++17", "-shared", "-fPIC",
+               f"-I{jax.ffi.include_dir()}"]
+        if platform.system() == "Darwin":
+            cmd += ["-undefined", "dynamic_lookup"]
+    cmd += [str(src), "-o", str(lib)]
     subprocess.run(cmd, check=True)
-    return _LIB
+    return lib
 
 
 _REGISTERED = False
@@ -157,6 +176,14 @@ def _register():
     jax.ffi.register_ffi_target(
         "vulcan_bt_solve", jax.ffi.pycapsule(lib.VulcanBtSolve), platform="cpu"
     )
+    if _CUDA_LIB.exists():  # built separately by `--cuda`; never built here
+        gpu = ctypes.CDLL(str(_CUDA_LIB))
+        jax.ffi.register_ffi_target(
+            "vulcan_bt_factor", jax.ffi.pycapsule(gpu.VulcanBtFactorCuda), platform="CUDA"
+        )
+        jax.ffi.register_ffi_target(
+            "vulcan_bt_solve", jax.ffi.pycapsule(gpu.VulcanBtSolveCuda), platform="CUDA"
+        )
     _REGISTERED = True
 
 
@@ -181,4 +208,4 @@ def _ffi_solve(lu, perm, sup_d, sub_d, rhs):
 
 
 if __name__ == "__main__":
-    print(build(force="--force" in sys.argv))
+    print(build(force="--force" in sys.argv, cuda="--cuda" in sys.argv))
