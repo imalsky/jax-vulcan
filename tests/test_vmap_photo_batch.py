@@ -142,10 +142,14 @@ def main() -> int:
     )
     out = outer_loop.unstack_integ_states(batched, 2)
 
+    # aflux counts only above 1e-30 of its own peak: the two-stream sweeps
+    # reduce as a tree, which underflows on a different schedule than the
+    # sequential chain, and a 1e-295 bin under a 1e17 peak is not physics.
+    aflux_floor = 1e-30 * float(np.max(np.abs(np.asarray(soloA.aflux))))
     checks = [
         ("ymix", lambda s: s.ymix, YMIX_FLOOR),
         ("k_arr", lambda s: s.k_arr, 0.0),
-        ("aflux", lambda s: s.aflux, 0.0),
+        ("aflux", lambda s: s.aflux, aflux_floor),
         ("tau", lambda s: s.tau, 0.0),
     ]
     for name, get, floor in checks:

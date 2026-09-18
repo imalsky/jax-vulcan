@@ -135,6 +135,42 @@ def compute_tau_jax(y: jnp.ndarray, dz: jnp.ndarray, photo: PhotoData) -> jnp.nd
     return tau
 
 
+def _two_stream_sweeps(
+    chi: jnp.ndarray,  # (nz, nbin)
+    phi: jnp.ndarray,  # (nz, nbin)
+    xi: jnp.ndarray,  # (nz, nbin)
+    i_d: jnp.ndarray,  # (nz, nbin)
+    i_u: jnp.ndarray,  # (nz, nbin)
+    dflux_u_prev: jnp.ndarray,  # (nz+1, nbin); the PRIOR call's dflux_u
+    mu_ang: float,
+):
+    """Down and up two-stream sweeps; returns (dflux_d, dflux_u), (nz+1, nbin).
+
+    down: d_j = (phi[j]*d_{j+1} - xi[j]*dflux_u_prev[j] + i_d[j]/mu_ang)/chi[j],
+    d_nz = 0.  up: u_{k+1} = (phi[k]*u_k - xi[k]*d_{k+1} + i_u[k]/mu_ang)/chi[k],
+    u_0 = 0.  Both are affine recurrences in the carry, so they run as
+    associative scans (depth log2(nz)) instead of nz sequential steps.
+    """
+    nbin = chi.shape[1]
+
+    def _then(f, g):
+        """Compose affine maps: apply f, then g.  g(f(x)) = ga*(fa*x + fb) + gb."""
+        fa, fb = f
+        ga, gb = g
+        return ga * fa, ga * fb + gb
+
+    a = phi / chi  # (nz, nbin)
+    # down: suffix composition from the top, applied to d_nz = 0
+    b_d = (-xi * dflux_u_prev[:-1] + i_d / mu_ang) / chi  # row j reads dflux_u_prev[j]
+    _, B_d = jax.lax.associative_scan(_then, (a, b_d), reverse=True)
+    dflux_d = jnp.concatenate([B_d, jnp.zeros((1, nbin))], axis=0)
+    # up: prefix composition from the bottom, applied to u_0 = 0
+    b_u = (-xi * dflux_d[1:] + i_u / mu_ang) / chi
+    _, B_u = jax.lax.associative_scan(_then, (a, b_u))
+    dflux_u = jnp.concatenate([jnp.zeros((1, nbin)), B_u], axis=0)
+    return dflux_d, dflux_u
+
+
 @_partial(jax.jit, static_argnames=("ag0_is_zero",))
 def compute_flux_jax(
     tau: jnp.ndarray,  # (nz+1, nbin) staggered
@@ -160,8 +196,6 @@ def compute_flux_jax(
     (nz+1, nbin) downward / upward diffuse flux.
     """
     mu_ang = -1.0 * mu_zenith
-    nz_plus1, nbin = tau.shape
-    nz = nz_plus1 - 1
 
     delta_tau = tau[:-1] - tau[1:]
 
@@ -221,33 +255,9 @@ def compute_flux_jax(
     i_u = phi * g_p * dir_flux[:-1] - (xi * g_m + chi * g_p) * dir_flux[1:]
     i_d = phi * g_m * dir_flux[1:] - (chi * g_m + xi * g_p) * dir_flux[:-1]
 
-    dflux_d_top = jnp.zeros(nbin)
-
-    def down_step(carry, j):
-        # dflux_u_j is the prior call's dflux_u, not the current up sweep's value.
-        dflux_u_j = dflux_u_prev[j]
-        dflux_d_jp1 = carry
-        dflux_d_j = (1.0 / chi[j]) * (
-            phi[j] * dflux_d_jp1 - xi[j] * dflux_u_j + i_d[j] / mu_ang
-        )
-        return dflux_d_j, dflux_d_j
-
-    js_down = jnp.arange(nz - 1, -1, -1)
-    _, dflux_d_seq = jax.lax.scan(down_step, dflux_d_top, js_down)
-    dflux_d = jnp.concatenate([dflux_d_seq[::-1], dflux_d_top[None]], axis=0)
-
-    dflux_u_bot = jnp.zeros(nbin)
-
-    def up_step(carry, j):
-        dflux_u_jm1 = carry
-        dflux_u_j = (1.0 / chi[j - 1]) * (
-            phi[j - 1] * dflux_u_jm1 - xi[j - 1] * dflux_d[j] + i_u[j - 1] / mu_ang
-        )
-        return dflux_u_j, dflux_u_j
-
-    js_up = jnp.arange(1, nz + 1)
-    _, dflux_u_seq = jax.lax.scan(up_step, dflux_u_bot, js_up)
-    dflux_u = jnp.concatenate([dflux_u_bot[None], dflux_u_seq], axis=0)
+    dflux_d, dflux_u = _two_stream_sweeps(
+        chi, phi, xi, i_d, i_u, dflux_u_prev, mu_ang
+    )
 
     ave_dir_flux = 0.5 * (sflux[:-1] + sflux[1:])
     tot_flux = (
