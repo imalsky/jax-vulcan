@@ -8,7 +8,6 @@ over the leading axis of (y, k_arr, atm).
 
 from __future__ import annotations
 
-import os
 from typing import NamedTuple
 
 import jax
@@ -25,10 +24,6 @@ from .solver import (
     solve_block_thomas_diag_offdiag,
 )
 from .config import default_config, REPAIR_ABS_FLOOR
-
-if os.environ.get("VULCAN_JAX_SOLVER"):  # import-frozen opt-in, see solver_fast.py
-    from .solver_fast import factor as factor_block_thomas_diag_offdiag
-    from .solver_fast import solve as solve_block_thomas_diag_offdiag
 
 jax.config.update("jax_enable_x64", True)
 
