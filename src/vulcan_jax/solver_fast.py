@@ -199,11 +199,16 @@ def _ffi_factor(diag, sup_d, sub_d):
 
 
 def _ffi_solve(lu, perm, sup_d, sub_d, rhs):
+    # expand_dims, not broadcast_all: at a vmap level where only `rhs` is
+    # batched (the six tangent directions share one factorisation) the factors
+    # get a size-1 axis instead of one copy per direction, and the handler
+    # broadcasts their leading dimensions against the rhs's. On the GPU that is
+    # 3.9 MB of `lu` per lane not copied six times per step.
     _register()
     return jax.ffi.ffi_call(
         "vulcan_bt_solve",
         jax.ShapeDtypeStruct(rhs.shape, rhs.dtype),
-        vmap_method="broadcast_all",
+        vmap_method="expand_dims",
     )(lu, perm, sup_d, sub_d, rhs)
 
 

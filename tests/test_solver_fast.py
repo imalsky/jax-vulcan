@@ -13,6 +13,7 @@ SNCHO child, slow-gated like the other W39b children).
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -108,6 +109,43 @@ def test_fast_matches_reference_on_random_system(fast):
     assert r["tangent_rel"] < 1e-8, r
     assert r["grad_rel"] < 1e-8, r
     assert r["vmap_rel"] < 1e-12, r
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_ffi_solve_takes_a_stack_of_rhs_on_shared_factors(fast, nested):
+    """The tangent directions' pattern: several right-hand sides on ONE
+    factorisation, flat and inside an outer vmap over lanes. The stack must equal
+    the single solves bit for bit, and (vmap_method="expand_dims") the lowered
+    custom call must keep the factors' direction axis at 1 instead of one copy of
+    `lu` per direction."""
+    if fast.BACKEND != "ffi":
+        pytest.skip("the stacked-rhs handler is the C++ kernel's")
+    nz, ni, ndir = 12, 7, 3
+    if nested:  # outer vmap over 2 lanes (all operands batched) around the inner
+        lanes = [_system(nz, ni, 11 + i, boost=1e3, scale=1e-3) for i in range(2)]
+        f = jax.vmap(fast.factor)(*(jnp.stack([ln[j] for ln in lanes]) for j in range(3)))
+        b = jnp.stack([jnp.stack([ln[3] * (1.0 + 0.1 * k) for k in range(ndir)]) for ln in lanes])
+        fn = jax.jit(jax.vmap(lambda fa, bs: jax.vmap(fast.solve, in_axes=(None, 0))(fa, bs)))
+        want = jnp.stack([
+            jnp.stack([jax.jit(fast.solve)(jax.tree.map(lambda a, i=i: a[i], f), r) for r in b[i]])
+            for i in range(2)
+        ])
+    else:
+        diag, sup, sub, rhs = _system(nz, ni, 11, boost=1e3, scale=1e-3)
+        f = fast.factor(diag, sup, sub)
+        b = jnp.stack([rhs * (1.0 + 0.1 * k) for k in range(ndir)])
+        fn = jax.jit(jax.vmap(fast.solve, in_axes=(None, 0)))
+        want = jnp.stack([jax.jit(fast.solve)(f, r) for r in b])
+    assert np.array_equal(np.asarray(fn(f, b)), np.asarray(want))
+
+    txt = fn.lower(f, b).as_text()
+    sig = next(ln for ln in txt.splitlines() if "vulcan_bt_solve" in ln).split("} : ")[-1]
+    print(f"\nnested={nested} vulcan_bt_solve{sig.strip()}")
+    lead = "2x1x" if nested else "1x"
+    assert re.match(rf"\(tensor<{lead}{nz}x{ni}x{ni}xf64>,", sig), sig
+    # ... and nothing anywhere in the module materialises `lu` once per direction
+    copied = f"tensor<{'2x' if nested else ''}{ndir}x{nz}x{ni}x{ni}xf64>"
+    assert copied not in txt, copied
 
 
 def capture_stage1(fixture: str, cfg_name: str, dt: float):

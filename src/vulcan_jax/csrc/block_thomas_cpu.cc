@@ -4,12 +4,15 @@
 //   solve:   r'_0 = r_0;  r'_j = r_j - c_j .* (A'_{j-1}^{-1} r'_{j-1})
 //            k_last = A'^{-1} r'_last;  k_j = A'_j^{-1} (r'_j - b_j .* k_{j+1})
 // with b = sup_d (nz-1, ni), c = sub_d (nz-1, ni). Leading dimensions are a
-// batch (vmap_method="broadcast_all"). Plain O(nz ni^3) loops: this is the
-// reference the GPU kernel is checked against, not a fast CPU solver. A zero
-// pivot gives inf/nan like lax.linalg.lu, not an error.
+// batch; in the solve the factors' leading dimensions broadcast against the
+// rhs's (equal, or 1: one factorisation, a stack of right-hand sides). Plain
+// O(nz ni^3) loops: this is the reference the GPU kernel is checked against,
+// not a fast CPU solver. A zero pivot gives inf/nan like lax.linalg.lu, not an
+// error.
 // Build: python -m vulcan_jax.solver_fast
 #include <cmath>
 #include <cstdint>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -103,6 +106,52 @@ static ffi::Error FactorImpl(ffi::Buffer<ffi::F64> diag, ffi::Buffer<ffi::F64> s
   return ffi::Error::Success();
 }
 
+// The solve's batch is the product of the rhs leading dimensions; each factor
+// operand's leading dimensions broadcast against them numpy-style (equal, or 1
+// -> stride 0), which is what vmap_method="expand_dims" hands the handler when
+// only the rhs is batched at a vmap level.
+static constexpr int kBtMaxBatch = 4;
+
+struct BtBcast {
+  int nd;                             // number of leading dimensions
+  int64_t dim[kBtMaxBatch];           // the rhs leading dimensions
+  int64_t stride[4][kBtMaxBatch];     // per factor operand: lu, perm, sup, sub
+};
+
+// Strides of one factor operand into `s`; `trail` is its per-element count.
+static ffi::Error bt_leading(BtBcast* s, int op, ffi::AnyBuffer::Dimensions dims,
+                             int ntrail, int64_t trail, int64_t count, const char* name) {
+  const int nb = static_cast<int>(dims.size()) - ntrail;
+  if (nb != s->nd) {
+    return ffi::Error(ffi::ErrorCode::kInvalidArgument,
+                      std::string(name) + " must have the rhs's number of leading dimensions");
+  }
+  int64_t stride = 1;
+  for (int k = nb - 1; k >= 0; --k) {
+    if (dims[k] != s->dim[k] && dims[k] != 1) {
+      return ffi::Error(ffi::ErrorCode::kInvalidArgument,
+                        std::string(name) + " leading dimensions must equal the rhs's or be 1");
+    }
+    s->stride[op][k] = (dims[k] == 1) ? 0 : stride;
+    stride *= dims[k];
+  }
+  if (count != stride * trail) {
+    return ffi::Error(ffi::ErrorCode::kInvalidArgument,
+                      std::string(name) + " has the wrong trailing shape");
+  }
+  return ffi::Error::Success();
+}
+
+// Element of factor operand `op` that rhs batch element `b` reads.
+static inline int64_t bt_index(int64_t b, const BtBcast& s, int op) {
+  int64_t idx = 0;
+  for (int k = s.nd - 1; k >= 0; --k) {
+    idx += (b % s.dim[k]) * s.stride[op][k];
+    b /= s.dim[k];
+  }
+  return idx;
+}
+
 static ffi::Error SolveImpl(ffi::Buffer<ffi::F64> lu, ffi::Buffer<ffi::S32> perm,
                             ffi::Buffer<ffi::F64> sup, ffi::Buffer<ffi::F64> sub,
                             ffi::Buffer<ffi::F64> rhs, ffi::ResultBuffer<ffi::F64> x) {
@@ -114,17 +163,40 @@ static ffi::Error SolveImpl(ffi::Buffer<ffi::F64> lu, ffi::Buffer<ffi::S32> perm
   const int nz = static_cast<int>(dims[nd - 3]);
   const int ni = static_cast<int>(dims[nd - 1]);
   const int64_t blk = static_cast<int64_t>(ni) * ni;
-  int64_t batch = 1;
-  for (int i = 0; i < nd - 3; ++i) batch *= dims[i];
-  if (rhs.element_count() != batch * nz * ni || perm.element_count() != batch * nz * ni) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "rhs/perm must be [..., nz, ni]");
+  auto rd = rhs.dimensions();
+  const int rnd = static_cast<int>(rd.size());
+  if (rnd < 2 || rd[rnd - 1] != ni || rd[rnd - 2] != nz) {
+    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "rhs must be [..., nz, ni]");
   }
+  BtBcast s = {};
+  s.nd = rnd - 2;
+  if (s.nd > kBtMaxBatch) {
+    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "rhs has more than 4 leading dimensions");
+  }
+  int64_t batch = 1;
+  for (int k = 0; k < s.nd; ++k) {
+    s.dim[k] = rd[k];
+    batch *= rd[k];
+  }
+  if (x->element_count() != batch * nz * ni) {
+    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "the result must have the rhs's shape");
+  }
+  const int64_t bnd = static_cast<int64_t>(nz - 1) * ni;
+  ffi::Error err = bt_leading(&s, 0, dims, 3, nz * blk, lu.element_count(), "lu");
+  if (err.failure()) return err;
+  err = bt_leading(&s, 1, perm.dimensions(), 2, static_cast<int64_t>(nz) * ni,
+                   perm.element_count(), "perm");
+  if (err.failure()) return err;
+  err = bt_leading(&s, 2, sup.dimensions(), 2, bnd, sup.element_count(), "sup");
+  if (err.failure()) return err;
+  err = bt_leading(&s, 3, sub.dimensions(), 2, bnd, sub.element_count(), "sub");
+  if (err.failure()) return err;
   std::vector<double> t(ni), tmp(ni);
   for (int64_t b = 0; b < batch; ++b) {
-    const double* L = lu.typed_data() + b * nz * blk;
-    const int32_t* P = perm.typed_data() + b * nz * ni;
-    const double* S = sup.typed_data() + b * (nz - 1) * ni;
-    const double* C = sub.typed_data() + b * (nz - 1) * ni;
+    const double* L = lu.typed_data() + bt_index(b, s, 0) * nz * blk;
+    const int32_t* P = perm.typed_data() + bt_index(b, s, 1) * nz * ni;
+    const double* S = sup.typed_data() + bt_index(b, s, 2) * bnd;
+    const double* C = sub.typed_data() + bt_index(b, s, 3) * bnd;
     const double* R = rhs.typed_data() + b * nz * ni;
     double* X = x->typed_data() + b * nz * ni;
     for (int i = 0; i < ni; ++i) X[i] = R[i];  // X holds r' during the forward sweep

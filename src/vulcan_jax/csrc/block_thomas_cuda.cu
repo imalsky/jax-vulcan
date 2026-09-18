@@ -5,10 +5,12 @@
 // the JAX sweep on these factors. One thread block per lane (a batch element):
 // the ni x ni block and inv(A'_{j-1}) live in dynamic shared memory, pivoting
 // happens in-block, and the whole nz loop runs inside the kernel, so a Ros2
-// step is one factor launch and two solve launches. Each layer's triangular
-// substitutions are column-oriented, so the whole thread block works on them
-// instead of one thread. A zero pivot gives inf/nan like lax.linalg.lu, not an
-// error.
+// step is one factor launch and two solve launches. The solve takes a stack of
+// right-hand sides on shared factors: one block per rhs element, the factors'
+// leading dimensions broadcasting against the rhs's (equal, or 1). Each layer's
+// triangular substitutions are column-oriented, so the whole thread block works
+// on them instead of one thread. A zero pivot gives inf/nan like lax.linalg.lu,
+// not an error.
 // Build: python -m vulcan_jax.solver_fast --cuda (nvcc, on the GPU host); the
 // library registers under platform="CUDA".
 #include <cmath>
@@ -167,6 +169,52 @@ __global__ void bt_factor_kernel(const double* diag, const double* sup, const do
   }
 }
 
+// The solve's batch is the product of the rhs leading dimensions; each factor
+// operand's leading dimensions broadcast against them numpy-style (equal, or 1
+// -> stride 0), which is what vmap_method="expand_dims" hands the handler when
+// only the rhs is batched at a vmap level.
+static constexpr int kBtMaxBatch = 4;
+
+struct BtBcast {
+  int nd;                             // number of leading dimensions
+  int64_t dim[kBtMaxBatch];           // the rhs leading dimensions
+  int64_t stride[4][kBtMaxBatch];     // per factor operand: lu, perm, sup, sub
+};
+
+// Strides of one factor operand into `s`; `trail` is its per-element count.
+static ffi::Error bt_leading(BtBcast* s, int op, ffi::AnyBuffer::Dimensions dims,
+                             int ntrail, int64_t trail, int64_t count, const char* name) {
+  const int nb = static_cast<int>(dims.size()) - ntrail;
+  if (nb != s->nd) {
+    return ffi::Error(ffi::ErrorCode::kInvalidArgument,
+                      std::string(name) + " must have the rhs's number of leading dimensions");
+  }
+  int64_t stride = 1;
+  for (int k = nb - 1; k >= 0; --k) {
+    if (dims[k] != s->dim[k] && dims[k] != 1) {
+      return ffi::Error(ffi::ErrorCode::kInvalidArgument,
+                        std::string(name) + " leading dimensions must equal the rhs's or be 1");
+    }
+    s->stride[op][k] = (dims[k] == 1) ? 0 : stride;
+    stride *= dims[k];
+  }
+  if (count != stride * trail) {
+    return ffi::Error(ffi::ErrorCode::kInvalidArgument,
+                      std::string(name) + " has the wrong trailing shape");
+  }
+  return ffi::Error::Success();
+}
+
+// Element of factor operand `op` that rhs batch element `b` reads.
+__device__ static int64_t bt_index(int64_t b, const BtBcast& s, int op) {
+  int64_t idx = 0;
+  for (int k = s.nd - 1; k >= 0; --k) {
+    idx += (b % s.dim[k]) * s.stride[op][k];
+    b /= s.dim[k];
+  }
+  return idx;
+}
+
 // Stage one layer's LU block and permutation in shared memory.
 __device__ void bt_load_block(double* A, int32_t* sp, const double* L, const int32_t* P,
                               int ni, int tid, int nt) {
@@ -178,7 +226,7 @@ __device__ void bt_load_block(double* A, int32_t* sp, const double* L, const int
 
 __global__ void bt_solve_kernel(const double* lu, const int32_t* perm, const double* sup,
                                 const double* sub, const double* rhs, double* x,
-                                int nz, int ni) {
+                                int nz, int ni, BtBcast s) {
   extern __shared__ double bt_smem[];
   const int64_t blk = static_cast<int64_t>(ni) * ni;
   double* A = bt_smem;  // the current layer's LU block
@@ -187,11 +235,12 @@ __global__ void bt_solve_kernel(const double* lu, const int32_t* perm, const dou
   int32_t* sp = reinterpret_cast<int32_t*>(u + ni);
 
   const int tid = threadIdx.x, nt = blockDim.x;
-  const int64_t b = blockIdx.x;
-  const double* L = lu + b * nz * blk;
-  const int32_t* P = perm + b * static_cast<int64_t>(nz) * ni;
-  const double* S = sup + b * static_cast<int64_t>(nz - 1) * ni;
-  const double* C = sub + b * static_cast<int64_t>(nz - 1) * ni;
+  const int64_t b = blockIdx.x;  // one block per rhs element; its factors are mapped
+  const int64_t bnd = static_cast<int64_t>(nz - 1) * ni;
+  const double* L = lu + bt_index(b, s, 0) * nz * blk;
+  const int32_t* P = perm + bt_index(b, s, 1) * static_cast<int64_t>(nz) * ni;
+  const double* S = sup + bt_index(b, s, 2) * bnd;
+  const double* C = sub + bt_index(b, s, 3) * bnd;
   const double* R = rhs + b * static_cast<int64_t>(nz) * ni;
   double* X = x + b * static_cast<int64_t>(nz) * ni;
 
@@ -286,19 +335,43 @@ static ffi::Error SolveImplCuda(cudaStream_t stream, ffi::Buffer<ffi::F64> lu,
   }
   const int nz = static_cast<int>(dims[nd - 3]);
   const int ni = static_cast<int>(dims[nd - 1]);
-  int64_t batch = 1;
-  for (int i = 0; i < nd - 3; ++i) batch *= dims[i];
-  if (rhs.element_count() != batch * nz * ni || perm.element_count() != batch * nz * ni) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "rhs/perm must be [..., nz, ni]");
+  const int64_t blk = static_cast<int64_t>(ni) * ni;
+  auto rd = rhs.dimensions();
+  const int rnd = static_cast<int>(rd.size());
+  if (rnd < 2 || rd[rnd - 1] != ni || rd[rnd - 2] != nz) {
+    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "rhs must be [..., nz, ni]");
   }
+  BtBcast s = {};
+  s.nd = rnd - 2;
+  if (s.nd > kBtMaxBatch) {
+    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "rhs has more than 4 leading dimensions");
+  }
+  int64_t batch = 1;
+  for (int k = 0; k < s.nd; ++k) {
+    s.dim[k] = rd[k];
+    batch *= rd[k];
+  }
+  if (x->element_count() != batch * nz * ni) {
+    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "the result must have the rhs's shape");
+  }
+  const int64_t bnd = static_cast<int64_t>(nz - 1) * ni;
+  ffi::Error err = bt_leading(&s, 0, dims, 3, nz * blk, lu.element_count(), "lu");
+  if (err.failure()) return err;
+  err = bt_leading(&s, 1, perm.dimensions(), 2, static_cast<int64_t>(nz) * ni,
+                   perm.element_count(), "perm");
+  if (err.failure()) return err;
+  err = bt_leading(&s, 2, sup.dimensions(), 2, bnd, sup.element_count(), "sup");
+  if (err.failure()) return err;
+  err = bt_leading(&s, 3, sub.dimensions(), 2, bnd, sub.element_count(), "sub");
+  if (err.failure()) return err;
   if (batch == 0) return ffi::Error::Success();
   const size_t shmem = (static_cast<size_t>(ni) * ni + 2 * ni) * sizeof(double) +
                        static_cast<size_t>(ni) * sizeof(int32_t);
-  ffi::Error err = bt_shared_opt_in(reinterpret_cast<const void*>(bt_solve_kernel), shmem);
+  err = bt_shared_opt_in(reinterpret_cast<const void*>(bt_solve_kernel), shmem);
   if (err.failure()) return err;
   bt_solve_kernel<<<static_cast<unsigned int>(batch), bt_threads(ni), shmem, stream>>>(
       lu.typed_data(), perm.typed_data(), sup.typed_data(), sub.typed_data(),
-      rhs.typed_data(), x->typed_data(), nz, ni);
+      rhs.typed_data(), x->typed_data(), nz, ni, s);
   return bt_launched();
 }
 
