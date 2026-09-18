@@ -29,10 +29,11 @@ warnings.filterwarnings("ignore")
 # Termination via count_max for speed → reason 3 ("too_many"). Kept small so
 # the whole batch integrates in a few seconds including JIT compile.
 COUNT_MAX = 40
-# vmap-vs-single agreement bar. XLA may fuse the vmapped kernel differently
-# from the single-profile kernel, so allow a hair above machine precision on
-# the mixing ratios that actually carry signal.
-RTOL = 1e-9
+# Batched runs use the iteration-tick cadence for photolysis and geometry,
+# solo runs the accepted-step cadence, so the two agree at the convergence
+# scale, not bitwise: mixing ratios that carry signal agree to RTOL.
+RTOL = 1e-4
+BATCH_FLOOR = 1e-10  # trace species below this diverge chaotically, not on cadence
 YMIX_FLOOR = 1e-15  # ignore ULP-noise trace species below this in the ref
 
 
@@ -77,11 +78,11 @@ def _build_integ():
     return outer_loop.OuterLoop(op_jax.Ros2JAX(), op.Output())
 
 
-def _max_rel_diff(batched_ymix, ref_ymix):
+def _max_rel_diff(batched_ymix, ref_ymix, floor=YMIX_FLOOR):
     """Max relative difference over cells where the reference carries signal."""
     b = np.asarray(batched_ymix, dtype=np.float64)
     r = np.asarray(ref_ymix, dtype=np.float64)
-    mask = np.abs(r) > YMIX_FLOOR
+    mask = np.abs(r) > floor
     if not np.any(mask):
         return 0.0
     return float(np.max(np.abs(b[mask] - r[mask]) / np.abs(r[mask])))
@@ -115,7 +116,7 @@ def main() -> int:
     ref = integ._runner(init_state, atm_static)  # single-profile ground truth
 
     for i in range(K):
-        rel = _max_rel_diff(out[i].ymix, ref.ymix)
+        rel = _max_rel_diff(out[i].ymix, ref.ymix, floor=BATCH_FLOOR)
         reason = int(out[i].termination_reason)
         done = bool(out[i].is_done)
         if rel > RTOL or not done or reason != 3:
@@ -126,7 +127,9 @@ def main() -> int:
             ok = False
     print(
         f"[homogeneous] K={K} max rel diff vs single = "
-        f"{max(_max_rel_diff(out[i].ymix, ref.ymix) for i in range(K)):.2e}"
+        f"{max(_max_rel_diff(out[i].ymix, ref.ymix, floor=BATCH_FLOOR) for i in range(K)):.2e}; "
+        f"accept_count {[int(out[i].accept_count) for i in range(K)]} vs solo "
+        f"{int(ref.accept_count)}"
     )
 
     # --- 2. Heterogeneous freeze-on-done --------------------------------
@@ -139,21 +142,21 @@ def main() -> int:
         outer_loop.stack_atm_statics([atm_static] * len(offsets)),
     )
     het_out = outer_loop.unstack_integ_states(het_batched, len(offsets))
+    het_rel = []
     for i, o in enumerate(offsets):
         solo = integ._runner(het_states[i], atm_static)
-        rel = _max_rel_diff(het_out[i].ymix, solo.ymix)
+        rel = _max_rel_diff(het_out[i].ymix, solo.ymix, floor=BATCH_FLOOR)
+        het_rel.append(rel)
         # A frozen-too-early lane would diverge from its solo run; a
         # never-frozen lane would over-integrate. Both show up here.
         if rel > RTOL or int(het_out[i].termination_reason) != 3:
             print(
                 f"FAIL[heterogeneous] lane {i} (offset {o}): rel={rel:.2e} "
-                f"reason={int(het_out[i].termination_reason)} (want rel<{RTOL:.0e}, reason=3)"
+                f"reason={int(het_out[i].termination_reason)} "
+                f"(want rel<{RTOL:.0e}, reason=3)"
             )
             ok = False
-    print(
-        f"[heterogeneous] offsets={offsets} max rel diff vs solo = "
-        f"{max(_max_rel_diff(het_out[i].ymix, integ._runner(het_states[i], atm_static).ymix) for i in range(len(offsets))):.2e}"
-    )
+    print(f"[heterogeneous] offsets={offsets} max rel diff vs solo = {max(het_rel):.2e}")
 
     # --- 3. Non-finite isolation ----------------------------------------
     import jax.numpy as jnp
@@ -179,14 +182,14 @@ def main() -> int:
     for i in range(K3):
         if i == bad:
             continue
-        rel = _max_rel_diff(nan_out[i].ymix, ref.ymix)
+        rel = _max_rel_diff(nan_out[i].ymix, ref.ymix, floor=BATCH_FLOOR)
         if rel > RTOL:
             print(f"FAIL[nan] neighbour lane {i} corrupted: rel={rel:.2e}")
             ok = False
     print(
         f"[nan] poisoned lane reason={int(nan_out[bad].termination_reason)}, "
         f"neighbours max rel diff = "
-        f"{max(_max_rel_diff(nan_out[i].ymix, ref.ymix) for i in range(K3) if i != bad):.2e}"
+        f"{max(_max_rel_diff(nan_out[i].ymix, ref.ymix, floor=BATCH_FLOOR) for i in range(K3) if i != bad):.2e}"
     )
 
     # --- 4. Genuinely different profiles --------------------------------
@@ -204,8 +207,8 @@ def main() -> int:
         outer_loop.stack_atm_statics([atm_static, atmB]),
     )
     het2_out = outer_loop.unstack_integ_states(het2, 2)
-    relA = _max_rel_diff(het2_out[0].ymix, soloA.ymix)
-    relB = _max_rel_diff(het2_out[1].ymix, soloB.ymix)
+    relA = _max_rel_diff(het2_out[0].ymix, soloA.ymix, floor=BATCH_FLOOR)
+    relB = _max_rel_diff(het2_out[1].ymix, soloB.ymix, floor=BATCH_FLOOR)
     # Sanity: the two profiles must actually differ, else the test is vacuous.
     profiles_differ = _max_rel_diff(soloB.ymix, soloA.ymix)
     if relA > RTOL or relB > RTOL or profiles_differ < 1e-6:

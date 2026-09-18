@@ -726,6 +726,8 @@ def _make_runner(
                       arms that freeze -- with fix_species=[] conden runs forever)
       4. atm_refresh (on accept, when accept_count % update_frq == 0;
                       reads post-conden ymix, geometry feeds next iter)
+      (batched runs key both cadences to the loop's iteration tick instead,
+       so all lanes take those branches together)
       5. hydrostatic balance (reads post-conden ymix)
       6. ring-buffer append (on accept)
       7. recompute (longdy, longdydt) against the ring
@@ -1003,32 +1005,44 @@ def _make_runner(
         chunk_done = s.accept_count >= s.chunk_target
         return jnp.logical_not(real_term | chunk_done)
 
-    def body_fn(s: JaxIntegState, atm_static_, lane_axis=None):
+    def body_fn(s: JaxIntegState, atm_static_, lane_axis=None, it=None):
         # `lane_axis=None` is the single-profile trace, unchanged. A string
         # means the body runs under `jax.vmap(..., axis_name=lane_axis)`: the
         # photo and refresh conds then take a lane-uniform predicate (a psum
         # over the lanes, which vmap returns unmapped) so they lower to a real
         # `case` instead of both sides running on every lane, and each lane
-        # keeps its own gate as a `where` inside the taken branch.
+        # keeps its own gate as a `where` inside the taken branch. `it` is the
+        # batched loop's iteration tick (unmapped), which keys those cadences.
         #
         # Gate photo on `retry_count==0` so reject loops don't re-fire it.
         # Cadence is `accept_count % update_photo_frq == 0`; the dynamic
         # update_photo_frq lives in the carry for the ini→final switch.
         if photo_branch is not None:
-            photo_due = (
-                (s.retry_count == jnp.int32(0))
-                & (jnp.mod(s.accept_count, s.update_photo_frq) == jnp.int32(0))
-                & jnp.bool_(use_photo_static)
-            )
             if lane_axis is None:
+                photo_due = (
+                    (s.retry_count == jnp.int32(0))
+                    & (jnp.mod(s.accept_count, s.update_photo_frq) == jnp.int32(0))
+                    & jnp.bool_(use_photo_static)
+                )
                 s = jax.lax.cond(photo_due, photo_branch, lambda ss: ss, s)
             else:
+                # Batched cadence is the shared tick, not this lane's accept
+                # count: dephased per-lane counts make the any-of predicate
+                # true on nearly every iteration at production width, so the
+                # branch buys nothing. The tick sets WHEN an update may
+                # happen; the retry gate keeps it on accepted states only, so
+                # a lane that rejected at the tick waits for the next tick.
                 # `live` is the freeze test of `body_fn_batch`: a lane whose
                 # advance is discarded must not pull the branch in.
                 live = jnp.logical_not(
                     s.is_done | (s.accept_count >= s.chunk_target)
                 )
-                lane_take = photo_due & live
+                lane_take = (
+                    (jnp.mod(it, s.update_photo_frq) == jnp.int32(0))
+                    & (s.retry_count == jnp.int32(0))
+                    & jnp.bool_(use_photo_static)
+                    & live
+                )
                 any_photo = jax.lax.psum(lane_take.astype(jnp.int32), lane_axis) > 0
 
                 def _photo_gated(ss):
@@ -1389,12 +1403,16 @@ def _make_runner(
 
         # Atm refresh (op.py:905-907): after conden, before hydrostatic
         # balance, on accepted steps only. `s.accept_count` is pre-increment,
-        # matching master's `count % update_frq == 0` cadence.
+        # matching master's `count % update_frq == 0` cadence; batched runs
+        # key the cadence to the iteration tick instead so every lane
+        # refreshes on the same iteration. The C21 candidate-forced refresh
+        # is unchanged either way.
         if refresh_static is not None:
+            cadence_count = s.accept_count if lane_axis is None else it
             refresh_due = (
                 do_accept
                 & (
-                    (jnp.mod(s.accept_count, jnp.int32(update_frq)) == jnp.int32(0))
+                    (jnp.mod(cadence_count, jnp.int32(update_frq)) == jnp.int32(0))
                     | candidate
                 )
                 & jnp.bool_(use_atm_refresh_static)
@@ -1847,7 +1865,7 @@ def _make_runner(
         chunk_reached = s.accept_count >= s.chunk_target
         return jnp.logical_not(s.is_done | chunk_reached)
 
-    def body_fn_batch(s: JaxIntegState, atm_static_, lane_axis=None):
+    def body_fn_batch(s: JaxIntegState, atm_static_, lane_axis=None, it=None):
         # vmap applies the body to EVERY lane each iteration until the slowest
         # finishes, so finished lanes must be frozen: advance all lanes, then
         # keep the pre-step carry `s` for lanes that are done / terminate now /
@@ -1855,7 +1873,7 @@ def _make_runner(
         # lane bit-identical to its solo run.
         real_term, reason = _real_terminate(s)
         chunk_reached = s.accept_count >= s.chunk_target
-        s_adv = body_fn(s, atm_static_, lane_axis=lane_axis)
+        s_adv = body_fn(s, atm_static_, lane_axis=lane_axis, it=it)
         nan_now = jnp.logical_not(jnp.all(jnp.isfinite(s_adv.y)))
 
         already_done = s.is_done
@@ -1882,17 +1900,23 @@ def _make_runner(
         # Freeze-on-done loop on STACKED inputs (lane axis on every array
         # leaf); the caller jits it, nobody vmaps it. The while loop sits
         # ABOVE the vmap, so its predicate is a scalar and the photo /
-        # refresh conds in `body_fn` keep real branches.
+        # refresh conds in `body_fn` keep real branches. The carry holds the
+        # iteration tick: batched runs take those branches every `frq`
+        # iterations for all lanes at once, where an any-of over per-lane
+        # accept counts would fire on nearly every iteration. Solo runs keep
+        # the accepted-step cadence, so batched and solo trajectories agree
+        # at the convergence scale, not bitwise.
         step = jax.vmap(
-            lambda s, a: body_fn_batch(s, a, lane_axis=_LANE_AXIS),
-            in_axes=(0, _ATM_STATIC_BATCH_AXES),
+            lambda it, s, a: body_fn_batch(s, a, lane_axis=_LANE_AXIS, it=it),
+            in_axes=(None, 0, _ATM_STATIC_BATCH_AXES),
             axis_name=_LANE_AXIS,
         )
-        return jax.lax.while_loop(
-            lambda s: jnp.any(cond_fn_batch(s)),
-            lambda s: step(s, atm_b),
-            state_b,
+        _, final_b = jax.lax.while_loop(
+            lambda c: jnp.any(cond_fn_batch(c[1])),
+            lambda c: (c[0] + jnp.int32(1), step(c[0], c[1], atm_b)),
+            (jnp.int32(0), state_b),
         )
+        return final_b
 
     return runner, runner_batch, _make_runner_jvp
 
@@ -3575,8 +3599,10 @@ class OuterLoop:
         `unstack_integ_states`. Requires `_ensure_runner` to have run (via
         `prepare_runstate`) for this batch's (nz, toggle-combo).
 
-        Lanes run with freeze-on-done: each profile's converged result is
-        identical to running it alone, and the call returns once the slowest
+        Lanes run with freeze-on-done: each profile's converged result
+        matches running it alone at the convergence scale (the photo /
+        geometry cadences follow the loop's iteration tick here, not the
+        lane's accept count), and the call returns once the slowest
         lane finishes (or every lane hits its `chunk_target` yield, which a
         host driver can use to observe progress between device calls;
         no lane compaction or refill is implemented).
