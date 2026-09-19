@@ -233,5 +233,186 @@ def test_main():
     assert main() == 0
 
 
+# --- forward mode: run_batch_jvp ------------------------------------------
+# A small column (nz=40) that really converges, so the tangent certificate --
+# not a count cap -- ends the run, with the refresh cadence well inside it.
+NDIR = 6      # stacked tangent directions, the production width
+H = 0.1       # ln Kzz step: the unit the tangent certificate reads
+JVP_RTOL = 5e-2  # batched vs solo, at the convergence scale
+JVP_FLOOR = 1e-10  # mixing ratio below which the primal carries no signal
+JVP_EXACT = 1e-12  # one-lane vs paired tangent: XLA vectorisation roundoff
+                   # (measured 3.9e-16 of the tangent's scale)
+
+
+def _jvp_cfg():
+    return fast_cfg(count_max=3000, use_vm_mol=False, use_hybrid_vm_mol=False,
+                    nz=40, update_frq=25)
+
+
+def _zero_tangent(tree, dirs=None, lanes=False):
+    """Zeros on float leaves, float0 elsewhere (what `jax.jvp` hands back).
+    `dirs` adds the runner's direction axis, after the lane axis if `lanes`."""
+    import jax
+    import jax.numpy as jnp
+
+    def z(x):
+        shape = jnp.shape(x)
+        if getattr(x, "dtype", None) is not None and jnp.issubdtype(x.dtype, jnp.floating):
+            if dirs is None:
+                return jnp.zeros(shape)
+            k = 1 if lanes else 0
+            return jnp.zeros(shape[:k] + (dirs,) + shape[k:])
+        return np.zeros(np.shape(x), dtype=jax.dtypes.float0)
+
+    return jax.tree_util.tree_map(z, tree)
+
+
+def _kzz_dirs(n, ndir):
+    """`eye`-style tangent basis: `ndir` interleaved bands of the Kzz vector,
+    H per band (d/d ln Kzz over that band)."""
+    import jax.numpy as jnp
+
+    b = np.zeros((ndir, n))
+    for j in range(ndir):
+        b[j, j::ndir] = H
+    return jnp.asarray(b)
+
+
+def _seed(state, atm, dirs):
+    """(dstate, datm) along `dirs` (a (D, nz-1) basis) or, for a 1-D array,
+    one direction at the primal's rank -- the shape `jax.jvp` uses."""
+    stacked = dirs.ndim == 2
+    ds = _zero_tangent(state, NDIR if stacked else None)
+    ds = ds._replace(pv=ds.pv._replace(Kzz=dirs * state.pv.Kzz))
+    da = _zero_tangent(atm, NDIR if stacked else None)._replace(Kzz=dirs * atm.Kzz)
+    return ds, da
+
+
+def _rel(a, b):
+    """Relative difference of two arrays over `b`."""
+    return np.abs(np.asarray(a) - np.asarray(b)) / np.abs(np.asarray(b))
+
+
+def _top_pct_rel(dy, dy_ref):
+    """Relative error on the top 1% of cells by |dy_ref| -> (median, max)."""
+    dy, dy_ref = np.asarray(dy), np.asarray(dy_ref)
+    hi = np.abs(dy_ref) >= np.quantile(np.abs(dy_ref), 0.99)
+    rel = _rel(dy[hi], dy_ref[hi])
+    return float(np.median(rel)), float(rel.max())
+
+
+@pytest.mark.strict_isolation
+def test_batched_forward_mode_runner():
+    """`run_batch_jvp`: lanes independent, each lane's (primal, tangent) the
+    solo `run_jvp` result at the convergence scale, the primal untouched by
+    riding a zero tangent, and D stacked directions equal to D single runs.
+    """
+    import jax.numpy as jnp
+
+    from vulcan_jax import outer_loop
+
+    rs = _build_rs(_jvp_cfg())
+    integ = _build_integ()
+    sA, aA = integ.prepare_runstate(rs)
+    # Lane B: 2x Kzz -- a different column AND a different tangent basis, so
+    # a lane reading its neighbour's carry shows up.
+    sB = sA._replace(pv=sA.pv._replace(Kzz=sA.pv.Kzz * 2.0))
+    aB = aA._replace(Kzz=aA.Kzz * 2.0)
+    prof = [(sA, aA), (sB, aB)]
+    basis = _kzz_dirs(sA.pv.Kzz.shape[0], NDIR)
+
+    solo = [integ.run_jvp(s, a, *_seed(s, a, basis)) for s, a in prof]
+    for k, (f, _d, tl, ok) in enumerate(solo):
+        print(f"[fwd] solo lane {k}: {int(f.accept_count)} steps, reason "
+              f"{int(f.termination_reason)}, tangent_ok {bool(ok)}, "
+              f"max tangent_longdy {float(np.max(np.asarray(tl))):.3g}")
+        assert int(f.termination_reason) == 1 and bool(ok)
+
+    def batched(idx, zero=False):
+        sb = outer_loop.stack_integ_states([prof[i][0] for i in idx])
+        ab = outer_loop.stack_atm_statics([prof[i][1] for i in idx])
+        seeds = [_seed(*prof[i], basis) for i in idx]
+        dsb = _zero_tangent(sb, NDIR, lanes=True)
+        dab = _zero_tangent(ab, NDIR, lanes=True)
+        if not zero:
+            dsb = dsb._replace(pv=dsb.pv._replace(
+                Kzz=jnp.stack([s.pv.Kzz for s, _ in seeds])))
+            dab = dab._replace(Kzz=jnp.stack([a.Kzz for _, a in seeds]))
+        return (sb, ab), integ.run_batch_jvp(sb, ab, dsb, dab)
+
+    (sb2, ab2), (fb, db, tlb, okb) = batched([0, 1])
+    print(f"[fwd] batch: steps {np.asarray(fb.accept_count).tolist()}, reasons "
+          f"{np.asarray(fb.termination_reason).tolist()}, tangent_ok "
+          f"{np.asarray(okb).tolist()}, dy {np.asarray(db.y).shape}")
+
+    # (a) a lane's result does not depend on its neighbours. Exchanging the
+    # two lanes runs the SAME executable and must be exact, tangent included.
+    # Against the one-lane run the primal, the certificate and the reason are
+    # still exact, but the tangent only agrees to roundoff: XLA vectorises 6
+    # direction rows there against 12 here.
+    _, (fs2, ds2, _tl2, _ok2) = batched([1, 0])
+    for k in (0, 1):
+        _, (f1, d1, tl1, _ok1) = batched([k])
+        same = [np.array_equal(np.asarray(fb.y)[k], np.asarray(f1.y)[0]),
+                np.array_equal(np.asarray(tlb)[k], np.asarray(tl1)[0]),
+                int(np.asarray(fb.termination_reason)[k])
+                == int(np.asarray(f1.termination_reason)[0]),
+                np.array_equal(np.asarray(fb.y)[k], np.asarray(fs2.y)[1 - k]),
+                np.array_equal(np.asarray(db.y)[k], np.asarray(ds2.y)[1 - k])]
+        d1y = np.asarray(d1.y)[0]
+        med, mx = _top_pct_rel(np.asarray(db.y)[k], d1y)
+        nrm = float(np.max(np.abs(np.asarray(db.y)[k] - d1y)) / np.max(np.abs(d1y)))
+        big = float(np.mean(_rel(np.asarray(db.y)[k][d1y != 0], d1y[d1y != 0]) > 1e-8))
+        print(f"[fwd] (a) lane {k} alone vs in the pair: exact "
+              f"y/tl/reason + exact under lane swap y/dy: {same}; tangent "
+              f"top-1% median {med:.3g} max {mx:.3g}, max|diff|/max|dy| "
+              f"{nrm:.3g}, cells over 1e-8 rel {big:.3g}")
+        assert all(same)
+        assert med < JVP_EXACT and nrm < JVP_EXACT
+
+    # (b) each lane reproduces its solo run at the convergence scale (the
+    # cadences are keyed to the tick here, to the accept count there).
+    for k in (0, 1):
+        fs, dsolo, _tls, _oks = solo[k]
+        ymix = np.asarray(fs.ymix)
+        m = ymix > JVP_FLOOR
+        prim = float(np.max(_rel(np.asarray(fb.ymix)[k][m], ymix[m])))
+        med, mx = _top_pct_rel(np.asarray(db.y)[k], np.asarray(dsolo.y))
+        print(f"[fwd] (b) lane {k} vs solo: reason "
+              f"{int(np.asarray(fb.termination_reason)[k])}/"
+              f"{int(fs.termination_reason)}, primal max rel {prim:.3g} over "
+              f"{int(m.sum())} cells, tangent top-1% median {med:.3g} max {mx:.3g}")
+        assert int(np.asarray(fb.termination_reason)[k]) == int(fs.termination_reason)
+        assert prim < JVP_RTOL and med < JVP_RTOL
+
+    # (c) riding a (zero) tangent must not move the batched primal.
+    _, (fz, _dz, _tlz, _okz) = batched([0, 1], zero=True)
+    prim_b = integ.run_batch(sb2, ab2)
+    exact = np.array_equal(np.asarray(fz.y), np.asarray(prim_b.y))
+    print(f"[fwd] (c) zero-seed jvp primal vs run_batch: bit-identical={exact}"
+          + ("" if exact else
+             f", max rel {float(np.max(_rel(fz.y, prim_b.y))):.3g}"))
+    assert exact
+
+    # (d) D stacked directions == D single-direction runs (they stop at the
+    # last direction's certificate, so agreement is at the tangent scale),
+    # and the primal is the plain runner's, integrated once.
+    fD, dD, _tlD, _okD = solo[0]
+    for j in range(NDIR):
+        _f1, d1, _tl1, _ok1 = integ.run_jvp(sA, aA, *_seed(sA, aA, basis[j]))
+        med, mx = _top_pct_rel(np.asarray(dD.y)[j], np.asarray(d1.y))
+        print(f"[fwd] (d) direction {j}: steps {int(_f1.accept_count)} vs "
+              f"{int(fD.accept_count)} stacked, top-1% median {med:.3g} max {mx:.3g}")
+        assert med < JVP_RTOL
+    prim_solo = integ._runner(sA, aA)
+    same_primal = np.array_equal(np.asarray(fD.y), np.asarray(prim_solo.y))
+    print(f"[fwd] (d) stacked-jvp primal vs plain runner: bit-identical="
+          f"{same_primal}, steps {int(fD.accept_count)} vs "
+          f"{int(prim_solo.accept_count)}"
+          + ("" if same_primal else
+             f", max rel {float(np.max(_rel(fD.y, prim_solo.y))):.3g}"))
+    assert same_primal
+
+
 if __name__ == "__main__":
     sys.exit(main())
