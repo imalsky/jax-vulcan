@@ -51,4 +51,11 @@ jobs:
       - name: Run tests
         env:
           VULCAN_JAX_ALLOW_MISSING_FIXTURES: "1"
-        run: python -m pytest tests -n auto -q --tb=short -ra --deselect tests/test_nh3_conden_batch_subprocess.py --deselect tests/test_forward_jvp_physical.py
+        # The batched forward-mode test compiles a ~5 GiB XLA program and peaks
+        # near 7 GB RSS; four xdist workers on the 16 GB runner ran out of memory
+        # twice, so it runs alone after the pool.
+        run: python -m pytest tests -n auto -q --tb=short -ra --deselect tests/test_nh3_conden_batch_subprocess.py --deselect tests/test_forward_jvp_physical.py --deselect tests/test_vmap_while_loop.py::test_batched_forward_mode_runner
+      - name: Run the batched forward-mode test alone
+        env:
+          VULCAN_JAX_ALLOW_MISSING_FIXTURES: "1"
+        run: python -m pytest tests/test_vmap_while_loop.py::test_batched_forward_mode_runner -q --tb=short -ra
