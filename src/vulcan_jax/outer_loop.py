@@ -660,6 +660,49 @@ class _Statics(NamedTuple):
     save_evo_n_max: int
 
 
+# --- batched freeze ------------------------------------------------------
+# The batched body advances every lane and then keeps the pre-step carry on
+# lanes that are done. Selecting every carry leaf whole costs a full copy of
+# the carry per iteration; these two helpers keep the select to what the step
+# can actually have changed.
+
+# Carry leaves the body appends to one slot at a time: (ring field, index
+# source). The convergence ring is written at `(accept_count-1) % conv_step`,
+# the save_evolution buffer at the pre-step `evo_idx`.
+_CONV_RING_FIELDS = ("y_time_ring", "t_time_ring")
+_EVO_RING_FIELDS = ("y_evo", "t_evo")
+
+
+def _freeze_leaf(old, new, keep_old):
+    """`where(keep_old, old, new)`, skipped when the step passed the leaf
+    through unchanged (the same object, so the select is a copy for nothing)."""
+    return old if old is new else jnp.where(keep_old, old, new)
+
+
+def _freeze_slot(old, new, keep_old, idx, axis=0):
+    """`_freeze_leaf` for a ring buffer the step writes ONE slot of.
+
+    `new` differs from `old` only at `idx` along `axis`, so restoring that
+    slot restores `old` exactly -- at one (nz, ni) write instead of a copy of
+    the whole (conv_step, nz, ni) leaf. `axis` is 1 for a tangent leaf, whose
+    leading axis is the direction."""
+    if old is new:
+        return old
+    at = (slice(None),) * axis + (idx,)
+    return new.at[at].set(jnp.where(keep_old, old[at], new[at]))
+
+
+def _state_leaf_names():
+    """Field name of every `JaxIntegState` leaf in `tree_leaves` order, with
+    `pv` expanded into its own fields. Lets the forward-mode runner tell which
+    flat tangent leaf is a ring buffer."""
+    named = JaxIntegState(**{
+        f: (ProfileVars(**{p: p for p in ProfileVars._fields}) if f == "pv" else f)
+        for f in JaxIntegState._fields
+    })
+    return jax.tree_util.tree_leaves(named)
+
+
 def _make_runner(
     net,
     statics: _Statics,
@@ -1842,6 +1885,34 @@ def _make_runner(
 
         return runner_jvp
 
+    def _ring_slot(s_adv: JaxIntegState):
+        """The ring slot `body_fn` wrote this iteration (its own expression,
+        read off the advanced carry)."""
+        return jnp.mod(
+            jnp.maximum(s_adv.accept_count - jnp.int32(1), jnp.int32(0)),
+            jnp.int32(conv_step),
+        )
+
+    def _freeze_state(s: JaxIntegState, s_adv: JaxIntegState, keep_old):
+        """Keep the pre-step carry `s` where `keep_old`, the advanced carry
+        elsewhere -- leaf by leaf, so untouched leaves are not re-selected and
+        a ring buffer only has its one written slot restored."""
+        ring_idx = _ring_slot(s_adv)
+        out = {}
+        for f in JaxIntegState._fields:
+            old, new = getattr(s, f), getattr(s_adv, f)
+            if f in _CONV_RING_FIELDS:
+                out[f] = _freeze_slot(old, new, keep_old, ring_idx)
+            elif f in _EVO_RING_FIELDS:
+                out[f] = _freeze_slot(old, new, keep_old, s.evo_idx)
+            elif f == "pv":
+                out[f] = jax.tree_util.tree_map(
+                    lambda o, n: _freeze_leaf(o, n, keep_old), old, new
+                )
+            else:
+                out[f] = _freeze_leaf(old, new, keep_old)
+        return s._replace(**out)
+
     def cond_fn_batch(s: JaxIntegState):
         # Per-lane stop predicate: gates ONLY on carry flags, never re-derives
         # `real_term` -- the body must run one final (frozen, no-op) iteration
@@ -1864,9 +1935,7 @@ def _make_runner(
         # bad `s_adv` is discarded.
         became_nan = nan_now & ~already_done & ~real_term
         keep_old = already_done | real_term | became_nan
-        frozen = jax.tree_util.tree_map(
-            lambda o, n: jnp.where(keep_old, o, n), s, s_adv
-        )
+        frozen = _freeze_state(s, s_adv, keep_old)
         is_done_next = already_done | real_term | became_nan
         reason_next = jnp.where(
             already_done,
@@ -1911,6 +1980,13 @@ def _make_runner(
         active tangent leaves and (tl, tldt) all hold at the pre-step carry,
         so a lane's result does not depend on its neighbours."""
         _step = _make_jvp_step(active_state, active_atm, lane_axis=_LANE_AXIS)
+        # Field name of each active tangent leaf: the tangent of a ring
+        # buffer is a ring buffer (the jvp of a one-slot write is a one-slot
+        # write), so it freezes on the slot too -- and the tangent ring is D
+        # times the primal's.
+        active_names = [
+            nm for nm, a in zip(_state_leaf_names(), active_state) if a
+        ]
 
         def lane_step(it, s, ds_active, tl, tldt, atm_static_, datm_active):
             real_term, reason = _real_terminate(
@@ -1921,12 +1997,18 @@ def _make_runner(
             already_done = s.is_done
             became_nan = nan_now & ~already_done & ~real_term
             keep_old = already_done | real_term | became_nan
-            frozen = jax.tree_util.tree_map(
-                lambda o, n: jnp.where(keep_old, o, n), s, s_adv
-            )
+            frozen = _freeze_state(s, s_adv, keep_old)
             # The tangent freezes on the SAME mask as the primal.
+            ring_idx = _ring_slot(s_adv)
             dfrozen = [
-                jnp.where(keep_old, o, n) for o, n in zip(ds_active, dact_out)
+                _freeze_slot(o, n, keep_old, ring_idx, axis=1)
+                if nm in _CONV_RING_FIELDS
+                else (
+                    _freeze_slot(o, n, keep_old, s.evo_idx, axis=1)
+                    if nm in _EVO_RING_FIELDS
+                    else _freeze_leaf(o, n, keep_old)
+                )
+                for nm, o, n in zip(active_names, ds_active, dact_out)
             ]
             tl_new, tldt_new = _tangent_conv(s_adv, ds_adv)
             accepted = (s_adv.retry_count == jnp.int32(0)) & ~keep_old
