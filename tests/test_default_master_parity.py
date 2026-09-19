@@ -40,8 +40,22 @@ from vulcan_jax._paths import PACKAGE_ROOT
 # by step 200 while the no-escape control sits at 9e-8 (measured 2026-08-26),
 # so the bar is 1e-6 over cells with master ymix > 1e-10 (trace cells clip to
 # zero on different steps once dt has grown, so the all-cell metric is noise).
+#
+# The 19-step bar is 5.0e-9, and the case is NOT run-to-run stable since
+# 0.15.1. One value per independent pytest invocation, same machine, same
+# pinned vulcan2_ncho oracle:
+#   NumPy rate build (0.15.1's parent): 2.486e-9, 10 runs of 10.
+#   unified JAX rate build (0.15.1):    1.826e-9 or 3.084e-9, nothing else,
+#     about half and half over 19 runs -- in a pristine tree as well as a
+#     used one, and with OMP_NUM_THREADS=1 and single-threaded XLA, so it is
+#     not CPU thread order. The mechanism is not understood.
+# The two rate tables differ by 5.7e-14 relative and 19 stiff steps amplify
+# that; the JAX build is the one the master rate oracles grade (4.5e-16 on
+# the forward rates, test_rates.py; 5.7e-14 on the reverse, test_gibbs.py).
+# 5.0e-9 clears both observed values. A pass here is NOT evidence of
+# bit-reproducibility.
 MATCHED_CASES = [
-    (19, 100, [], 3.0e-9, 0.0),
+    (19, 100, [], 5.0e-9, 0.0),
     (199, 5, ["H"], 1.0e-6, 1.0e-10),
 ]
 
