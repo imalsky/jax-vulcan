@@ -51,7 +51,7 @@ def _validate_abundance_preset(cfg, root: Path) -> list[str]:
         return [f"abundance preset {rel!r} does not parse: {exc}"]
     bad = [
         sp
-        for sp in ini_abun.SEED_ELEMENTS
+        for sp in ini_abun.seed_elements()
         if not math.isfinite(ratios.get(sp, math.nan)) or ratios.get(sp, 0.0) <= 0.0
     ]
     if bad:

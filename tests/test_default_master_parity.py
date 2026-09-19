@@ -4,6 +4,12 @@ The default HD189 config for 20 and 200 steps, plus the condensing column that
 pins the `fix_species` reservoir (C24). Every test stages VULCAN-master only
 inside subprocesses and restores any changed config/FastChem files before
 returning.
+
+The matched-step cases run the JAX side FROM MASTER'S OWN initial column
+(`_JAX_SCRIPT` swaps the `EQ` loader): since 0.15.0 the two codes seed from
+different equilibrium solvers, and comparing trajectories started from
+different columns would measure the seeds rather than the solvers. The seeds
+have their own gate in tests/test_eq_seed.py.
 """
 
 from __future__ import annotations
@@ -253,6 +259,7 @@ out_npz = Path(sys.argv[2])
 count_max = int(sys.argv[3])
 update_frq = int(sys.argv[4])
 diff_esc = [sp for sp in sys.argv[5].split(",") if sp]
+master_npz = Path(sys.argv[6])
 
 os.chdir(jax_root)
 sys.path.insert(0, str(jax_root))
@@ -286,6 +293,22 @@ vulcan_cfg.plot_TP = False
 from vulcan_jax.runtime_validation import validate_runtime_config
 
 validate_runtime_config(vulcan_cfg, root=jax_root)
+
+# Start from MASTER's initial column. Since 0.15.0 the two codes seed from
+# different equilibrium solvers (this port minimizes Gibbs energy on its own
+# NASA-9 data, master shells out to FastChem; they agree to 7.9e-3 dex, see
+# tests/test_eq_seed.py), and a matched-step comparison of two trajectories
+# started from different columns measures the seeds, not the solvers. Swapping
+# the `EQ` loader is the right injection point: ini_y -> _compute_ymix ->
+# ele_sum and everything after it (mu/dz via f_mu_dz, the photo optical depth,
+# the conservation projection's atom references and the C23 budget) is then
+# derived from master's column exactly as it would be from our own.
+import vulcan_jax.ini_abun as _ini_abun
+
+_MASTER_Y = np.asarray(
+    np.load(master_npz, allow_pickle=True)["y_ini"], dtype=np.float64
+)
+_ini_abun._MODE_DISPATCH["EQ"] = lambda _atm: (_MASTER_Y.copy(), [])
 
 import vulcan_jax.chem_funs as chem_funs
 import vulcan_jax.legacy_io as op
@@ -469,7 +492,14 @@ def test_default_hd189_preloop_and_matched_steps_match_master(
 
         jax_res = _run_script(
             _JAX_SCRIPT,
-            [PACKAGE_ROOT, jax_npz, count_max, update_frq, ",".join(diff_esc)],
+            [
+                PACKAGE_ROOT,
+                jax_npz,
+                count_max,
+                update_frq,
+                ",".join(diff_esc),
+                master_npz,
+            ],
             timeout=900.0,
         )
         assert jax_res.returncode == 0, (
@@ -484,10 +514,9 @@ def test_default_hd189_preloop_and_matched_steps_match_master(
 
         assert list(jax["species"]) == list(master["species"])
         assert int(jax["nr"]) == int(master["nr"])
-        # y_ini is NOT compared here: the two codes now seed from different
-        # equilibrium solvers (this port minimizes Gibbs energy on its own
-        # NASA-9 data, master shells out to FastChem). That comparison, with
-        # its measured bar, is tests/test_eq_seed.py.
+        # Exact because the JAX run was seeded from this very array; the two
+        # SEEDS are compared, with their measured bar, in tests/test_eq_seed.py.
+        np.testing.assert_array_equal(jax["y_ini"], master["y_ini"])
         np.testing.assert_array_equal(jax["pco"], master["pco"])
         np.testing.assert_array_equal(jax["Tco"], master["Tco"])
         np.testing.assert_allclose(jax["Kzz"], master["Kzz"], rtol=1e-14, atol=0.0)
