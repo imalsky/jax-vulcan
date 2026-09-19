@@ -29,9 +29,9 @@ height), Kzz (-> profile params via `atm_setup.kzz_profile_jax`), vz, gs, Rp.
 Reachable downstream: M/n_0, mu, g, Hp, dz, dzi, Ti, Hpi, Dzz, Dzz_cen, vm, vs.
 
 NOT differentiable here (by design):
-  * FastChem equilibrium initial abundances (subprocess wall). Use the
-    `const_lowT` initialiser for a differentiable elemental-abundance path, or
-    pass `ymix` as a leaf.
+  * The equilibrium initial abundances (`ini_abun.eq_seed` returns a zero
+    tangent by design). Use the `const_lowT` initialiser for a differentiable
+    elemental-abundance path, or pass `ymix` as a leaf.
   * Photolysis T-dependent cross-section re-interpolation
     (`photo_setup._bin_T_dependent`): cross-sections enter `PhotoStaticInputs`
     as injectable JAX arrays (so dL/d(cross-section) works), but their T-rebake

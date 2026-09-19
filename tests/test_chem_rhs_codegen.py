@@ -527,7 +527,7 @@ out_codegen = np.asarray(fn(jnp.asarray(y), jnp.asarray(M), jnp.asarray(k_full))
 # that differs from master's NumPy `*` chain. Both are valid float64
 # arithmetic; the difference is per-multiply ULP that compounds in
 # the cancellation. The master-parity integration tests
-# (test_default_master_parity / test_w39b_fastchem_invariant) validate
+# (test_default_master_parity / test_eq_seed) validate
 # the physically meaningful state, which is what matters end-to-end.
 bulk_species = ("H2O", "CO2", "SO", "SO2", "H2", "CO", "S", "H2S")
 bulk_ok = True

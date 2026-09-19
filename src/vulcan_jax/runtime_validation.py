@@ -27,189 +27,42 @@ def _declared(cfg, key, cast=float):
     return None if v is _ABSENT else cast(v)
 
 
-# Default FastChem abundances (Lodders 2019 / Wogan & Tsai 2023). Rocky
-# elements are pinned to -3.0: no shipped network has Mg/Si/Fe/... species,
-# and leaving them at solar silently sequesters ~19% of O into oxides that
-# `_load_eq_y` cannot read back. S stays at solar (matches master); the ~1%
-# S->O sequestration in the NCHO networks is a known small bias.
-_CANONICAL_FASTCHEM_ABUNDANCES = {
-    "H": 12.00,
-    "He": 10.9232,
-    "C": 8.4434,
-    "N": 7.9130,
-    "O": 8.7826,
-    "S": 7.1492,
-    "P": -3.0,
-    "Si": -3.0,
-    "Ti": -3.0,
-    "V": -3.0,
-    "Cl": -3.0,
-    "K": -3.0,
-    "Na": -3.0,
-    "Mg": -3.0,
-    "F": -3.0,
-    "Ca": -3.0,
-    "Fe": -3.0,
-}
+def _validate_abundance_preset(cfg, root: Path) -> list[str]:
+    """The EQ seed's abundance preset must parse and cover the network.
 
-# Upstream VULCAN's own file: Lodders (2009), every element at solar. Select
-# via `fastchem_solar_abundance_file` for matched cross-code runs; unmatched
-# composition files are the top source of wrong cross-code numbers (~20%
-# median on HD189, 3.8e-06 once matched). Values are upstream's verbatim;
-# only the P/S row ORDER is corrected.
-_UPSTREAM_LODDERS2009_ABUNDANCES = {
-    "H": 12.00,
-    "He": 10.9864,
-    "C": 8.4434,
-    "N": 7.9130,
-    "O": 8.7826,
-    "S": 7.12,
-    "P": 5.5058,
-    "Si": 7.5867,
-    "Ti": 4.9794,
-    "V": 4.0437,
-    "Cl": 5.3002,
-    "K": 5.1619,
-    "Na": 6.3479,
-    "Mg": 7.5995,
-    "F": 4.49196,
-    "Ca": 6.3677,
-    "Fe": 7.5151,
-}
-
-# The only selectable presets. Anything else is rejected: a hand-edited file
-# fails silently (plausible output from a composition nobody chose).
-_FASTCHEM_ABUNDANCE_PRESETS = {
-    "rocky-suppressed Lodders 2019 (VULCAN-JAX default)": (
-        _CANONICAL_FASTCHEM_ABUNDANCES
-    ),
-    "full-solar Lodders 2009 (upstream VULCAN)": _UPSTREAM_LODDERS2009_ABUNDANCES,
-}
-
-
-# Element row order REQUIRED by the vendored FastChem: its
-# mass_action_constant.cpp subtracts per-element NASA9 reference polynomials
-# by HARD-CODED slot index (C=0, H=1, He=2, ..., e-=17), and the element
-# vector is built in abundance-file row order, so the file MUST list elements
-# in exactly this order. A reorder makes carbon take helium's reference and CO
-# never forms; silent, no crash. `tests/test_fastchem_element_order.py` parses
-# the C++ and asserts this list still matches the hard-coded indices.
-_FASTCHEM_ELEMENT_ORDER = [
-    "C",
-    "H",
-    "He",
-    "N",
-    "O",
-    "P",
-    "S",
-    "Si",
-    "Ti",
-    "V",
-    "Cl",
-    "K",
-    "Na",
-    "Mg",
-    "F",
-    "Ca",
-    "Fe",
-    "e-",
-]
-
-
-def _validate_fastchem_input_vs_network(cfg, root: Path) -> list[str]:
-    """Pin `fastchem_solar_abundance_file` content AND element row order.
-
-    Two independent failure modes, both silent (no crash, plausible output):
-
-    1. Values: the file matches neither shipped preset (rocky-suppressed
-       Lodders 2019 default, or upstream's full-solar Lodders 2009). A hand
-       edit that leaves Mg/Si/Fe at solar sequesters ~19% of O into species
-       the networks cannot represent.
-    2. Order: FastChem reads NASA9 references by hard-coded row slot, so a
-       reorder makes carbon take helium's reference and CO/CH4/CO2 never
-       form. See `_FASTCHEM_ELEMENT_ORDER`.
-
-    Both checks are content-based (parsed values / symbol order), not byte
-    hashes, so whitespace or formatting differences don't trip them.
+    The file is read as `SYMBOL log10(n_X/n_H)+12` rows. The seed needs a
+    finite, positive ratio for hydrogen and for every element the loaded
+    network contains; a truncated or hand-mangled file otherwise drops an
+    element silently (its species then cannot form at all).
     """
-    errors: list[str] = []
     if getattr(cfg, "ini_mix", None) != "EQ":
-        return errors
+        return []
+    from . import ini_abun
 
-    abun_rel = getattr(
-        cfg,
-        "fastchem_solar_abundance_file",
-        "fastchem_vulcan/input/solar_element_abundances.dat",
+    rel = getattr(
+        cfg, "fastchem_solar_abundance_file", ini_abun.DEFAULT_ABUNDANCE_FILE
     )
-    abun_path = root / abun_rel
-    if not abun_path.exists():
-        return errors  # missing-file error captured by caller
-
-    parsed: dict[str, float] = {}
-    order: list[str] = []
-    with open(abun_path) as fh:
-        for line in fh:
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            parts = stripped.split()
-            if len(parts) < 2:
-                continue
-            try:
-                parsed[parts[0]] = float(parts[1])
-            except ValueError:
-                continue
-            order.append(parts[0])
-
-    # Order must match AND be complete: a truncated file would pass a prefix
-    # check yet leave later C++ slots (P, S, rocky) on the wrong reference
-    # polynomial. The trailing electron row is optional (absent w/o use_ion).
-    if order not in (_FASTCHEM_ELEMENT_ORDER, _FASTCHEM_ELEMENT_ORDER[:-1]):
-        errors.append(
-            f"FastChem input {abun_rel!r} element ROW ORDER is wrong: got "
-            f"{order} but FastChem's mass_action_constant.cpp hard-codes the "
-            f"full order {_FASTCHEM_ELEMENT_ORDER}. A reorder OR a missing "
-            "element makes carbon (or P/S/rocky) take the wrong reference "
-            "polynomial -> the affected molecules never form (e.g. carbon stays "
-            "atomic, no CO). Restore the canonical C,H,He,N,O,P,S,... order in "
-            "full."
+    path = root / rel
+    if not path.exists():
+        return []  # missing-file error captured by caller
+    try:
+        ratios = ini_abun.read_abundances(path)
+    except (OSError, ValueError) as exc:
+        return [f"abundance preset {rel!r} does not parse: {exc}"]
+    bad = [
+        sp
+        for sp in ini_abun.SEED_ELEMENTS
+        if not math.isfinite(ratios.get(sp, math.nan)) or ratios.get(sp, 0.0) <= 0.0
+    ]
+    if bad:
+        message = (
+            f"abundance preset {rel!r} has no finite, positive abundance for "
+            f"{', '.join(bad)}, which the {getattr(cfg, 'network', '?')!r} "
+            "network contains. Every element of the loaded network must have "
+            "a row in the preset."
         )
-
-    # Must match one shipped preset exactly. A file that is neither is almost
-    # always an accidental edit with a silent failure mode: reject, not warn.
-    per_preset: dict[str, list[str]] = {}
-    for preset_name, table in _FASTCHEM_ABUNDANCE_PRESETS.items():
-        mismatches: list[str] = []
-        for elem, expected in table.items():
-            actual = parsed.get(elem)
-            if actual is None:
-                mismatches.append(f"{elem} missing (expected {expected:+.4f})")
-            elif actual != expected:
-                mismatches.append(f"{elem}={actual:+.4f} (expected {expected:+.4f})")
-        if not mismatches:
-            return errors  # exact match against a known preset
-        per_preset[preset_name] = mismatches
-
-    closest = min(per_preset, key=lambda k: len(per_preset[k]))
-    errors.append(
-        f"FastChem input {abun_rel!r} matches neither shipped abundance preset. "
-        f"Closest is the {closest} set, which it deviates from in: "
-        + "; ".join(per_preset[closest][:8])
-        + (
-            f" (+{len(per_preset[closest]) - 8} more)"
-            if len(per_preset[closest]) > 8
-            else ""
-        )
-        + ". Point `fastchem_solar_abundance_file` at "
-        "fastchem_vulcan/input/solar_element_abundances.dat (rocky-suppressed "
-        "Lodders 2019, the default) or "
-        "fastchem_vulcan/input/solar_element_abundances_lodders2009.dat "
-        "(full-solar Lodders 2009, matches upstream VULCAN). A hand-edited file "
-        "fails silently: leaving Mg/Si/Fe at solar dex while the network has no "
-        "species for them sequesters O into MgO/SiO2/FeO the kinetics cannot "
-        "release (the original HD209 atom_loss anomaly)."
-    )
-    return errors
+        return [message]
+    return []
 
 
 def _validate_network_assets(cfg, root: Path) -> list[str]:
@@ -346,7 +199,7 @@ def _validate_numerical_bounds(cfg) -> list[str]:
     if hpt is not None and hpt <= 0.0:
         errors.append(f"hycean_pin_time={hpt} must be > 0.")
 
-    # FastChem Newton solver (only checked when ini_mix in {EQ, const_lowT})
+    # Equilibrium-seed / const_lowT Newton controls (shared knob names)
     ini_mix = getattr(cfg, "ini_mix", None)
     if ini_mix in ("EQ", "const_lowT"):
         max_iter = _declared(cfg, "fastchem_newton_max_iter", int)
@@ -566,7 +419,7 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
     """Raise RuntimeError if cfg is unsupported or required files are missing.
 
     Aggregates every configuration error (solver/flag consistency, required
-    files, network assets, FastChem input, numerical bounds) and raises once
+    files, network assets, abundance preset, numerical bounds) and raises once
     so the user sees all problems at once; returns None on success. `root`
     sets where relative asset paths resolve (defaults to the package dir).
     """
@@ -664,7 +517,7 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
                 getattr(
                     cfg,
                     "fastchem_solar_abundance_file",
-                    "fastchem_vulcan/input/solar_element_abundances.dat",
+                    "thermo/solar_element_abundances.dat",
                 ),
             )
         )
@@ -677,7 +530,7 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
             errors.append(f"{label}={rel_path!r} does not exist under {root}.")
 
     errors.extend(_validate_network_assets(cfg, root))
-    errors.extend(_validate_fastchem_input_vs_network(cfg, root))
+    errors.extend(_validate_abundance_preset(cfg, root))
     errors.extend(_validate_numerical_bounds(cfg))
 
     if errors:

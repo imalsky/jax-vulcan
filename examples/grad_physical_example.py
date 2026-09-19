@@ -14,7 +14,7 @@ What is differentiable: pco (-> P_b/P_t via `pco_from_endpoints`), Tco, ymix
 `atm_setup.kzz_profile_jax`), vz, gs, Rp. A specific T(P) parameterisation
 (e.g. `analytical_TP_H14` for T_irr) composes in front of the Tco leaf.
 
-What is not differentiable (by design): FastChem equilibrium init (subprocess),
+What is not differentiable (by design): the equilibrium initial abundances,
 and the photolysis T-dependent cross-section rebake. See README.
 
 Output: forward-mode tangents of column-integrated atmosphere quantities w.r.t.

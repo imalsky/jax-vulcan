@@ -60,12 +60,11 @@ oracles:
       - tests/test_photo.py
       - tests/test_diffusion.py
       - tests/test_diffusion_variants.py
-      - tests/test_ini_abun.py
       - tests/test_network_parse.py
       - tests/test_outer_loop_atm_refresh.py
       - tests/test_rates.py
       - tests/test_default_master_parity.py
-      - tests/test_w39b_fastchem_invariant.py
+      - tests/test_eq_seed.py
 
   vulcan2_fastchem_ps_order:
     repo: https://github.com/exoclime/VULCAN
@@ -76,13 +75,10 @@ oracles:
       element-ORDER correction (notes.md, Parity & bug guide, C12). Upstream's own 2026-07-28
       "fix" (8970337) is INERT: it edited `fc_list` while the defect is the row
       order of the shipped .dat file, so the report must cite the .dat, not
-      fc_list. Upstream has no W39 config, so the invariant test resolves the
-      shipped W39b.yaml and stages the checksummed SNCHO network, atmosphere,
-      and stellar spectrum listed below into a disposable copy. This revision
+      fc_list. This revision
       is NOT valid for the NCHO reaction-index families above -- it postdates
       39f1906.
-    used_by:
-      - tests/test_fastchem_element_order.py
+    used_by: []   # provenance of the two abundance presets below; no test runs it
 
   vulcan3_vm_branch:
     repo: https://github.com/shami-EEG/VULCAN
@@ -175,7 +171,7 @@ supported_inputs:
       `oracle` is null and the audit's oracle comparison does not cover it; the
       hash pin above is the whole guard. No shipped config selects it.
 
-  fastchem_vulcan/input/solar_element_abundances.dat:
+  thermo/solar_element_abundances.dat:
     sha256: 7c38fceaa0e358e62cde61ebdb416a08e248957c56cb2d301c270be2a45c2126
     oracle: vulcan2_fastchem_ps_order
     diverges: [C12_fastchem_ps_order, lodders2019_rocky_suppressed]
@@ -184,22 +180,21 @@ supported_inputs:
       approximate Lodders 2019 Table 8, the C/N/O rows are upstream's Lodders 2009 file
       values. default/HD189/HD189_vulcan3 use the file unchanged; HD209/W39b
       override network elements other than H in custom mode. The
-      header says so; the hash covers header and rows alike.
-      The leading comment block is REQUIRED: FastChem discards line 1 as a
-      header, so an element on the first row is silently dropped along with
-      every species containing it. Guarded by test_fastchem_element_order.py.
+      header says so; the hash covers header and rows alike. The row ORDER and
+      the leading comment block no longer matter to this port (the Gibbs seed
+      reads rows by symbol), but both are kept byte-identical so the file can
+      still be staged into an upstream checkout, where FastChem reads slots
+      positionally and eats line 1.
       ALWAYS match this file before quoting any cross-code number -- unmatched,
-      HD189 disagrees with upstream by ~20% median; matched, 3.8e-06.
+      HD189 disagrees with upstream by ~20% median.
 
-  fastchem_vulcan/input/solar_element_abundances_lodders2009.dat:
+  thermo/solar_element_abundances_lodders2009.dat:
     sha256: 9a83f9b8cc51380b5adcc3c764cec54f0b2f2bfbc0b8b34313d6da2873af95fd
     oracle: vulcan2_fastchem_ps_order
     diverges: [C12_fastchem_ps_order]
     note: >-
       The upstream composition (Lodders 2009 at solar), with only the P/S ROW
-      order corrected. Select it to reproduce upstream numbers. Its leading
-      comment block is load-bearing for the same reason as the default preset:
-      FastChem eats line 1.
+      order corrected. Select it to reproduce upstream numbers.
 
 # ---------------------------------------------------------------------------
 # Intentional divergences from upstream.
@@ -269,7 +264,7 @@ intentional_divergences:
     recorded_in: notes.md (Parity & bug guide, P18)
 
   C12_fastchem_ps_order:
-    files: [fastchem_vulcan/input/solar_element_abundances.dat]
+    files: [thermo/solar_element_abundances.dat]
     reason: >-
       Upstream swaps the P and S rows of the element-abundance file relative to
       the element list FastChem reads. CONFIRMED still open at exoclime HEAD
@@ -278,7 +273,7 @@ intentional_divergences:
     recorded_in: notes.md (Parity & bug guide, C12)
 
   lodders2019_rocky_suppressed:
-    files: [fastchem_vulcan/input/solar_element_abundances.dat]
+    files: [thermo/solar_element_abundances.dat]
     reason: >-
       The DEFAULT hybrid preset keeps upstream C/N/O and uses approximately
       Lodders 2019 He/S, with rocky elements suppressed to -3.0 for NCHO/SNCHO

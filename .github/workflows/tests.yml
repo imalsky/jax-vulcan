@@ -16,18 +16,27 @@ jobs:
       # against (the pyproject floor is the oldest API-compatible release).
       # test_vmap_photo_batch judges batch-vs-solo by scale ratio, so the pin
       # can move once a newer release is re-measured against the gates.
+      # exogibbs pinned and installed with --no-deps: of its declared deps the
+      # gas-equilibrium path only needs pandas (exogibbs.io.load_data), which
+      # is installed explicitly here; pyfastchem/xarray/thermochem are for
+      # parts this package never touches and pyfastchem has no linux-aarch64
+      # wheel (the GPU node installs this way). pip still resolves them from
+      # the `exogibbs` requirement in pyproject on this x86_64 runner, where
+      # they are merely wasted download.
       - name: Install
-        run: python -m pip install -e ".[dev,plot]" "jax==0.6.2"
+        run: |
+          python -m pip install --no-deps "exogibbs==0.6.0"
+          python -m pip install pandas
+          python -m pip install -e ".[dev,plot]" "jax==0.6.2"
       - name: Show resolved versions
         run: python -c "import jax, numpy, scipy, vulcan_jax; print('jax', jax.__version__, '| numpy', numpy.__version__, '| scipy', scipy.__version__, '| vulcan_jax', vulcan_jax.__version__)"
       # The master-oracle comparison tests skip on their own: $VULCAN_MASTER_DIR
       # is unset here, so require_oracle() skips with the clone commands. They
       # are ENFORCED in the separate `oracle.yml` workflow (manual dispatch +
-      # weekly), which clones the two pinned upstream revisions -- the manifest
-      # pins two families at different commits, so one checkout can never
-      # satisfy both -- builds FastChem, and sets VULCAN_JAX_REQUIRE_ORACLE=1
-      # so a missing oracle FAILS instead of skipping. Keeping it out of this
-      # per-push job is deliberate: it is slow and needs two clones.
+      # weekly), which clones the pinned upstream revision and sets
+      # VULCAN_JAX_REQUIRE_ORACLE=1 so a missing oracle FAILS instead of
+      # skipping. Keeping it out of this
+      # per-push job is deliberate: it is slow and needs an upstream clone.
       # The NH3 batched-condensation subprocess test takes ~10 min on
       # a laptop and longer on this runner, so it stays a local-only test.
       # ALLOW_MISSING_FIXTURES: the large .npz test fixtures are not in the git
