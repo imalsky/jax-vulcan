@@ -14,6 +14,7 @@ have their own gate in tests/test_eq_seed.py.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -41,19 +42,14 @@ from vulcan_jax._paths import PACKAGE_ROOT
 # so the bar is 1e-6 over cells with master ymix > 1e-10 (trace cells clip to
 # zero on different steps once dt has grown, so the all-cell metric is noise).
 #
-# The 19-step bar is 5.0e-9, and the case is NOT run-to-run stable since
-# 0.15.1. One value per independent pytest invocation, same machine, same
-# pinned vulcan2_ncho oracle:
-#   NumPy rate build (0.15.1's parent): 2.486e-9, 10 runs of 10.
-#   unified JAX rate build (0.15.1):    1.826e-9 or 3.084e-9, nothing else,
-#     about half and half over 19 runs -- in a pristine tree as well as a
-#     used one, and with OMP_NUM_THREADS=1 and single-threaded XLA, so it is
-#     not CPU thread order. The mechanism is not understood.
-# The two rate tables differ by 5.7e-14 relative and 19 stiff steps amplify
-# that; the JAX build is the one the master rate oracles grade (4.5e-16 on
-# the forward rates, test_rates.py; 5.7e-14 on the reverse, test_gibbs.py).
-# 5.0e-9 clears both observed values. A pass here is NOT evidence of
-# bit-reproducibility.
+# The 19-step bar is 5.0e-9, measured: 3.084e-9 with the unified JAX rate
+# build (0.15.1) and 2.486e-9 with the NumPy build it replaced. The two rate
+# tables differ by 5.7e-14 relative and 19 stiff steps amplify that; the JAX
+# build is the one the master rate oracles grade (4.5e-16 on the forward
+# rates, test_rates.py; 5.7e-14 on the reverse, test_gibbs.py). Both numbers
+# are only reproducible because `_run_script` pins PYTHONHASHSEED: master's
+# trajectory is not (see there). Without the pin this case straddled 3.0e-9,
+# taking 1.826e-9 or 3.084e-9 at random.
 MATCHED_CASES = [
     (19, 100, [], 5.0e-9, 0.0),
     (199, 5, ["H"], 1.0e-6, 1.0e-10),
@@ -400,12 +396,23 @@ def _run_script(
     python: str | None = None,
     timeout: float = 600.0,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a Python script string in a subprocess."""
+    """Run a Python script string in a subprocess, under a PINNED hash seed.
+
+    VULCAN-master's 20-step trajectory is not reproducible run to run: with the
+    interpreter's default random hash seed, five runs of `_MASTER_SCRIPT` gave
+    five different `y` (same `y_ini`, same count); with PYTHONHASHSEED=0 three
+    runs were bit-identical. This side is deterministic either way (the JAX half
+    against one fixed master npz gave the same `y` under eight fixed seeds and
+    under three random ones), so the pin is what makes a matched-step number
+    mean anything. Same remedy as the 2026-07-30 `photo_sp` set-order finding
+    (notes.md 1.3).
+    """
     return subprocess.run(
         [python or sys.executable, "-c", script, *map(str, args)],
         capture_output=True,
         text=True,
         timeout=timeout,
+        env={**os.environ, "PYTHONHASHSEED": "0"},
     )
 
 
