@@ -689,16 +689,23 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask):
     )
 
     eye = jnp.eye(ni)
-    di = jnp.arange(ni)
+    on_diag = eye[None] != 0.0  # (1, ni, ni) — the block diagonal
+    # The transport diagonal and the row pins go in as part of the elementwise
+    # block build, not as `.at[:, di, di]` scatters: a scatter makes XLA
+    # materialise the whole (nz, ni, ni) block and copy it (measured: two
+    # transposes + two f64[nz,ni,ni] copies per stage). Per element the
+    # arithmetic is unchanged -- `x + (-diag_d)` is `x - diag_d` in IEEE, and
+    # off the diagonal nothing is touched.
     diag = c0 * eye[None] - chem_J
-    diag = diag.at[:, di, di].add(-diag_d)
+    diag = jnp.where(on_diag, diag - diag_d[:, :, None], diag)
     sup_neg = -sup_d  # (nz-1, ni)
     sub_neg = -sub_d  # (nz-1, ni)
 
     if fix_mask is not None:
-        diag = jnp.where(fix_mask[:, :, None], 0.0, diag)
-        diag_diag = diag[:, di, di]
-        diag = diag.at[:, di, di].set(jnp.where(fix_mask, c0, diag_diag))
+        # A pinned row: zero off the diagonal, c0 on it.
+        diag = jnp.where(
+            fix_mask[:, :, None], jnp.where(on_diag, c0, 0.0), diag
+        )
         rhs_y = jnp.where(fix_mask, 0.0, rhs_y)
         sup_neg = jnp.where(fix_mask[:-1], 0.0, sup_neg)
         sub_neg = jnp.where(fix_mask[1:], 0.0, sub_neg)
