@@ -21,6 +21,10 @@ dependencies = [
     "numpy>=1.24",
     "scipy>=1.12",  # lgmres(rtol=...) for the reverse-mode steady-state adjoint
     "PyYAML>=6",  # the config surface is YAML (vulcan_jax/configs/*.yaml)
+    # The ini_mix='EQ' Gibbs minimizer. Install it with --no-deps: its declared
+    # extras (pyfastchem, xarray, thermochem, tqdm) are for parts of exogibbs
+    # this package never touches, and pyfastchem has no aarch64 wheel.
+    "exogibbs>=0.6.0,<0.7",
 ]
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -66,7 +70,6 @@ where = ["src"]
 vulcan_jax = [
     "atm/**/*",
     "thermo/**/*",
-    "fastchem_vulcan/**/*",
     "configs/*.yaml",
 ]
 
@@ -74,15 +77,6 @@ vulcan_jax = [
 vulcan_jax = [
     "**/__pycache__/**",
     "**/*.pyc",
-    "fastchem_vulcan/fastchem",
-    "fastchem_vulcan/obj/*.o",
-    "fastchem_vulcan/obj/*.d",
-    "fastchem_vulcan/input/parameters.dat",
-    "fastchem_vulcan/input/element_abundances_vulcan.dat",
-    "fastchem_vulcan/input/vulcan_TP/vulcan_TP.dat",
-    "fastchem_vulcan/output/monitor_output.dat",
-    "fastchem_vulcan/output/chem_species.dat",
-    "fastchem_vulcan/output/vulcan_EQ.dat",
 ]
 
 [tool.setuptools.dynamic]
@@ -104,5 +98,4 @@ version = { attr = "vulcan_jax._version.__version__" }
 "tests/test_default_master_parity.py" = ["E402"]
 "tests/test_photo_ion.py" = ["E402"]
 "tests/test_steady_state_reaction_sensitivity.py" = ["E402"]
-"tests/test_w39b_fastchem_invariant.py" = ["E402"]
 "src/vulcan_jax/vulcan_jax_cli.py" = ["E402"]

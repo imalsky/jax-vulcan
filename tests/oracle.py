@@ -264,6 +264,36 @@ def apply_code_deltas(root: Path) -> list[str]:
     return applied
 
 
+# One FastChem build per oracle family per session: `make` takes ~1 min and
+# every EQ comparison needs the same binary. The build happens in a throwaway
+# copy (make writes objects in place), never in the pinned checkout; the
+# TemporaryDirectory handles stay alive so the binaries outlive each worktree.
+_FASTCHEM_BUILDS: dict[str, Path] = {}
+_FASTCHEM_BUILD_DIRS: list[tempfile.TemporaryDirectory] = []
+
+
+def _oracle_fastchem_binary(family: str, src: Path) -> Path:
+    """Build the oracle's own FastChem and return the binary."""
+    cached = _FASTCHEM_BUILDS.get(family)
+    if cached is not None and cached.is_file():
+        return cached
+    holder = tempfile.TemporaryDirectory(prefix="vulcan-oracle-fastchem-")
+    _FASTCHEM_BUILD_DIRS.append(holder)
+    tree = Path(holder.name) / "fastchem_vulcan"
+    shutil.copytree(src / "fastchem_vulcan", tree, symlinks=True,
+                    ignore=shutil.ignore_patterns(".git", "__pycache__"))
+    (tree / "obj").mkdir(exist_ok=True)
+    build = subprocess.run(["make"], cwd=str(tree), capture_output=True,
+                           text=True, timeout=1800)
+    binary = tree / "fastchem"
+    if build.returncode != 0 or not binary.is_file():
+        raise RuntimeError(
+            f"building the oracle's FastChem in {tree} failed "
+            f"({build.returncode}):\n{build.stdout[-2000:]}\n{build.stderr[-2000:]}")
+    _FASTCHEM_BUILDS[family] = binary
+    return binary
+
+
 @contextmanager
 def oracle_worktree(
     family: str,
@@ -290,26 +320,19 @@ def oracle_worktree(
                 raise FileNotFoundError(
                     f"oracle config does not exist: {config_source}")
             shutil.copy2(config_source, dst / "vulcan_cfg.py")
-        jax_fastchem = ROOT / "src" / "vulcan_jax" / "fastchem_vulcan"
         oracle_fastchem = dst / "fastchem_vulcan"
         # Upstream ships FastChem SOURCE, never a binary, so any oracle test
-        # reaching ini_mix='EQ' dies with exit 127. Stage our built one: the
-        # C++ source, model_main and makefile are byte-identical between the
-        # two trees (verified), so it is the same program.
+        # reaching ini_mix='EQ' dies with exit 127. Build UPSTREAM'S OWN
+        # source: this port no longer carries FastChem, and the oracle must be
+        # upstream's initializer with upstream's data, unmodified.
         if oracle_fastchem.is_dir() and not (oracle_fastchem / "fastchem").exists():
-            binary = jax_fastchem / "fastchem"
-            if not binary.is_file():
-                raise FileNotFoundError(
-                    f"oracle FastChem needs the built JAX binary at {binary}; "
-                    "run any ini_mix='EQ' config once to compile it")
-            shutil.copy2(binary, oracle_fastchem / "fastchem")
+            shutil.copy2(_oracle_fastchem_binary(family, src),
+                         oracle_fastchem / "fastchem")
         if fastchem_abundance is not None:
-            abundance = jax_fastchem / "input" / fastchem_abundance
+            abundance = (ROOT / "src" / "vulcan_jax" / "thermo"
+                         / fastchem_abundance)
             if not abundance.is_file():
                 raise FileNotFoundError(f"no such abundance preset: {abundance}")
-            shutil.copy2(
-                jax_fastchem / "input" / "nasa9_logK_SNCHOPTi.dat",
-                oracle_fastchem / "input" / "nasa9_logK_SNCHOPTi.dat")
             shutil.copy2(
                 abundance,
                 oracle_fastchem / "input" / "solar_element_abundances.dat")

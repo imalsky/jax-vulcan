@@ -22,7 +22,7 @@ inputs and reference results.
 
 ## Install
 
-VULCAN-JAX needs Python 3.10 or later. FastChem also needs a C++ compiler.
+VULCAN-JAX needs Python 3.10 or later.
 
 ```bash
 python -m pip install \
@@ -101,7 +101,7 @@ reverse-mode derivatives to the same model.
 - Only the Rosenbrock-2 solver is ported.
 - Reverse-mode differentiation does not pass through the time-integration
   loop. Use forward mode or the steady-state adjoint.
-- FastChem initialization is not differentiable.
+- The equilibrium seed (ExoGibbs) is not differentiable.
 - Condensation can run in the forward model, but it is not validated for
   gradient inference.
 - VULCAN-JAX includes documented corrections and deliberate differences from
@@ -114,8 +114,8 @@ If you publish results from VULCAN-JAX, cite the original VULCAN papers:
 - [Tsai et al. (2017), ApJS 228, 20](https://doi.org/10.3847/1538-4365/228/2/20)
 - [Tsai et al. (2021), ApJ 923, 264](https://doi.org/10.3847/1538-4357/ac29bc)
 
-If the run uses FastChem initialization, also cite
-[Stock et al. (2018)](https://doi.org/10.1093/mnras/sty1531).
+If the run uses the equilibrium seed (`ini_mix: EQ`), also cite ExoGibbs:
+Kawahara, H. et al., <https://github.com/HajimeKawahara/exogibbs> (GPL-3.0).
 Record the VULCAN-JAX version, configuration, network, and input-data versions
 with the result.
 

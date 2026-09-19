@@ -27,7 +27,7 @@ _GRAVITY_RTOL = 1e-9
 
 
 JAX_ONLY_DEFAULTS: dict[str, Any] = {
-    "fastchem_solar_abundance_file": "fastchem_vulcan/input/solar_element_abundances.dat",
+    "fastchem_solar_abundance_file": "thermo/solar_element_abundances.dat",
     "use_ini_cold_trap": False,
     "use_sat_surfaceH2O": False,
     "rtol_min": 0.0,
@@ -51,7 +51,7 @@ JAX_ONLY_DEFAULTS: dict[str, Any] = {
     "hycean_pin_time": 1e6,
     "loss_ex": [],
     "fastchem_newton_tol": 1e-12,
-    "fastchem_newton_max_iter": 50,
+    "fastchem_newton_max_iter": 450,
     "use_fix_all_bot": False,
     "use_fix_H2He": False,
 }
@@ -161,7 +161,6 @@ IGNORED_RUNTIME_FILENAMES = {".DS_Store"}
 # Without this the whole-tree symmetric fallback below would report those two
 # as `only master=` drift, which is a doc-layout difference, not a data one.
 IGNORED_RUNTIME_SUFFIXES = {".py", ".pyc", ".md"}
-STOCK_FASTCHEM = Path("fastchem_vulcan/input/solar_element_abundances.dat")
 
 
 def _is_data_value(value: Any) -> bool:
@@ -209,92 +208,6 @@ def _runtime_files(root: Path) -> dict[Path, str]:
             continue
         files[path.relative_to(root)] = _sha256(path)
     return files
-
-
-def _parse_abundances(path: Path) -> dict[str, float]:
-    """Parse a FastChem element-abundance file into element -> log abundance."""
-    abundances: dict[str, float] = {}
-    with path.open() as handle:
-        for line in handle:
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#"):
-                continue
-            parts = stripped.split()
-            if len(parts) >= 2:
-                abundances[parts[0]] = float(parts[1])
-    return abundances
-
-
-def _check_stock_fastchem(path: Path, label: str) -> list[str]:
-    """Validate the canonical FastChem abundance file (rocky-suppressed).
-
-    Shipped networks contain no Mg / Si / Fe / Ti / V / Cl / K / Na / F / Ca / P
-    species, so any positive abundance for those elements in the FastChem input
-    silently sequesters O / H / etc. into species `_load_eq_y` cannot read
-    back. The canonical file therefore uses Lodders 2019 H/He/C/N/O/S values
-    with all rocky elements pinned to -3.0.
-    """
-    errors: list[str] = []
-    if not path.exists():
-        return [f"{label}: missing {path}"]
-    abundances = _parse_abundances(path)
-    expected = {
-        "H": 12.0,
-        "He": 10.9232,
-        "C": 8.4434,
-        "N": 7.9130,
-        "O": 8.7826,
-        "S": 7.1492,
-        "P": -3.0,
-        "Si": -3.0,
-        "Ti": -3.0,
-        "V": -3.0,
-        "Cl": -3.0,
-        "K": -3.0,
-        "Na": -3.0,
-        "Mg": -3.0,
-        "F": -3.0,
-        "Ca": -3.0,
-        "Fe": -3.0,
-    }
-    for element, expected_value in expected.items():
-        actual = abundances.get(element)
-        if actual != expected_value:
-            errors.append(f"{label}: {element}={actual!r}, expected {expected_value!r}")
-    return errors
-
-
-def _report_master_fastchem_preset(master_path: Path) -> list[str]:
-    """Identify the oracle's composition. Never an error on its own.
-
-    The two codes legitimately ship different elemental abundances: VULCAN-JAX
-    defaults to rocky-suppressed Lodders 2019, upstream to full-solar
-    Lodders 2009. Which one a comparison should use depends on the question
-    being asked, so this reports rather than judges. An unrecognised file IS an
-    error, because it means the oracle's composition came from somewhere
-    undocumented.
-    """
-    if not master_path.exists():
-        return []  # missing-file errors are reported by _check_stock_fastchem
-    abundances = _parse_abundances(master_path)
-    he = abundances.get("He")
-    mg = abundances.get("Mg")
-    if he is None or mg is None:
-        return [f"oracle FastChem file {master_path} is unreadable or truncated"]
-    if abs(he - 10.9864) < 1e-9 and mg > 0:
-        print(f"  oracle composition: full-solar Lodders 2009 ({master_path.name})")
-        return []
-    if abs(he - 10.9232) < 1e-9 and mg == -3.0:
-        print(
-            f"  oracle composition: rocky-suppressed Lodders 2019 "
-            f"({master_path.name}) -- matches VULCAN-JAX's default"
-        )
-        return []
-    return [
-        f"oracle FastChem file {master_path} matches neither known preset "
-        f"(He={he}, Mg={mg}). Its composition has an undocumented provenance, "
-        "so any cross-code number from it is unattributable."
-    ]
 
 
 def _compare_cfgs(master_cfg: Path) -> list[str]:
@@ -650,32 +563,15 @@ def audit(
 
     errors.extend(_compare_cfgs(master_cfg))
     errors.extend(_compare_runtime_data(master_root, jax_root, oracle_family))
-    # VULCAN-JAX's own file must be one of the two shipped presets. This is a
-    # check on OUR tree and is always meaningful.
-    errors.extend(_check_stock_fastchem(jax_root / STOCK_FASTCHEM, "JAX FastChem"))
-
-    # The upstream side is NOT checked against our rocky-suppressed abundance
-    # file, and the two are NOT required to match. Do not add such a check: a
-    # pristine upstream tree ships full-solar Lodders 2009, so requiring our
-    # file could only ever pass against a hand-patched oracle -- exactly what
-    # the pristine guard rejects. Composition parity is a science-input CONFIG
-    # choice: point `fastchem_solar_abundance_file` at
-    # solar_element_abundances_lodders2009.dat to reproduce upstream's
-    # composition (notes.md, Validation, "Elemental abundances are a config
-    # choice"). This audit only reports which composition the oracle would use.
-    errors.extend(
-        _report_master_fastchem_preset(master_root / STOCK_FASTCHEM),
-    )
     return errors
 
 
 def main(argv: list[str] | None = None) -> int:
     """Run the parity audit CLI."""
     parser = argparse.ArgumentParser(description=__doc__)
-    # Runtime data (atm/, thermo/, fastchem_vulcan/) lives under the installed
-    # package, not the repo root; the JAX config is loaded by name from
-    # configs/*.yaml. Default to the package dir so no explicit --jax-root is
-    # needed.
+    # Runtime data (atm/, thermo/) lives under the installed package, not the
+    # repo root; the JAX config is loaded by name from configs/*.yaml. Default
+    # to the package dir so no explicit --jax-root is needed.
     from vulcan_jax._paths import PACKAGE_ROOT
 
     parser.add_argument(

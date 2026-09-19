@@ -34,7 +34,7 @@ output_dir: output/
 plot_dir: plot/
 movie_dir: plot/movie/
 out_name: HD189_vulcan3.vul
-# EQ takes the selected abundance file unchanged; *_H and fastchem_met_scale
+# EQ takes the selected abundance file unchanged; the *_H values
 # below are inactive unless the initialization mode/settings change.
 use_solar: true
 O_H: 0.00060618
@@ -45,8 +45,7 @@ S_H: 1.3183e-05
 # EQ ignores He_H for the shipped atom_list; const_lowT reads it.
 He_H: 0.09692
 ini_mix: EQ
-fastchem_met_scale: 1.0
-# Elemental abundances FastChem starts from. Two files ship:
+# Elemental abundances the equilibrium seed starts from. Two files ship:
 #   solar_element_abundances.dat            rocky elements suppressed to -3.0,
 #                                           hybrid C/N/O (2009), He/S (2019).
 #                                           The default, intended
@@ -55,12 +54,16 @@ fastchem_met_scale: 1.0
 #                                           species to hold the oxygen.
 #   solar_element_abundances_lodders2009.dat every element at solar, Lodders
 #                                           2009. What upstream VULCAN ships.
-#                                           Use it to compare against an
-#                                           unmodified VULCAN checkout.
+#                                           Its C/N/O rows equal the default's,
+#                                           so the seed sees only a different
+#                                           helium: it does NOT reproduce
+#                                           upstream's rocky-oxide oxygen sink
+#                                           (0.166 dex on H2O/CH4/CO2 --
+#                                           no NCHO/SNCHO species can hold
+#                                           that oxygen). See notes.md 2.9.
 # The two disagree by ~20% median on HD 189733 b, so MATCH THIS FILE before
-# quoting any VULCAN-JAX vs VULCAN 2.0 number. Matched, the codes agree to
-# 3.8e-06.
-fastchem_solar_abundance_file: fastchem_vulcan/input/solar_element_abundances.dat
+# quoting any VULCAN-JAX vs VULCAN 2.0 number.
+fastchem_solar_abundance_file: thermo/solar_element_abundances.dat
 const_mix:
   CH4: 0.00055522
   O2: 0.0004807
@@ -225,8 +228,11 @@ photo_switch_longdydt_thresh: 1.0e-06
 hycean_pin_time: 1000000.0
 loss_ex: []
 report_column_atom_loss: false
+# Shared by the EQ Gibbs seed and the const_lowT Newton solve. 450 is 2.1x
+# the worst iteration count measured over the prior box (214, an isothermal
+# 300 K column); the loop exits on the residual, so headroom costs nothing.
 fastchem_newton_tol: 1.0e-12
-fastchem_newton_max_iter: 50
+fastchem_newton_max_iter: 450
 use_fix_all_bot: false
 use_fix_H2He: false
 plot_TP: false

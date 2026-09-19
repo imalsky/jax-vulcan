@@ -117,6 +117,12 @@ _REMOVED_KEYS: dict[str, str] = {
         "the per-step delta print was not ported (a VULCAN-master live-UI "
         "knob); use `use_print_prog` for progress output"
     ),
+    "fastchem_met_scale": (
+        "the equilibrium seed carries only the loaded network's own elements, "
+        "so there are no other metals to scale; set `<X>_H` for the elements "
+        "of `atom_list`, or point `fastchem_solar_abundance_file` at a "
+        "different preset (drop the key)"
+    ),
     **dict.fromkeys(
         ("use_pi_controller", "pi_controller_alpha", "pi_controller_beta"),
         "the Gustafsson PI step-size controller was removed; the master-faithful "

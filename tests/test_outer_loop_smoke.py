@@ -1,9 +1,8 @@
 """Smoke test for outer_loop.OuterLoop.
 
 Runs 50 accepted Ros2 steps end-to-end on the HD189 reference state and
-asserts: exact step count, atom_loss at the tracked ~4.4e-5 baseline
-(EXPECTED_ATOM_LOSS below), no retries on the smooth HD189 case, and
-finite-positive dt / t.
+asserts: exact step count, atom_loss under MAX_ATOM_LOSS, no retries on the
+smooth HD189 case, and finite-positive dt / t.
 
 The canonical smoke test for any change to outer_loop.py (~10s incl. JIT).
 """
@@ -25,13 +24,16 @@ os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
 
-# Per-atom atom_loss target. HD189 50-step matched-step with the
-# reservoir-species conservation projection: empirically lands at ~4.4e-05.
-# Tolerance 50% — wide enough to absorb platform differences (the
-# projection's correction is at ULP level, so the exact value depends on
-# XLA compilation choices), tight enough to catch a 10x regression.
-EXPECTED_ATOM_LOSS = 4.4e-5
-ATOM_LOSS_RTOL = 0.50
+# Per-atom atom_loss bound over 50 HD189 steps with the reservoir-species
+# conservation projection. A BOUND, not a target: the drift is roundoff the
+# projection leaves behind, so its exact value depends on XLA compilation
+# choices and on how far the initial state sits from chemical equilibrium.
+# The FastChem seed left 4.4e-05 here; the 0.15.0 Gibbs seed, built on the
+# same NASA-9 data as the reverse rates, starts close enough that the same
+# 50 steps leave -3.53e-10 (measured, reproducible to every printed digit).
+# 1e-8 is ~28x that and four orders under the old seed's number, so it still
+# catches the 10x regression this test exists for.
+MAX_ATOM_LOSS = 1.0e-8
 
 
 def main() -> int:
@@ -103,13 +105,12 @@ def main() -> int:
         )
         ok = False
 
-    # 2. atom_loss matches baseline.
+    # 2. atom_loss stays under the bound.
     for atom, loss in data_var.atom_loss.items():
-        relerr = abs(loss - EXPECTED_ATOM_LOSS) / EXPECTED_ATOM_LOSS
-        if relerr > ATOM_LOSS_RTOL:
+        if abs(loss) > MAX_ATOM_LOSS:
             print(
-                f"FAIL: atom_loss[{atom}] = {loss:.3e}; expected ~{EXPECTED_ATOM_LOSS:.3e} "
-                f"(relerr={relerr:.3e}, tol={ATOM_LOSS_RTOL:.3e})"
+                f"FAIL: atom_loss[{atom}] = {loss:.3e}; bound is "
+                f"{MAX_ATOM_LOSS:.3e}"
             )
             ok = False
 

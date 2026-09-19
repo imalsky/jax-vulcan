@@ -3,7 +3,7 @@
 Integrates a batch of HD 189-like planets to steady state in ONE vmapped
 device call (`OuterLoop.run_batch`). Each planet is the vendored HD189
 atmosphere (T-P + Kzz file) with its temperature profile scaled by a few
-percent, initialised from FastChem equilibrium, photochemistry off (the
+percent, initialised from the Gibbs equilibrium seed, photochemistry off (the
 emulator data-generation regime; `run_batch` also supports photo-on batches).
 That workload converges in ~600 accepted Ros2 steps (~50 s single-profile on
 a laptop CPU), so the default job is a few minutes.
@@ -14,9 +14,8 @@ Design rules (do not revert):
     margin over the ~600 steps this regime needs. A cap below the real step
     count makes every lane terminate on the cap (0 "converged").
 2.  Host setup runs on a spawn `ProcessPool` pinned to CPU, one task per
-    planet. Each worker gets a private copy of the vendored FastChem tree
-    via `$VULCAN_JAX_FASTCHEM_DIR` so the cross-process flock never
-    serialises the pool.
+    planet. The seed is in-process JAX, so the workers share no scratch
+    files and never serialise on one another.
 3.  The GPU never waits for the CPU: builds for ALL batch sizes are
     submitted up front; integration starts on the smallest batch while the
     pool keeps building the rest.
@@ -28,7 +27,7 @@ Design rules (do not revert):
     Per-lane results are unchanged (lanes never interact).
 
 Standalone: imports only `vulcan_jax`, the stdlib, NumPy, and JAX -- no
-sibling repos; the atmosphere file and the FastChem source ship inside the
+sibling repos; the atmosphere file and the thermochemistry ship inside the
 installed package.
 
 RUN IT, after `pip install vulcan-jax`:
@@ -86,7 +85,7 @@ _HD189_ATM = "atm/atm_HD189_Kzz.txt"  # vendored in the vulcan_jax package
 
 def build_cfg(nz: int, count_max: int):
     """The real HD189 regime minus photochemistry: vendored T-P + Kzz file
-    (cfg defaults), FastChem-EQ init, photo off (the emulator regime).
+    (cfg defaults), equilibrium-seed init, photo off (the emulator regime).
 
     `count_max` must comfortably exceed the ~600 accepted steps this regime
     needs to converge (measured single-profile).
@@ -94,7 +93,7 @@ def build_cfg(nz: int, count_max: int):
     import vulcan_jax
 
     return vulcan_jax.make_config(
-        ini_mix="EQ",  # vendored-FastChem equilibrium, like the real HD189 config
+        ini_mix="EQ",  # Gibbs equilibrium seed, like the real HD189 config
         # atm_type/atm_file/Kzz_prof stay at the package defaults; each worker
         # swaps in its own T-scaled copy of the vendored HD189 atm file.
         use_photo=False,  # photo-off: the emulator data-generation regime
@@ -125,39 +124,15 @@ def make_tscales(n: int, spread: float, seed: int) -> np.ndarray:
 
 
 # Host-setup worker pool. Spawn (not fork) because the parent has CUDA
-# initialised; CPU-pinned so the workers never touch the GPU; each worker
-# gets a private FastChem tree so the package's cross-process fcntl.flock
-# never serialises the pool.
+# initialised; CPU-pinned so the workers never touch the GPU.
 _WORKER_CFG = None  # set once per worker by _worker_init
-_WORKER_DIR = None  # private scratch dir (FastChem tree + scaled atm files)
+_WORKER_DIR = None  # private scratch dir (scaled atm files)
 _WORKER_ATM = None  # parsed (header_lines, P, T, Kzz) of the vendored HD189 atm
 
 
-def _seed_private_fastchem_tree(worker_root) -> None:
-    """Point $VULCAN_JAX_FASTCHEM_DIR at a private copy of the package's
-    fastchem_vulcan/ tree (binary + input data). Must run BEFORE the first
-    vulcan_jax import: the env var is read at import time."""
-    import importlib.util
-    import shutil
-    from pathlib import Path
-
-    spec = importlib.util.find_spec("vulcan_jax")
-    package_root = Path(spec.origin).parent
-    fastchem_root = worker_root / "fastchem_vulcan"
-    shutil.copytree(
-        package_root / "fastchem_vulcan",
-        fastchem_root,
-        ignore=shutil.ignore_patterns(
-            "obj", "output", ".fastchem_lock", "*.pyc", "__pycache__"
-        ),
-    )
-    (fastchem_root / "output").mkdir(exist_ok=True)
-    os.environ["VULCAN_JAX_FASTCHEM_DIR"] = str(fastchem_root)
-
-
 def _worker_init(nz: int, count_max: int) -> None:
-    """Pin this worker to CPU before its first vulcan_jax import, seed its
-    private FastChem tree, and parse the vendored HD189 atm table once."""
+    """Pin this worker to CPU before its first vulcan_jax import and parse
+    the vendored HD189 atm table once."""
     import logging
     import tempfile
     from pathlib import Path
@@ -172,7 +147,6 @@ def _worker_init(nz: int, count_max: int) -> None:
     # vulcan_jax/jax import so that per-worker traceback never reaches the log.
     logging.getLogger("jax._src.xla_bridge").setLevel(logging.CRITICAL)
     worker_root = Path(tempfile.mkdtemp(prefix=f"vjax_bench_{os.getpid()}_"))
-    _seed_private_fastchem_tree(worker_root)
 
     global _WORKER_CFG, _WORKER_DIR, _WORKER_ATM
     _WORKER_CFG = build_cfg(nz, count_max)  # first vulcan_jax import
@@ -193,9 +167,8 @@ def _worker_build(task):
     scaled by `tscale` (Kzz and the pressure grid unchanged) and points the
     cfg at it.
 
-    Stdout/stderr are silenced at the OS fd level, not with redirect_stdout:
-    the FastChem binary is a subprocess that inherits the fds, so a
-    Python-level redirect would not catch its chatter.
+    Stdout/stderr are silenced at the OS fd level so a worker's setup
+    chatter never reaches the benchmark log.
     """
     import copy
 

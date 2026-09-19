@@ -1,7 +1,8 @@
 """JAX-native initial-abundance setup.
 
 Five `ini_mix` modes:
-- `EQ`         FastChem equilibrium (subprocess + parsed output)
+- `EQ`         Gibbs-minimization equilibrium (ExoGibbs) on the network's own
+               NASA-9 thermochemistry
 - `const_mix`  apply a per-species mixing dict from cfg
 - `vulcan_ini` restore composition from a previous `.vul` file
 - `table`      read a per-layer mixing-ratio table
@@ -10,27 +11,28 @@ Five `ini_mix` modes:
 `compute_initial_abundance` returns a typed `IniAbunOutputs`. The
 `InitialAbun` class is a legacy facade that mutates `data_var`/`data_atm`.
 
-FastChem subprocess calls are serialised via `fcntl.flock` so
-`pytest -n auto` and concurrent drivers don't race on the shared
-`fastchem_vulcan/input/` and `output/` files.
+The EQ seed (`eq_seed`) is end-to-end JAX: it minimizes the Gibbs energy of
+the loaded network's own gas species using the same NASA-9 polynomials the
+reverse rates use, so the seed and the kinetics cannot disagree about
+thermochemistry. It jits and vmaps over columns. It is NOT a differentiable
+map: `custom_jvp` returns a zero tangent, because the seed is where the
+integration starts, not part of the steady state it converges to.
 """
 
 from __future__ import annotations
 
-import fcntl
-import os
 import pickle
-import subprocess
-import warnings
 from pathlib import Path
-from shutil import copyfile
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from exogibbs.api.gas import EquilibriumOptions, solve_profile
+from exogibbs.thermo.models import ChemicalSetup
 
 from .config import default_config
 from . import chem_funs
+from . import rates_jax
 from .composition import (
     compo,
     compo_row,
@@ -45,66 +47,273 @@ jax.config.update("jax_enable_x64", True)
 
 _CFG = default_config()
 
+# --- the equilibrium seed ---------------------------------------------------
+# Network-frozen inputs (species, elements, NASA-9 coefficients) are resolved
+# once at import; everything the config owns is read at CALL time, because
+# `state._cfg_overlay` rewrites `_CFG` per run.
 
-# Anchor FastChem paths to the source location (not cwd) so concurrent workers
-# from different directories flock on the same sentinel and share input/output
-# files. $VULCAN_JAX_FASTCHEM_DIR (set BEFORE the first import) points FastChem
-# at a private per-worker copy of `fastchem_vulcan/` (binary + input tree
-# included), making the flock per-worker and uncontended. Read-only static data
-# (the solar-abundance file) stays anchored to `_ROOT`, which is fine to share.
-_ROOT = Path(__file__).resolve().parent
+DEFAULT_ABUNDANCE_FILE = "thermo/solar_element_abundances.dat"
 
 
-def _fastchem_dir() -> Path:
-    """FastChem working tree: $VULCAN_JAX_FASTCHEM_DIR if set, else the package
-    copy. The module-level `_FC_DIR` captures this at import, so the override
-    must be set in the environment before the first `import vulcan_jax`.
-    """
-    override = os.environ.get("VULCAN_JAX_FASTCHEM_DIR")
-    if override:
-        return Path(override).expanduser().resolve()
-    return (_ROOT / "fastchem_vulcan").resolve()
-
-
-_FC_DIR = _fastchem_dir()
-_FC_BIN = _FC_DIR / "fastchem"
-_FC_SENTINEL = _FC_DIR / ".fastchem_lock"
-
-
-def _ensure_fastchem_binary() -> None:
-    """Compile FastChem from vendored C++ source (via `make`) if the binary is
-    missing or not executable."""
-    if _FC_BIN.is_file() and os.access(_FC_BIN, os.X_OK):
-        return
-    makefile = _FC_DIR / "makefile"
-    if not makefile.is_file():
-        raise FileNotFoundError(
-            f"FastChem binary missing and no makefile found at {makefile}. "
-            "Reinstall vulcan-jax to get the C++ source."
-        )
-    (_FC_DIR / "obj").mkdir(exist_ok=True)
-    subprocess.check_call(["make"], cwd=str(_FC_DIR))
-    if not _FC_BIN.is_file():
-        raise RuntimeError("make completed but fastchem binary was not produced")
-
-
-_FC_INPUT = _FC_DIR / "input"
-_FC_OUTPUT = _FC_DIR / "output"
-_FC_VULCAN_TP = _FC_INPUT / "vulcan_TP" / "vulcan_TP.dat"
-_FC_VULCAN_EQ = _FC_OUTPUT / "vulcan_EQ.dat"
-
-
-def _fastchem_solar_abundance_path() -> Path:
-    """Return the configured FastChem solar-element abundance source file."""
-    configured = getattr(
-        _CFG,
-        "fastchem_solar_abundance_file",
-        "fastchem_vulcan/input/solar_element_abundances.dat",
+def _abundance_path() -> Path:
+    """The configured elemental-abundance preset file."""
+    return resolve_data_path(
+        str(getattr(_CFG, "fastchem_solar_abundance_file", DEFAULT_ABUNDANCE_FILE))
     )
-    path = Path(str(configured)).expanduser()
-    if not path.is_absolute():
-        path = _ROOT / path
-    return path.resolve()
+
+
+def _condensate_species() -> set[str]:
+    """Species produced by a condensation reaction.
+
+    They have no gas-phase entry in the minimizer: the seed solves the gas
+    equilibrium and the cold-trap clip (`_apply_condense`) runs after it.
+    """
+    net = chem_funs._NETWORK
+    out: set[str] = set()
+    for i in range(1, net.nr + 1):
+        if not (net.is_conden[i] and net.is_forward[i]):
+            continue
+        for slot, sp_idx in enumerate(net.product_idx[i]):
+            if net.product_stoich[i, slot] != 0.0:
+                out.add(net.species[sp_idx])
+    return out
+
+
+def _make_hvector(coeffs: np.ndarray):
+    """`T -> mu0(T)/(RT)` (K,) at the 1 bar standard state.
+
+    That is the convention ExoGibbs's `gk = h + ln n_k - ln n_tot +
+    ln(P/Pref)` expects, so the seed takes P in bar with `Pref=1.0`.
+    `gibbs_sp_vector` is the same function the reverse rates use, evaluated
+    on a one-layer grid because the minimizer calls `h` per layer.
+    """
+    coeffs = jnp.asarray(coeffs)
+
+    def hvector(T):
+        return rates_jax.gibbs_sp_vector(coeffs, jnp.atleast_1d(T))[:, 0]
+
+    return hvector
+
+
+def _build_seed_setup() -> tuple[ChemicalSetup, np.ndarray, tuple[str, ...]]:
+    """Build the ExoGibbs setup for the loaded network's gas species."""
+    charged = {sp for sp in species if compo[compo_row.index(sp)]["e"] != 0}
+    excluded = _condensate_species() | charged
+    seed_idx = np.array(
+        [i for i, sp in enumerate(species) if sp not in excluded], dtype=np.int64
+    )
+    missing = [species[i] for i in seed_idx if not chem_funs._NASA9_PRESENT[i]]
+    if missing:
+        raise RuntimeError(
+            f"the equilibrium seed needs NASA-9 data for every gas species of "
+            f"{_CFG.network!r}, but thermo/NASA9/ has no file for: "
+            f"{', '.join(missing)}. Add them, or initialize with "
+            "ini_mix='const_mix'."
+        )
+    counts = np.asarray(compo_array)[seed_idx]
+    elem_cols = [
+        j
+        for j, atom in enumerate(_COMPO_ATOMS)
+        if atom != "e" and counts[:, j].sum() > 0.0
+    ]
+    elements = tuple(_COMPO_ATOMS[j] for j in elem_cols)
+    setup = ChemicalSetup(
+        formula_matrix=jnp.asarray(counts[:, elem_cols].T),
+        hvector_func=_make_hvector(np.asarray(chem_funs._NASA9_COEFFS)[seed_idx]),
+        elements=elements,
+        species=tuple(species[i] for i in seed_idx),
+    )
+    return setup, seed_idx, elements
+
+
+_SEED_SETUP, _SEED_IDX, SEED_ELEMENTS = _build_seed_setup()
+
+# Sequential warm start from the bottom layer. The independent per-layer cold
+# solve ("vmap_cold") needs several times as many iterations and does not
+# reach 1e-12 on the cold top of the prior box; measured in notes.md 2.9.
+_SEED_METHOD = "scan_hot_from_bottom"
+
+_OPTIONS_CACHE: dict[tuple[float, int], EquilibriumOptions] = {}
+_SEED_JIT: dict[tuple[float, int], object] = {}
+
+
+def _seed_key() -> tuple[float, int]:
+    """The config's solver controls, read at CALL time (`_cfg_overlay`)."""
+    return (
+        float(getattr(_CFG, "fastchem_newton_tol", 1e-12)),
+        int(getattr(_CFG, "fastchem_newton_max_iter", 450)),
+    )
+
+
+def _seed_options() -> EquilibriumOptions:
+    """Solver options for the current config, interned.
+
+    ExoGibbs keys its scan-body cache on `id(options)`, so a fresh dataclass
+    per call would rebuild the profile scan every time.
+    """
+    key = _seed_key()
+    if key not in _OPTIONS_CACHE:
+        _OPTIONS_CACHE[key] = EquilibriumOptions(
+            epsilon_crit=key[0], max_iter=key[1], method=_SEED_METHOD
+        )
+    return _OPTIONS_CACHE[key]
+
+
+def _seed_jit():
+    """`eq_seed` jitted, one wrapper per set of solver controls.
+
+    Keyed so a config change retraces instead of reusing a trace that baked
+    in the old tolerance. Without it the host path re-traces the 150-layer
+    scan on every call: 223 ms against 3.2 ms jitted, on the HD189 column.
+    """
+    key = _seed_key()
+    if key not in _SEED_JIT:
+        _SEED_JIT[key] = jax.jit(eq_seed)
+    return _SEED_JIT[key]
+
+
+@jax.custom_jvp
+def eq_seed(Tco, p_bar, b):
+    """Equilibrium mixing ratios `(nz, ni)` at `Tco` (K) and `p_bar` (bar).
+
+    `b` is the elemental abundance vector in `SEED_ELEMENTS` order; only its
+    ratios matter. Species outside the seed (condensates, ions) are exactly
+    zero. A column with a layer that did not converge comes back all-NaN, so
+    no caller can use half a solution.
+    """
+    res, diag = solve_profile(
+        _SEED_SETUP,
+        Tco,
+        p_bar,
+        b,
+        Pref=1.0,
+        options=_seed_options(),
+        return_diagnostics=True,
+    )
+    ok = jnp.all(diag["converged"]) & jnp.all(jnp.isfinite(res.x))
+    y = jnp.zeros((Tco.shape[0], chem_funs.ni), dtype=jnp.float64)
+    return y.at[:, jnp.asarray(_SEED_IDX)].set(jnp.where(ok, res.x, jnp.nan))
+
+
+@eq_seed.defjvp
+def _eq_seed_jvp(primals, tangents):
+    """Zero tangent: the seed is an initial condition, not a model output.
+
+    ExoGibbs's kernel carries a `custom_vjp` and no forward rule, so a jvp
+    must never reach it.
+    """
+    del tangents
+    primal = eq_seed(*primals)
+    return primal, jnp.zeros_like(primal)
+
+
+def seed_diagnostics(Tco, p_bar, b) -> dict:
+    """Per-layer `converged` / `n_iter` / `final_residual` for one column."""
+    _, diag = solve_profile(
+        _SEED_SETUP,
+        jnp.asarray(Tco, dtype=jnp.float64),
+        jnp.asarray(p_bar, dtype=jnp.float64),
+        jnp.asarray(b, dtype=jnp.float64),
+        Pref=1.0,
+        options=_seed_options(),
+        return_diagnostics=True,
+    )
+    return {k: np.asarray(v) for k, v in diag.items()}
+
+
+_ABUNDANCE_CACHE: dict[Path, dict[str, float]] = {}
+
+
+def read_abundances(path: Path) -> dict[str, float]:
+    """Parse a `SYMBOL log10(n_X/n_H)+12` preset into n_X/n_H, with H == 1."""
+    if path not in _ABUNDANCE_CACHE:
+        dex: dict[str, float] = {}
+        with open(path) as fh:
+            for line in fh:
+                row = line.split("#", 1)[0].split()
+                if len(row) >= 2:
+                    dex[row[0]] = float(row[1])
+        if "H" not in dex:
+            raise ValueError(
+                f"{path}: no H row. The preset is read as log10(n_X/n_H)+12, "
+                "so hydrogen sets the scale and must be present."
+            )
+        _ABUNDANCE_CACHE[path] = {
+            sp: 10.0 ** (value - dex["H"]) for sp, value in dex.items()
+        }
+    return _ABUNDANCE_CACHE[path]
+
+
+def _preset_vector() -> np.ndarray:
+    """`b` (E,) straight from the configured preset file."""
+    path = _abundance_path()
+    preset = read_abundances(path)
+    absent = [sp for sp in SEED_ELEMENTS if sp not in preset]
+    if absent:
+        raise RuntimeError(
+            f"{path} has no row for {', '.join(absent)}, which the "
+            f"{_CFG.network!r} network needs. Every element of the loaded "
+            "network must be in the abundance preset."
+        )
+    return np.array([preset[sp] for sp in SEED_ELEMENTS], dtype=np.float64)
+
+
+def _base_vector() -> np.ndarray:
+    """`b` (E,) with the config's `<X>_H` applied on top of the preset.
+
+    Precedence, inherited from the FastChem driver: an explicit `ratios`
+    entry, then `cfg.<X>_H` for the elements of `cfg.atom_list` other than H,
+    then the preset file. Helium comes from the file for every shipped atom
+    list (`He_H` is a `const_lowT` knob).
+    """
+    b = _preset_vector()
+    for atom in _CFG.atom_list:
+        if atom != "H" and atom in SEED_ELEMENTS:
+            b[SEED_ELEMENTS.index(atom)] = float(getattr(_CFG, atom + "_H"))
+    return b
+
+
+def ratio_indices(names) -> jnp.ndarray:
+    """Positions of `names` in the seed's element vector, resolved once.
+
+    The array path (`element_vector`) takes these so a batched caller never
+    resolves element names inside a traced function.
+    """
+    unknown = [sp for sp in names if sp not in SEED_ELEMENTS]
+    if unknown:
+        raise KeyError(
+            f"{unknown} are not elements of the loaded network "
+            f"({', '.join(SEED_ELEMENTS)}); setting them would do nothing."
+        )
+    return jnp.asarray([SEED_ELEMENTS.index(sp) for sp in names], dtype=jnp.int32)
+
+
+def element_vector(ratios, idx) -> jnp.ndarray:
+    """`b` (E,) with the elements at `idx` replaced by `ratios`. Traceable.
+
+    Bit-identical to `_element_vector({name: value, ...})` for the same
+    numbers: both write into the same `_base_vector()`.
+    """
+    return jnp.asarray(_base_vector()).at[idx].set(
+        jnp.asarray(ratios, dtype=jnp.float64)
+    )
+
+
+def _element_vector(ratios: dict | None = None) -> np.ndarray:
+    """`b` (E,) for the current config, host-side."""
+    if ratios:
+        b = _base_vector()
+        for sp, value in ratios.items():
+            if sp not in SEED_ELEMENTS:
+                raise KeyError(
+                    f"ratios[{sp!r}] is not an element of the loaded network "
+                    f"({', '.join(SEED_ELEMENTS)})."
+                )
+            b[SEED_ELEMENTS.index(sp)] = float(value)
+        return b
+    if _CFG.use_solar is True:
+        return _preset_vector()
+    return _base_vector()
 
 
 def _abun_lowT_residual(x, O_H, C_H, He_H, N_H):
@@ -205,158 +414,6 @@ def column_atom_loss(y, y_ini, dz, compo_arr=compo_array):
     return jnp.where(col0 == 0.0, 0.0, (col - col0) / jnp.where(col0 == 0.0, 1.0, col0))
 
 
-def _effective_ratios(new_str: str) -> dict:
-    """Element -> ratio to H as written into the FastChem input."""
-    effective = {}
-    for line in new_str.splitlines():
-        fields = line.split()
-        if fields and not line.lstrip().startswith("#"):
-            effective[fields[0]] = 10.0 ** (float(fields[1]) - 12.0)
-    return effective
-
-
-def _report_fastchem_input(effective: dict, ele_list: list, solar_ele) -> None:
-    print("FastChem input ratios (to H): " + ", ".join(
-        f"{sp}/H={effective[sp]:.8g}" for sp in ("He", "C", "N", "O", "S")
-        if sp in effective
-    ))
-    ignored = [
-        f"{sp}_H={getattr(_CFG, sp + '_H')} (effective {effective[sp]:.8g})"
-        for sp in effective
-        if hasattr(_CFG, sp + "_H") and (_CFG.use_solar or sp not in ele_list)
-    ]
-    if _CFG.use_solar and hasattr(_CFG, "fastchem_met_scale"):
-        ignored.append(f"fastchem_met_scale={_CFG.fastchem_met_scale}")
-    if ignored:
-        warnings.warn(
-            "EQ initialization ignored settings: " + "; ".join(ignored)
-            + f". Abundance preset: {solar_ele}. "
-            + ("use_solar=True uses the file unchanged; select use_solar=False "
-               "to customize network elements. " if _CFG.use_solar else
-               "Only atom_list elements other than H use <X>_H; other metals "
-               "use the file scaled by fastchem_met_scale. ")
-            + "For the shipped atom lists, helium comes from the selected preset.",
-            UserWarning, stacklevel=3,
-        )
-
-
-def _run_fastchem_locked(pco, Tco, ratios=None) -> None:
-    """Inner FastChem driver. Caller must already hold the flock.
-
-    ``ratios`` (element -> number ratio to H) overrides the config's ``<X>_H``
-    for the elements it names; every other element follows the config path.
-    """
-    solar_ele = _fastchem_solar_abundance_path()
-    if _CFG.use_ion is True:
-        copyfile(
-            _FC_INPUT / "parameters_ion.dat",
-            _FC_INPUT / "parameters.dat",
-        )
-    else:
-        copyfile(
-            _FC_INPUT / "parameters_wo_ion.dat",
-            _FC_INPUT / "parameters.dat",
-        )
-
-    with open(solar_ele, "r") as f:
-        new_str = ""
-        ele_list = list(_CFG.atom_list)
-        ele_list.remove("H")
-
-        # Elements FastChem knows but the network does not: rescaled by
-        # `fastchem_met_scale` instead of read from cfg.<X>_H. Membership-only
-        # (`sp in fc_list`), so order here is inert; the ROW ORDER of
-        # solar_element_abundances.dat IS load-bearing (FastChem hard-codes
-        # slot indices; see runtime_validation._FASTCHEM_ELEMENT_ORDER).
-        fc_list = [
-            "C",
-            "N",
-            "O",
-            "P",
-            "S",
-            "Si",
-            "Ti",
-            "V",
-            "Cl",
-            "K",
-            "Na",
-            "Mg",
-            "F",
-            "Ca",
-            "Fe",
-        ]
-
-        if _CFG.use_solar is True and not ratios:
-            new_str = f.read()
-            print("Initializing with the default solar abundance.")
-        else:
-            quiet = bool(ratios)   # per-lane seeds: no per-call banner
-            if not quiet:
-                print("Initializing with the customized elemental abundance:")
-                print("{:4}".format("H") + str("1."))
-            for line in f.readlines():
-                li = line.split()
-                sp = li[0].strip()
-                if ratios and sp in ratios:
-                    line = sp + "\t" + "{0:.4f}".format(12.0 + np.log10(ratios[sp])) + "\n"
-                elif sp in ele_list:
-                    sp_abun = getattr(_CFG, sp + "_H")
-                    fc_abun = 12.0 + np.log10(sp_abun)
-                    line = sp + "\t" + "{0:.4f}".format(fc_abun) + "\n"
-                    if not quiet:
-                        print("{:4}".format(sp) + "{0:.4E}".format(sp_abun))
-                elif sp in fc_list:
-                    sol_ratio = li[1].strip()
-                    if hasattr(_CFG, "fastchem_met_scale"):
-                        met_scale = _CFG.fastchem_met_scale
-                    else:
-                        met_scale = 1.0
-                        print(
-                            "fastchem_met_scale not specified in the config. "
-                            "Using solar metallicity for other elements not included in vulcan."
-                        )
-                    new_ratio = float(sol_ratio) + np.log10(met_scale)
-                    line = sp + "\t" + "{0:.4f}".format(new_ratio) + "\n"
-                new_str += line
-
-        with open(_FC_INPUT / "element_abundances_vulcan.dat", "w") as fout:
-            fout.write(new_str)
-
-    # Report the generated input, not the potentially inactive config values.
-    # A ratios call is a per-lane seed: the report and the ignored-settings
-    # warning describe the config path only.
-    effective = {} if ratios else _effective_ratios(new_str)
-    if effective:
-        _report_fastchem_input(effective, ele_list, solar_ele)
-
-    _FC_VULCAN_TP.parent.mkdir(parents=True, exist_ok=True)
-    _FC_OUTPUT.mkdir(parents=True, exist_ok=True)
-    with open(_FC_VULCAN_TP, "w") as fout:
-        ost = "#p (bar)    T (K)\n"
-        for n, p in enumerate(pco):
-            ost += (
-                "{:.3e}".format(p / 1.0e6)
-                + "\t"
-                + "{:.1f}".format(Tco[n])
-                + "\n"
-            )
-        ost = ost[:-1]
-        fout.write(ost)
-
-    _ensure_fastchem_binary()
-    try:
-        subprocess.check_call(
-            ["./fastchem input/config.input"],
-            shell=True,
-            cwd=str(_FC_DIR),
-        )
-    except Exception:
-        print(
-            "\n FastChem cannot run properly. Try compile it by running make under /fastchem_vulcan\n"
-        )
-        raise
-
-
 def _build_charge_list_if_ion(charge_list: list[str]) -> None:
     """Append every species with non-zero electron count to `charge_list`."""
     for sp in species:
@@ -365,54 +422,53 @@ def _build_charge_list_if_ion(charge_list: list[str]) -> None:
 
 
 def eq_column(pco, Tco, M, ratios=None) -> np.ndarray:
-    """FastChem equilibrium column ``(nz, ni)`` in absolute densities at the
-    given pressure (dyne/cm^2) and temperature columns, ``M`` the gas density.
-    ``ratios`` (element -> number ratio to H) overrides the config's ``<X>_H``.
-    Species FastChem does not know stay zero. Host-side, one subprocess per
-    call, serialized on the flock; a batched caller pays one call per lane.
+    """Equilibrium column ``(nz, ni)`` in absolute number densities.
 
-    Invoke + read + cleanup all happen inside one flock so a concurrent
-    worker can't clobber the output mid-read.
+    ``pco`` is in dyne/cm^2, ``Tco`` in K and ``M`` the total gas density.
+    ``ratios`` (element -> number ratio to H) overrides the config's ``<X>_H``
+    for the elements it names. Species outside the seed stay zero. Host-side:
+    a batched caller should drive `eq_seed` under `vmap` instead.
     """
-    _FC_DIR.mkdir(exist_ok=True)
-    _FC_SENTINEL.touch(exist_ok=True)
-    with open(_FC_SENTINEL, "r") as lock_f:
-        fcntl.flock(lock_f, fcntl.LOCK_EX)
-        try:
-            _run_fastchem_locked(np.asarray(pco), np.asarray(Tco), ratios)
-            fc = np.genfromtxt(
-                _FC_VULCAN_EQ,
-                names=True,
-                dtype=None,
-                skip_header=0,
+    if _CFG.use_ion is True:
+        raise RuntimeError(
+            "ini_mix='EQ' does not support use_ion=True: the equilibrium seed "
+            "is gas-phase and neutral, with no electron balance. Initialize an "
+            "ionized run with ini_mix='const_mix' or 'vulcan_ini'."
+        )
+    b = _element_vector(ratios)
+    Tco = np.asarray(Tco, dtype=np.float64)
+    p_bar = np.asarray(pco, dtype=np.float64) / 1.0e6
+    if not ratios:
+        print(
+            f"Equilibrium seed from {_abundance_path()}: "
+            + ", ".join(
+                f"{sp}/H={b[SEED_ELEMENTS.index(sp)]:.8g}"
+                for sp in ("He", "C", "N", "O", "S")
+                if sp in SEED_ELEMENTS
             )
-            # Unlink under the lock so we can't strip another worker's
-            # freshly-written output before they parse it.
-            try:
-                _FC_VULCAN_EQ.unlink()
-            except FileNotFoundError:
-                pass
-        finally:
-            fcntl.flock(lock_f, fcntl.LOCK_UN)
-    y = np.zeros((len(pco), chem_funs.ni), dtype=np.float64)
-    gas_tot = np.asarray(M)
-    for sp_idx, sp in enumerate(species):
-        if sp == "P":
-            y[:, sp_idx] = fc["P_1"] * gas_tot
-        elif sp in fc.dtype.names:
-            y[:, sp_idx] = fc[sp] * gas_tot
-        else:
-            print(sp + " not included in fastchem.")
-    return y
+        )
+    ymix = np.asarray(
+        _seed_jit()(jnp.asarray(Tco), jnp.asarray(p_bar), jnp.asarray(b))
+    )
+    if not np.isfinite(ymix).all():
+        conv = seed_diagnostics(Tco, p_bar, b)["converged"]
+        bad = np.flatnonzero(~conv)
+        raise RuntimeError(
+            f"the equilibrium seed did not converge in "
+            f"{_CFG.fastchem_newton_max_iter} iterations at "
+            f"{bad.size} of {Tco.size} layers, tol={_CFG.fastchem_newton_tol:g}: "
+            + "; ".join(
+                f"layer {i} (T={Tco[i]:.1f} K, p={p_bar[i]:.3e} bar)"
+                for i in bad[:5]
+            )
+            + ". Raise fastchem_newton_max_iter."
+        )
+    return ymix * np.asarray(M, dtype=np.float64)[:, None]
 
 
 def _load_eq_y(data_atm) -> tuple[np.ndarray, list[str]]:
-    """Run FastChem at the atmosphere's own T-P and the config's abundances."""
-    y = eq_column(data_atm.pco, data_atm.Tco, data_atm.M)
-    charge_list: list[str] = []
-    if _CFG.use_ion is True:
-        _build_charge_list_if_ion(charge_list)
-    return y, charge_list
+    """Seed the atmosphere's own T-P at the config's elemental abundances."""
+    return eq_column(data_atm.pco, data_atm.Tco, data_atm.M), []
 
 
 def _load_vulcan_ini_y(data_atm) -> tuple[np.ndarray, list[str]]:

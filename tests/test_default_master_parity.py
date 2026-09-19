@@ -55,18 +55,13 @@ import numpy as np
 master_root = Path(sys.argv[1])
 out_npz = Path(sys.argv[2])
 backup_dir = Path(sys.argv[3])
-stock_fastchem = Path(sys.argv[4])
-count_max = int(sys.argv[5])
-jax_fastchem_bin = Path(sys.argv[6])
-update_frq = int(sys.argv[7])
-diff_esc = [sp for sp in sys.argv[8].split(",") if sp]
+count_max = int(sys.argv[4])
+update_frq = int(sys.argv[5])
+diff_esc = [sp for sp in sys.argv[6].split(",") if sp]
 
 TRACKED_FILES = [
     Path("vulcan_cfg.py"),
     Path("chem_funs.py"),
-    Path("fastchem_vulcan/fastchem"),
-    Path("fastchem_vulcan/input/nasa9_logK_SNCHOPTi.dat"),
-    Path("fastchem_vulcan/input/solar_element_abundances.dat"),
     Path("fastchem_vulcan/input/element_abundances_vulcan.dat"),
     Path("fastchem_vulcan/input/parameters.dat"),
     Path("fastchem_vulcan/input/vulcan_TP/vulcan_TP.dat"),
@@ -125,24 +120,6 @@ def run() -> None:
             f"diff_esc = {diff_esc!r}\n"
         )
         (master_root / "vulcan_cfg.py").write_text(cfg_text + overrides)
-        shutil.copy2(
-            stock_fastchem,
-            master_root / "fastchem_vulcan/input/solar_element_abundances.dat",
-        )
-        # Stage the SAME FastChem binary both sides: two builds of the same
-        # source differ in the last printed digit of vulcan_EQ.dat (amplified
-        # ~n_atoms per species, observed up to 9.3e-7 on C6H6), which seeds a
-        # matched-step divergence far above the oracle's 3e-9 bar. The oracle
-        # compares VULCAN implementations, not FastChem compiler builds.
-        shutil.copy2(jax_fastchem_bin, master_root / "fastchem_vulcan/fastchem")
-        # Stage the JAX logK table too: upstream's nasa9_logK_SNCHOPTi.dat
-        # carries a DUPLICATE CH2_1 species block (double-counted singlet
-        # methylene shifts every element's equilibrium by ~1e-10..1e-7); the
-        # JAX copy deduplicates it (notes.md, Parity & bug guide, C5).
-        shutil.copy2(
-            jax_fastchem_bin.parent / "input/nasa9_logK_SNCHOPTi.dat",
-            master_root / "fastchem_vulcan/input/nasa9_logK_SNCHOPTi.dat",
-        )
 
         res = subprocess.run(
             [sys.executable, "make_chem_funs.py"],
@@ -459,19 +436,16 @@ def test_default_hd189_preloop_and_matched_steps_match_master(
     from oracle import oracle_worktree
 
     with tempfile.TemporaryDirectory(prefix="default_parity_") as tmp, \
-            oracle_worktree("vulcan2_ncho") as master_root:
+            oracle_worktree(
+                "vulcan2_ncho",
+                # The shipped default preset on both sides: an unmatched
+                # composition is a different atmosphere, not a parity result.
+                fastchem_abundance="solar_element_abundances.dat",
+            ) as master_root:
         tmp_path = Path(tmp)
         master_npz = tmp_path / "master_hd189.npz"
         jax_npz = tmp_path / "jax_hd189.npz"
         master_backup = tmp_path / "master_backup"
-        stock_fastchem = (
-            PACKAGE_ROOT / "fastchem_vulcan/input/solar_element_abundances.dat"
-        )
-        jax_fastchem_bin = PACKAGE_ROOT / "fastchem_vulcan" / "fastchem"
-        if not jax_fastchem_bin.exists():
-            from vulcan_jax.ini_abun import _ensure_fastchem_binary
-
-            _ensure_fastchem_binary()
 
         master_res = _run_script(
             _MASTER_SCRIPT,
@@ -479,9 +453,7 @@ def test_default_hd189_preloop_and_matched_steps_match_master(
                 master_root,
                 master_npz,
                 master_backup,
-                stock_fastchem,
                 count_max,
-                jax_fastchem_bin,
                 update_frq,
                 ",".join(diff_esc),
             ],
@@ -512,10 +484,10 @@ def test_default_hd189_preloop_and_matched_steps_match_master(
 
         assert list(jax["species"]) == list(master["species"])
         assert int(jax["nr"]) == int(master["nr"])
-        # Exact equality holds because _MASTER_SCRIPT stages the JAX-compiled
-        # FastChem binary: same binary + same inputs -> bit-identical
-        # vulcan_EQ.dat on both sides.
-        np.testing.assert_array_equal(jax["y_ini"], master["y_ini"])
+        # y_ini is NOT compared here: the two codes now seed from different
+        # equilibrium solvers (this port minimizes Gibbs energy on its own
+        # NASA-9 data, master shells out to FastChem). That comparison, with
+        # its measured bar, is tests/test_eq_seed.py.
         np.testing.assert_array_equal(jax["pco"], master["pco"])
         np.testing.assert_array_equal(jax["Tco"], master["Tco"])
         np.testing.assert_allclose(jax["Kzz"], master["Kzz"], rtol=1e-14, atol=0.0)
