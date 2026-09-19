@@ -48,7 +48,7 @@ def main() -> int:
     # with_pre_loop_setup already ran the photo pipeline once. Reset var.k_arr
     # to the post-rate-build, pre-photo values via setup_var_k, then re-run
     # Path A explicitly so there is a clean pre/post split.
-    import vulcan_jax.rates as _rates_mod
+    import vulcan_jax.rates_jax as _rates_mod
 
     _network = _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
 

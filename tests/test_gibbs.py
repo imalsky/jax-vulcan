@@ -1,9 +1,10 @@
-"""Validate gibbs.py against VULCAN-master/chem_funs.Gibbs and gibbs_sp.
+"""Validate the NASA-9 reverse-rate path against VULCAN-master's rev_rate.
 
-Compares:
-  - gibbs_sp_vector(coeffs, T)[species_idx, :]   vs   chem_funs.gibbs_sp(name, T)
-  - K_eq_array(net, g_sp, T)[i, :]               vs   chem_funs.Gibbs(i, T)
-  - Final reverse-rate array                      vs   VULCAN's data_var.k after rev_rate
+Runs master's setup until `data_var.k` holds forward AND reverse rates, then
+compares `rates_jax.build_rate_array` reverse slot for reverse slot. This is
+the only check that the Gibbs energies, the (kB T/P0)^dn factor and the
+forward/reverse pairing are right; a self-comparison against another copy of
+the same polynomial would prove nothing.
 """
 
 from __future__ import annotations
@@ -33,15 +34,16 @@ warnings.filterwarnings("ignore")
 def main() -> int:
     os.chdir(VULCAN_MASTER)
     sys.path.insert(0, str(VULCAN_MASTER))
+    import jax.numpy as jnp
+
     from vulcan_jax.config import default_config
 
     vulcan_cfg = default_config()  # noqa
     import store, op  # noqa
     from vulcan_jax.atm_setup import Atm
-    import vulcan_jax.chem_funs as chem_funs  # noqa
 
     import vulcan_jax.network as net_mod
-    import vulcan_jax.rates as rates_mod
+    import vulcan_jax.rates_jax as rates_jax
     import vulcan_jax.gibbs as gibbs_mod
 
     # === 1. VULCAN setup (build atm + read forward + reverse rates) ===
@@ -62,62 +64,25 @@ def main() -> int:
     T = np.asarray(data_atm.Tco, dtype=np.float64)
     M = np.asarray(data_atm.M, dtype=np.float64)
 
-    # === 2. JAX-side computation ===
+    # === 2. VULCAN-JAX computation on the same atmosphere ===
     net = net_mod.parse_network(vulcan_cfg.network)
     coeffs, present = gibbs_mod.load_nasa9(net.species, "thermo")
-    g_sp = gibbs_mod.gibbs_sp_vector(coeffs, T)
-    K_eq = gibbs_mod.K_eq_array(net, g_sp, T)
-    k_fwd = rates_mod.compute_forward_k(net, T, M)
-    k_full = gibbs_mod.fill_reverse_k(
-        net, k_fwd, K_eq, remove_list=vulcan_cfg.remove_list
+    k_full = np.asarray(
+        rates_jax.build_rate_array(
+            net,
+            jnp.asarray(T),
+            jnp.asarray(M),
+            coeffs,
+            remove_list=vulcan_cfg.remove_list,
+            use_lowT_caps=bool(getattr(vulcan_cfg, "use_lowT_limit_rates", False)),
+        )
     )
-
-    # === 3. Compare gibbs_sp per species ===
     print(f"NASA-9 coverage: {int(present.sum())}/{net.ni} species have files")
     missing = [sp for sp, p in zip(net.species, present) if not p]
     if missing:
         print(f"  Missing: {missing}")
 
-    max_err_gsp = 0.0
-    for j, sp in enumerate(net.species):
-        if not present[j]:
-            continue
-        ref = chem_funs.gibbs_sp(sp, T)
-        ours = g_sp[j]
-        err = np.max(np.abs(ours - ref) / np.maximum(np.abs(ref), 1e-30))
-        if err > max_err_gsp:
-            max_err_gsp = err
-    print(f"gibbs_sp max relative error: {max_err_gsp:.3e}")
-
-    # === 4. Compare K_eq per reaction ===
-    max_err_K = 0.0
-    n_compared = 0
-    n_fail = 0
-    for i in range(1, net.stop_rev_indx, 2):
-        if net.is_photo[i] or net.is_ion[i] or net.is_conden[i]:
-            continue
-        try:
-            ref = chem_funs.Gibbs(i, T)
-        except KeyError:
-            continue
-        ours = K_eq[i]
-        # K_eq spans many orders of magnitude; use relative error
-        err = np.max(np.abs(ours - ref) / np.maximum(np.abs(ref), 1e-300))
-        if err > max_err_K:
-            max_err_K = err
-        if err > 1e-8:
-            n_fail += 1
-            if n_fail <= 5:
-                print(
-                    f"  K_eq fail i={i}: {net.Rf.get(i)!r}  err={err:.2e}  "
-                    f"ours_max={ours.max():.3e}  ref_max={ref.max():.3e}"
-                )
-        n_compared += 1
-    print(
-        f"K_eq compared: {n_compared}  fails: {n_fail}  max relative error: {max_err_K:.3e}"
-    )
-
-    # === 5. Compare reverse k against VULCAN's data_var.k ===
+    # === 3. Compare reverse k against VULCAN's data_var.k ===
     max_err_rev = 0.0
     n_rev = 0
     n_rev_fail = 0
@@ -139,7 +104,7 @@ def main() -> int:
         f"reverse k compared: {n_rev}  fails: {n_rev_fail}  max relative error: {max_err_rev:.3e}"
     )
 
-    # === 6. Check that beyond stop_rev_indx all reverses are zero ===
+    # === 4. Check that beyond stop_rev_indx all reverses are zero ===
     bad_zero = 0
     for i in range(net.stop_rev_indx + 1, net.nr + 1, 2):
         if k_full[i].max() != 0.0:
@@ -147,12 +112,7 @@ def main() -> int:
     print(f"reverses beyond stop_rev_indx that should be zero: {bad_zero} non-zero")
 
     print()
-    ok = (
-        max_err_gsp < 1e-10
-        and max_err_K < 1e-8
-        and max_err_rev < 1e-8
-        and bad_zero == 0
-    )
+    ok = max_err_rev < 1e-8 and bad_zero == 0
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 

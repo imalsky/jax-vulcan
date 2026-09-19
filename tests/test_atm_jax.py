@@ -2,9 +2,11 @@
 
 Pins two things:
   1. Equivalence: `build_atm_static` reproduces the production `AtmStatic`
-     (`make_atm_static`) field for field at machine precision, plus targeted
-     vm/settling branch checks. (`atm_type='table'` and `use_moldiff=off`
-     intentionally differ; build_atm_static is the more self-consistent one.)
+     (`make_atm_static`) field for field at machine precision -- the two
+     wirings agree, the kernels underneath being shared. (`atm_type='table'`
+     and `use_moldiff=off` intentionally differ; build_atm_static is the more
+     self-consistent one.) Plus the vm expression against the verbatim
+     vm_branch port, and settling.
   2. Differentiability: forward-mode tangents match finite differences for
      the gs, Tco, pressure-grid, Kzz-profile, and Heng+14 T(P) front-ends.
 """
@@ -106,60 +108,6 @@ def _synthetic_mol_diff_setup():
     dz = np.full(nz, 4e5) + rng.uniform(0, 1e4, nz)
     alpha = atm_setup._alpha_array_for_base("H2", species_list, lambda s: masses[s])
     return species_list, ms_arr, nz, ni, Tco, n_0, g, Hp, dz, alpha
-
-
-def test_mol_diff_vm_branch_matches_host():
-    """_mol_diff (vm mode) reproduces compute_mol_diff at machine precision."""
-    from vulcan_jax.atm_jax import _mol_diff
-
-    species_list, ms_arr, nz, ni, Tco, n_0, g, Hp, dz, alpha = (
-        _synthetic_mol_diff_setup()
-    )
-    cfg = types.SimpleNamespace(
-        use_moldiff=True,
-        atm_base="H2",
-        non_gas_sp=["H2O_l_s"],
-        use_vm_mol=True,
-    )
-    ref = atm_setup.compute_mol_diff(
-        cfg, Tco, n_0, g, Hp, dz, ms_arr, alpha, species_list
-    )
-    nongas = np.array([s in cfg.non_gas_sp for s in species_list])
-    phys = PhysicalInputs(
-        pco=jnp.ones(nz),
-        Tco=jnp.asarray(Tco),
-        ymix=jnp.ones((nz, ni)),
-        Kzz=jnp.ones(nz - 1),
-        vz=jnp.zeros(nz - 1),
-        gs=jnp.float64(2140.0),
-        Rp=jnp.float64(8e9),
-    )
-    spec = AtmSpec(
-        nz=nz,
-        ni=ni,
-        pref_indx=0,
-        atm_base="H2",
-        ms=jnp.asarray(ms_arr),
-        alpha=jnp.asarray(alpha),
-        gas_indx_mask=jnp.asarray(~nongas),
-        nongas_mask=jnp.asarray(nongas),
-        diff_esc_mask=jnp.zeros(ni, dtype=jnp.bool_),
-        settle_coeff=jnp.zeros(ni),
-        top_flux=jnp.zeros(ni),
-        bot_flux=jnp.zeros(ni),
-        bot_vdep=jnp.zeros(ni),
-        use_moldiff=True,
-        use_vm_mol=True,
-        use_settling=False,
-        use_topflux=False,
-        use_botflux=False,
-    )
-    Dzz, Dzz_cen, vm = _mol_diff(
-        phys, spec, jnp.asarray(n_0), jnp.asarray(g), jnp.asarray(Hp), jnp.asarray(dz)
-    )
-    assert _rel(Dzz, ref["Dzz"]) < 1e-12
-    assert _rel(Dzz_cen, ref["Dzz_cen"]) < 1e-12
-    assert _rel(vm, ref["vm"]) < 1e-12
 
 
 def _reference_vm_branch_vm(

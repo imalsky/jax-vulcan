@@ -869,7 +869,7 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
     from .atm_setup import Atm
     from .ini_abun import InitialAbun
     from . import op_jax as _op_jax
-    from . import rates as _rates_mod
+    from . import rates_jax as _rates_mod
     from . import photo_setup as _photo_setup
 
     stellar = load_stellar_flux(cfg)

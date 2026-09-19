@@ -73,7 +73,7 @@ _VULCAN_JAX_MODULE_NAMES = (
     "vulcan_jax.legacy_io",
     "vulcan_jax.chem_funs",
     "vulcan_jax.network",
-    "vulcan_jax.rates",
+    "vulcan_jax.rates_jax",
     "vulcan_jax.gibbs",
     "vulcan_jax.chem",
     "vulcan_jax.atm_setup",

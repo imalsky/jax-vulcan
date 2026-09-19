@@ -50,19 +50,17 @@ import jax.numpy as jnp
 import numpy as np
 
 from .atm_setup import (
-    _Dzz_gen_for_base,
     _VISCOSITY_TABLE,
-    _scan_down_mu_dz_g,
-    _scan_up_mu_dz_g,
     compute_mean_mass,
     compute_pico,
+    mol_diff_jax,
+    mu_dz_g_jax,
     settling_coeff_array,
     settling_velocity_jax,
     surface_gravity,
 )
 from .jax_step import AtmStatic
-from .atm_refresh import recompute_vm_jax
-from .phy_const import Navo, kb
+from .phy_const import kb
 
 jax.config.update("jax_enable_x64", True)
 
@@ -130,42 +128,26 @@ def pco_from_endpoints(P_b, P_t, nz: int) -> jnp.ndarray:
 
 
 def _mu_dz_g(phys: PhysicalInputs, spec: AtmSpec):
-    """On-graph reproduction of `atm_setup.compute_mu_dz_g` (no host asarray).
+    """Mean mass plus the hydrostatic cascade, with no host `np.asarray`.
 
-    Returns (mu, g, Hp, dz, dzi, Ti, Hpi). The discrete `pref_indx` anchor is
-    taken from `spec` and held fixed, so the two height-integration scans run
-    exactly as in the host path.
+    The height integration is `atm_setup.mu_dz_g_jax`, the same body the host
+    setup path runs; only the inputs differ (`pico` is recomputed from the
+    differentiable `pco`, and the discrete `pref_indx` anchor comes from
+    `spec` and is held fixed). Returns (mu, g, Hp, dz, dzi, Ti, Hpi).
     """
-    nz = spec.nz
-    pref = spec.pref_indx
     pico = compute_pico(phys.pco)
     mu = compute_mean_mass(phys.ymix, spec.ms)
-
-    gz_up, Hp_up, dz_up, _z_after_up = _scan_up_mu_dz_g(
-        pref, phys.gs, phys.Rp, phys.Tco, mu, pico, nz
+    gz, Hp, dz, _zco, _zmco, dzi, Ti, Hpi = mu_dz_g_jax(
+        spec.pref_indx, phys.gs, phys.Rp, phys.Tco, mu, pico, spec.nz
     )
-    gz = jnp.zeros(nz, dtype=jnp.float64).at[pref:nz].set(gz_up)
-    Hp = jnp.zeros(nz, dtype=jnp.float64).at[pref:nz].set(Hp_up)
-    dz = jnp.zeros(nz, dtype=jnp.float64).at[pref:nz].set(dz_up)
-
-    if pref > 0:
-        gz_dn, Hp_dn, dz_dn, _z_dn = _scan_down_mu_dz_g(
-            pref, phys.gs, phys.Rp, phys.Tco, mu, pico, z_at_pref=0.0
-        )
-        gz = gz.at[:pref].set(gz_dn)
-        Hp = Hp.at[:pref].set(Hp_dn)
-        dz = dz.at[:pref].set(dz_dn)
-
-    dzi = 0.5 * (dz[1:] + jnp.roll(dz, 1)[1:])
-    Ti = 0.5 * (phys.Tco[:-1] + jnp.roll(phys.Tco, -1)[:-1])
-    Hpi = 0.5 * (Hp[:-1] + jnp.roll(Hp, -1)[:-1])
     return mu, gz, Hp, dz, dzi, Ti, Hpi
 
 
 def _mol_diff(phys: PhysicalInputs, spec: AtmSpec, n_0, gz, Hp, dz):
-    """On-graph reproduction of `atm_setup.compute_mol_diff`.
+    """Molecular diffusion for `build_atm_static`: (Dzz, Dzz_cen, vm).
 
-    Returns (Dzz, Dzz_cen, vm). All zero when `use_moldiff` is off.
+    The body is `atm_setup.mol_diff_jax`, the same one the host setup path
+    runs. All three are zero when `use_moldiff` is off.
     """
     nz, ni = spec.nz, spec.ni
     if not spec.use_moldiff:
@@ -174,32 +156,18 @@ def _mol_diff(phys: PhysicalInputs, spec: AtmSpec, n_0, gz, Hp, dz):
             jnp.zeros((nz, ni), dtype=jnp.float64),  # Dzz_cen (cell)
             jnp.zeros((nz - 1, ni), dtype=jnp.float64),  # vm (interface)
         )
-
-    Dzz_gen = _Dzz_gen_for_base(spec.atm_base)
-    Tco = phys.Tco
-    Tco_i = (Tco[1:] + Tco[:-1]) * 0.5
-    n0_i = (n_0[1:] + n_0[:-1]) * 0.5
-    Dzz = jax.vmap(lambda mi: Dzz_gen(Tco_i, n0_i, mi), out_axes=1)(spec.ms)
-    Dzz_cen = jax.vmap(lambda mi: Dzz_gen(Tco, n_0, mi), out_axes=1)(spec.ms)
-
-    # Non-gaseous species get zero diffusion on the interfaces; because the
-    # advective term vm = -Dzz * drift below reuses this interface Dzz, the
-    # zeroing carries straight into vm (no separate condensation gate needed).
-    nongas = spec.nongas_mask[None, :]
-    Dzz = jnp.where(nongas, 0.0, Dzz)
-
-    vm = jnp.zeros((nz - 1, ni), dtype=jnp.float64)
-    if spec.use_vm_mol:
-        # Interface-centered upwind advective velocity (nz-1, ni), matching
-        # VULCAN's vm_branch op.update_mu_dz. ONE implementation, in
-        # atm_refresh (see its docstring); Hpi/dzi are the same interface means
-        # _mu_dz_g uses, recomputed here so this stays a pure function of
-        # (gz, Hp, dz).
-        Hpi = 0.5 * (Hp[:-1] + Hp[1:])
-        dzi = 0.5 * (dz[1:] + dz[:-1])
-        vm = recompute_vm_jax(gz, Hpi, dzi, Dzz, spec.ms, spec.alpha, Tco,
-                              kb, Navo)
-    return Dzz, Dzz_cen, vm
+    return mol_diff_jax(
+        spec.atm_base,
+        phys.Tco,
+        n_0,
+        gz,
+        Hp,
+        dz,
+        spec.ms,
+        spec.alpha,
+        spec.nongas_mask,
+        use_vm_mol=spec.use_vm_mol,
+    )
 
 
 def build_atm_static(phys: PhysicalInputs, spec: AtmSpec) -> AtmStatic:

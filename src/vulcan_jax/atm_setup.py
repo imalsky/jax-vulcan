@@ -441,44 +441,18 @@ def _scan_down_mu_dz_g(
     return gz_rev[::-1], Hp_rev[::-1], dz_rev[::-1], z_rev[::-1]
 
 
-def compute_mu_dz_g(
-    cfg,
-    ymix: np.ndarray,
-    ms_arr: np.ndarray,
-    pico: np.ndarray,
-    Tco: np.ndarray,
-) -> dict[str, np.ndarray | int]:
-    """Build (mu, g, gs, Hp, dz, dzi, zco, zmco, pref_indx, [Ti, Hpi])."""
-    nz = int(Tco.shape[0])
-    pico_j = jnp.asarray(pico, dtype=jnp.float64)
-    Tco_j = jnp.asarray(Tco, dtype=jnp.float64)
-    mu_j = compute_mean_mass(
-        jnp.asarray(ymix, dtype=jnp.float64), jnp.asarray(ms_arr, dtype=jnp.float64)
-    )
+def mu_dz_g_jax(pref_indx: int, gs, Rp, Tco, mu, pico, nz: int):
+    """Hydrostatic height integration on the JAX graph, anchored at `pref_indx`.
 
-    gs = surface_gravity(cfg)
-    Rp = float(cfg.Rp)
-    rocky = bool(cfg.rocky)
-    Pb = float(cfg.P_b)
+    ONE implementation: the host setup path (:func:`compute_mu_dz_g`) and the
+    differentiable builder (`atm_jax._mu_dz_g`) both call this, so no
+    reassociation can move float64 bits between them. `pref_indx` is a discrete
+    host-side choice and is passed in.
 
-    # `pref_indx` anchors g(z)=gs: gas giants with P_b >= 1 bar anchor at the
-    # layer nearest 1 bar (log10 pico = 6 cgs); rocky planets at index 0.
-    pico_host = np.asarray(pico_j)
-    if (not rocky) and Pb >= 1e6:
-        pref_indx = int(
-            min(range(nz + 1), key=lambda i: abs(np.log10(pico_host[i]) - 6.0))
-        )
-    else:
-        pref_indx = 0
-
+    Returns (g, Hp, dz, zco, zmco, dzi, Ti, Hpi) as jnp arrays.
+    """
     gz_up, Hp_up, dz_up, z_after_up = _scan_up_mu_dz_g(
-        pref_indx,
-        gs,
-        Rp,
-        Tco_j,
-        mu_j,
-        pico_j,
-        nz,
+        pref_indx, gs, Rp, Tco, mu, pico, nz
     )
     gz = jnp.zeros(nz, dtype=jnp.float64).at[pref_indx:nz].set(gz_up)
     Hp = jnp.zeros(nz, dtype=jnp.float64).at[pref_indx:nz].set(Hp_up)
@@ -490,13 +464,7 @@ def compute_mu_dz_g(
 
     if pref_indx > 0:
         gz_dn, Hp_dn, dz_dn, z_dn = _scan_down_mu_dz_g(
-            pref_indx,
-            gs,
-            Rp,
-            Tco_j,
-            mu_j,
-            pico_j,
-            z_at_pref=0.0,
+            pref_indx, gs, Rp, Tco, mu, pico, z_at_pref=0.0
         )
         gz = gz.at[:pref_indx].set(gz_dn)
         Hp = Hp.at[:pref_indx].set(Hp_dn)
@@ -505,6 +473,45 @@ def compute_mu_dz_g(
 
     zmco = 0.5 * (zco[:-1] + jnp.roll(zco, -1)[:-1])
     dzi = 0.5 * (dz[1:] + jnp.roll(dz, 1)[1:])
+    Ti = 0.5 * (Tco[:-1] + jnp.roll(Tco, -1)[:-1])
+    Hpi = 0.5 * (Hp[:-1] + jnp.roll(Hp, -1)[:-1])
+    return gz, Hp, dz, zco, zmco, dzi, Ti, Hpi
+
+
+def compute_mu_dz_g(
+    cfg,
+    ymix: np.ndarray,
+    ms_arr: np.ndarray,
+    pico: np.ndarray,
+    Tco: np.ndarray,
+) -> dict[str, np.ndarray | int]:
+    """Build (mu, g, gs, Hp, dz, dzi, zco, zmco, pref_indx, [Ti, Hpi]).
+
+    Host wrapper over :func:`mu_dz_g_jax`: it picks the discrete `pref_indx`
+    and freezes the result to NumPy.
+    """
+    nz = int(Tco.shape[0])
+    pico_j = jnp.asarray(pico, dtype=jnp.float64)
+    Tco_j = jnp.asarray(Tco, dtype=jnp.float64)
+    mu_j = compute_mean_mass(
+        jnp.asarray(ymix, dtype=jnp.float64), jnp.asarray(ms_arr, dtype=jnp.float64)
+    )
+
+    gs = surface_gravity(cfg)
+
+    # `pref_indx` anchors g(z)=gs: gas giants with P_b >= 1 bar anchor at the
+    # layer nearest 1 bar (log10 pico = 6 cgs); rocky planets at index 0.
+    pico_host = np.asarray(pico_j)
+    if (not bool(cfg.rocky)) and float(cfg.P_b) >= 1e6:
+        pref_indx = int(
+            min(range(nz + 1), key=lambda i: abs(np.log10(pico_host[i]) - 6.0))
+        )
+    else:
+        pref_indx = 0
+
+    gz, Hp, dz, zco, zmco, dzi, Ti, Hpi = mu_dz_g_jax(
+        pref_indx, gs, float(cfg.Rp), Tco_j, mu_j, pico_j, nz
+    )
 
     out: dict[str, np.ndarray | int] = {
         "mu": np.asarray(mu_j),
@@ -518,8 +525,6 @@ def compute_mu_dz_g(
         "pref_indx": pref_indx,
     }
     if bool(cfg.use_moldiff):
-        Ti = 0.5 * (Tco_j[:-1] + jnp.roll(Tco_j, -1)[:-1])
-        Hpi = 0.5 * (Hp[:-1] + jnp.roll(Hp, -1)[:-1])
         out["Ti"] = np.asarray(Ti)
         out["Hpi"] = np.asarray(Hpi)
     return out
@@ -668,6 +673,44 @@ def _alpha_array_for_base(
     return alpha
 
 
+def mol_diff_jax(atm_base: str, Tco, n_0, g, Hp, dz, ms, alpha, nongas_mask,
+                 *, use_vm_mol: bool):
+    """Molecular diffusion on the JAX graph: (Dzz, Dzz_cen, vm).
+
+    ONE implementation: the host setup path (:func:`compute_mol_diff`) and the
+    differentiable builder (`atm_jax._mol_diff`) both call this. Callers gate
+    `use_moldiff` themselves. `Dzz` is on the cell interfaces (nz-1, ni),
+    `Dzz_cen` the cell-centered companion kept for the `.vul` diagnostic
+    surface, `vm` the interface-centered advective (drift) component.
+    """
+    Dzz_gen = _Dzz_gen_for_base(atm_base)
+
+    # Interface values for the (nz-1, ni) Dzz array.
+    Tco_i = (Tco[1:] + Tco[:-1]) * 0.5
+    n0_i = (n_0[1:] + n_0[:-1]) * 0.5
+    Dzz = jax.vmap(lambda mi: Dzz_gen(Tco_i, n0_i, mi), out_axes=1)(ms)
+    Dzz_cen = jax.vmap(lambda mi: Dzz_gen(Tco, n_0, mi), out_axes=1)(ms)
+
+    # Non-gaseous species (e.g. H2O_l_s) get zero diffusion on the interfaces;
+    # because vm below reuses this interface Dzz, the zeroing carries straight
+    # into vm with no separate condensation gate.
+    Dzz = jnp.where(nongas_mask[None, :], 0.0, Dzz)
+
+    if not use_vm_mol:
+        return Dzz, Dzz_cen, jnp.zeros_like(Dzz)
+
+    # Interface-centered upwind drift velocity (vm_branch op.update_mu_dz):
+    # vm = -Dzz * (1/H_i - 1/Hp + thermal) on cell interfaces, using the same
+    # arithmetic means mu_dz_g_jax forms for Ti/Hpi/dzi. ONE implementation, in
+    # atm_refresh: the runner refreshes vm in-loop with the identical formula,
+    # and separately-maintained copies would let a reassociation move float64
+    # bits and churn step counts.
+    Hpi = 0.5 * (Hp[:-1] + Hp[1:])  # (nz-1,)
+    dzi = 0.5 * (dz[1:] + dz[:-1])  # (nz-1,)
+    vm = recompute_vm_jax(g, Hpi, dzi, Dzz, ms, alpha, Tco, kb, Navo)
+    return Dzz, Dzz_cen, vm
+
+
 def compute_mol_diff(
     cfg,
     Tco: np.ndarray,
@@ -681,63 +724,36 @@ def compute_mol_diff(
 ) -> dict[str, np.ndarray]:
     """Build (Dzz, Dzz_cen, vm) for the cfg's `atm_base`.
 
-    `Dzz` is the molecular-diffusion coefficient on the cell interfaces
-    (nz-1, ni); `Dzz_cen` is the cell-centered companion kept for the `.vul`
-    diagnostic surface. `vm` is the interface-centered advective (drift)
-    component of molecular diffusion (nz-1, ni), zero unless `use_vm_mol`.
-    When use_moldiff=False, all three return as zeros.
+    Host wrapper over :func:`mol_diff_jax`; all three are zeros when
+    `use_moldiff` is off.
     """
     nz = int(Tco.shape[0])
     ni = len(species_list)
-    Tco_j = jnp.asarray(Tco, dtype=jnp.float64)
-    n0_j = jnp.asarray(n_0, dtype=jnp.float64)
-    ms_j = jnp.asarray(ms_arr, dtype=jnp.float64)
-
-    out: dict[str, np.ndarray] = {
-        "Dzz": np.zeros((nz - 1, ni), dtype=np.float64),
-        "Dzz_cen": np.zeros((nz, ni), dtype=np.float64),
-        "vm": np.zeros((nz - 1, ni), dtype=np.float64),
-    }
     if not bool(cfg.use_moldiff):
-        return out
+        return {
+            "Dzz": np.zeros((nz - 1, ni), dtype=np.float64),
+            "Dzz_cen": np.zeros((nz, ni), dtype=np.float64),
+            "vm": np.zeros((nz - 1, ni), dtype=np.float64),
+        }
 
-    atm_base = cfg.atm_base
-    Dzz_gen = _Dzz_gen_for_base(atm_base)
-
-    # Interface values for the (nz-1, ni) Dzz array.
-    Tco_i = (Tco_j[1:] + Tco_j[:-1]) * 0.5
-    n0_i = (n0_j[1:] + n0_j[:-1]) * 0.5
-
-    Dzz = jax.vmap(lambda mi: Dzz_gen(Tco_i, n0_i, mi), out_axes=1)(ms_j)
-    Dzz_cen = jax.vmap(lambda mi: Dzz_gen(Tco_j, n0_j, mi), out_axes=1)(ms_j)
-
-    # Non-gaseous species (e.g. H2O_l_s) get zero diffusion on interfaces.
-    for sp in cfg.non_gas_sp:
-        if sp in species_list:
-            Dzz = Dzz.at[:, species_list.index(sp)].set(0.0)
-
-    out["Dzz"] = np.asarray(Dzz)
-    out["Dzz_cen"] = np.asarray(Dzz_cen)
-
-    if bool(getattr(cfg, "use_vm_mol", False)):
-        g_j = jnp.asarray(g, dtype=jnp.float64)
-        Hp_j = jnp.asarray(Hp, dtype=jnp.float64)
-        dz_j = jnp.asarray(dz, dtype=jnp.float64)
-        alpha_j = jnp.asarray(alpha_arr, dtype=jnp.float64)
-        # Interface-centered upwind drift velocity (vm_branch op.update_mu_dz):
-        # vm = -Dzz * (1/H_i - 1/Hp + thermal) on cell interfaces, using the
-        # same arithmetic means compute_mu_dz_g forms for Ti/Hpi/dzi. ONE
-        # implementation, in atm_refresh: the runner refreshes vm in-loop with
-        # the identical formula, and three separately-maintained copies would
-        # let a reassociation move float64 bits and churn step counts.
-        Hpi = 0.5 * (Hp_j[:-1] + Hp_j[1:])  # (nz-1,)
-        dzi = 0.5 * (dz_j[1:] + dz_j[:-1])  # (nz-1,)
-        # `Dzz` is already zeroed on the non-gas interfaces above, so vm
-        # vanishes there with no separate condensation gate.
-        vm = recompute_vm_jax(g_j, Hpi, dzi, Dzz, ms_j, alpha_j, Tco_j,
-                              kb, Navo)  # (nz-1, ni)
-        out["vm"] = np.asarray(vm)
-    return out
+    nongas = np.array([sp in set(cfg.non_gas_sp) for sp in species_list], dtype=bool)
+    Dzz, Dzz_cen, vm = mol_diff_jax(
+        cfg.atm_base,
+        jnp.asarray(Tco, dtype=jnp.float64),
+        jnp.asarray(n_0, dtype=jnp.float64),
+        jnp.asarray(g, dtype=jnp.float64),
+        jnp.asarray(Hp, dtype=jnp.float64),
+        jnp.asarray(dz, dtype=jnp.float64),
+        jnp.asarray(ms_arr, dtype=jnp.float64),
+        jnp.asarray(alpha_arr, dtype=jnp.float64),
+        jnp.asarray(nongas),
+        use_vm_mol=bool(getattr(cfg, "use_vm_mol", False)),
+    )
+    return {
+        "Dzz": np.asarray(Dzz),
+        "Dzz_cen": np.asarray(Dzz_cen),
+        "vm": np.asarray(vm),
+    }
 
 
 def read_sflux_binned(

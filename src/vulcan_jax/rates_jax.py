@@ -1,55 +1,49 @@
-"""Differentiable (JAX) rate-coefficient build: `T -> k_arr` on the AD graph.
+"""Rate-coefficient build: `T -> k_arr`, on the AD graph.
 
-Vectorized port of the NumPy `rates.compute_forward_k` (Arrhenius / Lindemann /
-the one hardcoded Troe form) and the Gibbs reverse-rate path
-(`gibbs.gibbs_sp_vector` / `K_eq_array` / `fill_reverse_k`). The NumPy versions
-run host-side at setup and are bit-exact vs VULCAN-master; this module is the
-*differentiable* counterpart so a temperature perturbation flows through the
-rate constants (the dominant chemical T-dependence), which the frozen
-host-side `k_arr` does not. It also exposes the Arrhenius rate coefficients
-(`compute_forward_k(..., a=, n=, E=, ...)` / `build_rate_array(..., rate_coeffs=)`)
-and the NASA-9 thermo table (`nasa9_coeffs`, already on the graph via the Gibbs
-reverse path) as differentiable inputs, for rate-coefficient / thermochemistry
-uncertainty gradients. Validate with `tests`/scripts against
-`rates.build_rate_array` before trusting it.
+THE rate build -- setup and gradients run the same code. Covers the forward
+forms (modified Arrhenius, Lindemann falloff with k_inf, bare 3-body, and the
+one hardcoded Troe expression for `OH + CH3 + M -> CH3OH + M`), the Moses+2005
+low-T caps, and the NASA-9 Gibbs reverse-rate path. Photo / conden / radiative
+/ ion slots are zero here and filled at runtime; the 3-body [M] factor is
+applied in the chemistry RHS (it depends on the time-evolving sum(y)).
 
-Low-T caps (`rates.apply_lowT_caps`, Moses+2005) ARE ported (`apply_lowT_caps`
-below, applied when `build_rate_array(..., use_lowT_caps=True)`), so dL/dT is
-correct on cool networks too. They only fire below 277.5/300/200 K and are off
-by default (the hot benchmarks never trigger them). Photo / ion / conden /
-radiative slots are zero here (filled at runtime), exactly as in the NumPy path.
+Output is `k[nr+1, nz]` with 1-based reaction indexing (row 0 unused). The
+setup entry point is :func:`setup_var_k`, which freezes the result to NumPy on
+`var.k_arr`; a temperature / rate-coefficient / NASA-9 gradient calls
+:func:`build_rate_array` directly and keeps the tangent, since the Arrhenius
+coefficients (`compute_forward_k(..., a=, n=, E=, ...)` /
+`build_rate_array(..., rate_coeffs=)`) and the thermo table are differentiable
+inputs.
 """
 
 from __future__ import annotations
 
-import numpy as np
+from collections.abc import Iterable
+from pathlib import Path
+
 import jax.numpy as jnp
+import numpy as np
 
-from .network import Network
-from .phy_const import kb
+from ._paths import resolve_data_path
+from .gibbs import _NASA9_BRANCH_T, CORR, load_nasa9
+from .network import Network, parse_network
 
-# Standard-state pressure, 1 bar in cgs (dyne/cm^2). `CORR * T` is the
-# (kB T / P0) factor K_eq carries per unit change in mole number.
-_P0 = 1.0e6
-CORR = kb / _P0
-
-# NASA-9 low/high-T polynomial breakpoint (NASA/TP-2002-211556). Must equal
-# `gibbs._NASA9_BRANCH_T`: this module is the differentiable twin of that NumPy
-# path and the two are compared at ~5e-14.
-_NASA9_BRANCH_T = 1000.0
+_RATES_ROOT = Path(__file__).resolve().parent
 
 _SPECIAL_OH_CH3 = "OH + CH3 + M -> CH3OH + M"
 
 # Upper bound on the Gibbs exponent (reac - prod) before exp() in K_eq_array.
-# float64 exp overflows at ~709; cold columns (~100-160 K) can exceed that,
-# giving K_eq = +inf. The primal is fine (k_rev -> 0) but the forward-mode jvp
-# of k_fwd/K becomes inf/inf = NaN, poisoning d(k)/dT for the column. Clip the
-# UPPER side only: K stays huge-but-finite (k_rev ~0 as before), tangent finite.
-# Underflow needs no clip -- fill_reverse_k's `where(K > 0, ...)` is tangent-safe.
-_EXP_ARG_MAX = 500.0
+# Set to the largest argument float64 exp() still returns a finite value for
+# (log(np.finfo(float64).max) = 709.7827), so the clip only replaces an
+# overflow: below it K_eq is the unclipped value, above it the primal would
+# have been +inf and k_rev = k_fwd / inf = 0 either way. Without the clip the
+# forward-mode jvp of k_fwd/K is inf/inf = NaN on a cold column, poisoning
+# d(k)/dT. Underflow needs no clip -- fill_reverse_k's `where(K > 0, ...)` is
+# tangent-safe.
+_EXP_ARG_MAX = 709.0
 
-# Three Moses+2005 low-T rate caps (mirror rates.py), applied to the forward
-# slot below a temperature threshold on cool-atmosphere networks.
+# Three Moses+2005 low-T rate caps, applied to the post-Lindemann forward slot
+# below a temperature threshold on cool-atmosphere networks.
 _LOWT_CAP_RXN_CH3 = "H + CH3 + M -> CH4 + M"  # T <= 277.5 K, Lindemann cap
 _LOWT_CAP_RXN_C2H4 = "H + C2H4 + M -> C2H5 + M"  # T <= 300 K, constant 3.7e-30
 _LOWT_CAP_RXN_C2H5 = "H + C2H5 + M -> C2H6 + M"  # T <= 200 K, constant 2.49e-27
@@ -62,7 +56,7 @@ def _arrhenius(a, n, E, T):
 def _troe_OH_CH3(T, M):
     """Hardcoded Troe form for OH + CH3 + M -> CH3OH + M: Visscher & Moses 2011
     eqs 13-14 (log10 width, notes C20) with the eq 24-26 fits of Jasper et al.
-    2007. Mirrors rates.py operation for operation."""
+    2007."""
     k0 = 1.932e3 * T**-9.88 * jnp.exp(-7544.0 / T) + 5.109e-11 * T**-6.25 * jnp.exp(
         -1433.0 / T
     )
@@ -94,7 +88,11 @@ def compute_forward_k(
     n_inf=None,
     E_inf=None,
 ) -> jnp.ndarray:
-    """Vectorized JAX forward rates. T, M are (nz,) JAX arrays -> (nr+1, nz).
+    """Vectorized forward rates. T, M are (nz,) arrays -> (nr+1, nz).
+
+    Reverse slots (even indices) are zero here and filled by
+    :func:`fill_reverse_k`; photo / ion / conden / radiative-recombination
+    slots are zero and filled at runtime.
 
     The six Arrhenius/Lindemann coefficient arrays default to the network's
     static values; pass any as a (nr+1,) JAX array to differentiate the rates
@@ -147,14 +145,14 @@ def compute_forward_k(
 def apply_lowT_caps(
     net: Network, k_fwd: jnp.ndarray, T: jnp.ndarray, M: jnp.ndarray
 ) -> jnp.ndarray:
-    """JAX port of `rates.apply_lowT_caps` (Moses+2005 low-T recombination caps).
+    """Apply the three Moses+2005 low-T recombination caps. Callers gate on
+    `cfg.use_lowT_limit_rates`, used for cool-atmosphere networks.
 
     Caps the three forward rows when present in `net`, gated by a temperature
     threshold via `jnp.where`. The cap branch is a T-independent constant for
     C2H4/C2H5 (so dk/dT = 0 below threshold) and a Lindemann form for CH3; the
     tangent is non-smooth only exactly at the threshold (a measure-zero kink),
-    smooth on either side. Mirrors the NumPy path so dL/dT is correct on cool
-    networks. `k_fwd` (nr+1, nz); `T`, `M` (nz,).
+    smooth on either side. `k_fwd` (nr+1, nz); `T`, `M` (nz,).
     """
     Tz = jnp.asarray(T)
     Mz = jnp.asarray(M)
@@ -167,6 +165,7 @@ def apply_lowT_caps(
     k = k_fwd
     i = rows.get(_LOWT_CAP_RXN_CH3)
     if i is not None:
+        # Moses+2005 cap: k0=6e-29, kinf=2.06e-10*T^-0.4 (Lindemann form).
         kinf = 2.06e-10 * Tz**-0.4
         cap = 6.0e-29 / (1.0 + 6.0e-29 * Mz / kinf)
         k = k.at[i].set(jnp.where(Tz <= 277.5, cap, k[i]))
@@ -216,7 +215,11 @@ def gibbs_sp_vector(coeffs, T: jnp.ndarray) -> jnp.ndarray:
 
 
 def K_eq_array(net: Network, gibbs_sp: jnp.ndarray, T: jnp.ndarray) -> jnp.ndarray:
-    """Equilibrium constants per forward reaction (nr+1, nz). Vectorized."""
+    """Equilibrium constants per forward reaction (nr+1, nz). Vectorized.
+
+    Slots without a thermal reverse (photo/ion/conden/radiative, beyond
+    `stop_rev_indx`) are 1 -- a sentinel so the reverse-fill divide is safe.
+    """
     nz = gibbs_sp.shape[1]
     g_pad = jnp.concatenate([gibbs_sp, jnp.zeros((1, nz))], axis=0)  # (ni+1, nz)
     r_idx = jnp.asarray(np.asarray(net.reactant_idx))  # (nr+1, S)
@@ -228,9 +231,9 @@ def K_eq_array(net: Network, gibbs_sp: jnp.ndarray, T: jnp.ndarray) -> jnp.ndarr
     prod = jnp.einsum("rs,rsz->rz", p_st, g_pad[p_idx])
     delta_n = (r_st.sum(axis=1) - p_st.sum(axis=1))[:, None]  # (nr+1, 1)
     Tg = jnp.asarray(T)[None, :]
-    # Clip the upper side of the exponent so exp() cannot overflow to +inf on
-    # cold columns (would give a NaN forward-mode tangent in the reverse divide;
-    # see _EXP_ARG_MAX). Primal is unchanged to float precision.
+    # Clip the upper side of the exponent so exp() cannot overflow to +inf
+    # (would give a NaN forward-mode tangent in the reverse divide; see
+    # _EXP_ARG_MAX). No shipped column comes near the bound.
     K_raw = jnp.exp(jnp.minimum(reac - prod, _EXP_ARG_MAX)) * (CORR * Tg) ** delta_n
 
     # Valid forward slots get a real K; everything else stays 1 (sentinel).
@@ -248,7 +251,12 @@ def K_eq_array(net: Network, gibbs_sp: jnp.ndarray, T: jnp.ndarray) -> jnp.ndarr
 
 
 def fill_reverse_k(net: Network, k_fwd: jnp.ndarray, K_eq: jnp.ndarray) -> jnp.ndarray:
-    """Fill even (reverse) slots from forward rates / K_eq. (nr+1, nz)."""
+    """Fill even (reverse) slots from forward rates / K_eq. (nr+1, nz).
+
+    Reverse slots beyond `stop_rev_indx` stay as they come in (zero out of
+    :func:`compute_forward_k`): photo/conden/ion/radiative have no thermal
+    reverse. Their forward slots are left untouched.
+    """
     nr = net.nr
     idx = np.arange(nr + 1)
     even_rev = (idx % 2 == 0) & (idx >= 2) & (idx < net.stop_rev_indx)
@@ -264,6 +272,25 @@ def fill_reverse_k(net: Network, k_fwd: jnp.ndarray, K_eq: jnp.ndarray) -> jnp.n
     return jnp.where(even_rev_m, k_rev, k_fwd)
 
 
+def apply_remove_list(net: Network, k, remove_list: Iterable[int] | None):
+    """Zero the rows in `remove_list`. No auto-pairing: passing a lone forward
+    leaves its reverse intact.
+
+    Accepts a NumPy or a JAX `k` and returns the same kind, so the on-graph
+    build and the host post-photolysis pass share one implementation.
+    """
+    if not remove_list:
+        return k
+    rm = np.zeros(net.nr + 1, dtype=bool)
+    for i in remove_list:
+        idx = int(i)
+        if 0 <= idx <= net.nr:
+            rm[idx] = True
+    if isinstance(k, np.ndarray):
+        return np.where(rm[:, None], 0.0, k)
+    return jnp.where(jnp.asarray(rm)[:, None], 0.0, k)
+
+
 def build_rate_array(
     net: Network,
     T: jnp.ndarray,
@@ -273,27 +300,97 @@ def build_rate_array(
     use_lowT_caps: bool = False,
     rate_coeffs: dict | None = None,
 ) -> jnp.ndarray:
-    """Differentiable end-to-end: forward(T) -> (lowT caps) -> reverse via Gibbs(T) -> remove.
+    """End-to-end: forward(T) -> (lowT caps) -> reverse via Gibbs(T) -> remove.
 
-    Mirrors `rates.build_rate_array`. `T`, `M` are JAX arrays; `nasa9_coeffs` is
-    the static (ni,2,10) table (already differentiable — it flows through the
-    Gibbs reverse path); `remove_list` zeros those rows. Pass `use_lowT_caps=True`
-    to match `cfg.use_lowT_limit_rates` on cool networks (off by default — the hot
+    `T`, `M` are (nz,) arrays; `nasa9_coeffs` is the (ni,2,10) thermo table
+    (differentiable -- it flows through the Gibbs reverse path); `remove_list`
+    zeros those rows. Pass `use_lowT_caps=True` to match
+    `cfg.use_lowT_limit_rates` on cool networks (off by default -- the hot
     benchmarks never trigger the caps). Pass `rate_coeffs` (a dict of any of
     `a/n/E/a_inf/n_inf/E_inf` as (nr+1,) JAX arrays) to differentiate w.r.t.
     Arrhenius rate-coefficient uncertainty; defaults to the network's values.
+
+    Index 0 is unused (1-based reactions); reverse slots beyond
+    `net.stop_rev_indx` are zero.
     """
     k_fwd = compute_forward_k(net, T, M, **(rate_coeffs or {}))
     if use_lowT_caps:
         k_fwd = apply_lowT_caps(net, k_fwd, T, M)
     g_sp = gibbs_sp_vector(nasa9_coeffs, T)
     K_eq = K_eq_array(net, g_sp, T)
+    # `remove_list` is applied in its own pass, after the reverse fill, to
+    # match legacy semantics (no auto fwd/rev pairing).
     k = fill_reverse_k(net, k_fwd, K_eq)
-    if remove_list:
-        nr = net.nr
-        rm = np.zeros(nr + 1, dtype=bool)
-        for i in remove_list:
-            if 0 <= int(i) <= nr:
-                rm[int(i)] = True
-        k = jnp.where(jnp.asarray(rm)[:, None], 0.0, k)
-    return k
+    return apply_remove_list(net, k, remove_list)
+
+
+def _assert_reversible_thermo_present(net: Network, present: np.ndarray) -> None:
+    """Fail loudly if a species in a reversible reaction lacks NASA-9 thermo.
+
+    A missing `thermo/NASA9/<sp>.txt` leaves that species' Gibbs coefficients
+    zero (`load_nasa9` returns `present[j] = False`), which silently corrupts
+    `K_eq` and every reverse rate the species participates in. VULCAN-master
+    raises `FileNotFoundError` here; we mirror that instead of returning a
+    plausible-but-wrong rate array. Only species used in a *reversible* reaction
+    (index below `stop_rev_indx`) need thermo -- condensate/photo/ion-only
+    species legitimately have no NASA-9 file.
+    """
+    needed: set[int] = set()
+    last_rev = min(net.stop_rev_indx, net.nr + 1)
+    for i in range(1, last_rev):
+        for idx_arr, st_arr in (
+            (net.reactant_idx, net.reactant_stoich),
+            (net.product_idx, net.product_stoich),
+        ):
+            for slot in range(idx_arr.shape[1]):
+                if st_arr[i, slot] == 0.0:
+                    continue
+                sp = int(idx_arr[i, slot])
+                if 0 <= sp < net.ni:
+                    needed.add(sp)
+    missing = [net.species[j] for j in sorted(needed) if not bool(present[j])]
+    if missing:
+        raise FileNotFoundError(
+            "Missing NASA-9 thermo file(s) for species used in reversible "
+            f"reactions: {', '.join(missing)}. Each needs thermo/NASA9/<sp>.txt "
+            "(a missing file silently zeros its Gibbs energy and corrupts the "
+            "reverse rates). Add the file or list the reaction in remove_list."
+        )
+
+
+def setup_var_k(cfg, var, atm) -> Network:
+    """Parse network, load NASA-9 coeffs, freeze `var.k_arr`. Returns the Network.
+
+    The host half of the setup contract: it resolves the files and pins the
+    result to NumPy for the runner. The physics is :func:`build_rate_array`,
+    the same call a temperature gradient makes. `np.array` (not `asarray`):
+    `op_jax.compute_J` writes the photolysis rows into `var.k_arr` in place,
+    and a view of a JAX buffer is read-only.
+    """
+    network = parse_network(str(resolve_data_path(cfg.network)))
+    thermo_dir = resolve_data_path(cfg.network).parent
+    if not (thermo_dir / "NASA9").exists():
+        thermo_dir = _RATES_ROOT / "thermo"
+    nasa9_coeffs, present = load_nasa9(network.species, thermo_dir)
+    _assert_reversible_thermo_present(network, present)
+    var.k_arr = np.array(
+        build_rate_array(
+            network,
+            jnp.asarray(np.asarray(atm.Tco, dtype=np.float64)),
+            jnp.asarray(np.asarray(atm.M, dtype=np.float64)),
+            nasa9_coeffs,
+            remove_list=getattr(cfg, "remove_list", None),
+            use_lowT_caps=bool(getattr(cfg, "use_lowT_limit_rates", False)),
+        ),
+        dtype=np.float64,
+    )
+    return network
+
+
+def apply_photo_remove(cfg, var, network: Network, atm) -> None:
+    """Re-apply `cfg.remove_list` after `compute_J`/`compute_Jion` has
+    overwritten the photolysis rows of `var.k_arr`."""
+    del atm
+    var.k_arr = np.array(
+        apply_remove_list(network, var.k_arr, cfg.remove_list), dtype=np.float64
+    )

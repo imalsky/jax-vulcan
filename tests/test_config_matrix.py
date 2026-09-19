@@ -111,8 +111,10 @@ def test_lowT_limit_rates_noop_on_HD189():
     reactions are bit-identical to the uncapped build. Cap-firing coverage:
     ``test_read_rate.py::test_lowT_caps_fire_all_three``.
     """
+    import jax.numpy as jnp
+
     import vulcan_jax.network as net_mod
-    import vulcan_jax.rates as rates
+    import vulcan_jax.rates_jax as rates
     from vulcan_jax.config import default_config
 
     vulcan_cfg = default_config()
@@ -125,10 +127,20 @@ def test_lowT_limit_rates_noop_on_HD189():
         thermo_dir = ROOT / "src" / "vulcan_jax" / "thermo"
     nasa9_coeffs, _present = load_nasa9(net.species, thermo_dir)
 
-    with cfg_overrides(use_lowT_limit_rates=True):
-        k_on = rates.build_rate_array(vulcan_cfg, net, data_atm, nasa9_coeffs)
-    with cfg_overrides(use_lowT_limit_rates=False):
-        k_off = rates.build_rate_array(vulcan_cfg, net, data_atm, nasa9_coeffs)
+    def _build(use_caps):
+        return np.asarray(
+            rates.build_rate_array(
+                net,
+                jnp.asarray(np.asarray(data_atm.Tco, dtype=np.float64)),
+                jnp.asarray(np.asarray(data_atm.M, dtype=np.float64)),
+                nasa9_coeffs,
+                remove_list=getattr(vulcan_cfg, "remove_list", None),
+                use_lowT_caps=use_caps,
+            )
+        )
+
+    k_on = _build(True)
+    k_off = _build(False)
 
     T = np.asarray(data_atm.Tco, dtype=np.float64)
     assert T.min() > 300.0, (

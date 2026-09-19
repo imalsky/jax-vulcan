@@ -1,4 +1,4 @@
-"""Validate VULCAN-JAX rates.py against VULCAN-master's ReadRate.read_rate.
+"""Validate VULCAN-JAX rates_jax.py against VULCAN-master's ReadRate.read_rate.
 
 Runs VULCAN's startup pipeline until var.k holds the forward rates, then
 compares VULCAN-JAX's compute_forward_k on the same T/M atmosphere.
@@ -42,7 +42,7 @@ def main() -> int:
     from vulcan_jax.state import _Variables, _AtmData  # noqa: E402
 
     import vulcan_jax.network as net_mod  # VULCAN-JAX
-    import vulcan_jax.rates as rates_mod  # VULCAN-JAX
+    import vulcan_jax.rates_jax as rates_mod  # VULCAN-JAX
 
     # === 1. Run VULCAN setup until var.k is populated ===
     data_var = _Variables()
@@ -70,7 +70,7 @@ def main() -> int:
     net = net_mod.parse_network(vulcan_cfg.network)
     print(f"Network: ni={net.ni}, nr={net.nr}")
 
-    k_jax = rates_mod.compute_forward_k(net, T, M)
+    k_jax = np.asarray(rates_mod.compute_forward_k(net, T, M))
 
     # === 3. Compare ===
     n_compared = 0

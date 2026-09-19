@@ -1,10 +1,8 @@
 """JAX-native chem_funs: parses the network at import time and exposes the
-same public surface (ni, nr, spec_list, re_dict, chemdf, Gibbs, gibbs_sp, ...)
+same public surface (ni, nr, spec_list, re_dict, chemdf, ...)
 as VULCAN-master's auto-generated chem_funs.py — backed by JAX kernels."""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 import numpy as np
 import jax
@@ -13,7 +11,6 @@ import jax.numpy as jnp
 from .config import default_config
 from . import network as _network
 from . import chem as _chem
-from . import gibbs as _gibbs
 from . import make_chem_funs as _make_chem_funs
 from ._paths import resolve_data_path
 
@@ -29,14 +26,6 @@ _NET_JAX = _chem.to_jax(_NETWORK)
 # Memoised in `_make_chem_funs._BUILD_CACHE`, so the warmup call in
 # `state._build_pre_loop_runstate` returns the same `Callable`.
 _CHEM_RHS_CODEGEN = _make_chem_funs.build_chem_rhs(_NETWORK)
-
-# Locate thermo/NASA9 next to the network file, or fall back to repo-root.
-_THERMO_DIR = resolve_data_path(_CFG.network).parent
-if not (_THERMO_DIR / "NASA9").exists():
-    _THERMO_DIR = Path(__file__).resolve().parent / "thermo"
-
-_NASA9_COEFFS, _NASA9_PRESENT = _gibbs.load_nasa9(_NETWORK.species, _THERMO_DIR)
-
 
 ni: int = _NETWORK.ni
 nr: int = _NETWORK.nr
@@ -155,89 +144,6 @@ def neg_symjac(y, M, k):
     raise NotImplementedError(
         "chem_funs.neg_symjac: use chem.chem_jac (block stack) instead."
     )
-
-
-def h_RT(T, a):
-    """h(T) / (RT) for a 10-element NASA-9 coefficient row."""
-    T = np.asarray(T, dtype=np.float64)
-    return (
-        -a[0] / T**2
-        + a[1] * np.log(T) / T
-        + a[2]
-        + a[3] * T / 2.0
-        + a[4] * T**2 / 3.0
-        + a[5] * T**3 / 4.0
-        + a[6] * T**4 / 5.0
-        + a[8] / T
-    )
-
-
-def s_R(T, a):
-    """s(T) / R for a 10-element NASA-9 coefficient row."""
-    T = np.asarray(T, dtype=np.float64)
-    return (
-        -a[0] / T**2 / 2.0
-        - a[1] / T
-        + a[2] * np.log(T)
-        + a[3] * T
-        + a[4] * T**2 / 2.0
-        + a[5] * T**3 / 3.0
-        + a[6] * T**4 / 4.0
-        + a[9]
-    )
-
-
-# NASA-9 low/high-T polynomial breakpoint (NASA/TP-2002-211556);
-# same breakpoint as gibbs._NASA9_BRANCH_T.
-_NASA9_BRANCH_T = 1000.0
-
-
-def g_RT(T, a_low, a_high):
-    """g(T)/(RT) = h/RT - s/R, low-T branch below _NASA9_BRANCH_T, high-T above."""
-    T = np.asarray(T, dtype=np.float64)
-    return (T < _NASA9_BRANCH_T) * (h_RT(T, a_low) - s_R(T, a_low)) + (
-        T >= _NASA9_BRANCH_T
-    ) * (h_RT(T, a_high) - s_R(T, a_high))
-
-
-def gibbs_sp(name, T):
-    """Per-species g/(RT) at temperature(s) T."""
-    j = spec_list.index(name)
-    return g_RT(T, _NASA9_COEFFS[j, 0], _NASA9_COEFFS[j, 1])
-
-
-# Cache K_eq arrays by T identity. `Gibbs(i, T)` is typically called in a loop
-# over reaction indices with the same T, so naive recomputation costs ~600x.
-_K_EQ_CACHE: dict = {}
-
-
-def _K_eq_array_cached(T_np: np.ndarray) -> np.ndarray:
-    """Per-T equilibrium-constant array, memoised by `T` byte identity (the
-    whole cache is cleared once it reaches 4 entries)."""
-    key = (T_np.shape, T_np.tobytes())
-    cached = _K_EQ_CACHE.get(key)
-    if cached is not None:
-        return cached
-    g_sp = _gibbs.gibbs_sp_vector(_NASA9_COEFFS, T_np)
-    K_eq = _gibbs.K_eq_array(_NETWORK, g_sp, T_np)
-    if len(_K_EQ_CACHE) >= 4:
-        _K_EQ_CACHE.clear()
-    _K_EQ_CACHE[key] = K_eq
-    return K_eq
-
-
-def Gibbs(i, T):
-    """Equilibrium constant K_eq for forward reaction i at temperature(s) T.
-
-    Returns float for scalar T, ndarray otherwise. The (k_B T / P0)^Δn
-    factor (Δn = n_reac - n_prod) is folded into the result, so
-    `k_reverse = k_forward / Gibbs(i, T)`.
-    """
-    T_arr = np.atleast_1d(np.asarray(T, dtype=np.float64))
-    K = _K_eq_array_cached(T_arr)[i]
-    if np.isscalar(T) or np.ndim(T) == 0:
-        return float(K[0])
-    return K
 
 
 NETWORK = _NETWORK
