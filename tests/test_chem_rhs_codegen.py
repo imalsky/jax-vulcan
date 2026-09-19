@@ -362,8 +362,20 @@ def test_codegen_matches_numpy_oracle():
     The floor (1e-12 of each species's peak |dydt|) absorbs float64
     cancellation noise on trace species; the 1e-5 threshold absorbs XLA FMA
     fusion vs NumPy `*` chains. The master oracle test verifies term order.
+
+    Evaluated on a PERTURBED column, not on the pre-loop one. Since 0.15.0
+    the seed is a Gibbs minimizer on the same NASA-9 data the reverse rates
+    use, so the pre-loop column sits AT chemical equilibrium: gross forward
+    and reverse fluxes cancel and the net RHS is a small difference of large
+    terms, which makes a per-cell RELATIVE comparison of two float64
+    summation orders ill-posed (measured 4.0e+04 there, while the two agree
+    to 2.5e-06 of the species' own peak |dydt|). Scaling every species by
+    exp(u), u ~ U(-1, 1) from a fixed seed, moves the column off equilibrium
+    without changing its magnitudes, and the 1e-5 bar is meaningful again
+    (measured 7.3e-14 there, and 1e-15 on the bulk species).
     """
     y, M, k_arr, net = _capture_state()
+    y = y * np.exp(np.random.default_rng(0).uniform(-1.0, 1.0, y.shape))
 
     import jax.numpy as jnp
     import vulcan_jax.chem as chem_mod

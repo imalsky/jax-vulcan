@@ -303,15 +303,16 @@ def test_seed_reproduces_its_element_vector_and_normalisation(Tiso) -> None:
     )
 
     assert np.isfinite(ymix).all()
-    excluded = [i for i in range(len(composition.species))
-                if i not in set(ini_abun._SEED_IDX.tolist())]
+    seed_idx = set(ini_abun._seed()[1].tolist())
+    excluded = [i for i in range(len(composition.species)) if i not in seed_idx]
     assert np.all(ymix[:, excluded] == 0.0)
     np.testing.assert_allclose(ymix.sum(axis=1), 1.0, rtol=1e-12, atol=0.0)
 
     counts = np.asarray(composition.compo_array)
-    cols = [composition.atom_list.index(e) for e in ini_abun.SEED_ELEMENTS]
+    elements = ini_abun.seed_elements()
+    cols = [composition.atom_list.index(e) for e in elements]
     got = ymix @ counts[:, cols]                       # (nz, E)
-    got = got / got[:, [ini_abun.SEED_ELEMENTS.index("H")]]
+    got = got / got[:, [elements.index("H")]]
     np.testing.assert_allclose(
         got, np.broadcast_to(b / b[0], got.shape), rtol=ELEMENT_RTOL, atol=0.0
     )

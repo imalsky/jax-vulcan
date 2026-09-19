@@ -32,6 +32,7 @@ from exogibbs.thermo.models import ChemicalSetup
 
 from .config import default_config
 from . import chem_funs
+from . import gibbs
 from . import rates_jax
 from .composition import (
     compo,
@@ -95,6 +96,18 @@ def _make_hvector(coeffs: np.ndarray):
     return hvector
 
 
+def _thermo_dir() -> Path:
+    """`thermo/` beside the network file, else the packaged one.
+
+    The same resolution `rates_jax.setup_var_k` uses for the rate build, so
+    the seed and the reverse rates read one table from one place.
+    """
+    beside = resolve_data_path(_CFG.network).parent
+    if (beside / "NASA9").exists():
+        return beside
+    return Path(__file__).resolve().parent / "thermo"
+
+
 def _build_seed_setup() -> tuple[ChemicalSetup, np.ndarray, tuple[str, ...]]:
     """Build the ExoGibbs setup for the loaded network's gas species."""
     charged = {sp for sp in species if compo[compo_row.index(sp)]["e"] != 0}
@@ -102,7 +115,8 @@ def _build_seed_setup() -> tuple[ChemicalSetup, np.ndarray, tuple[str, ...]]:
     seed_idx = np.array(
         [i for i, sp in enumerate(species) if sp not in excluded], dtype=np.int64
     )
-    missing = [species[i] for i in seed_idx if not chem_funs._NASA9_PRESENT[i]]
+    coeffs, present = gibbs.load_nasa9(tuple(species), _thermo_dir())
+    missing = [species[i] for i in seed_idx if not present[i]]
     if missing:
         raise RuntimeError(
             f"the equilibrium seed needs NASA-9 data for every gas species of "
@@ -119,14 +133,31 @@ def _build_seed_setup() -> tuple[ChemicalSetup, np.ndarray, tuple[str, ...]]:
     elements = tuple(_COMPO_ATOMS[j] for j in elem_cols)
     setup = ChemicalSetup(
         formula_matrix=jnp.asarray(counts[:, elem_cols].T),
-        hvector_func=_make_hvector(np.asarray(chem_funs._NASA9_COEFFS)[seed_idx]),
+        hvector_func=_make_hvector(coeffs[seed_idx]),
         elements=elements,
         species=tuple(species[i] for i in seed_idx),
     )
     return setup, seed_idx, elements
 
 
-_SEED_SETUP, _SEED_IDX, SEED_ELEMENTS = _build_seed_setup()
+_SEED: tuple[ChemicalSetup, np.ndarray, tuple[str, ...]] | None = None
+
+
+def _seed() -> tuple[ChemicalSetup, np.ndarray, tuple[str, ...]]:
+    """`(setup, seed species indices, element names)`, built once on first use.
+
+    Lazy on purpose: it reads one `thermo/NASA9/<sp>.txt` per species, and a
+    run with any other `ini_mix` must not pay for that at import.
+    """
+    global _SEED
+    if _SEED is None:
+        _SEED = _build_seed_setup()
+    return _SEED
+
+
+def seed_elements() -> tuple[str, ...]:
+    """Elements the seed solves for, in the order `b` is indexed."""
+    return _seed()[2]
 
 # Sequential warm start from the bottom layer. The independent per-layer cold
 # solve ("vmap_cold") needs several times as many iterations and does not
@@ -176,13 +207,14 @@ def _seed_jit():
 def eq_seed(Tco, p_bar, b):
     """Equilibrium mixing ratios `(nz, ni)` at `Tco` (K) and `p_bar` (bar).
 
-    `b` is the elemental abundance vector in `SEED_ELEMENTS` order; only its
+    `b` is the elemental abundance vector in `seed_elements()` order; only its
     ratios matter. Species outside the seed (condensates, ions) are exactly
     zero. A column with a layer that did not converge comes back all-NaN, so
     no caller can use half a solution.
     """
+    setup, seed_idx, _ = _seed()
     res, diag = solve_profile(
-        _SEED_SETUP,
+        setup,
         Tco,
         p_bar,
         b,
@@ -192,7 +224,7 @@ def eq_seed(Tco, p_bar, b):
     )
     ok = jnp.all(diag["converged"]) & jnp.all(jnp.isfinite(res.x))
     y = jnp.zeros((Tco.shape[0], chem_funs.ni), dtype=jnp.float64)
-    return y.at[:, jnp.asarray(_SEED_IDX)].set(jnp.where(ok, res.x, jnp.nan))
+    return y.at[:, jnp.asarray(seed_idx)].set(jnp.where(ok, res.x, jnp.nan))
 
 
 @eq_seed.defjvp
@@ -210,7 +242,7 @@ def _eq_seed_jvp(primals, tangents):
 def seed_diagnostics(Tco, p_bar, b) -> dict:
     """Per-layer `converged` / `n_iter` / `final_residual` for one column."""
     _, diag = solve_profile(
-        _SEED_SETUP,
+        _seed()[0],
         jnp.asarray(Tco, dtype=jnp.float64),
         jnp.asarray(p_bar, dtype=jnp.float64),
         jnp.asarray(b, dtype=jnp.float64),
@@ -248,14 +280,14 @@ def _preset_vector() -> np.ndarray:
     """`b` (E,) straight from the configured preset file."""
     path = _abundance_path()
     preset = read_abundances(path)
-    absent = [sp for sp in SEED_ELEMENTS if sp not in preset]
+    absent = [sp for sp in seed_elements() if sp not in preset]
     if absent:
         raise RuntimeError(
             f"{path} has no row for {', '.join(absent)}, which the "
             f"{_CFG.network!r} network needs. Every element of the loaded "
             "network must be in the abundance preset."
         )
-    return np.array([preset[sp] for sp in SEED_ELEMENTS], dtype=np.float64)
+    return np.array([preset[sp] for sp in seed_elements()], dtype=np.float64)
 
 
 def _base_vector() -> np.ndarray:
@@ -267,9 +299,10 @@ def _base_vector() -> np.ndarray:
     list (`He_H` is a `const_lowT` knob).
     """
     b = _preset_vector()
+    elements = seed_elements()
     for atom in _CFG.atom_list:
-        if atom != "H" and atom in SEED_ELEMENTS:
-            b[SEED_ELEMENTS.index(atom)] = float(getattr(_CFG, atom + "_H"))
+        if atom != "H" and atom in elements:
+            b[elements.index(atom)] = float(getattr(_CFG, atom + "_H"))
     return b
 
 
@@ -279,13 +312,14 @@ def ratio_indices(names) -> jnp.ndarray:
     The array path (`element_vector`) takes these so a batched caller never
     resolves element names inside a traced function.
     """
-    unknown = [sp for sp in names if sp not in SEED_ELEMENTS]
+    elements = seed_elements()
+    unknown = [sp for sp in names if sp not in elements]
     if unknown:
         raise KeyError(
             f"{unknown} are not elements of the loaded network "
-            f"({', '.join(SEED_ELEMENTS)}); setting them would do nothing."
+            f"({', '.join(elements)}); setting them would do nothing."
         )
-    return jnp.asarray([SEED_ELEMENTS.index(sp) for sp in names], dtype=jnp.int32)
+    return jnp.asarray([elements.index(sp) for sp in names], dtype=jnp.int32)
 
 
 def element_vector(ratios, idx) -> jnp.ndarray:
@@ -302,14 +336,14 @@ def element_vector(ratios, idx) -> jnp.ndarray:
 def _element_vector(ratios: dict | None = None) -> np.ndarray:
     """`b` (E,) for the current config, host-side."""
     if ratios:
-        b = _base_vector()
+        b, elements = _base_vector(), seed_elements()
         for sp, value in ratios.items():
-            if sp not in SEED_ELEMENTS:
+            if sp not in elements:
                 raise KeyError(
                     f"ratios[{sp!r}] is not an element of the loaded network "
-                    f"({', '.join(SEED_ELEMENTS)})."
+                    f"({', '.join(elements)})."
                 )
-            b[SEED_ELEMENTS.index(sp)] = float(value)
+            b[elements.index(sp)] = float(value)
         return b
     if _CFG.use_solar is True:
         return _preset_vector()
@@ -442,9 +476,9 @@ def eq_column(pco, Tco, M, ratios=None) -> np.ndarray:
         print(
             f"Equilibrium seed from {_abundance_path()}: "
             + ", ".join(
-                f"{sp}/H={b[SEED_ELEMENTS.index(sp)]:.8g}"
+                f"{sp}/H={b[seed_elements().index(sp)]:.8g}"
                 for sp in ("He", "C", "N", "O", "S")
-                if sp in SEED_ELEMENTS
+                if sp in seed_elements()
             )
         )
     ymix = np.asarray(
