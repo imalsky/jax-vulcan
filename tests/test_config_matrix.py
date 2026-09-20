@@ -50,7 +50,7 @@ def cfg_overrides(**kwargs):
 
 
 def _hd189_atm_minimal():
-    """Minimal HD189 pre-loop atmosphere (no photo, no rates, no FastChem);
+    """Minimal HD189 pre-loop atmosphere (no photo, no rates, no EQ seed);
     uses the private `state._Variables` / `_AtmData` containers to stay light.
     """
     from vulcan_jax.atm_setup import Atm
@@ -206,7 +206,7 @@ def test_use_vm_mol_populates_vm():
     """
     with cfg_overrides(use_vm_mol=True):
         _, data_atm, make_atm = _hd189_atm_minimal()
-        # f_mu_dz needs ymix; populate via const_mix to avoid FastChem.
+        # f_mu_dz needs ymix; populate via const_mix to avoid the EQ seed.
         from vulcan_jax.ini_abun import InitialAbun
         from vulcan_jax.state import _Variables
 
@@ -261,7 +261,7 @@ def test_use_settling_populates_vs_for_non_gas():
         from vulcan_jax.ini_abun import InitialAbun
         import vulcan_jax.legacy_io as op
 
-        # const_mix avoids FastChem coupling and is independent of condensables.
+        # const_mix avoids the EQ seed and is independent of condensables.
         with cfg_overrides(
             ini_mix="const_mix",
             const_mix={"H2": 0.9, "He": 0.0838, "H2O": 1e-3},

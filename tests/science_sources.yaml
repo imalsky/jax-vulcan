@@ -194,7 +194,10 @@ supported_inputs:
     diverges: [C12_fastchem_ps_order]
     note: >-
       The upstream composition (Lodders 2009 at solar), with only the P/S ROW
-      order corrected. Select it to reproduce upstream numbers.
+      order corrected. It matches upstream's elemental C/N/O/S/He for a
+      cross-code comparison, but it does NOT reproduce upstream's initial
+      state: at full solar, upstream's FastChem locks 0.166 dex of oxygen into
+      rocky oxides that an NCHO/SNCHO network has no species for.
 
 # ---------------------------------------------------------------------------
 # Intentional divergences from upstream.

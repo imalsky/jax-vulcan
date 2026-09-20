@@ -99,6 +99,12 @@ def compute_forward_k(
     w.r.t. rate-coefficient uncertainty (`jvp`/`grad`). The one hardcoded Troe
     row (OH+CH3) is not overridable (its constants stay fixed).
     """
+    if jnp.shape(M) != jnp.shape(T):
+        raise ValueError(
+            f"T and M must be the same shape; got T {jnp.shape(T)} and M "
+            f"{jnp.shape(M)}. A length-1 M would broadcast silently over the "
+            "column and give every layer the bottom layer's density."
+        )
     T = jnp.asarray(T)[None, :]  # (1, nz)
     M = jnp.asarray(M)[None, :]
 
@@ -114,8 +120,10 @@ def compute_forward_k(
 
     arr = _arrhenius(a, n, E, T)  # plain Arrhenius (a==0 -> 0)
     kinf = _arrhenius(a_inf, n_inf, E_inf, T)
-    kinf_safe = jnp.where(kinf > 0, kinf, 1.0)  # guard unused branch
-    lindemann = arr / (1.0 + arr * M / kinf_safe)
+    # k_inf == 0 is the zero-rate limit, not a low-pressure rate: with the
+    # guard value alone the falloff row would read `arr / (1 + arr*M)`.
+    kinf_safe = jnp.where(kinf > 0, kinf, 1.0)
+    lindemann = jnp.where(kinf > 0, arr / (1.0 + arr * M / kinf_safe), 0.0)
     has_kinf = jnp.asarray(np.asarray(net.has_kinf, dtype=bool))[:, None]
     general = jnp.where(has_kinf, lindemann, arr)
 

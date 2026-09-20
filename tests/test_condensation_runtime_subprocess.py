@@ -4,7 +4,7 @@ The default NCHO network has no condensate species, so the curated suite never
 exercises the assembled condensation runtime path. The network is
 import-locked, so the child selects `SNCHO_photo_network_2025.txt` (the one
 vendored network with both `H2O_l_s` and `S8_l_s`) via `$VULCAN_JAX_NETWORK`.
-Self-contained: isothermal TP + const_mix init, no photo, no FastChem.
+Self-contained: isothermal TP + const_mix init, no photo, no EQ seed.
 
 Checks: (1) settling velocities are downward for each condensate column and
 exactly zero for gas species; (2) a short H2O-relaxation run stays finite and

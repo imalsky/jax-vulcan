@@ -49,7 +49,7 @@ def _cfg_overrides(**kwargs):
 def _build_hd189_atm():
     """Return `(data_var, data_atm, make_atm)` after `load_TPK` (and
     `sp_sat` if condense is on). Deliberately partial setup: the full
-    `RunState.with_pre_loop_setup` would also run rates / FastChem / photo
+    `RunState.with_pre_loop_setup` would also run rates / the EQ seed / photo
     reads these mode tests do not use.
     """
     from vulcan_jax.atm_setup import Atm
@@ -68,7 +68,7 @@ def _build_hd189_atm():
     return data_var, data_atm, make_atm
 
 
-# const_mix mode: algebraic, no FastChem, no scipy.
+# const_mix mode: algebraic, no EQ seed, no scipy.
 
 
 def test_const_mix_matches_reference():

@@ -73,5 +73,5 @@ def _check_jacobians(state) -> int:
 
 def test_main(hd189_state):
     """Pytest entry. Uses the session-scoped HD189 fixture so the rate
-    parser / FastChem / atmospheric build doesn't re-run per test."""
+    parser / EQ seed / atmospheric build doesn't re-run per test."""
     assert _check_jacobians(hd189_state) == 0

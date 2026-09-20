@@ -4,7 +4,7 @@
 atm)`) but is no longer a parser: `network.parse_network` is the one
 network parser, and this copies the host-side metadata the runtime reads
 off `var` (`var.Rf`, `var.pho_rate_index`, ...) from it. Rate *values*
-come from `rates.build_rate_array`.
+come from `rates_jax.build_rate_array`.
 
 `Output` writes the `.vul` pickle with the same public schema upstream
 plotting tools read; photo cross-section dicts, the per-reaction `var.k`
@@ -63,7 +63,7 @@ class ReadRate(object):
 
     Upstream's ``op.ReadRate`` re-parsed the network file and built rate
     coefficients; both are done elsewhere here (``network.parse_network``
-    owns the parse, ``rates.build_rate_array`` owns ``var.k_arr``). What is
+    owns the parse, ``rates_jax.build_rate_array`` owns ``var.k_arr``). What is
     left is publishing the host-side metadata the runtime reads off the
     legacy ``var``.
     """

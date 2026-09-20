@@ -23,12 +23,15 @@ from __future__ import annotations
 
 import pickle
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
 import numpy as np
-from exogibbs.api.gas import EquilibriumOptions, solve_profile
-from exogibbs.thermo.models import ChemicalSetup
+
+if TYPE_CHECKING:  # the exogibbs imports are function-local (pandas at import)
+    from exogibbs.api.gas import EquilibriumOptions
+    from exogibbs.thermo.models import ChemicalSetup
 
 from .config import default_config
 from . import chem_funs
@@ -86,9 +89,11 @@ def _make_hvector(coeffs: np.ndarray):
     That is the convention ExoGibbs's `gk = h + ln n_k - ln n_tot +
     ln(P/Pref)` expects, so the seed takes P in bar with `Pref=1.0`.
     `gibbs_sp_vector` is the same function the reverse rates use, evaluated
-    on a one-layer grid because the minimizer calls `h` per layer.
+    on a one-layer grid because the minimizer calls `h` per layer. `coeffs`
+    stays NumPy: the closure is cached in `_SEED`, so a `jnp.asarray` here
+    would be a tracer whenever the first seed call happens inside a trace.
     """
-    coeffs = jnp.asarray(coeffs)
+    coeffs = np.asarray(coeffs, dtype=np.float64)
 
     def hvector(T):
         return rates_jax.gibbs_sp_vector(coeffs, jnp.atleast_1d(T))[:, 0]
@@ -109,7 +114,15 @@ def _thermo_dir() -> Path:
 
 
 def _build_seed_setup() -> tuple[ChemicalSetup, np.ndarray, tuple[str, ...]]:
-    """Build the ExoGibbs setup for the loaded network's gas species."""
+    """Build the ExoGibbs setup for the loaded network's gas species.
+
+    Every array in the returned setup is NumPy. The result is cached for the
+    process, and the first seed call may happen inside a trace (vulcan-forward
+    calls `eq_seed` from a jitted forward model); a JAX array built there is a
+    tracer that escapes into every later trace.
+    """
+    from exogibbs.thermo.models import ChemicalSetup
+
     charged = {sp for sp in species if compo[compo_row.index(sp)]["e"] != 0}
     excluded = _condensate_species() | charged
     seed_idx = np.array(
@@ -132,7 +145,7 @@ def _build_seed_setup() -> tuple[ChemicalSetup, np.ndarray, tuple[str, ...]]:
     ]
     elements = tuple(_COMPO_ATOMS[j] for j in elem_cols)
     setup = ChemicalSetup(
-        formula_matrix=jnp.asarray(counts[:, elem_cols].T),
+        formula_matrix=np.ascontiguousarray(counts[:, elem_cols].T),
         hvector_func=_make_hvector(coeffs[seed_idx]),
         elements=elements,
         species=tuple(species[i] for i in seed_idx),
@@ -159,9 +172,15 @@ def seed_elements() -> tuple[str, ...]:
     """Elements the seed solves for, in the order `b` is indexed."""
     return _seed()[2]
 
-# Sequential warm start from the bottom layer. The independent per-layer cold
-# solve ("vmap_cold") needs several times as many iterations and does not
-# reach 1e-12 on the cold top of the prior box; measured in notes.md 2.9.
+# Sequential warm start, layer by layer. NOTE the name is ExoGibbs's, not
+# ours: `scan_hot_from_bottom` FLIPS the input arrays, so on VULCAN's grid
+# (index 0 is the BOTTOM, `pco = logspace(P_b, P_t)`) it starts at the COLD
+# TOP and walks down. `scan_hot_from_top` is the true hot start here and needs
+# ~10% fewer minimizer iterations, but it moves the seed and the
+# HD189_vulcan3 gate then does not converge within its step cap; the seed cost
+# is a one-off and that gate is not. Both converge everywhere at 1e-12 and
+# the independent per-layer cold solve ("vmap_cold") does not; measured in
+# notes.md 2.9.
 _SEED_METHOD = "scan_hot_from_bottom"
 
 _OPTIONS_CACHE: dict[tuple[float, int], EquilibriumOptions] = {}
@@ -170,10 +189,7 @@ _SEED_JIT: dict[tuple[float, int], object] = {}
 
 def _seed_key() -> tuple[float, int]:
     """The config's solver controls, read at CALL time (`_cfg_overlay`)."""
-    return (
-        float(getattr(_CFG, "fastchem_newton_tol", 1e-12)),
-        int(getattr(_CFG, "fastchem_newton_max_iter", 450)),
-    )
+    return (float(_CFG.fastchem_newton_tol), int(_CFG.fastchem_newton_max_iter))
 
 
 def _seed_options() -> EquilibriumOptions:
@@ -182,6 +198,8 @@ def _seed_options() -> EquilibriumOptions:
     ExoGibbs keys its scan-body cache on `id(options)`, so a fresh dataclass
     per call would rebuild the profile scan every time.
     """
+    from exogibbs.api.gas import EquilibriumOptions
+
     key = _seed_key()
     if key not in _OPTIONS_CACHE:
         _OPTIONS_CACHE[key] = EquilibriumOptions(
@@ -193,13 +211,16 @@ def _seed_options() -> EquilibriumOptions:
 def _seed_jit():
     """`eq_seed` jitted, one wrapper per set of solver controls.
 
-    Keyed so a config change retraces instead of reusing a trace that baked
-    in the old tolerance. Without it the host path re-traces the 150-layer
+    `eq_seed` reads the tolerance and the iteration cap at TRACE time, and
+    JAX keys its trace cache on the traced function plus the argument shapes
+    -- not on our key -- so `jax.jit(eq_seed)` under a new key would reuse the
+    trace that baked in the old controls. A fresh closure per key is a fresh
+    cache entry. Without the jit at all the host path re-traces the 150-layer
     scan on every call: 223 ms against 3.2 ms jitted, on the HD189 column.
     """
     key = _seed_key()
     if key not in _SEED_JIT:
-        _SEED_JIT[key] = jax.jit(eq_seed)
+        _SEED_JIT[key] = jax.jit(lambda Tco, p_bar, b: eq_seed(Tco, p_bar, b))
     return _SEED_JIT[key]
 
 
@@ -211,13 +232,18 @@ def eq_seed(Tco, p_bar, b):
     ratios matter. Species outside the seed (condensates, ions) are exactly
     zero. A column with a layer that did not converge comes back all-NaN, so
     no caller can use half a solution.
+
+    The inputs are cast to float64: a float32 caller would otherwise give the
+    minimizer a mixed-dtype loop carry.
     """
+    from exogibbs.api.gas import solve_profile
+
     setup, seed_idx, _ = _seed()
     res, diag = solve_profile(
         setup,
-        Tco,
-        p_bar,
-        b,
+        jnp.asarray(Tco, dtype=jnp.float64),
+        jnp.asarray(p_bar, dtype=jnp.float64),
+        jnp.asarray(b, dtype=jnp.float64),
         Pref=1.0,
         options=_seed_options(),
         return_diagnostics=True,
@@ -241,6 +267,8 @@ def _eq_seed_jvp(primals, tangents):
 
 def seed_diagnostics(Tco, p_bar, b) -> dict:
     """Per-layer `converged` / `n_iter` / `final_residual` for one column."""
+    from exogibbs.api.gas import solve_profile
+
     _, diag = solve_profile(
         _seed()[0],
         jnp.asarray(Tco, dtype=jnp.float64),
@@ -253,27 +281,20 @@ def seed_diagnostics(Tco, p_bar, b) -> dict:
     return {k: np.asarray(v) for k, v in diag.items()}
 
 
-_ABUNDANCE_CACHE: dict[Path, dict[str, float]] = {}
-
-
 def read_abundances(path: Path) -> dict[str, float]:
     """Parse a `SYMBOL log10(n_X/n_H)+12` preset into n_X/n_H, with H == 1."""
-    if path not in _ABUNDANCE_CACHE:
-        dex: dict[str, float] = {}
-        with open(path) as fh:
-            for line in fh:
-                row = line.split("#", 1)[0].split()
-                if len(row) >= 2:
-                    dex[row[0]] = float(row[1])
-        if "H" not in dex:
-            raise ValueError(
-                f"{path}: no H row. The preset is read as log10(n_X/n_H)+12, "
-                "so hydrogen sets the scale and must be present."
-            )
-        _ABUNDANCE_CACHE[path] = {
-            sp: 10.0 ** (value - dex["H"]) for sp, value in dex.items()
-        }
-    return _ABUNDANCE_CACHE[path]
+    dex: dict[str, float] = {}
+    with open(path) as fh:
+        for line in fh:
+            row = line.split("#", 1)[0].split()
+            if len(row) >= 2:
+                dex[row[0]] = float(row[1])
+    if "H" not in dex:
+        raise ValueError(
+            f"{path}: no H row. The preset is read as log10(n_X/n_H)+12, "
+            "so hydrogen sets the scale and must be present."
+        )
+    return {sp: 10.0 ** (value - dex["H"]) for sp, value in dex.items()}
 
 
 def _preset_vector() -> np.ndarray:
@@ -293,10 +314,9 @@ def _preset_vector() -> np.ndarray:
 def _base_vector() -> np.ndarray:
     """`b` (E,) with the config's `<X>_H` applied on top of the preset.
 
-    Precedence, inherited from the FastChem driver: an explicit `ratios`
-    entry, then `cfg.<X>_H` for the elements of `cfg.atom_list` other than H,
-    then the preset file. Helium comes from the file for every shipped atom
-    list (`He_H` is a `const_lowT` knob).
+    Precedence: an explicit `ratios` entry, then `cfg.<X>_H` for the elements
+    of `cfg.atom_list` other than H, then the preset file. Helium comes from
+    the file for every shipped atom list (`He_H` is a `const_lowT` knob).
     """
     b = _preset_vector()
     elements = seed_elements()
@@ -325,10 +345,12 @@ def ratio_indices(names) -> jnp.ndarray:
 def element_vector(ratios, idx) -> jnp.ndarray:
     """`b` (E,) with the elements at `idx` replaced by `ratios`. Traceable.
 
-    Bit-identical to `_element_vector({name: value, ...})` for the same
-    numbers: both write into the same `_base_vector()`.
+    Starts from `_element_vector()`, the host path's own no-override vector,
+    so `use_solar` and the `cfg.<X>_H` overrides have the same precedence on
+    both paths; with `use_solar: false` and a `ratios` entry per element it is
+    bit-identical to `_element_vector({name: value, ...})`.
     """
-    return jnp.asarray(_base_vector()).at[idx].set(
+    return jnp.asarray(_element_vector()).at[idx].set(
         jnp.asarray(ratios, dtype=jnp.float64)
     )
 
@@ -564,8 +586,8 @@ def _load_const_lowT_y(data_atm) -> tuple[np.ndarray, list[str]]:
     He_H = float(_CFG.He_H)
     N_H = float(_CFG.N_H)
     m0 = jnp.array([0.9, 0.1, 0.0, 0.0, 0.0], dtype=jnp.float64)
-    max_iter = int(getattr(_CFG, "fastchem_newton_max_iter", 50))
-    tol = float(getattr(_CFG, "fastchem_newton_tol", 1e-12))
+    max_iter = int(_CFG.fastchem_newton_max_iter)
+    tol = float(_CFG.fastchem_newton_tol)
     ini_mol = np.asarray(
         _jax_newton(
             _abun_lowT_residual,

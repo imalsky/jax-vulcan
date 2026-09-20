@@ -185,6 +185,50 @@ print("MASTER_OK")
 """
 
 
+_TRACER_PROBE = r"""
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+import jax
+import jax.numpy as jnp
+import numpy as np
+
+root = Path(sys.argv[1])       # PACKAGE_ROOT (.../src/vulcan_jax)
+os.chdir(root)
+
+from vulcan_jax import ini_abun
+from vulcan_jax.atm_setup import Atm
+from vulcan_jax.state import _AtmData
+
+make_atm = Atm()
+data_atm = make_atm.load_TPK(make_atm.f_pico(_AtmData()))
+Tco = jnp.asarray(np.asarray(data_atm.Tco, dtype=np.float64))
+p_bar = jnp.asarray(np.asarray(data_atm.pco, dtype=np.float64) / 1.0e6)
+b = jnp.asarray(ini_abun._element_vector())
+
+# `_element_vector` needs the element order, so drop the setup again: the
+# first seed CALL has to be the traced one, so the lazy setup is built inside
+# that trace.
+ini_abun._SEED = None
+y = np.asarray(jax.jit(ini_abun.eq_seed)(Tco, p_bar, b))
+assert np.isfinite(y).all()
+fm = ini_abun._SEED[0].formula_matrix
+assert not isinstance(fm, jax.core.Tracer), f"formula_matrix is a {type(fm)}"
+
+# Anything later must be able to reuse the cached setup: another trace at
+# another nz, and an untraced call. A tracer anywhere in the cached setup
+# (the formula matrix, or the NASA-9 coefficients the hvector closure holds)
+# raises UnexpectedTracerError here.
+k = 40
+np.asarray(jax.jit(ini_abun.eq_seed)(Tco[:k], p_bar[:k], b))
+np.asarray(ini_abun.eq_seed(Tco, p_bar, b))
+print("TRACER_PROBE_OK")
+"""
+
+
 def _run(script: str, *args) -> None:
     """Run a probe subprocess and surface both streams on failure."""
     result = subprocess.run(
@@ -345,9 +389,20 @@ def test_ratios_path_matches_the_config_path_and_moves_carbon() -> None:
                 jnp.asarray([ratios[a] for a in elements]), idx)),
             b_cfg,
         )
+        # No-override case, both branches of `use_solar`: the traced path
+        # must read the same vector the host path reads, preset or <X>_H.
+        empty = ini_abun.ratio_indices([])
+        np.testing.assert_array_equal(
+            np.asarray(ini_abun.element_vector(jnp.zeros(0), empty)), b_cfg
+        )
         b_c2 = ini_abun._element_vector({**ratios, "C": 2.0 * ratios["C"]})
     finally:
         cfg.use_solar = True
+
+    np.testing.assert_array_equal(
+        np.asarray(ini_abun.element_vector(jnp.zeros(0), empty)),
+        ini_abun._element_vector(),
+    )
 
     Tco, p_bar = _hd189_column()
     y_cfg = np.asarray(
@@ -361,6 +416,58 @@ def test_ratios_path_matches_the_config_path_and_moves_carbon() -> None:
     np.testing.assert_allclose(
         y_c2[:, sp.index("He")], y_cfg[:, sp.index("He")], rtol=2e-2
     )
+
+
+def test_solver_controls_force_a_retrace() -> None:
+    """A tighter or looser config must not reuse the trace that baked in the
+    old controls.
+
+    `eq_seed` reads the tolerance and the iteration cap at TRACE time, and
+    JAX keys its trace cache on the traced function plus the argument shapes,
+    so a jit wrapper per key is not by itself enough. The observable: after a
+    converged run at the shipped 450 iterations, the same column at
+    `max_iter = 1` must come back all-NaN (the seed's "did not converge"
+    signal), not silently repeat the converged answer.
+    """
+    import jax.numpy as jnp
+
+    from vulcan_jax import ini_abun
+    from vulcan_jax.config import default_config
+
+    Tco, p_bar = _hd189_column()
+    b = ini_abun._element_vector()
+    args = (jnp.asarray(Tco), jnp.asarray(p_bar), jnp.asarray(b))
+
+    cfg = default_config()
+    warm = np.asarray(ini_abun._seed_jit()(*args))
+    assert np.isfinite(warm).all(), "the shipped controls must converge"
+
+    keep = cfg.fastchem_newton_max_iter
+    cfg.fastchem_newton_max_iter = 1
+    try:
+        one = np.asarray(ini_abun._seed_jit()(*args))
+    finally:
+        key = (float(cfg.fastchem_newton_tol), 1)
+        cfg.fastchem_newton_max_iter = keep
+        ini_abun._SEED_JIT.pop(key, None)
+        ini_abun._OPTIONS_CACHE.pop(key, None)
+
+    seeded = ini_abun._seed()[1]
+    assert np.isnan(one[:, seeded]).all(), (
+        "max_iter=1 reused the converged trace: the config's solver controls "
+        "are baked in at trace time and a new key must retrace"
+    )
+
+
+def test_seed_setup_survives_being_built_inside_a_trace() -> None:
+    """The lazy setup is cached, so it must hold no tracers.
+
+    vulcan-forward calls `eq_seed` from a jitted forward model, so the first
+    call of a process can be a traced one; a JAX array built there escapes
+    into every later trace. Runs in a subprocess because the check needs a
+    process whose first seed call is the traced one.
+    """
+    _run(_TRACER_PROBE, PACKAGE_ROOT)
 
 
 def test_seed_is_batchable_and_carries_a_zero_tangent() -> None:

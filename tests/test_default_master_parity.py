@@ -569,9 +569,10 @@ def test_default_hd189_preloop_and_matched_steps_match_master(
 # of the pin snapshot and the relax. `CHO_photo_network_lowT.txt` is the
 # smallest vendored network carrying a condensation reaction
 # (`299 [ H2O -> H2O_l_s ]`) and is byte-identical in both trees; isothermal
-# 250 K + const_mix + no photo needs neither FastChem nor cross sections, so
-# the only moving parts beyond the shared Ros2 core are the condensation
-# kernels, the saturation table and the relaxation path. 51 steps: the pin
+# 250 K + const_mix + no photo needs neither an equilibrium seed nor cross
+# sections, so the only moving parts beyond the shared Ros2 core are the
+# condensation kernels, the saturation table and the relaxation path. 51
+# steps: the pin
 # fires at `t > stop_conden_time` on step 45, leaving the frozen reservoir six
 # steps to show.
 CONDEN_STEPS = 50

@@ -17,7 +17,7 @@ scalars) stays closure-baked and batch-constant. Three properties:
      stellar flux differs from the first profile's (only T-P may vary
      across a photo batch).
 
-Fast-ish: isothermal atmosphere (no atm file), const_mix init (no FastChem),
+Fast-ish: isothermal atmosphere (no atm file), const_mix init (no EQ seed),
 small nz / count_max, photo cadence lowered so the branch fires repeatedly.
 """
 
@@ -57,7 +57,7 @@ def _pin_cfg():
     const_mix init, lowered photo cadence so the branch fires within
     COUNT_MAX. Mirrors test_vmap_while_loop._pin_cfg.
 
-    `ini_mix="const_mix"` avoids FastChem. The fixed diffusion scheme is
+    `ini_mix="const_mix"` avoids the EQ seed. The fixed diffusion scheme is
     deterministic for the batched/emulator regime (the hybrid default would
     flip schemes mid-run per lane). `T_cross_sp=["H2O"]` selects the vendored
     T-dependent 423K-2360K tables: the two Tiso values interpolate to

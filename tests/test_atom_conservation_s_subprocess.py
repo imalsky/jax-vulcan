@@ -4,7 +4,7 @@ Extends test_atom_conservation_projection.py (HD189/NCHO, H/O/C/N) to sulfur,
 conserved through the H2S reservoir. The network AND the projection tables are
 import-locked, so the S path needs a fresh child process that selects SNCHO
 and an S-bearing atom_list before the first import. Self-contained:
-isothermal TP + const_mix init, no atm file, no FastChem, no photo.
+isothermal TP + const_mix init, no atm file, no EQ seed, no photo.
 
 Checks: (1) projection enabled for all five atoms with reservoirs exactly
 (H2, H2O, CO, N2, H2S) and a well-conditioned 5x5 count matrix; (2) an
@@ -85,7 +85,7 @@ assert np.max(np.abs(resid1)) < 1e-12, "projection did not zero the injected S r
 assert np.max(np.abs(non_res)) == 0.0, "projection mutated a non-reservoir species"
 
 # ---- Check 3: real codegen RHS conserves all five atoms after projection ----
-# Self-contained isothermal SNCHO state (no atm file / FastChem / photo).
+# Self-contained isothermal SNCHO state (no atm file / EQ seed / photo).
 cfg.atm_type = "isothermal"; cfg.Tiso = 1200.0
 cfg.atm_base = "H2"; cfg.use_moldiff = False
 cfg.use_Kzz = True; cfg.Kzz_prof = "const"; cfg.const_Kzz = 1e9; cfg.use_vz = False

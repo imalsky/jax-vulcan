@@ -5,7 +5,7 @@ Script-style test files keep a `main()` entry plus a thin
 The upstream oracle is optional: oracle tests run master comparisons in
 fresh subprocesses and skip cleanly when it is absent. The `hd189_state`
 fixture hands out a per-test deep copy of the session-built HD189
-pre-loop state so tests avoid re-running rates / FastChem / photo setup.
+pre-loop state so tests avoid re-running rates / the EQ seed / photo setup.
 """
 
 from __future__ import annotations

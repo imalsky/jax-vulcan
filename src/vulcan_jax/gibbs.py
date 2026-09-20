@@ -7,6 +7,7 @@ implementation, on the AD graph); this module owns the reading of
 
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +24,7 @@ CORR = kb / _P0
 _NASA9_BRANCH_T = 1000.0
 
 
+@functools.cache
 def load_nasa9(
     species: tuple[str, ...], thermo_dir: str | Path
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -30,6 +32,10 @@ def load_nasa9(
 
     Returns (coeffs[ni, 2, 10], present[ni]). Index 0 is low-T (T<1000 K),
     index 1 is high-T. Species without a NASA-9 file get zeros.
+
+    Cached per (species, directory): the rate build and the equilibrium seed
+    ask for the same table, and one call reads one file per species. The
+    arrays are SHARED between callers -- read them, never write into them.
     """
     from ._paths import resolve_data_path
 

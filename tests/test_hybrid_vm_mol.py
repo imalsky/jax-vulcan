@@ -32,7 +32,7 @@ warnings.filterwarnings("ignore")
 
 
 def _pin_cfg():
-    """Fast, FastChem-free (const_mix), photo-off isothermal config."""
+    """Fast, EQ-seed-free (const_mix), photo-off isothermal config."""
     return fast_cfg(
         trun_min=1e-30,
         use_condense=False,

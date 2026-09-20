@@ -291,9 +291,8 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
                 if section == _SECTION_RADIATIVE:
                     raise ValueError(
                         f"{network_path}:{lineno}: radiative-recombination networks are "
-                        "not supported -- rates.py, rates_jax.py and gibbs.py all "
-                        "exclude those slots, so their reactions would be silently "
-                        "dropped."
+                        "not supported -- rates_jax.py excludes those slots, "
+                        "so their reactions would be silently dropped."
                     )
                 if section == _SECTION_PHOTO and photo_indx is None:
                     photo_indx = parser_i
