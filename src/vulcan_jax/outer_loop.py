@@ -12,6 +12,7 @@ exactly (including the forced-accept fallback when `dt < dt_min`).
 
 from __future__ import annotations
 
+import functools
 import time
 from typing import NamedTuple, Optional
 
@@ -1970,6 +1971,164 @@ def _make_runner(
         )
         return final_b
 
+    def runner_queue(jobs, n_lanes, chunk, refill_every, init_fn, out_fn):
+        """Freeze-on-done loop over `n_lanes` lanes fed from a queue of jobs.
+
+        A lane that has finished (is_done, still holding a job) is written out
+        with `out_fn` and refilled with the next pending job, in chunks,
+        inside the same while loop. The static atmosphere rides the carry so a
+        refill can swap a lane's, and wall time follows total work / n_lanes
+        instead of the slowest job. A fresh lane gets its photolysis fields
+        from its own column, as a plain-batch lane does at tick 0.
+
+        With `n_lanes >= n_jobs` nothing is ever refilled and every lane runs
+        the ticks `runner_batch` would give it, so the result is bitwise
+        `runner_batch`'s.
+        """
+        sizes = {
+            jnp.shape(x)[0]
+            for x in jax.tree_util.tree_leaves(jobs)
+            if jnp.ndim(x) > 0
+        }
+        if len(sizes) != 1:
+            raise ValueError(
+                "run_queue: the array leaves of `jobs` must share one leading "
+                f"job axis; found lengths {sorted(sizes)}."
+            )
+        n_jobs = int(sizes.pop())
+        n_lanes = int(n_lanes)
+        chunk = int(max(1, min(int(chunk), n_lanes)))
+        arr_fields = tuple(
+            f for f in AtmStatic._fields
+            if getattr(_ATM_STATIC_BATCH_AXES, f) == 0
+        )
+
+        def job_at(j):
+            """Job `j` with no leading axis. Leaves that carry no job axis
+            (the AtmStatic toggles are Python scalars) pass through."""
+            j = jnp.clip(j, 0, n_jobs - 1)
+            return jax.tree_util.tree_map(
+                lambda x: x[j] if jnp.ndim(x) > 0 else x, jobs
+            )
+
+        def fresh(j):
+            """(k,) job ids -> k fresh lane states, their atmosphere ARRAYS,
+            and the AtmStatic the arrays belong to (toggles unmapped)."""
+            st, atm = jax.vmap(
+                lambda jj: init_fn(job_at(jj)),
+                out_axes=(0, _ATM_STATIC_BATCH_AXES),
+            )(j)
+            if photo_branch is not None and use_photo_static:
+                st = jax.vmap(photo_branch)(st)
+            return st, {f: getattr(atm, f) for f in arr_fields}, atm
+
+        step = jax.vmap(
+            lambda it, s, a: body_fn_batch(s, a, lane_axis=_LANE_AXIS, it=it),
+            in_axes=(None, 0, _ATM_STATIC_BATCH_AXES),
+            axis_name=_LANE_AXIS,
+        )
+
+        j0 = jnp.arange(n_lanes, dtype=jnp.int32)
+        lanes, atm_l, atm_tmpl = fresh(j0)
+        # Only the toggles are kept from the template: the array fields ride
+        # the carry, so holding the initial ones here would bake n_lanes
+        # columns into the program as constants.
+        toggles = {
+            f: getattr(atm_tmpl, f)
+            for f in AtmStatic._fields
+            if f not in arr_fields
+        }
+        # Lanes past the last job are idle: frozen from the start, holding no
+        # job (-1), never written out.
+        have = j0 < jnp.int32(n_jobs)
+        lanes = lanes._replace(is_done=lanes.is_done | jnp.logical_not(have))
+        lane_job = jnp.where(have, j0, jnp.int32(-1))
+        out = jax.tree_util.tree_map(
+            lambda x: jnp.zeros((n_jobs,) + x.shape[1:], x.dtype),
+            jax.vmap(out_fn)(lanes),
+        )
+        nxt = jnp.int32(min(n_lanes, n_jobs))
+
+        def with_atm(al):
+            return AtmStatic(**al, **toggles)
+
+        def write_out(out, lanes, dst_lane, dst_job, valid):
+            """Write `dst_lane`'s summaries to their jobs; an invalid slot is
+            sent to the out-of-bounds index `n_jobs`, which `mode="drop"`
+            discards."""
+            summ = jax.vmap(out_fn)(
+                jax.tree_util.tree_map(lambda x: x[dst_lane], lanes)
+            )
+            dst = jnp.where(valid, dst_job, jnp.int32(n_jobs))
+            return jax.tree_util.tree_map(
+                lambda o, v: o.at[dst].set(v, mode="drop"), out, summ
+            )
+
+        def refill(c):
+            it, lanes, atm_l, lane_job, nxt, out = c
+            free = lanes.is_done & (lane_job >= 0)
+            # Free lanes first, then lane order: a fixed-size selection of
+            # `chunk` slots whose leading entries are the refillable ones.
+            order = jnp.logical_not(free).astype(jnp.int32) * jnp.int32(n_lanes) + j0
+            sel = jnp.argsort(order)[:chunk]
+            sel_free = free[sel]
+            out = write_out(out, lanes, sel, lane_job[sel], sel_free)
+            jid = nxt + jnp.cumsum(sel_free, dtype=jnp.int32) - jnp.int32(1)
+            got = sel_free & (jid < jnp.int32(n_jobs))
+            # `init_fn` runs on every slot, valid or not: shapes are fixed.
+            new_st, new_atm, _ = fresh(jid)
+
+            def put(lane_arr, new):
+                g = got.reshape((-1,) + (1,) * (new.ndim - 1))
+                return lane_arr.at[sel].set(jnp.where(g, new, lane_arr[sel]))
+
+            lanes = jax.tree_util.tree_map(put, lanes, new_st)
+            atm_l = jax.tree_util.tree_map(put, atm_l, new_atm)
+            # A lane written out without a new job drops to -1, so `free`
+            # never selects it again and it is not written twice.
+            lane_job = lane_job.at[sel].set(
+                jnp.where(
+                    got, jid, jnp.where(sel_free, jnp.int32(-1), lane_job[sel])
+                )
+            )
+            return (it, lanes, atm_l, lane_job,
+                    nxt + jnp.sum(got, dtype=jnp.int32), out)
+
+        def body(c):
+            it, lanes, atm_l, lane_job, nxt, out = c
+            lanes = step(it, lanes, with_atm(atm_l))
+            it = it + jnp.int32(1)
+            c = (it, lanes, atm_l, lane_job, nxt, out)
+            n_free = jnp.sum(lanes.is_done & (lane_job >= 0), dtype=jnp.int32)
+            n_held = jnp.sum(lane_job >= 0, dtype=jnp.int32)
+            remaining = jnp.int32(n_jobs) - nxt
+            want = jnp.minimum(jnp.int32(chunk), remaining)
+            # Refill on a full chunk, or when every lane still holding a job
+            # is free (the tail, fewer than `chunk` left), or on the cadence
+            # so a single straggler does not hold the queue.
+            trigger = (
+                (remaining > 0)
+                & (n_free > 0)
+                & (
+                    (n_free >= want)
+                    | (n_free == n_held)
+                    | (jnp.mod(it, jnp.int32(refill_every)) == jnp.int32(0))
+                )
+            )
+            return jax.lax.cond(trigger, refill, lambda cc: cc, c)
+
+        def cond(c):
+            _it, lanes, _atm_l, lane_job, nxt, _out = c
+            live = jnp.logical_not(lanes.is_done) & (lane_job >= 0)
+            return (nxt < jnp.int32(n_jobs)) | jnp.any(live)
+
+        it, lanes, _atm_l, lane_job, _nxt, out = jax.lax.while_loop(
+            cond, body, (jnp.int32(0), lanes, atm_l, lane_job, nxt, out)
+        )
+        # Flush the lanes still holding a job when the loop ended.
+        out = write_out(out, lanes, j0, lane_job, lane_job >= 0)
+        return out, it
+
     def _make_runner_batch_jvp(active_state, active_atm):
         """The batched twin of `runner_jvp`, built from it the way
         `runner_batch` is built from `runner`: one while loop ABOVE a lane
@@ -2060,7 +2219,8 @@ def _make_runner(
 
         return runner_batch_jvp
 
-    return runner, runner_batch, _make_runner_jvp, _make_runner_batch_jvp
+    return (runner, runner_batch, runner_queue, _make_runner_jvp,
+            _make_runner_batch_jvp)
 
 
 # vmap axis name of the batched runner. `body_fn` psums over it to build the
@@ -2270,6 +2430,11 @@ class OuterLoop:
         # same (nz, toggle-combo) closure as `_runner`.
         self._runner_batch = None
         self._vrunner = None
+        # Same closure again, with a job queue above the lanes (`run_queue`);
+        # its jit cache is keyed by (init_fn, out_fn, n_lanes, chunk,
+        # refill_every), all of which the traced program bakes in.
+        self._runner_queue = None
+        self._vrunner_queue = {}
         self._statics = None
         self._photo_static = None
         self._refresh_static = None
@@ -2520,6 +2685,7 @@ class OuterLoop:
         (
             self._runner,
             self._runner_batch,
+            self._runner_queue,
             self._make_runner_jvp,
             self._make_runner_batch_jvp,
         ) = _make_runner(
@@ -3676,7 +3842,8 @@ class OuterLoop:
         matches running it alone at the convergence scale (the photo /
         geometry cadences follow the loop's iteration tick here, not the
         lane's accept count), and the call returns once the slowest
-        lane finishes (no lane compaction or refill is implemented).
+        lane finishes. Lanes are never compacted or refilled here; feed a
+        queue of profiles through `run_queue` for that.
         """
         if self._runner_batch is None:
             raise RuntimeError(
@@ -3686,6 +3853,50 @@ class OuterLoop:
         if self._vrunner is None:
             self._vrunner = jax.jit(self._runner_batch)
         return self._vrunner(states_batched, atm_static_batched)
+
+    def run_queue(self, init_fn, jobs, n_lanes, out_fn, *, chunk=8,
+                  refill_every=100):
+        """Integrate `n_jobs` independent profiles on `n_lanes` lanes with refill.
+
+        `init_fn(job) -> (JaxIntegState, AtmStatic)` builds ONE job's initial
+        state (traceable); `jobs` is a pytree with a leading job axis on every
+        array leaf; `out_fn(final_lane_state) -> pytree` is what is kept per
+        job. Returns `(out, n_iter)`: `out_fn`'s pytree stacked in JOB order
+        and the loop's iteration count. A job whose lane went non-finite comes
+        back with `termination_reason` 5.
+
+        A finished lane is written out and refilled with the next pending job
+        once `chunk` lanes are free, when every lane still holding a job is
+        free, or every `refill_every` iterations; with `n_lanes >= n_jobs`
+        nothing is refilled and the result is bitwise `run_batch`'s. A fresh
+        lane starts as a plain-batch lane does at tick 0 (its own photolysis
+        fields), so a refilled job matches the plain batch at the convergence
+        scale, not bitwise: it enters the loop at a tick that moves the photo
+        and geometry cadences. Requires `prepare_runstate` to have built the
+        runner for this nz / toggle-combo, like `run_batch`.
+        """
+        if self._runner_queue is None:
+            raise RuntimeError(
+                "run_queue called before the runner was built; call "
+                "prepare_runstate on at least one profile first."
+            )
+        # The callables are part of the key, not their `id`s: holding them
+        # keeps a dead closure's id from being reused by a new one.
+        key = (init_fn, out_fn, int(n_lanes), int(chunk), int(refill_every))
+        fn = self._vrunner_queue.get(key)
+        if fn is None:
+            fn = jax.jit(
+                functools.partial(
+                    self._runner_queue,
+                    n_lanes=int(n_lanes),
+                    chunk=int(chunk),
+                    refill_every=int(refill_every),
+                    init_fn=init_fn,
+                    out_fn=out_fn,
+                )
+            )
+            self._vrunner_queue[key] = fn
+        return fn(jobs)
 
     def _summary_shim(self, rs):
         """Build a minimal legacy-shape stand-in for the post-run prints.

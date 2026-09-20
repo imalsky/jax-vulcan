@@ -198,5 +198,44 @@ def test_main():
     assert main() == 0
 
 
+@pytest.mark.strict_isolation
+def test_queue_refill_starts_on_its_own_photolysis():
+    """`run_queue` on ONE lane: the second profile is refilled into a lane the
+    first profile just left, and must start on its own photolysis fields the
+    way a plain-batch lane does at tick 0. Run one at a time it reaches the
+    same termination reason and the same mixing ratios as the pair run in a
+    single `run_batch`; a refilled lane left on its predecessor's RT state
+    would integrate a different column.
+    """
+    import vulcan_jax.outer_loop as outer_loop
+
+    vulcan_cfg = _pin_cfg()
+    integ = _build_integ()
+    sA, atmA = integ.prepare_runstate(_build_rs(vulcan_cfg, Tiso=900.0))
+    sB, atmB = integ.prepare_runstate(_build_rs(vulcan_cfg, Tiso=1600.0))
+    init_b = outer_loop.stack_integ_states([sA, sB])
+    atm_b = outer_loop.stack_atm_statics([atmA, atmB])
+
+    ref = integ.run_batch(init_b, atm_b)
+    (y, reason), n_iter = integ.run_queue(
+        lambda job: job,
+        (init_b, atm_b),
+        n_lanes=1,
+        out_fn=lambda f: (f.y, f.termination_reason),
+        chunk=1,
+    )
+    assert np.array_equal(np.asarray(reason), np.asarray(ref.termination_reason))
+    for k in (0, 1):
+        yk, yr = np.asarray(y[k]), np.asarray(ref.y[k])
+        rel = _max_rel_diff(
+            yk / yk.sum(axis=1, keepdims=True), yr / yr.sum(axis=1, keepdims=True)
+        )
+        print(
+            f"[queue-refill] job {k}: ymix max rel vs run_batch {rel:.3e} "
+            f"(n_iter {int(n_iter)}, reason {int(reason[k])})"
+        )
+        assert rel < RTOL
+
+
 if __name__ == "__main__":
     sys.exit(main())
