@@ -1414,6 +1414,14 @@ def _make_runner(
                 )
                 & jnp.bool_(use_atm_refresh_static)
             )
+            if lane_axis is not None:
+                # Same live-lane term as the photo gate above. A finished
+                # lane's hypothetical next step is always a convergence
+                # candidate, so without it `any_refresh` is true on every
+                # iteration once one lane is done and the whole batch takes
+                # the refresh branch for values `body_fn_batch` then throws
+                # away. Exact: a live lane's own gate is unchanged.
+                refresh_due = refresh_due & jnp.logical_not(s.is_done)
             # Splice this lane's per-profile atmosphere from the carry into
             # the closure-baked refresh static (vmap batches the carry, not
             # closures). `pref_indx` stays baked and must be batch-constant
