@@ -16,6 +16,9 @@ on the same five is the reference. Pins:
      queue neighbours: with the same lane count and chunk their histories are
      the same with and without it appended, so their results are bitwise
      equal.
+  5. LANE REUSE — the jobs refilled into the lane a poisoned job died in come
+     back finite and on the batch's fixed point.
+  6. ARGUMENT GUARDS — an empty queue and a lane count below 1 raise.
 """
 
 from __future__ import annotations
@@ -75,6 +78,20 @@ def _cat_jobs(a, b):
     )
 
 
+def _poisoned(jobs, sl):
+    """Job `sl` with y AND y_prev all-NaN: a rejected Ros2 step reverts y to
+    y_prev, so poisoning y alone self-heals and the lane never goes
+    non-finite (test_vmap_while_loop makes the same point)."""
+    st, atm = _take_jobs(jobs, sl)
+    return (
+        st._replace(
+            y=jnp.full_like(st.y, jnp.nan),
+            y_prev=jnp.full_like(st.y_prev, jnp.nan),
+        ),
+        atm,
+    )
+
+
 def _ident(job):
     """`init_fn` for a queue whose jobs ARE the prepared (state, atm) pairs."""
     return job
@@ -128,9 +145,15 @@ def test_queue_refills_and_matches_the_batch_at_the_convergence_scale(
 ):
     integ, init_b, atm_b = prepared
     ref = integ.run_batch(init_b, atm_b)
+    # The no-refill call is the lockstep baseline: with fewer lanes than jobs
+    # the queue must take strictly more iterations, or nothing was refilled.
+    _, n_iter_lockstep = integ.run_queue(
+        _ident, (init_b, atm_b), n_lanes=len(TISO), out_fn=_out_fn
+    )
     (y, _t, _acc, reason, done), n_iter = integ.run_queue(
         _ident, (init_b, atm_b), n_lanes=n_lanes, out_fn=_out_fn, chunk=chunk
     )
+    assert int(n_iter) > int(n_iter_lockstep)
     assert np.array_equal(np.asarray(reason), np.asarray(ref.termination_reason))
     assert bool(np.all(np.asarray(done)))
     for k in range(len(TISO)):
@@ -140,7 +163,8 @@ def test_queue_refills_and_matches_the_batch_at_the_convergence_scale(
             yk / yk.sum(axis=1, keepdims=True), yr / yr.sum(axis=1, keepdims=True)
         )
         print(
-            f"[lanes={n_lanes} chunk={chunk} n_iter={int(n_iter)} job {k}] "
+            f"[lanes={n_lanes} chunk={chunk} n_iter={int(n_iter)} "
+            f"(lockstep {int(n_iter_lockstep)}) job {k}] "
             f"max rel {rel:.3e}",
             flush=True,
         )
@@ -163,15 +187,7 @@ def test_more_lanes_than_jobs(prepared):
 def test_poisoned_job_does_not_touch_its_neighbours(prepared):
     integ, init_b, atm_b = prepared
     abc = _take_jobs((init_b, atm_b), slice(0, 3))
-    p_state, p_atm = _take_jobs((init_b, atm_b), slice(3, 4))
-    # Poison y AND y_prev: a rejected Ros2 step reverts y to y_prev, so
-    # poisoning y alone self-heals and the lane never goes non-finite
-    # (test_vmap_while_loop makes the same point).
-    p_state = p_state._replace(
-        y=jnp.full_like(p_state.y, jnp.nan),
-        y_prev=jnp.full_like(p_state.y_prev, jnp.nan),
-    )
-    abcp = _cat_jobs(abc, (p_state, p_atm))
+    abcp = _cat_jobs(abc, _poisoned((init_b, atm_b), slice(3, 4)))
     (y3, _, _, r3, _), _ = integ.run_queue(
         _ident, abc, n_lanes=2, out_fn=_out_fn, chunk=1
     )
@@ -185,3 +201,44 @@ def test_poisoned_job_does_not_touch_its_neighbours(prepared):
     )
     assert np.array_equal(np.asarray(y3), np.asarray(y4[:3]))
     assert int(r4[3]) == 5 and int(acc4[3]) == 0
+
+
+def test_lane_reuse_after_a_poisoned_job(prepared):
+    """One lane, the poisoned job FIRST: A and B are refilled into the lane P
+    died in. A lane left holding P's non-finite state would carry the NaNs
+    into the jobs that follow it. A and B enter at a later tick than the
+    plain batch gives them, so they agree at the convergence scale."""
+    integ, init_b, atm_b = prepared
+    ab = _take_jobs((init_b, atm_b), slice(0, 2))
+    pab = _cat_jobs(_poisoned((init_b, atm_b), slice(3, 4)), ab)
+    ref = integ.run_batch(*ab)
+    (y, _t, acc, reason, _done), n_iter = integ.run_queue(
+        _ident, pab, n_lanes=1, out_fn=_out_fn, chunk=1
+    )
+    assert int(reason[0]) == 5 and int(acc[0]) == 0
+    assert np.array_equal(np.asarray(reason[1:]), np.asarray(ref.termination_reason))
+    for k in range(2):
+        yk, yr = np.asarray(y[k + 1]), np.asarray(ref.y[k])
+        assert np.all(np.isfinite(yk)), k
+        rel = _max_rel_diff(
+            yk / yk.sum(axis=1, keepdims=True), yr / yr.sum(axis=1, keepdims=True)
+        )
+        print(
+            f"[lane reuse] job {k + 1} max rel {rel:.3e} (n_iter {int(n_iter)})",
+            flush=True,
+        )
+        assert rel < REL_MAX
+
+
+def test_empty_queue_and_lane_count_below_one_raise(prepared):
+    integ, init_b, atm_b = prepared
+    with pytest.raises(ValueError):
+        integ.run_queue(
+            _ident, _take_jobs((init_b, atm_b), slice(0, 0)), n_lanes=2,
+            out_fn=_out_fn,
+        )
+    with pytest.raises(ValueError):
+        integ.run_queue(
+            _ident, _take_jobs((init_b, atm_b), slice(0, 2)), n_lanes=0,
+            out_fn=_out_fn,
+        )

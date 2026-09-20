@@ -1978,8 +1978,15 @@ def _make_runner(
         with `out_fn` and refilled with the next pending job, in chunks,
         inside the same while loop. The static atmosphere rides the carry so a
         refill can swap a lane's, and wall time follows total work / n_lanes
-        instead of the slowest job. A fresh lane gets its photolysis fields
-        from its own column, as a plain-batch lane does at tick 0.
+        instead of the slowest job.
+
+        Every lane starts on its own photolysis fields, but the two fills
+        reach that differently. The initial fill does NOT apply the photo
+        branch here: those lanes enter at tick 0 and `body_fn`'s cadence
+        (`it % update_photo_frq == 0`) applies it inside their first step,
+        exactly as `runner_batch` does. A refill enters at an arbitrary tick,
+        so it applies the branch at entry; otherwise the job would take its
+        first chemistry steps on the previous occupant's RT state.
 
         With `n_lanes >= n_jobs` nothing is ever refilled and every lane runs
         the ticks `runner_batch` would give it, so the result is bitwise
@@ -1997,6 +2004,13 @@ def _make_runner(
             )
         n_jobs = int(sizes.pop())
         n_lanes = int(n_lanes)
+        if n_jobs < 1:
+            raise ValueError("run_queue: the job queue is empty (n_jobs = 0).")
+        if n_lanes < 1:
+            raise ValueError(
+                f"run_queue: n_lanes must be >= 1; got {n_lanes}. With no lane "
+                "the queue is never drained."
+            )
         chunk = int(max(1, min(int(chunk), n_lanes)))
         arr_fields = tuple(
             f for f in AtmStatic._fields
@@ -2011,14 +2025,17 @@ def _make_runner(
                 lambda x: x[j] if jnp.ndim(x) > 0 else x, jobs
             )
 
-        def fresh(j):
+        def fresh(j, *, photo):
             """(k,) job ids -> k fresh lane states, their atmosphere ARRAYS,
-            and the AtmStatic the arrays belong to (toggles unmapped)."""
+            and the AtmStatic the arrays belong to (toggles unmapped).
+
+            `photo=True` puts the state on its own photolysis fields here;
+            see the two fills in the docstring."""
             st, atm = jax.vmap(
                 lambda jj: init_fn(job_at(jj)),
                 out_axes=(0, _ATM_STATIC_BATCH_AXES),
             )(j)
-            if photo_branch is not None and use_photo_static:
+            if photo and photo_branch is not None and use_photo_static:
                 st = jax.vmap(photo_branch)(st)
             return st, {f: getattr(atm, f) for f in arr_fields}, atm
 
@@ -2029,7 +2046,7 @@ def _make_runner(
         )
 
         j0 = jnp.arange(n_lanes, dtype=jnp.int32)
-        lanes, atm_l, atm_tmpl = fresh(j0)
+        lanes, atm_l, atm_tmpl = fresh(j0, photo=False)
         # Only the toggles are kept from the template: the array fields ride
         # the carry, so holding the initial ones here would bake n_lanes
         # columns into the program as constants.
@@ -2076,7 +2093,7 @@ def _make_runner(
             jid = nxt + jnp.cumsum(sel_free, dtype=jnp.int32) - jnp.int32(1)
             got = sel_free & (jid < jnp.int32(n_jobs))
             # `init_fn` runs on every slot, valid or not: shapes are fixed.
-            new_st, new_atm, _ = fresh(jid)
+            new_st, new_atm, _ = fresh(jid, photo=True)
 
             def put(lane_arr, new):
                 g = got.reshape((-1,) + (1,) * (new.ndim - 1))
@@ -3872,8 +3889,11 @@ class OuterLoop:
         lane starts as a plain-batch lane does at tick 0 (its own photolysis
         fields), so a refilled job matches the plain batch at the convergence
         scale, not bitwise: it enters the loop at a tick that moves the photo
-        and geometry cadences. Requires `prepare_runstate` to have built the
-        runner for this nz / toggle-combo, like `run_batch`.
+        and geometry cadences. A job stopped by `count_max` is `is_done` like
+        a converged one and IS refilled, so a fixed-step benchmark run with
+        fewer lanes than jobs measures queue throughput, not per-step cost.
+        Requires `prepare_runstate` to have built the runner for this nz /
+        toggle-combo, like `run_batch`.
         """
         if self._runner_queue is None:
             raise RuntimeError(

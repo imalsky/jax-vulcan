@@ -237,5 +237,41 @@ def test_queue_refill_starts_on_its_own_photolysis():
         assert rel < RTOL
 
 
+@pytest.mark.strict_isolation
+def test_queue_without_refill_is_the_photo_batch():
+    """`run_queue` with one lane per job, PHOTOLYSIS ON: nothing is refilled,
+    so every job runs the ticks `run_batch` gives it and the result must be
+    bitwise `run_batch`'s. The photo-off twin of this pin is
+    test_run_queue.test_queue_without_refill_is_the_batch; only with photo on
+    can the initial fill see the photo branch twice before its first
+    chemistry step (which moves prev_aflux and aflux_change, and aflux_change
+    gates the convergence certificate).
+    """
+    from vulcan_jax import outer_loop
+
+    vulcan_cfg = _pin_cfg()
+    integ = _build_integ()
+    sA, atmA = integ.prepare_runstate(_build_rs(vulcan_cfg, Tiso=900.0))
+    sB, atmB = integ.prepare_runstate(_build_rs(vulcan_cfg, Tiso=1600.0))
+    init_b = outer_loop.stack_integ_states([sA, sB])
+    atm_b = outer_loop.stack_atm_statics([atmA, atmB])
+
+    ref = integ.run_batch(init_b, atm_b)
+    (y, t, acc, reason), n_iter = integ.run_queue(
+        lambda job: job,
+        (init_b, atm_b),
+        n_lanes=2,
+        out_fn=lambda f: (f.y, f.t, f.accept_count, f.termination_reason),
+    )
+    print(f"[photo no refill] n_iter={int(n_iter)}", flush=True)
+    for name, a, b in (
+        ("y", y, ref.y),
+        ("t", t, ref.t),
+        ("accept_count", acc, ref.accept_count),
+        ("termination_reason", reason, ref.termination_reason),
+    ):
+        assert np.array_equal(np.asarray(a), np.asarray(b)), name
+
+
 if __name__ == "__main__":
     sys.exit(main())
