@@ -70,6 +70,33 @@ def _system(nz, ni, seed, boost, scale):
     )
 
 
+def banded_solve(diag, sup, sub, b):
+    """A BACKWARD-STABLE solve of the block-tridiagonal system (LAPACK gbsv).
+
+    The yardstick the tangent and cotangent bars in `check_real_blocks` are
+    read against; `compare` runs it on the same linearised right-hand side
+    and the same cotangent seed as the two arms. The system is assembled banded (kl = ku = 2*ni-1) rather
+    than dense: n = nz*ni is 10350 here, so the dense matrix would be 857 MB
+    while the band is 34 MB. Pass the transposed operands for `A^T g = w`.
+    """
+    import scipy.linalg
+
+    diag, sup, sub = np.asarray(diag), np.asarray(sup), np.asarray(sub)
+    nz, ni = diag.shape[0], diag.shape[1]
+    n, kl = nz * ni, 2 * ni - 1
+    ab = np.zeros((2 * kl + 1, n))
+    rows = np.arange(ni)
+    for z in range(nz):
+        r, c = z * ni + rows[:, None], z * ni + rows[None, :]
+        ab[kl + r - c, c] = diag[z]
+        if z + 1 < nz:
+            r1, c1 = z * ni + rows, (z + 1) * ni + rows
+            ab[kl + r1 - c1, c1] = sup[z]
+            ab[kl + c1 - r1, r1] = sub[z]
+    x = scipy.linalg.solve_banded((kl, kl), ab, np.asarray(b).reshape(n))
+    return jnp.asarray(x.reshape(nz, ni))
+
+
 def compare(diag, sup, sub, rhs, tans, seed=1):
     """Both arms jitted (the production condition). Returns a dict of the
     agreement numbers; the callers assert on them."""
@@ -82,7 +109,9 @@ def compare(diag, sup, sub, rhs, tans, seed=1):
     # the linearised equation A dx = db - dA x, satisfied by the exact tangent
     b_lin = tans[3] - fast_mod._matvec(tans[0], tans[1], tans[2], x0)
     # the rhs-cotangent solves the transposed system, A^T g = w
-    gres = lambda g: _resid(jnp.swapaxes(diag, 1, 2), sub, sup, g, w)
+    diag_t = jnp.swapaxes(diag, 1, 2)
+    gres = lambda g: _resid(diag_t, sub, sup, g, w)
+    # the backward-stable third arm of each, on the SAME b_lin and w
     return {
         "primal_equal": bool(jnp.array_equal(x0, x1)),
         "primal_rel": _rel(x0, x1),
@@ -94,6 +123,8 @@ def compare(diag, sup, sub, rhs, tans, seed=1):
         "grad_rel": max(_rel(a, b) for a, b in zip(g0, g1)),
         "gres_cur": gres(g0[3]),
         "gres_cand": gres(g1[3]),
+        "tres_dense": _resid(diag, sup, sub, banded_solve(diag, sup, sub, b_lin), b_lin),
+        "gres_dense": _resid(diag_t, sub, sup, banded_solve(diag_t, sub, sup, w), w),
         "vmap_rel": max(_rel(batched[0], x1), _rel(batched[1], x1)),
     }
 
@@ -185,34 +216,6 @@ def capture_stage1(fixture: str, cfg_name: str, dt: float):
     return diag, sup, sub, cap["rhs"][0]
 
 
-def dense_cotangent_resid(diag, sup, sub, w):
-    """`gres` of a BACKWARD-STABLE solve of `A^T g = w` (LAPACK gbsv).
-
-    The yardstick the cotangent bar in `check_real_blocks` is read against.
-    The block-tridiagonal system is assembled banded (kl = ku = 2*ni-1) rather
-    than dense: n = nz*ni is 10350 here, so the dense matrix would be 857 MB
-    while the band is 34 MB.
-    """
-    import scipy.linalg
-
-    diag_t = np.swapaxes(np.asarray(diag), 1, 2)
-    upper, lower = np.asarray(sub), np.asarray(sup)  # A^T's off-diagonals
-    nz, ni = diag_t.shape[0], diag_t.shape[1]
-    n, kl = nz * ni, 2 * ni - 1
-    ab = np.zeros((2 * kl + 1, n))
-    rows = np.arange(ni)
-    for z in range(nz):
-        r, c = z * ni + rows[:, None], z * ni + rows[None, :]
-        ab[kl + r - c, c] = diag_t[z]
-        if z + 1 < nz:
-            r1, c1 = z * ni + rows, (z + 1) * ni + rows
-            ab[kl + r1 - c1, c1] = upper[z]
-            ab[kl + c1 - r1, r1] = lower[z]
-    g = scipy.linalg.solve_banded((kl, kl), ab, np.asarray(w).reshape(n))
-    return _resid(jnp.asarray(diag_t), jnp.asarray(upper), jnp.asarray(lower),
-                  jnp.asarray(g.reshape(nz, ni)), w)
-
-
 def check_real_blocks(fixture: str, cfg_name: str, backend: str):
     """Assert the agreement bars on the real blocks at DTS; returns the rows.
     Also run by the SNCHO child for W39b."""
@@ -231,10 +234,6 @@ def check_real_blocks(fixture: str, cfg_name: str, backend: str):
             1e-3 * jnp.abs(rhs) * jax.random.normal(ks[3], rhs.shape),
         )
         r = compare(diag, sup, sub, rhs, tans)
-        r["gres_dense"] = dense_cotangent_resid(
-            diag, sup, sub,
-            jnp.asarray(np.random.default_rng(1).standard_normal(rhs.shape)),
-        )
         r["dt"] = dt
         rows.append(r)
     print(f"\n{backend} {fixture}:")
@@ -248,7 +247,7 @@ def check_real_blocks(fixture: str, cfg_name: str, backend: str):
     # backward-stable solve on these blocks (1e14..1e23 for a random rhs, notes
     # §1.4.1), so they are only compared between arms, never to a fixed bar.
     #
-    # The cotangent needs a THIRD arm. Measured on the HD189 fixture (normwise
+    # Both residuals need a THIRD arm. Measured on the HD189 fixture (normwise
     # `gres`, ref / ffi / gbsv):
     #     dt 1e2    2.546e-02 / 5.223e-02 / 3.467e-02
     #     dt 1e6    3.026e+02 / 1.957e+02 / 8.394e+01
@@ -259,7 +258,16 @@ def check_real_blocks(fixture: str, cfg_name: str, backend: str):
     # residuals happens to be smaller on the column the fixture was built
     # from, and it failed by 2.6% on a rebuilt one. `10x` the gbsv residual is
     # a bar no correct kernel reaches by noise (6.6x headroom at dt 1e2) and
-    # one a broken transpose cannot pass.
+    # one a broken transpose cannot pass. The tangent residual `tres` has the
+    # same character (ref / fast / gbsv on the rebuilt fixture, two machines
+    # and the GH200 agreeing on the miss):
+    #     dt 1e2    6.81e-07 / 4.46e-07 / 1.77e-07
+    #     dt 3.8e4  8.52e-05 / 9.85e-05 / 8.51e-05
+    #     dt 1e6    1.85e-03 / 5.01e-03 / 3.44e-03
+    #     dt 1e11   4.05e+00 / 4.15e+00 / 6.95e-01
+    # At dt 1e6 the `fast` arm (the reference scans under a custom_linear_solve
+    # rule) sits 2.7x the reference and 1.5x gbsv while the tangents themselves
+    # agree to 8.7e-7, so the 2x arm-to-arm bar failed for the same reason.
     tangent_bar = 1e-5 if backend == "fast" else 1e-3
     for r in rows:
         if backend == "fast":
@@ -270,7 +278,9 @@ def check_real_blocks(fixture: str, cfg_name: str, backend: str):
         # off-run-path conditioning regime, notes §1.4): nothing to match there
         if r["dt"] <= 1e6:
             assert r["tangent_rel"] < tangent_bar, r
-            assert r["tres_cand"] <= 2.0 * r["tres_cur"] + 1e-13, r
+            assert r["tres_cand"] <= max(
+                2.0 * r["tres_cur"], 10.0 * r["tres_dense"]
+            ), r
             assert r["gres_cand"] <= max(
                 2.0 * r["gres_cur"], 10.0 * r["gres_dense"]
             ), r

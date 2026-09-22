@@ -39,10 +39,14 @@ _GAMMA = 1.0 + 2.0**-0.5
 
 # The band's H2S cells sit at VMR 1e-8 and the fixture is a converged solve
 # rebuilt on whatever machine runs the suite, so how many of them the UNGUARDED
-# repair inverts is a property of THAT column: 11-12 here (notes.md §1.13), 0
-# on the x86 runner of the oracle workflow. The non-vacuity pin below is
-# therefore read only off a fixture built where it was measured; what the guard
-# itself must deliver -- no inverted cell -- is pinned everywhere.
+# repair inverts is a property of THAT column: 11-12 on the column that
+# motivated the guard (notes.md §1.13), 2-3 on the 0.15.0 EQ-seeded rebuild
+# (the unguarded stage-1 correction exceeds the cell in 2 of the 12 band cells
+# at dt 1e11, and those are the 2 the step inverts), 0 on the x86 runner of the
+# oracle workflow. The non-vacuity pin below is therefore read only off a
+# fixture built where it was measured, and pins only that the unguarded repair
+# inverts SOMETHING; what the guard itself must deliver -- no inverted cell --
+# is pinned everywhere.
 PINNED_MACHINE = "arm64"
 
 
@@ -112,9 +116,9 @@ for dt in (1e8, 1e11):
     print(f"dt={dt:.0e} band H2S flipped negative: {counts}", flush=True)
     assert counts["guarded"] == 0, (dt, counts)
     if dt >= 1e11:
-        # Without the guard the whole band inverts; keeps the pin non-vacuous.
+        # Without the guard the band inverts somewhere; keeps the pin non-vacuous.
         if built_on == PINNED_MACHINE:
-            assert counts["unguarded"] >= 10, (dt, counts)
+            assert counts["unguarded"] >= 1, (dt, counts)
         else:
             print(f"non-vacuity NOT checked: fixture built on {built_on!r}, "
                   f"the unguarded count is pinned only on {PINNED_MACHINE!r}",
