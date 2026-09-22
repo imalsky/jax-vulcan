@@ -271,8 +271,9 @@ def check_real_blocks(fixture: str, cfg_name: str, backend: str):
     # agree to 8.7e-7, so the 2x arm-to-arm bar failed for the same reason.
     # The kernel's tangent against AD-through-LU: 8.5e-4 (CPU kernel) and
     # 1.3e-3 (GH200, job 79354) at dt 1e6, where the reference itself is
-    # 1.7e-4 from the gbsv tangent and the kernel 6.8e-4, with all three
-    # residuals at 2e-3; a wrong tangent reads 0.66 (the dt 1e11 row).
+    # 1.7e-4 from the gbsv tangent and the kernel 6.8e-4, with the three
+    # residuals at 1.9e-3 / 2.0e-3 / 3.4e-3: on these blocks the residual is
+    # the accuracy statement and this is the loose sanity bar.
     tangent_bar = 1e-5 if backend == "fast" else 1e-2
     for r in rows:
         if backend == "fast":
@@ -291,14 +292,15 @@ def check_real_blocks(fixture: str, cfg_name: str, backend: str):
             ), r
         if backend == "fast":  # the transpose runs on the same factors as today
             assert r["grad_rel"] < 1e-6, r
-        # The vmapped solve is judged by its residual. On CPU the batched
-        # program runs the same kernels and is bitwise (measured 0); on the
-        # GH200 the batched LU is a different cuSOLVER kernel and the
-        # solutions differ by roundoff amplified by the block conditioning
-        # (1.6e-9 at dt 1e2 up to 1.3e-3 at dt 1e11, job 79350), which a
-        # 1e-12 bar on the solution reads as a failure.
+        # The vmapped solve is judged by its residual, and by solution
+        # agreement wherever batching does not change the arithmetic: on CPU
+        # (measured 0 for both backends) and for the kernel on any device
+        # (one thread block per lane, the same code batched or not). The
+        # `fast` scans on the GH200 lower to a different cuSOLVER LU when
+        # batched, and the solutions differ by roundoff amplified by the block
+        # conditioning (1.6e-9 at dt 1e2 up to 1.3e-3 at dt 1e11, job 79350).
         assert r["resid_vmap"] <= 2.0 * r["resid_cand"] + 1e-12, r
-        if jax.default_backend() == "cpu":
+        if backend == "ffi" or jax.default_backend() == "cpu":
             assert r["vmap_rel"] < 1e-12, r
     return rows
 
