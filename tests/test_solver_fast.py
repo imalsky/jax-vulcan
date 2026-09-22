@@ -126,6 +126,7 @@ def compare(diag, sup, sub, rhs, tans, seed=1):
         "tres_dense": _resid(diag, sup, sub, banded_solve(diag, sup, sub, b_lin), b_lin),
         "gres_dense": _resid(diag_t, sub, sup, banded_solve(diag_t, sub, sup, w), w),
         "vmap_rel": max(_rel(batched[0], x1), _rel(batched[1], x1)),
+        "resid_vmap": max(_resid(diag, sup, sub, batched[i], rhs) for i in (0, 1)),
     }
 
 
@@ -286,7 +287,15 @@ def check_real_blocks(fixture: str, cfg_name: str, backend: str):
             ), r
         if backend == "fast":  # the transpose runs on the same factors as today
             assert r["grad_rel"] < 1e-6, r
-        assert r["vmap_rel"] < 1e-12, r
+        # The vmapped solve is judged by its residual. On CPU the batched
+        # program runs the same kernels and is bitwise (measured 0); on the
+        # GH200 the batched LU is a different cuSOLVER kernel and the
+        # solutions differ by roundoff amplified by the block conditioning
+        # (1.6e-9 at dt 1e2 up to 1.3e-3 at dt 1e11, job 79350), which a
+        # 1e-12 bar on the solution reads as a failure.
+        assert r["resid_vmap"] <= 2.0 * r["resid_cand"] + 1e-12, r
+        if jax.default_backend() == "cpu":
+            assert r["vmap_rel"] < 1e-12, r
     return rows
 
 
