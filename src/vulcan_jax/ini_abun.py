@@ -480,13 +480,12 @@ def _build_charge_list_if_ion(charge_list: list[str]) -> None:
             charge_list.append(sp)
 
 
-def eq_column(pco, Tco, M, ratios=None) -> np.ndarray:
+def eq_column(pco, Tco, M) -> np.ndarray:
     """Equilibrium column ``(nz, ni)`` in absolute number densities.
 
     ``pco`` is in dyne/cm^2, ``Tco`` in K and ``M`` the total gas density.
-    ``ratios`` (element -> number ratio to H) overrides the config's ``<X>_H``
-    for the elements it names. Species outside the seed stay zero. Host-side:
-    a batched caller should drive `eq_seed` under `vmap` instead.
+    Species outside the seed stay zero. Host-side: a batched caller drives
+    `eq_seed` under `vmap` with `element_vector` instead.
     """
     if _CFG.use_ion is True:
         raise RuntimeError(
@@ -494,18 +493,17 @@ def eq_column(pco, Tco, M, ratios=None) -> np.ndarray:
             "is gas-phase and neutral, with no electron balance. Initialize an "
             "ionized run with ini_mix='const_mix' or 'vulcan_ini'."
         )
-    b = _element_vector(ratios)
+    b = _element_vector()
     Tco = np.asarray(Tco, dtype=np.float64)
     p_bar = np.asarray(pco, dtype=np.float64) / 1.0e6
-    if not ratios:
-        print(
-            f"Equilibrium seed from {_abundance_path()}: "
-            + ", ".join(
-                f"{sp}/H={b[seed_elements().index(sp)]:.8g}"
-                for sp in ("He", "C", "N", "O", "S")
-                if sp in seed_elements()
-            )
+    print(
+        f"Equilibrium seed from {_abundance_path()}: "
+        + ", ".join(
+            f"{sp}/H={b[seed_elements().index(sp)]:.8g}"
+            for sp in ("He", "C", "N", "O", "S")
+            if sp in seed_elements()
         )
+    )
     ymix = np.asarray(
         _seed_jit()(jnp.asarray(Tco), jnp.asarray(p_bar), jnp.asarray(b))
     )

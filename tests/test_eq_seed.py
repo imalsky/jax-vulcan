@@ -403,6 +403,15 @@ def test_ratios_path_matches_the_config_path_and_moves_carbon() -> None:
         np.asarray(ini_abun.element_vector(jnp.zeros(0), empty)),
         ini_abun._element_vector(),
     )
+    # A partial override under use_solar=True, the retrieval's case: every
+    # element it does not name keeps the preset on both paths (before 5657a25
+    # the host path took <X>_H for them instead).
+    c_only = {"C": 2.0 * ratios["C"]}
+    np.testing.assert_array_equal(
+        np.asarray(ini_abun.element_vector(
+            jnp.asarray(list(c_only.values())), ini_abun.ratio_indices(list(c_only)))),
+        ini_abun._element_vector(c_only),
+    )
 
     Tco, p_bar = _hd189_column()
     y_cfg = np.asarray(
