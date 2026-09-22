@@ -269,7 +269,11 @@ def check_real_blocks(fixture: str, cfg_name: str, backend: str):
     # At dt 1e6 the `fast` arm (the reference scans under a custom_linear_solve
     # rule) sits 2.7x the reference and 1.5x gbsv while the tangents themselves
     # agree to 8.7e-7, so the 2x arm-to-arm bar failed for the same reason.
-    tangent_bar = 1e-5 if backend == "fast" else 1e-3
+    # The kernel's tangent against AD-through-LU: 8.5e-4 (CPU kernel) and
+    # 1.3e-3 (GH200, job 79354) at dt 1e6, where the reference itself is
+    # 1.7e-4 from the gbsv tangent and the kernel 6.8e-4, with all three
+    # residuals at 2e-3; a wrong tangent reads 0.66 (the dt 1e11 row).
+    tangent_bar = 1e-5 if backend == "fast" else 1e-2
     for r in rows:
         if backend == "fast":
             assert r["primal_equal"], r
