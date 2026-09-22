@@ -24,6 +24,8 @@
 // library registers under platform="CUDA".
 #include <cmath>
 #include <cstdint>
+#include <initializer_list>
+#include <mutex>
 #include <string>
 
 #include <cuda_runtime.h>
@@ -407,18 +409,49 @@ static int bt_threads(int ni) {
   return t > 1024 ? 1024 : (t < 32 ? 32 : t);
 }
 
-// Opt in to more than the 48 KB default of dynamic shared memory per block
-// (a GH200 allows 228 KB): the factor kernel needs 2 ni^2 doubles and the solve
-// the same for its double-buffered LU, 125 KB at ni = 89. A block too large for
-// the device fails here, not silently.
-static ffi::Error bt_shared_opt_in(const void* kernel, size_t bytes) {
-  if (bytes <= 48 * 1024) return ffi::Error::Success();
-  const cudaError_t e = cudaFuncSetAttribute(
-      kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, static_cast<int>(bytes));
-  if (e != cudaSuccess) {
+// Dynamic shared memory above the 48 KB default needs an opt-in per kernel and
+// device: the factor kernel needs 2 ni^2 doubles and the solve the same for its
+// double-buffered LU, 125 KB at ni = 89 (a GH200 allows 227 KB). Both kernels
+// are opted in ONCE per device, to the device's maximum, so every launch shape
+// fits and a call runs nothing but its launch: no shape-dependent attribute two
+// differently sized calls could race on, and nothing extra while XLA records a
+// command buffer (the handlers below declare themselves compatible). A block
+// too large for the device fails here, not silently.
+static constexpr int kBtMaxDevices = 64;
+
+static ffi::Error bt_shared_fits(size_t bytes) {
+  static std::once_flag once[kBtMaxDevices];
+  static int limit[kBtMaxDevices];
+  static cudaError_t status[kBtMaxDevices];
+  int dev = 0;
+  cudaError_t e = cudaGetDevice(&dev);
+  if (e == cudaSuccess && (dev < 0 || dev >= kBtMaxDevices)) e = cudaErrorInvalidDevice;
+  if (e != cudaSuccess) return ffi::Error(ffi::ErrorCode::kInternal, cudaGetErrorString(e));
+  std::call_once(once[dev], [dev] {
+    int optin = 0;
+    cudaError_t r = cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev);
+    limit[dev] = optin;
+    for (const void* k : {reinterpret_cast<const void*>(bt_factor_kernel),
+                          reinterpret_cast<const void*>(bt_solve_kernel)}) {
+      cudaFuncAttributes a = {};
+      if (r == cudaSuccess) r = cudaFuncGetAttributes(&a, k);
+      // the opt-in bounds static + dynamic shared memory together
+      const int dyn = optin - static_cast<int>(a.sharedSizeBytes);
+      if (r == cudaSuccess && dyn < limit[dev]) limit[dev] = dyn;
+      if (r == cudaSuccess) r = cudaFuncSetAttribute(k, cudaFuncAttributeMaxDynamicSharedMemorySize, dyn);
+    }
+    status[dev] = r;
+  });
+  if (status[dev] != cudaSuccess) {
+    return ffi::Error(ffi::ErrorCode::kInternal,
+                      std::string("block-Thomas shared-memory opt-in failed: ") +
+                          cudaGetErrorString(status[dev]));
+  }
+  if (bytes > static_cast<size_t>(limit[dev])) {
     return ffi::Error(ffi::ErrorCode::kInvalidArgument,
                       "block-Thomas needs " + std::to_string(bytes) +
-                          " B of shared memory per block: " + cudaGetErrorString(e));
+                          " B of shared memory per block; this device allows " +
+                          std::to_string(limit[dev]));
   }
   return ffi::Error::Success();
 }
@@ -448,7 +481,7 @@ static ffi::Error FactorImplCuda(cudaStream_t stream, ffi::Buffer<ffi::F64> diag
   if (batch == 0) return ffi::Error::Success();
   const size_t shmem = (2 * static_cast<size_t>(ni) * ni + 64) * sizeof(double) +
                        (32 + static_cast<size_t>(ni)) * sizeof(int32_t);
-  ffi::Error err = bt_shared_opt_in(reinterpret_cast<const void*>(bt_factor_kernel), shmem);
+  ffi::Error err = bt_shared_fits(shmem);
   if (err.failure()) return err;
   bt_factor_kernel<<<static_cast<unsigned int>(batch), bt_threads(ni), shmem, stream>>>(
       diag.typed_data(), sup.typed_data(), sub.typed_data(), lu->typed_data(),
@@ -498,7 +531,7 @@ static ffi::Error SolveImplCuda(cudaStream_t stream, ffi::Buffer<ffi::F64> lu,
   if (err.failure()) return err;
   if (batch == 0) return ffi::Error::Success();
   const size_t shmem = (2 * static_cast<size_t>(ni) * ni + 2 * ni) * sizeof(double);
-  err = bt_shared_opt_in(reinterpret_cast<const void*>(bt_solve_kernel), shmem);
+  err = bt_shared_fits(shmem);
   if (err.failure()) return err;
   bt_solve_kernel<<<static_cast<unsigned int>(batch), bt_threads(ni), shmem, stream>>>(
       lu.typed_data(), perm.typed_data(), sup.typed_data(), sub.typed_data(),
@@ -514,7 +547,8 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<ffi::Buffer<ffi::F64>>()
         .Arg<ffi::Buffer<ffi::F64>>()
         .Ret<ffi::Buffer<ffi::F64>>()
-        .Ret<ffi::Buffer<ffi::S32>>());
+        .Ret<ffi::Buffer<ffi::S32>>(),
+    {ffi::Traits::kCmdBufferCompatible});
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
     VulcanBtSolveCuda, SolveImplCuda,
@@ -525,4 +559,5 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
         .Arg<ffi::Buffer<ffi::F64>>()
         .Arg<ffi::Buffer<ffi::F64>>()
         .Arg<ffi::Buffer<ffi::F64>>()
-        .Ret<ffi::Buffer<ffi::F64>>());
+        .Ret<ffi::Buffer<ffi::F64>>(),
+    {ffi::Traits::kCmdBufferCompatible});

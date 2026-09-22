@@ -23,8 +23,7 @@ import jax.numpy as jnp
 from .config import default_config, DT_MAX_S
 from . import phy_const as _phy_const
 
-from . import network as _net_mod
-from . import chem as _chem_mod
+from . import chem_funs as _chem_funs
 from . import photo as _photo_mod
 from . import atm_refresh as _atm_refresh_mod
 from . import conden as _conden_mod
@@ -32,7 +31,6 @@ from . import state as _state_mod
 from .ini_abun import column_atom_loss, column_atoms
 from .jax_step import AtmStatic, jax_ros2_step, make_atm_static
 from .runtime_validation import validate_runtime_config
-from ._paths import resolve_data_path
 
 
 def _now() -> float:
@@ -49,11 +47,17 @@ jax.config.update("jax_enable_x64", True)
 _UNDERFLOW_DENOM = 1e-300
 
 
-# Network parsed once at module import. After editing the config `network`,
-# restart Python (or reload this module) to pick it up.
-_CFG = default_config()
-_NETWORK = _net_mod.parse_network(str(resolve_data_path(_CFG.network)))
-_NET_JAX = _chem_mod.to_jax(_NETWORK)
+# The network chem_funs parsed at import: one parse per process. After editing
+# the config `network`, restart Python to pick it up.
+_NETWORK = _chem_funs._NETWORK
+_NET_JAX = _chem_funs._NET_JAX
+
+# run_queue's refill defaults: refill once this many lanes are free (or every
+# lane still holding a job is), and at least every _QUEUE_REFILL_EVERY loop
+# iterations. Set by hand with run_queue (0.16.0), never tuned; vulcan-forward
+# passes its own values.
+_QUEUE_REFILL_CHUNK = 8
+_QUEUE_REFILL_EVERY = 100
 
 
 class ProfileVars(NamedTuple):
@@ -3587,6 +3591,53 @@ class OuterLoop:
             return 1  # the JAX-only stall fallback (4) shares end_case=1
         return 5
 
+    def _report_end(self, end_case, reason, count, longdy, longdydt,
+                    aflux_change, var, para, y, y_ini, dz) -> None:
+        """End-of-run printing for both entry points (op.py:1069-1085 and
+        op.stop): the end-case message, print_prog, the summary and the column
+        atom loss. Master only calls print_end_msg (end_case 1); this also
+        calls print_unconverged_msg for 2 / 3 / 5."""
+        if end_case == 3:
+            print(
+                "Integration not completed...\nMaximal allowed steps "
+                f"exceeded ({self._cfg.count_max})!"
+            )
+        elif end_case == 2:
+            print(
+                "Integration not completed...\nMaximal allowed runtime "
+                f"exceeded ({self._cfg.runtime} sec)!"
+            )
+        elif end_case == 5:
+            print(
+                "Integration not completed...\nStopped without converging and "
+                f"without hitting a cap (termination_reason {reason}); the "
+                "state may be non-finite."
+            )
+        else:
+            # Reason 4 (JAX-only stall fallback) shares end_case=1 with a real
+            # convergence; say so in the message.
+            how = (
+                "via the stall fallback (JAX-only; no VULCAN 2.0 counterpart)"
+                if reason == 4
+                else "on the standard convergence criterion"
+            )
+            print(
+                f"Integration successful {how} with {count} steps and "
+                f"long dy, long dydt = {longdy}, {longdydt}\n"
+                f"Actinic flux change: {aflux_change:.2E}"
+            )
+        if self._cfg.use_print_prog:
+            # print_prog reads para.where_varies_most; set a sentinel so the
+            # read doesn't crash when unset.
+            if getattr(para, "where_varies_most", None) is None:
+                para.where_varies_most = np.zeros_like(np.asarray(y))
+            self.output.print_prog(var, para)
+        if end_case == 1:
+            self.output.print_end_msg(var, para)
+        elif end_case in (2, 3, 5):
+            self.output.print_unconverged_msg(var, para, end_case)
+        _print_column_atom_loss(self._cfg, y, y_ini, dz)
+
     def __call__(self, *args):
         """Run the integration to convergence / runtime / count cap.
 
@@ -3635,48 +3686,9 @@ class OuterLoop:
         # Determine end_case (op.py:1069-1085) for the final print.
         para.end_case = self._classify_end_case(final_state)
         para.termination_reason = int(final_state.termination_reason)
-        if para.end_case == 3:
-            print(
-                "Integration not completed...\nMaximal allowed steps "
-                f"exceeded ({self._cfg.count_max})!"
-            )
-        elif para.end_case == 2:
-            print(
-                "Integration not completed...\nMaximal allowed runtime "
-                f"exceeded ({self._cfg.runtime} sec)!"
-            )
-        elif para.end_case == 5:
-            print(
-                "Integration not completed...\nStopped without converging and "
-                f"without hitting a cap (termination_reason "
-                f"{para.termination_reason}); the state may be non-finite."
-            )
-        elif para.end_case == 1:
-            how = (
-                "via the stall fallback (JAX-only; no VULCAN 2.0 counterpart)"
-                if para.termination_reason == 4
-                else "on the standard convergence criterion"
-            )
-            print(
-                f"Integration successful {how} with {para.count} steps and "
-                f"long dy, long dydt = {var.longdy}, {var.longdydt}\n"
-                f"Actinic flux change: {var.aflux_change:.2E}"
-            )
-
-        if self._cfg.use_print_prog:
-            # print_prog reads para.where_varies_most; set a sentinel so the
-            # read doesn't crash when unset.
-            if not hasattr(para, "where_varies_most") or para.where_varies_most is None:
-                para.where_varies_most = np.zeros_like(var.y)
-            self.output.print_prog(var, para)
-
-        # End-of-run summary (op.stop). Master only calls print_end_msg
-        # (end_case=1); we also call print_unconverged_msg for 2/3/5.
-        if para.end_case == 1:
-            self.output.print_end_msg(var, para)
-        elif para.end_case in (2, 3, 5):
-            self.output.print_unconverged_msg(var, para, para.end_case)
-        _print_column_atom_loss(self._cfg, var.y, var.y_ini, atm.dz)
+        self._report_end(para.end_case, para.termination_reason, para.count,
+                         var.longdy, var.longdydt, var.aflux_change, var, para,
+                         var.y, var.y_ini, atm.dz)
 
     def _call_runstate(self, rs: "_state_mod.RunState", var=None, atm=None, para=None):
         """RunState entry point: integrate from a typed `RunState` and
@@ -3720,7 +3732,6 @@ class OuterLoop:
 
         rs_out = self._unpack_state_to_runstate(final_state, rs)
 
-        # End-of-run printing, same predicates as the legacy path.
         count = int(rs_out.params.count)
         end_case = self._classify_end_case(final_state)
         reason = int(final_state.termination_reason)
@@ -3730,38 +3741,6 @@ class OuterLoop:
                     end_case=end_case, termination_reason=reason
                 )
             )
-        if end_case == 3:
-            print(
-                "Integration not completed...\nMaximal allowed steps "
-                f"exceeded ({self._cfg.count_max})!"
-            )
-        elif end_case == 2:
-            print(
-                "Integration not completed...\nMaximal allowed runtime "
-                f"exceeded ({self._cfg.runtime} sec)!"
-            )
-        elif end_case == 5:
-            print(
-                "Integration not completed...\nStopped without converging and "
-                f"without hitting a cap (termination_reason {reason}); the "
-                "state may be non-finite."
-            )
-        else:
-            # Reason 4 (JAX-only stall fallback) shares end_case=1 with a real
-            # convergence; say so in the message.
-            how = (
-                "via the stall fallback (JAX-only; no VULCAN 2.0 counterpart)"
-                if reason == 4
-                else "on the standard convergence criterion"
-            )
-            print(
-                f"Integration successful {how} with {count} steps and "
-                f"long dy, long dydt = {rs_out.step.longdy}, "
-                f"{rs_out.step.longdydt}\n"
-                f"Actinic flux change: "
-                f"{(rs_out.photo_runtime.aflux_change if rs_out.photo_runtime is not None else 0.0):.2E}"
-            )
-
         # The summary printers expect a legacy (var, para) pair; build a thin
         # shim. start_time flows from the caller's para (not in the RunState
         # schema).
@@ -3770,23 +3749,11 @@ class OuterLoop:
             float(getattr(para, "start_time", _now())) if para is not None else _now()
         )
         para_shim.end_case = end_case
-
-        if self._cfg.use_print_prog:
-            if (
-                not hasattr(para_shim, "where_varies_most")
-                or para_shim.where_varies_most is None
-            ):
-                para_shim.where_varies_most = np.zeros_like(np.asarray(rs_out.step.y))
-            self.output.print_prog(var_shim, para_shim)
-
-        if end_case == 1:
-            self.output.print_end_msg(var_shim, para_shim)
-        elif end_case in (2, 3, 5):
-            self.output.print_unconverged_msg(var_shim, para_shim, end_case)
-        _print_column_atom_loss(
-            self._cfg, rs_out.step.y, rs_out.metadata.y_ini, rs_out.atm.dz
-        )
-
+        aflux = (rs_out.photo_runtime.aflux_change
+                 if rs_out.photo_runtime is not None else 0.0)
+        self._report_end(end_case, reason, count, rs_out.step.longdy,
+                         rs_out.step.longdydt, aflux, var_shim, para_shim,
+                         rs_out.step.y, rs_out.metadata.y_ini, rs_out.atm.dz)
         return rs_out
 
     def prepare_runstate(self, rs):
@@ -3877,8 +3844,8 @@ class OuterLoop:
             self._vrunner = jax.jit(self._runner_batch)
         return self._vrunner(states_batched, atm_static_batched)
 
-    def run_queue(self, init_fn, jobs, n_lanes, out_fn, *, chunk=8,
-                  refill_every=100):
+    def run_queue(self, init_fn, jobs, n_lanes, out_fn, *,
+                  chunk=_QUEUE_REFILL_CHUNK, refill_every=_QUEUE_REFILL_EVERY):
         """Integrate `n_jobs` independent profiles on `n_lanes` lanes with refill.
 
         `init_fn(job) -> (JaxIntegState, AtmStatic)` builds ONE job's initial

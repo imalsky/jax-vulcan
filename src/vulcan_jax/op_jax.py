@@ -7,15 +7,14 @@ import jax
 import jax.numpy as jnp
 
 from .config import default_config
-from . import network as _net_mod
+from . import chem_funs
 from . import photo as _photo_mod
 from . import phy_const as _phy_const
-from ._paths import resolve_data_path
 
 jax.config.update("jax_enable_x64", True)
 
 _CFG = default_config()
-_NETWORK = _net_mod.parse_network(str(resolve_data_path(_CFG.network)))
+_NETWORK = chem_funs._NETWORK   # the one parse per process
 
 
 class Ros2JAX:
