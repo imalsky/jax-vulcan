@@ -1,0 +1,44 @@
+{
+  "generated_utc": "2026-09-19T08:40:11Z",
+  "vulcan_jax_commit": "e7edf8ac6d800eb2c9c30c5f9b4d10d8444d8b2d-dirty",
+  "platform_machine": "arm64",
+  "versions": {
+    "python": "3.12.11",
+    "jax": "0.6.2",
+    "jaxlib": "0.6.2",
+    "numpy": "1.26.4",
+    "scipy": "1.17.1",
+    "vulcan_jax": "0.15.0"
+  },
+  "config_sha256_16": {
+    "default.yaml": "db6556f04810197a",
+    "W39b.yaml": "ec0f44f900c96be7",
+    "HD189.yaml": "3f65302bc76bd1be"
+  },
+  "fixtures": {
+    "photo_setup_hd189_baseline.npz": {
+      "sha256": "df3d70c0741c8d038c552cc15d4558e6a199783b1ecde38d211ce13d3c08b1c0",
+      "bytes": 1635884,
+      "generator": "tests/_gen_photo_baseline.py",
+      "note": "HD189 photo cross-section setup (default and T-dependent)"
+    },
+    "photo_setup_hd189_T_dep.npz": {
+      "sha256": "585fc82e49a3f085720d3e2218d351572f83d0bec8618686d62a10dceab976fd",
+      "bytes": 32547752,
+      "generator": "tests/_gen_photo_baseline.py",
+      "note": "HD189 photo cross-section setup (default and T-dependent)"
+    },
+    "adj_state_hd189.npz": {
+      "sha256": "af5464fad07f982af4a7d8168c829606dba411985b582e1eb144a92d14b44bce",
+      "bytes": 1414716,
+      "generator": "tests/_gen_adj_state.py hd189",
+      "note": "HD189 converged state, photo OFF, C-H-N-O network"
+    },
+    "adj_state_w39b.npz": {
+      "sha256": "5403b72aa5a35c2700bec99117588f066c0cec9f9edb65fe604caf42b43d508a",
+      "bytes": 1840442,
+      "generator": "tests/_gen_adj_state.py w39b",
+      "note": "WASP-39 b converged state, photo ON (frozen), SNCHO network"
+    }
+  }
+}

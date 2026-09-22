@@ -106,7 +106,7 @@ def _validate_network_assets(cfg, root: Path) -> list[str]:
                     f"Add the file or remove {sp!r} from photo reactions."
                 )
 
-    # 3. Warn about atom_list entries not in the composition table header.
+    # 3. Refuse atom_list entries not in the composition table header.
     for atom in getattr(cfg, "atom_list", []):
         if atom not in compose_atoms:
             errors.append(

@@ -683,7 +683,12 @@ def _assert_network_matches_import(cfg) -> None:
 
     try:
         want_net = _net_mod.parse_network(want_path)
-    except Exception:
+    except Exception as exc:
+        # Announce the skip (skipped != passed), as the com_file guard does.
+        warnings.warn(
+            f"network import-lock guard could not parse cfg.network={want_path!r} "
+            f"({type(exc).__name__}: {exc}); the check was SKIPPED, not passed.",
+            RuntimeWarning, stacklevel=2)
         return
     if list(want_net.species) == list(import_net.species) and (
         _network_topology_signature(want_net) == _network_topology_signature(import_net)

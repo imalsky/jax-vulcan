@@ -44,7 +44,7 @@ isothermal, constant-gravity column, solving the discrete steady state directly
      dotted guide marks the classical Pe = 2); upwind stays positive at every
      Pe -- which is exactly why the hybrid needs it.
 
-Run (in the `vulcan` conda env):
+Run (in the root uv env, `uv run` from this repo):
     python benchmarks/zhang2013_moldiff_benchmark.py
 Writes benchmarks/zhang2013_moldiff_benchmark.png and prints an error table.
 """

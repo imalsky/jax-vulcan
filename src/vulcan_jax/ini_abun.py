@@ -347,8 +347,8 @@ def element_vector(ratios, idx) -> jnp.ndarray:
 
     Starts from `_element_vector()`, the host path's own no-override vector,
     so `use_solar` and the `cfg.<X>_H` overrides have the same precedence on
-    both paths; with `use_solar: false` and a `ratios` entry per element it is
-    bit-identical to `_element_vector({name: value, ...})`.
+    both paths, and it is bit-identical to `_element_vector({name: value,
+    ...})` for the same elements.
     """
     return jnp.asarray(_element_vector()).at[idx].set(
         jnp.asarray(ratios, dtype=jnp.float64)
@@ -356,9 +356,15 @@ def element_vector(ratios, idx) -> jnp.ndarray:
 
 
 def _element_vector(ratios: dict | None = None) -> np.ndarray:
-    """`b` (E,) for the current config, host-side."""
+    """`b` (E,) for the current config, host-side.
+
+    The base is the same on both paths -- the preset when `use_solar` is
+    true, else the preset with `cfg.<X>_H` applied -- and `ratios` replaces
+    entries on top of it, exactly as `element_vector` does with `idx`.
+    """
+    b = _preset_vector() if _CFG.use_solar is True else _base_vector()
     if ratios:
-        b, elements = _base_vector(), seed_elements()
+        elements = seed_elements()
         for sp, value in ratios.items():
             if sp not in elements:
                 raise KeyError(
@@ -366,10 +372,7 @@ def _element_vector(ratios: dict | None = None) -> np.ndarray:
                     f"({', '.join(elements)})."
                 )
             b[elements.index(sp)] = float(value)
-        return b
-    if _CFG.use_solar is True:
-        return _preset_vector()
-    return _base_vector()
+    return b
 
 
 def _abun_lowT_residual(x, O_H, C_H, He_H, N_H):

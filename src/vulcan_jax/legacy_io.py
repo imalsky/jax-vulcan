@@ -819,7 +819,7 @@ class Output(object):
         """
         plt = import_plt()
         plot_dir = self._cfg.plot_dir
-        fig, ax1 = plt.subplots()
+        _fig, ax1 = plt.subplots()
         ax2 = ax1.twiny()
         if not self._cfg.plot_height:
             ax1.semilogy(atm.Tco, atm.pco / 1.0e6, c="black")

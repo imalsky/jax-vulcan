@@ -2655,9 +2655,7 @@ class OuterLoop:
             h2_idx=h2_idx,
             he_idx=he_idx,
             use_fix_species=use_fix_species,
-            post_conden_rtol=float(
-                getattr(self._cfg, "post_conden_rtol", self._cfg.rtol)
-            ),
+            post_conden_rtol=float(self._cfg.post_conden_rtol),
             fix_species_from_coldtrap_lev=bool(
                 getattr(self._cfg, "fix_species_from_coldtrap_lev", True)
             ),

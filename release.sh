@@ -35,6 +35,10 @@ find . -name ".DS_Store" -delete
 # the version bump and nothing else. Test BEFORE the bump so a red suite
 # leaves the tree clean.
 test -z "$(git status --porcelain --untracked-files=no)" || { echo "dirty tree"; exit 1; }
+# Releases come from main only: the commit and tag below land on the checked-out
+# branch, and `git push origin main` would not carry a bump made elsewhere.
+[ "$(git branch --show-current)" = "main" ] || { echo "release from main, not $(git branch --show-current)"; exit 1; }
+unset PYTHONSAFEPATH   # strips the cwd from sys.path and breaks the parity tests (CLAUDE.md)
 python -m pytest tests -q
 
 # 2) Bump patch version in src/vulcan_jax/_version.py
@@ -77,11 +81,12 @@ git push origin "v$VER"
 export TWINE_USERNAME="__token__"
 python -m twine upload --verbose --repository-url https://test.pypi.org/legacy/ dist/*
 
-# 5) Reinstall into vulcan conda env
-source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate vulcan
+# 5) Install the upload into a THROWAWAY venv (never the workspace env, whose
+#    vulcan-jax is the editable checkout)
+RELCHECK="$(mktemp -d)/relcheck"
+python -m venv "$RELCHECK"
+source "$RELCHECK/bin/activate"
 python -V
-python -m pip uninstall -y vulcan-jax || true
 
 echo "Waiting for TestPyPI to index v$VER ..."
 for i in $(seq 1 12); do

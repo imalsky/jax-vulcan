@@ -55,8 +55,9 @@ jobs:
           python -m pip install pandas
           python -m pip install -e ".[dev,plot]" "jax==0.6.2"
 
-      # A DIFFERENT directory per family so neither job can accidentally see
-      # the other's revision. require_oracle checks the exact commit AND a
+      # One family runs today (vulcan2_ncho; vulcan2_fastchem_ps_order is kept
+      # in science_sources.yaml for provenance only). A directory per family
+      # keeps a second family, if one returns, from seeing this one's revision. require_oracle checks the exact commit AND a
       # clean worktree, so a dirty or wrong clone fails loudly here.
       - name: Clone the pinned upstream oracle
         run: |
@@ -78,7 +79,7 @@ jobs:
       # not take the ALLOW_MISSING_FIXTURES skip. Converge it here instead: the
       # CLI writes output/<out_name> relative to the cwd, so running from the
       # checkout puts it exactly where the test looks. 1211 steps, ~45 s on the
-      # reference laptop plus a cold XLA compile; ncho only (the other family
+      # reference laptop plus a cold XLA compile; ncho only (a second family
       # does not select that file).
       - name: Converge HD209 (the codegen tests' steady-state oracle)
         if: matrix.family == 'vulcan2_ncho'
