@@ -317,13 +317,17 @@ def check_matrix_free(fixture: str, cfg_name: str, backend: str):
     """`_ros2_stages` gives the solve a matrix-free operator so a tangent never
     builds the dense dA per direction. On a real fixture, free and with pinned
     rows: (1) the operator equals the dense block's `_matvec` to roundoff and a
-    pinned row is exactly `c0 x`; (2) the step's primal is the same program
-    (bitwise) and its tangent in y, k, dt and every float atmosphere field
-    agrees with the dense operator's. The tangent passes through blocks of
-    cond up to ~6e19 (notes §1.4), so (2) is a wiring check at 1e-3 (worst,
-    both at dt 1e6: HD189 8.5e-5 `fast` / 8.1e-6 `ffi`, W39b 1.4e-7 / 3.2e-13);
-    a lost or wrong dA x reads O(1) and above. dt 1e11 is not compared (the tangent is
-    O(1)-conditioned there). Also run by the SNCHO child for W39b."""
+    pinned row is exactly `c0 x`; (2) the step's primal is unchanged and its
+    tangent in y, k, dt and every float atmosphere field agrees with the
+    dense operator's. The tangent passes through blocks of cond up to ~6e19
+    (notes §1.4), so (2) is a wiring check at 1e-3 (worst, both at dt 1e6:
+    HD189 8.5e-5 `fast` / 8.1e-6 `ffi`, W39b 1.4e-7 / 3.2e-13); a lost or
+    wrong dA x reads O(1) and above. The primal is bitwise on the CPU; on the
+    GH200 the two programs round differently and the same conditioning
+    amplifies it (first row at dt 1e2: 5e-8 `fast`, 5e-10 `ffi`, job 79533),
+    so there the primal takes the tangent's bar. dt 1e11 is not compared
+    (the tangent is O(1)-conditioned there). Also run by the SNCHO child for
+    W39b."""
     import vulcan_jax.chem as chem_mod
     import vulcan_jax.network as net_mod
     from vulcan_jax import jax_step
@@ -387,15 +391,17 @@ def check_matrix_free(fixture: str, cfg_name: str, backend: str):
         got = [free(*c) for c in cases]   # traced now, on the matrix-free operator
         jax_step.solve_block_thomas_diag_offdiag = lambda factors, rhs, **_: solve0(factors, rhs)
         dense = jax.jit(lambda *c: stages(*c))   # traced after the patch: the dense operator
+        primal_bar = 0.0 if jax.default_backend() == "cpu" else 1e-3
         for c, (p_free, t_free) in zip(cases, got):
             p_dense, t_dense = dense(*c)
             for a, b in zip(p_free, p_dense):
-                assert jnp.array_equal(a, b), float(c[0][2])
+                assert _rel(b, a) <= primal_bar, (float(c[0][2]), _rel(b, a))
             for a, b in zip(t_free, t_dense):
                 assert _rel(b, a) < 1e-3, (float(c[0][2]), bool(c[2].any()), _rel(b, a))
             # no "dt=" here: the W39b child counts check_real_blocks' rows by it
             print(f"matrix-free {cfg_name} {backend} at dt {float(c[0][2]):.0e}, pinned "
-                  f"{bool(c[2].any())}: tangent {max(_rel(b, a) for a, b in zip(t_free, t_dense)):.2e}")
+                  f"{bool(c[2].any())}: primal {max(_rel(b, a) for a, b in zip(p_free, p_dense)):.1e}, "
+                  f"tangent {max(_rel(b, a) for a, b in zip(t_free, t_dense)):.2e}")
     finally:
         jax_step.solve_block_thomas_diag_offdiag = solve0
 
