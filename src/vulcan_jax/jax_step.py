@@ -8,6 +8,7 @@ over the leading axis of (y, k_arr, atm).
 
 from __future__ import annotations
 
+import functools
 import os
 from typing import NamedTuple
 
@@ -622,7 +623,8 @@ def _apply_diffusion_jax(
 _ROS2_GAMMA = 1.0 + 2.0**-0.5
 
 
-def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask):
+def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask,
+                 matrix_free=True):
     """The two Ros2 stage solves. Returns (k1, k2, yk2, ident) with `ident` =
     (c0, diag_d, sup_d, sub_d, b_tr1, b_tr2): the matrix's transport bands and
     the transport part of each stage RHS, which is what the per-layer element
@@ -710,8 +712,25 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask):
         sup_neg = jnp.where(fix_mask[:-1], 0.0, sup_neg)
         sub_neg = jnp.where(fix_mask[1:], 0.0, sub_neg)
 
+    def matvec(x):
+        # The same operator without its dense block, for the tangent's dA x.
+        # The chemistry part is the jvp of the RHS that `chem_J`
+        # differentiates analytically (they agree to ~1e-13), so a tangent
+        # costs a second-order jvp of the RHS instead of a dense dJ per
+        # direction (notes §2.9). Pinned rows as the dense build pins them.
+        jx = jax.jvp(lambda yy: _chem_rhs(yy, M, k_arr), (y,), (x,))[1]
+        out = c0 * x - _project_chem_rhs(jx) - diag_d * x
+        if fix_mask is not None:
+            out = jnp.where(fix_mask, c0 * x, out)
+        out = out.at[:-1].add(sup_neg * x[1:])
+        return out.at[1:].add(sub_neg * x[:-1])
+
+    # The reference pair differentiates through the LU and takes no operator.
+    # `matrix_free=False` keeps the dense one: reverse-over-forward of the RHS
+    # made a step's VJP 1.9-3.2x slower (notes §2.9), so the adjoint keeps it.
+    solve_kw = {"matvec": matvec} if matrix_free and _SOLVER != "reference" else {}
     factors = factor_block_thomas_diag_offdiag(diag, sup_neg, sub_neg)
-    k1 = solve_block_thomas_diag_offdiag(factors, rhs_y)
+    k1 = solve_block_thomas_diag_offdiag(factors, rhs_y, **solve_kw)
     n_tot = jnp.sum(y, axis=1, keepdims=True)
     k1 = _repair_stage(k1, diff_at_y, c0, diag_d, sup_d, sub_d, fix_mask, n_tot, y)
 
@@ -727,7 +746,7 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask):
         rhs_yk2 = jnp.where(fix_mask, 0.0, rhs_yk2)
 
     rhs2 = rhs_yk2 - (2.0 / (r * dt)) * k1
-    k2 = solve_block_thomas_diag_offdiag(factors, rhs2)
+    k2 = solve_block_thomas_diag_offdiag(factors, rhs2, **solve_kw)
     # Transport part of the stage-2 RHS (the projected chemistry term carries
     # no element content; the k1 term does).
     b_tr2 = diff_at_yk2 - (2.0 / (r * dt)) * k1
@@ -735,16 +754,19 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask):
     return k1, k2, yk2, (c0, diag_d, sup_d, sub_d, diff_at_y, b_tr2)
 
 
-@jax.jit
-def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=None):
+@functools.partial(jax.jit, static_argnames=("matrix_free",))
+def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=None,
+                  matrix_free=True):
     """One 2nd-order Rosenbrock step.
 
     Returns (sol, delta_arr), both (nz, ni). `fix_mask` (nz, ni) optionally
     pins selected (layer, species) entries by zeroing the corresponding
-    rows/cols of the LHS and RHS.
+    rows/cols of the LHS and RHS. `matrix_free` picks the stage operator the
+    solve's AD rules use (the primal is the same either way): True for
+    forward mode, False for reverse mode (`_ros2_stages`).
     """
     r = _ROS2_GAMMA
-    k1, k2, yk2, _ = _ros2_stages(y, k_arr, dt, atm, net, fix_mask)
+    k1, k2, yk2, _ = _ros2_stages(y, k_arr, dt, atm, net, fix_mask, matrix_free)
     sol = y + (3.0 / (2.0 * r)) * k1 + (1.0 / (2.0 * r)) * k2
     delta_arr = jnp.abs(sol - yk2)
     return sol, delta_arr

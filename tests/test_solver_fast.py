@@ -204,9 +204,9 @@ def capture_stage1(fixture: str, cfg_name: str, dt: float):
         cap["A"] = (diag, sup, sub)
         return f0(diag, sup, sub)
 
-    def rec_s(factors, rhs):
+    def rec_s(factors, rhs, **kw):
         cap.setdefault("rhs", []).append(rhs)
-        return s0(factors, rhs)
+        return s0(factors, rhs, **kw)
 
     jax_step.factor_block_thomas_diag_offdiag, jax_step.solve_block_thomas_diag_offdiag = rec_f, rec_s
     try:
@@ -313,6 +313,105 @@ def test_fast_on_real_hd189_blocks(fast):
     check_real_blocks("adj_state_hd189.npz", "HD189", fast.BACKEND)
 
 
+def check_matrix_free(fixture: str, cfg_name: str, backend: str):
+    """`_ros2_stages` gives the solve a matrix-free operator so a tangent never
+    builds the dense dA per direction. On a real fixture, free and with pinned
+    rows: (1) the operator equals the dense block's `_matvec` to roundoff and a
+    pinned row is exactly `c0 x`; (2) the step's primal is the same program
+    (bitwise) and its tangent in y, k, dt and every float atmosphere field
+    agrees with the dense operator's. The tangent passes through blocks of
+    cond up to ~6e19 (notes §1.4), so (2) is a wiring check at 1e-3 (worst,
+    both at dt 1e6: HD189 8.5e-5 `fast` / 8.1e-6 `ffi`, W39b 1.4e-7 / 3.2e-13);
+    a lost or wrong dA x reads O(1) and above. dt 1e11 is not compared (the tangent is
+    O(1)-conditioned there). Also run by the SNCHO child for W39b."""
+    import vulcan_jax.chem as chem_mod
+    import vulcan_jax.network as net_mod
+    from vulcan_jax import jax_step
+    from vulcan_jax.config import load_config
+
+    fast_mod.BACKEND = backend
+    d = np.load(ROOT / "tests" / "data" / fixture)
+    atm = jax_step.AtmStatic(
+        **{
+            f: (bool(d[f"atmbool__{f}"]) if f"atmbool__{f}" in d else jnp.asarray(d[f"atm__{f}"]))
+            for f in jax_step.AtmStatic._fields
+        }
+    )
+    net = chem_mod.to_jax(net_mod.parse_network(load_config(cfg_name).network))
+    y, k_arr = jnp.asarray(d["y_star"]), jnp.asarray(d["k_arr"])
+    floats = {f: v for f in jax_step.AtmStatic._fields
+              if isinstance(v := getattr(atm, f), jax.Array) and jnp.issubdtype(v.dtype, jnp.floating)}
+    rng = np.random.default_rng(0)
+
+    def nudge(x):
+        return x * 1e-3 * jnp.asarray(rng.standard_normal(jnp.shape(x)))
+
+    pins = jnp.asarray(rng.random(y.shape) < 0.02)
+    probe = y * jnp.asarray(rng.standard_normal(y.shape))
+    solve0 = jax_step.solve_block_thomas_diag_offdiag
+    try:
+        # (1) the operator the step hands the solve, against its dense block
+        calls = []
+
+        def record(factors, rhs, **kw):
+            calls.append((factors, kw["matvec"]))
+            return solve0(factors, rhs, **kw)
+
+        jax_step.solve_block_thomas_diag_offdiag = record
+        dt = DTS[1]
+        for fix in (None, pins):
+            calls.clear()
+            jax_step._ros2_stages(y, k_arr, jnp.float64(dt), atm, net, fix)
+            factors, matvec = calls[0]
+            got = matvec(probe)
+            assert _rel(fast_mod._matvec(factors.diag, factors.sup_d, factors.sub_d, probe), got) < 1e-13
+            if fix is not None:
+                c0 = 1.0 / (jax_step._ROS2_GAMMA * dt)
+                assert jnp.array_equal(got[fix], (c0 * probe)[fix])
+
+        # (2) the step. The arrays go in as jit ARGUMENTS: closed over, XLA
+        # folds the step at compile time and the folded tangent is garbage
+        # (1e42 against 1e23 on the dense operator), a harness artifact.
+        def stages(primals, tangents, fix):
+            return jax.jvp(
+                lambda a, b, t, af: jax_step._ros2_stages(a, b, t, atm._replace(**af), net, fix)[:2],
+                primals, tangents)
+
+        cases = []
+        for fix in (jnp.zeros_like(pins), pins):
+            for dt in DTS[:-1]:
+                primals = (y, k_arr, jnp.float64(dt), floats)
+                cases.append((primals, jax.tree_util.tree_map(nudge, primals), fix))
+        jax_step.solve_block_thomas_diag_offdiag = solve0
+        free = jax.jit(stages)
+        got = [free(*c) for c in cases]   # traced now, on the matrix-free operator
+        jax_step.solve_block_thomas_diag_offdiag = lambda factors, rhs, **_: solve0(factors, rhs)
+        dense = jax.jit(lambda *c: stages(*c))   # traced after the patch: the dense operator
+        for c, (p_free, t_free) in zip(cases, got):
+            p_dense, t_dense = dense(*c)
+            for a, b in zip(p_free, p_dense):
+                assert jnp.array_equal(a, b), float(c[0][2])
+            for a, b in zip(t_free, t_dense):
+                assert _rel(b, a) < 1e-3, (float(c[0][2]), bool(c[2].any()), _rel(b, a))
+            # no "dt=" here: the W39b child counts check_real_blocks' rows by it
+            print(f"matrix-free {cfg_name} {backend} at dt {float(c[0][2]):.0e}, pinned "
+                  f"{bool(c[2].any())}: tangent {max(_rel(b, a) for a, b in zip(t_free, t_dense)):.2e}")
+    finally:
+        jax_step.solve_block_thomas_diag_offdiag = solve0
+
+
+@pytest.mark.skipif(
+    not (ROOT / "tests" / "data" / "adj_state_hd189.npz").exists(),
+    reason="HD189 adjoint fixture missing",
+)
+def test_matrix_free_operator_matches_the_dense_one(fast):
+    from vulcan_jax import jax_step
+
+    if jax_step._SOLVER == "reference":
+        pytest.skip("the reference pair differentiates through the LU and takes no operator")
+    check_matrix_free("adj_state_hd189.npz", "HD189", fast.BACKEND)
+
+
 _DEFAULT_CHILD = r"""
 import os, sys
 os.environ.pop("VULCAN_JAX_SOLVER", None)
@@ -342,12 +441,13 @@ import os, sys
 os.environ["VULCAN_JAX_ATOM_LIST"] = "H,O,C,N,S"
 repo = sys.argv[1]
 sys.path.insert(0, os.path.join(repo, "tests"))
-from test_solver_fast import check_real_blocks
+from test_solver_fast import check_matrix_free, check_real_blocks
 import vulcan_jax.solver_fast as fast_mod
 for backend in ("fast", "ffi"):
     if backend == "ffi":
         fast_mod.build()
     check_real_blocks("adj_state_w39b.npz", "W39b", backend)
+    check_matrix_free("adj_state_w39b.npz", "W39b", backend)
 """
 
 

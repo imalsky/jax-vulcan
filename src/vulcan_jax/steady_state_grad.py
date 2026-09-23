@@ -423,13 +423,16 @@ def _make_body_map(
         return balanced
 
     def step_fn(y, k_use, atm_use):
+        # Reverse mode through the step: the dense stage operator
+        # (`matrix_free=False`, jax_step._ros2_stages).
         # fix_species regime: pin inside the step (row/col zeroing) then
         # overwrite with the pinned values, so pinned rows are constants of
         # the map (identity rows of I - dG/dy), not singular pass-throughs.
         if t is not None and t.fix_mask is not None:
-            sol, _ = jax_ros2_step(y, k_use, dt64, atm_use, net, fix_mask=t.fix_mask)
+            sol, _ = jax_ros2_step(y, k_use, dt64, atm_use, net, fix_mask=t.fix_mask,
+                                   matrix_free=False)
             return jnp.where(t.fix_mask, t.fix_y, sol)
-        sol, _ = jax_ros2_step(y, k_use, dt64, atm_use, net)
+        sol, _ = jax_ros2_step(y, k_use, dt64, atm_use, net, matrix_free=False)
         return sol
 
     # With photo_recompute_k the photolysis rows are rebuilt from y each

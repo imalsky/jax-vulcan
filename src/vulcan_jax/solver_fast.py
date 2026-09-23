@@ -37,6 +37,7 @@ in `jax_step.py`.
 from __future__ import annotations
 
 import ctypes
+import functools
 import os
 import platform
 import subprocess
@@ -97,13 +98,18 @@ def factor(diag, sup_d, sub_d) -> Factors:
     return Factors(lu, perm, diag, sup_d, sub_d)
 
 
-def solve(factors: Factors, rhs):
+def solve(factors: Factors, rhs, matvec=None):
+    """`matvec` is the operator as a function of x. The primal never runs it;
+    the AD rules do (the tangent's `dA x`, the transpose's cotangent). The
+    default is the dense bands in `factors`, whose tangent is the whole dense
+    `dA` per direction; `jax_step._ros2_stages` passes a matrix-free one
+    (notes §2.9)."""
     lu, perm, diag, sup_d, sub_d = factors
     sg = jax.lax.stop_gradient
     sup0, sub0 = sg(sup_d), sg(sub_d)
 
-    def matvec(x):
-        return _matvec(diag, sup_d, sub_d, x)
+    if matvec is None:
+        matvec = functools.partial(_matvec, diag, sup_d, sub_d)
 
     def solve_(_matvec, b):
         return _raw_solve(lu, perm, sup0, sub0, b)
