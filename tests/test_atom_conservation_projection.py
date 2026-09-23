@@ -244,3 +244,71 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch):
         n_lay = jnp.sum(jnp.abs(sol), axis=1) + jnp.sum(jnp.abs(y), axis=1)
         worst = float(jnp.max(change / n_lay[:, None]))
         assert worst < 10.0 * REPAIR_ABS_FLOOR, (dt, worst)
+
+
+def test_repair_tridiagonal_solve_is_lapack_gtsv_with_its_tangent():
+    """`jax_step._tridiagonal_solve`, the batched partial-pivoting sweep
+    the stage repair uses instead of `lax.linalg.tridiagonal_solve`
+    (a per-system cuSPARSE call on the GPU, notes.md §2.9), IS LAPACK dgtsv:
+    the CPU primitive to roundoff (a few ulp, where XLA fuses a
+    multiply-add differently) on the HD189 repair matrices `c0 - T_rho` at
+    every dt from 1e4 s to the 1e15 s cap, and on systems that force row
+    swaps, where an unpivoted sweep meets an exact zero pivot (a wrong-sign
+    sub-diagonal from the central-difference drift can do that, notes.md
+    §1.13). Its tangent, taken through the sweep's `where`s, matches the
+    primitive's JVP rule (a second solve) and a dense solve on a
+    well-conditioned swap-forcing system; a vmap over directions is the
+    per-direction result to roundoff (the retrieval's 6-direction
+    program)."""
+    import jax
+    import jax.numpy as jnp
+    from jax.lax.linalg import tridiagonal_solve
+
+    import vulcan_jax.jax_step as js
+
+    def lapack(dl, d, du, g):
+        return tridiagonal_solve(dl.T, d.T, du.T, g.T[:, :, None])[:, :, 0].T
+
+    y, _, atm, _ = _hd189_step_inputs()
+    y = jnp.asarray(y)
+    ridx = js._CHEM_RESERVOIR_IDX
+    A_e, B_e, C_e, A_m, B_m, C_m, _ = js._build_diff_coeffs_jax(y, atm, js.compute_diff_grav(atm))
+    diag_d = A_e[:, None] + A_m
+    pad = jnp.zeros((1, ridx.shape[0]))
+    du = jnp.concatenate([-(B_e[:-1, None] + B_m[:-1])[:, ridx], pad])
+    dl = jnp.concatenate([pad, -(C_e[1:, None] + C_m[1:])[:, ridx]])
+    g = jax.random.normal(jax.random.PRNGKey(1), diag_d[:, ridx].shape)
+    def roundoff_equal(a, b):
+        return bool(jnp.all(jnp.isfinite(a))) and float(jnp.max(jnp.abs(a - b))) <= 1e-15 * float(jnp.max(jnp.abs(b)))
+
+    for dt in (1e4, 1e8, 1e11, 1e13, 1e15):
+        d = 1.0 / (js._ROS2_GAMMA * dt) - diag_d[:, ridx]
+        assert roundoff_equal(js._tridiagonal_solve(dl, d, du, g), lapack(dl, d, du, g)), dt
+
+    # Well-conditioned, column-dominant, with five rows shrunk so |d_i| < |dl_{i+1}|
+    # forces a swap there; plus the 3x3 whose unpivoted second pivot is exactly 0.
+    nz, m = 62, 5
+    k = jax.random.split(jax.random.PRNGKey(3), 3)
+    du = -jnp.exp(jax.random.normal(k[0], (nz, m))).at[-1].set(0.0)
+    dl = -jnp.exp(jax.random.normal(k[1], (nz, m))).at[0].set(0.0)
+    zero = jnp.zeros((1, m))
+    d = 1e-3 - jnp.concatenate([zero, du[:-1]]) - jnp.concatenate([dl[1:], zero])
+    d = d.at[jnp.array([5, 20, 21, 40, 60])].multiply(0.05)
+    g = jax.random.normal(k[2], (nz, m))
+    assert bool(jnp.any(jnp.abs(d[:-1]) < jnp.abs(dl[1:])))
+    assert roundoff_equal(js._tridiagonal_solve(dl, d, du, g), lapack(dl, d, du, g))
+    # independent directions (a common scaling of A and g has a zero tangent)
+    tans = tuple(jax.random.normal(jax.random.PRNGKey(10 + i), a.shape) * 1e-2
+                 for i, a in enumerate((dl, d, du, g)))
+    tans = (tans[0].at[0].set(0.0), tans[1], tans[2].at[-1].set(0.0), tans[3])
+    t_new = jax.jvp(js._tridiagonal_solve, (dl, d, du, g), tans)[1]
+    t_ref = jax.jvp(lapack, (dl, d, du, g), tans)[1]
+    scale = float(jnp.max(jnp.abs(t_ref)))
+    assert float(jnp.max(jnp.abs(t_new - t_ref))) < 1e-13 * scale
+    dirs = jnp.stack([g * s for s in (1.0, -0.5, 0.25)])
+    solve_g = lambda gg: js._tridiagonal_solve(dl, d, du, gg)
+    batched = jax.vmap(lambda v: jax.jvp(solve_g, (g,), (v,))[1])(dirs)
+    assert roundoff_equal(batched, jnp.stack([jax.jvp(solve_g, (g,), (v,))[1] for v in dirs]))
+    dl3, d3, du3 = (jnp.array(v)[:, None] for v in ((0.0, -1.0, 2.0), (2.0, 1.0, 4.0), (-2.0, -3.0, 0.0)))
+    x3 = js._tridiagonal_solve(dl3, d3, du3, jnp.ones((3, 1)))
+    assert bool(jnp.allclose(x3[:, 0], jnp.array([2.0, 1.5, -0.5]), rtol=0, atol=1e-15)), x3

@@ -14,14 +14,14 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
-from jax.lax.linalg import tridiagonal_solve
 import numpy as np
 
-from .chem import chem_jac_analytical, NetworkArrays
-from .chem_funs import chem_rhs_codegen as _chem_rhs, spec_list as _SPEC_LIST
 from . import composition as _composition
-from .phy_const import kb, Navo
-from .config import default_config, REPAIR_ABS_FLOOR
+from .chem import NetworkArrays, chem_jac_analytical
+from .chem_funs import chem_rhs_codegen as _chem_rhs
+from .chem_funs import spec_list as _SPEC_LIST
+from .config import REPAIR_ABS_FLOOR, default_config
+from .phy_const import Navo, kb
 
 _SOLVER = os.environ.get("VULCAN_JAX_SOLVER", "fast")  # import-frozen: reference | fast | ffi
 if _SOLVER == "reference":
@@ -190,6 +190,73 @@ _DEFECT_FLOOR = 1e-13
 # where it is doing its job.
 _REPAIR_MAX_CELL_FRAC = 1.0
 
+# Layers per iteration of the repair sweep's two scans. Measured on the solo
+# HD189 step and its 3-direction jvp (XLA:CPU, §1.13): 1 / 8 / 32 layers give
+# 7 / 33 / 219 fusions per sweep body, i.e. ~427 / ~264 / ~438 kernels per
+# sweep once the loop runs, and jvp compiles of 19 / 20 / 35 s (fully
+# unrolled: killed past 574 s, register 74). 8 has the fewest kernels.
+_REPAIR_SWEEP_UNROLL = 8
+
+
+def _tridiagonal_solve(dl, d, du, g):
+    """Solve `dl[i] x[i-1] + d[i] x[i] + du[i] x[i+1] = g[i]` along axis 0,
+    one system per trailing index (`dl[0]` and `du[-1]` unused, as
+    `lax.linalg.tridiagonal_solve`). LAPACK dgtsv's algorithm, Gaussian
+    elimination with partial pivoting (a row swap leaves a fill-in on the
+    second superdiagonal), as two `lax.scan`s over the layers in plain
+    elementwise ops, so every system a program holds -- lanes, reservoirs,
+    tangent directions -- is solved by the same kernels. Pivoting costs
+    arithmetic only, not launches, and the repair matrix needs it: with the
+    central-difference molecular-diffusion drift a few sub-diagonal entries
+    of `c0 - T_rho` take the wrong sign, and such a matrix can put an exact
+    zero on an unpivoted pivot (notes §1.13). `lax.linalg.tridiagonal_solve`
+    itself is a per-system cuSPARSE call on the GPU as soon as a system has
+    more than one right-hand side, which the JVP's direction stack is: at
+    144 lanes that was ~1,440 calls and ~16,000 launches per gradient step,
+    136 ms of its 402 ms, and the one custom call that kept the `ffi` loop
+    out of a command buffer (notes §2.9). The scans stay rolled: fully
+    unrolled, a 3-direction jvp step took XLA:CPU over 574 s and 7.9 GB to
+    compile against 37 s with the primitive (register 74); at
+    `_REPAIR_SWEEP_UNROLL` layers per iteration it compiles in 20 s with
+    the fewest fusions per sweep of the rolled settings (notes §1.13)."""
+    du = du.at[-1].set(0.0)  # the last swap reads it as the fill-in
+
+    def fwd(row, below):
+        d_i, du_i, b_i = row  # row i as the sweep has left it
+        a, d_n, du_n, b_n = below  # row i+1 as given; `a` is its sub-diagonal
+        swap = jnp.abs(d_i) < jnp.abs(a)
+        fact = jnp.where(swap, d_i, a) / jnp.where(swap, a, d_i)
+        done = (
+            jnp.where(swap, a, d_i),
+            jnp.where(swap, d_n, du_i),
+            jnp.where(swap, du_n, 0.0),
+            jnp.where(swap, b_n, b_i),
+        )
+        nxt = (
+            jnp.where(swap, du_i - fact * d_n, d_n - fact * du_i),
+            jnp.where(swap, -fact * du_n, du_n),
+            jnp.where(swap, b_i - fact * b_n, b_n - fact * b_i),
+        )
+        return nxt, done
+
+    (d_last, _, b_last), (dd, du1, du2, bb) = jax.lax.scan(
+        fwd, (d[0], du[0], g[0]), (dl[1:], d[1:], du[1:], g[1:]),
+        unroll=_REPAIR_SWEEP_UNROLL,
+    )
+    x_last = b_last / d_last
+
+    def bwd(carry, row):
+        x1, x2 = carry  # x[i+1], x[i+2]
+        d_i, du_i, du2_i, b_i = row
+        x = (b_i - du_i * x1 - du2_i * x2) / d_i
+        return (x, x1), x
+
+    _, xs = jax.lax.scan(
+        bwd, (x_last, jnp.zeros_like(x_last)), (dd, du1, du2, bb),
+        unroll=_REPAIR_SWEEP_UNROLL, reverse=True,
+    )
+    return jnp.concatenate([xs, x_last[None]])
+
 
 def _repair_stage(k, b_tr, c0, diag_d, sup_d, sub_d, fix_mask, n_tot, y):
     """Put the element content of a Ros2 stage vector back where its own
@@ -242,7 +309,7 @@ def _repair_stage(k, b_tr, c0, diag_d, sup_d, sub_d, fix_mask, n_tot, y):
         du = jnp.where(pinned, 0.0, du)
         dl = jnp.where(pinned, 0.0, dl)
         g = jnp.where(pinned, 0.0, g)
-    c = tridiagonal_solve(dl.T, d.T, du.T, g.T[:, :, None])[:, :, 0].T
+    c = _tridiagonal_solve(dl, d, du, g)
     # Per layer and atom: drop a correction the carrier cell cannot carry --
     # one larger than BOTH the cell's own content and the carrier's raw stage
     # change -- and leave the raw solve there. That layer's element budget

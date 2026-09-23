@@ -322,10 +322,12 @@ def check_matrix_free(fixture: str, cfg_name: str, backend: str):
     dense operator's. The tangent passes through blocks of cond up to ~6e19
     (notes §1.4), so (2) is a wiring check at 1e-3 (worst, both at dt 1e6:
     HD189 8.5e-5 `fast` / 8.1e-6 `ffi`, W39b 1.4e-7 / 3.2e-13); a lost or
-    wrong dA x reads O(1) and above. The primal is bitwise on the CPU; on the
-    GH200 the two programs round differently and the same conditioning
-    amplifies it (first row at dt 1e2: 5e-8 `fast`, 5e-10 `ffi`, job 79533),
-    so there the primal takes the tangent's bar. dt 1e11 is not compared
+    wrong dA x reads O(1) and above. The primal is bitwise on the CPU and,
+    since the gather-table Jacobian (0.16.5), on the GH200 too (0.0 in all
+    12 cases of job 79750, both backends, every dt and pinning); job 79533's
+    5e-8 `fast` / 5e-10 `ffi` came from the scatter Jacobian's atomics. Off
+    the CPU the primal bar is 1e-9, roundoff amplified by the block
+    conditioning with room to spare. dt 1e11 is not compared
     (the tangent is O(1)-conditioned there). Also run by the SNCHO child for
     W39b."""
     import vulcan_jax.chem as chem_mod
@@ -391,7 +393,7 @@ def check_matrix_free(fixture: str, cfg_name: str, backend: str):
         got = [free(*c) for c in cases]   # traced now, on the matrix-free operator
         jax_step.solve_block_thomas_diag_offdiag = lambda factors, rhs, **_: solve0(factors, rhs)
         dense = jax.jit(lambda *c: stages(*c))   # traced after the patch: the dense operator
-        primal_bar = 0.0 if jax.default_backend() == "cpu" else 1e-3
+        primal_bar = 0.0 if jax.default_backend() == "cpu" else 1e-9
         for c, (p_free, t_free) in zip(cases, got):
             p_dense, t_dense = dense(*c)
             for a, b in zip(p_free, p_dense):
