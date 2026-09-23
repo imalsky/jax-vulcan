@@ -197,6 +197,15 @@ def _cfg_guard(request, _cfg_snapshot_session):
             _clear_jax_caches()
 
 
+@pytest.fixture(autouse=True, scope="module")
+def _release_jax_caches_per_module():
+    """Drop a module's compiled programs when it finishes. Kept, they pile up
+    per xdist worker (one held 5.3 GB before its next test) and four workers
+    reached ~16 GB together, the whole GitHub runner."""
+    yield
+    _clear_jax_caches()
+
+
 # Cross-process serialisation for master-touching tests.
 
 _MASTER_LOCK = ROOT / "tests" / ".master_lock"

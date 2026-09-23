@@ -51,10 +51,24 @@ jobs:
       - name: Run tests
         env:
           VULCAN_JAX_ALLOW_MISSING_FIXTURES: "1"
-        # The batched forward-mode test compiles a ~5 GiB XLA program and peaks
-        # near 7 GB RSS; four xdist workers on the 16 GB runner ran out of memory
-        # twice, so it runs alone after the pool.
-        run: python -m pytest tests -n auto -q --tb=short -ra --deselect tests/test_nh3_conden_batch_subprocess.py --deselect tests/test_forward_jvp_physical.py --deselect tests/test_vmap_while_loop.py::test_batched_forward_mode_runner
+        # Memory on the 16 GB runner (a local profile of every test's peak RSS,
+        # worker plus children): four workers reached ~16 GB together, and the
+        # runner was killed mid-suite (exit 143) in two runs of six. Compiled
+        # programs piled up per worker; tests/conftest.py now drops them after
+        # each module. Three workers, and four tests run only in the local
+        # suite: the two tangent-certificate cases (+8.3 / +5.7 GB of their
+        # own) and the two slowest atmosphere-setup cases (~8 and ~4 min
+        # locally; both evaluate JAX's expn over the full pressure grid). The
+        # batched forward-mode test (a ~5 GiB compile, ~7 GB RSS) still runs
+        # alone.
+        run: >-
+          python -m pytest tests -n 3 -q --tb=short -ra --durations=15
+          --deselect tests/test_nh3_conden_batch_subprocess.py
+          --deselect tests/test_forward_jvp_physical.py
+          --deselect tests/test_vmap_while_loop.py::test_batched_forward_mode_runner
+          --deselect tests/test_tangent_certificate.py
+          --deselect tests/test_atm_setup_matrix.py::test_TP_H14_matches_scipy_reference
+          --deselect "tests/test_atm_setup_matrix.py::test_load_TPK_atm_types[analytical-1000000000.0-0.01-50-2140.0]"
       - name: Run the batched forward-mode test alone
         env:
           VULCAN_JAX_ALLOW_MISSING_FIXTURES: "1"
