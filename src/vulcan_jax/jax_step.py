@@ -645,9 +645,8 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask,
         y, A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, atm
     )
     rhs_y = _projected_chem_rhs(y, M, k_arr) + diff_at_y
-    # Analytical Jacobian: <=1e-13 vs the AD (jacrev) path, and 15.7x faster
-    # than jitted jacrev on NCHO (notes.md §1.3).
-    # It skips the structurally-zero entries AD would materialize.
+    # Analytical Jacobian: <= 1e-13 vs the AD (jacrev) oracle, a gather along
+    # the network's static tables (ratios in notes.md §1.3).
     chem_J = _project_chem_jac(chem_jac_analytical(y, M, k_arr, net))
 
     # Diffusion blocks are diagonal-in-species: pass off-diagonals as (nz-1, ni)

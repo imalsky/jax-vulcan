@@ -33,21 +33,14 @@ from .network import Network
 
 jax.config.update("jax_enable_x64", True)
 
-# Reaction-axis chunk size for the analytical-Jacobian scatter. Un-chunked,
-# the (nr+1, 6, 3) per-layer contribution tensor peaked at ~60 GiB under vmap
-# (batch 512 x nz 150, the NCHO network's 878 reaction slots) and OOM'd a
-# 96 GB GH200;
-# lax.scan over 128-reaction blocks bounds the transient ~7x smaller. Not a
-# tuning knob: changing it permutes float summation order (~1e-16 per cell)
-# and churns step counts, so it stays a code constant.
-_JAC_CHUNK_REACTIONS = 128
-
 
 class NetworkArrays:
     """Network stoichiometry packed for JAX.
 
     Registered as a custom pytree with `ni`/`nr` as static aux_data so
     jit/vmap don't retrace per network and `num_segments` stays concrete.
+    `jac_terms` / `jac_place` are the analytical Jacobian's static gather
+    tables (`_jac_gather_tables`).
     """
 
     __slots__ = (
@@ -58,6 +51,8 @@ class NetworkArrays:
         "reactant_stoich",
         "product_stoich",
         "is_three_body",
+        "jac_terms",
+        "jac_place",
     )
 
     def __init__(
@@ -69,6 +64,8 @@ class NetworkArrays:
         reactant_stoich,
         product_stoich,
         is_three_body,
+        jac_terms,
+        jac_place,
     ):
         self.ni = int(ni)
         self.nr = int(nr)
@@ -77,6 +74,8 @@ class NetworkArrays:
         self.reactant_stoich = reactant_stoich
         self.product_stoich = product_stoich
         self.is_three_body = is_three_body
+        self.jac_terms = jac_terms
+        self.jac_place = jac_place
 
 
 def _network_arrays_flatten(net):
@@ -86,6 +85,8 @@ def _network_arrays_flatten(net):
         net.reactant_stoich,
         net.product_stoich,
         net.is_three_body,
+        net.jac_terms,
+        net.jac_place,
     )
     aux = (net.ni, net.nr)
     return children, aux
@@ -93,8 +94,7 @@ def _network_arrays_flatten(net):
 
 def _network_arrays_unflatten(aux, children):
     ni, nr = aux
-    r_idx, p_idx, r_st, p_st, is3 = children
-    return NetworkArrays(ni, nr, r_idx, p_idx, r_st, p_st, is3)
+    return NetworkArrays(ni, nr, *children)
 
 
 jtu.register_pytree_node(
@@ -102,8 +102,63 @@ jtu.register_pytree_node(
 )
 
 
+def _jac_gather_tables(net: Network) -> tuple[tuple, jnp.ndarray]:
+    """Static tables behind `chem_jac_analytical_per_layer`.
+
+    Every nonzero J[i, j] is a sum over the (reaction r, reactant slot s)
+    pairs with species j in slot s and species i among r's reactants or
+    products, of `signed stoich_i * drate_dy[r, s]`. The pairs are listed
+    per entry in (r, s) order and bucketed by power-of-two padded length
+    (about 1.3x the real terms on the shipped networks), so the assembly is
+    a gather, one fixed-order sum per entry (`_left_to_right_sum`) and a
+    final gather into the dense block: no scatter-add, hence one summation
+    order on every backend and in every program (a GPU scatter-add is atomic
+    and reorders run to run) and no chunked transient.
+    Returns `(terms, place)`: `terms` is a tuple of `(r, s, coef)` int32 /
+    int32 / float64 tables of shape (entries, width) with zero-coefficient
+    pads, and `place[i * ni + j]` indexes the concatenated per-entry sums,
+    with the index one past the end meaning a structural zero.
+    """
+    r_idx = np.asarray(net.reactant_idx)
+    r_st = np.asarray(net.reactant_stoich)
+    out_idx = np.concatenate([r_idx, np.asarray(net.product_idx)], axis=1)
+    out_st = np.concatenate([-r_st, np.asarray(net.product_stoich)], axis=1)
+    ni = net.ni
+    terms: dict[tuple[int, int], list[tuple[int, int, float]]] = {}
+    for r in range(r_idx.shape[0]):
+        for sj in range(r_idx.shape[1]):
+            if r_st[r, sj] <= 0 or r_idx[r, sj] >= ni:
+                continue
+            for si in range(out_idx.shape[1]):
+                if out_st[r, si] == 0 or out_idx[r, si] >= ni:
+                    continue
+                key = (int(out_idx[r, si]), int(r_idx[r, sj]))
+                terms.setdefault(key, []).append((r, sj, float(out_st[r, si])))
+    keys = sorted(terms, key=lambda ij: (len(terms[ij]), ij))
+    buckets = []
+    start = 0
+    while start < len(keys):
+        width = 1 << (len(terms[keys[start]]) - 1).bit_length()
+        end = start
+        while end < len(keys) and len(terms[keys[end]]) <= width:
+            end += 1
+        r_tab = np.zeros((end - start, width), dtype=np.int32)
+        s_tab = np.zeros_like(r_tab)
+        c_tab = np.zeros(r_tab.shape, dtype=np.float64)
+        for a, key in enumerate(keys[start:end]):
+            for b, (r, sj, c) in enumerate(terms[key]):
+                r_tab[a, b], s_tab[a, b], c_tab[a, b] = r, sj, c
+        buckets.append(tuple(jnp.asarray(t) for t in (r_tab, s_tab, c_tab)))
+        start = end
+    place = np.full(ni * ni, len(keys), dtype=np.int32)
+    for p, (i, j) in enumerate(keys):
+        place[i * ni + j] = p
+    return tuple(buckets), jnp.asarray(place)
+
+
 def to_jax(net: Network) -> NetworkArrays:
     """Pack a Network's relevant arrays into jnp form for the chemistry RHS."""
+    jac_terms, jac_place = _jac_gather_tables(net)
     return NetworkArrays(
         ni=net.ni,
         nr=net.nr,
@@ -112,6 +167,8 @@ def to_jax(net: Network) -> NetworkArrays:
         reactant_stoich=jnp.asarray(net.reactant_stoich, dtype=jnp.float64),
         product_stoich=jnp.asarray(net.product_stoich, dtype=jnp.float64),
         is_three_body=jnp.asarray(net.is_three_body, dtype=jnp.bool_),
+        jac_terms=jac_terms,
+        jac_place=jac_place,
     )
 
 
@@ -188,7 +245,8 @@ def chem_jac_analytical_per_layer(
     """Stoichiometry-driven chemistry Jacobian for one layer. Returns [ni, ni].
 
     Builds J[i, j] = Σ_r sign_i * stoich_i * (∂rate[r]/∂y_j) directly from
-    the network tables, skipping `jacrev`'s ni reverse-mode passes.
+    the network tables, skipping `jacrev`'s ni reverse-mode passes; the sum
+    runs along the static gather tables of `_jac_gather_tables`.
     """
     yp = jnp.concatenate([y, jnp.ones((1,), dtype=y.dtype)])
 
@@ -219,57 +277,25 @@ def chem_jac_analytical_per_layer(
     drate_dy = net.reactant_stoich * pow_minus_one * leave_out * k[:, None]
     drate_dy = jnp.where(net.is_three_body[:, None], drate_dy * M, drate_dy)
 
-    # Stack reactants (sign -1) and products (sign +1) into one "output" axis;
-    # contrib[r, s_i, s_j] = out_stoich_signed[r, s_i] * drate_dy[r, s_j].
+    # One sum per nonzero entry along the static tables, then the dense block
+    # by a gather (the slot past the last entry is the structural zero).
+    entry_sums = [_left_to_right_sum(coef * drate_dy[r, s]) for r, s, coef in net.jac_terms]
+    zero = jnp.zeros((1,), dtype=drate_dy.dtype)
     ni = net.ni
-    out_idx = jnp.concatenate([net.reactant_idx, net.product_idx], axis=1)
-    out_stoich_signed = jnp.concatenate(
-        [-net.reactant_stoich, net.product_stoich], axis=1
-    )
+    return jnp.concatenate([*entry_sums, zero])[net.jac_place].reshape(ni, ni)
 
-    # Scatter in `lax.scan` chunks over the reaction axis instead of one flat
-    # (nr+1, 2*max_terms, max_terms) contrib tensor: under vmap every lane's
-    # transient is live at once, so the flat form is the batch-512 OOM driver
-    # (see _JAC_CHUNK_REACTIONS). Pad rows scatter exact zeros (stoich and
-    # drate_dy pads are 0) into the stripped padding row/col (index ni).
-    n_rows = out_idx.shape[0]
-    chunk = min(_JAC_CHUNK_REACTIONS, n_rows)
-    n_chunks = -(-n_rows // chunk)
-    pad = n_chunks * chunk - n_rows
 
-    r_idx_c = jnp.pad(net.reactant_idx, ((0, pad), (0, 0)), constant_values=ni)
-    out_idx_c = jnp.pad(out_idx, ((0, pad), (0, 0)), constant_values=ni)
-    out_st_c = jnp.pad(out_stoich_signed, ((0, pad), (0, 0)))
-    drate_c = jnp.pad(drate_dy, ((0, pad), (0, 0)))
-
-    r_idx_c = r_idx_c.reshape(n_chunks, chunk, max_terms)
-    out_idx_c = out_idx_c.reshape(n_chunks, chunk, 2 * max_terms)
-    out_st_c = out_st_c.reshape(n_chunks, chunk, 2 * max_terms)
-    drate_c = drate_c.reshape(n_chunks, chunk, max_terms)
-
-    def _scatter_chunk(J_acc, xs):
-        o_idx, o_st, r_idx, dr = xs
-        contrib = o_st[:, :, None] * dr[:, None, :]
-        row = jnp.broadcast_to(o_idx[:, :, None], contrib.shape)
-        col = jnp.broadcast_to(r_idx[:, None, :], contrib.shape)
-        keys = row.reshape(-1) * (ni + 1) + col.reshape(-1)
-        J_acc = J_acc + jax.ops.segment_sum(
-            contrib.reshape(-1),
-            keys,
-            num_segments=(ni + 1) * (ni + 1),
-            indices_are_sorted=False,
-        )
-        return J_acc, None
-
-    # unroll=1 keeps XLA from fusing the chunks back into one flat scatter,
-    # which would silently reintroduce the un-bounded transient.
-    J_flat, _ = jax.lax.scan(
-        _scatter_chunk,
-        jnp.zeros((ni + 1) * (ni + 1), dtype=drate_dy.dtype),
-        (out_idx_c, out_st_c, r_idx_c, drate_c),
-        unroll=1,
-    )
-    return J_flat.reshape(ni + 1, ni + 1)[:ni, :ni]
+def _left_to_right_sum(x: jnp.ndarray) -> jnp.ndarray:
+    """Sum over the last axis in one fixed order. XLA may reorder a `reduce`
+    per program, and the batch and queue runners then disagreed at the last
+    bit, which the dt controller turned into a different accept count
+    (vulcan-forward's `test_queue_with_enough_lanes_runs_the_batch_ticks`).
+    The terms are exact (a stoichiometric coefficient times a gathered
+    value), so an explicit chain of adds has one result on every program."""
+    acc = x[..., 0]
+    for j in range(1, x.shape[-1]):
+        acc = acc + x[..., j]
+    return acc
 
 
 chem_jac_analytical = jax.vmap(
