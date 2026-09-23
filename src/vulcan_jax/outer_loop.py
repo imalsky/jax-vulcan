@@ -676,6 +676,17 @@ class _Statics(NamedTuple):
 # the save_evolution buffer at the pre-step `evo_idx`.
 _CONV_RING_FIELDS = ("y_time_ring", "t_time_ring")
 _EVO_RING_FIELDS = ("y_evo", "t_evo")
+# Certificate-only lane fields: the convergence ring, its two statistics, the
+# cell it points at and the photolysis-change reference. They steer predicates,
+# never the arithmetic, so their tangents are dead. The lockstep batch drops
+# them on its own; the queue's refill `cond` rewrites lane state and keeps them
+# (D tangent copies of the conv_step-slot ring per lane), so `runner_queue`
+# zeroes them at its lane step. Every primal and every live tangent stays
+# bitwise. `_make_jvp_step` (run_jvp, run_batch_jvp) is untouched: its
+# certificate reads the ring tangent (C22).
+_QUEUE_STOP_FIELDS = _CONV_RING_FIELDS + (
+    "longdy", "longdydt", "where_varies_most", "prev_aflux",
+)
 
 
 def _freeze_leaf(old, new, keep_old):
@@ -2126,6 +2137,10 @@ def _make_runner(
         def body(c):
             it, lanes, atm_l, lane_job, nxt, out = c
             lanes = step(it, lanes, with_atm(atm_l))
+            lanes = lanes._replace(**{
+                f: jax.lax.stop_gradient(getattr(lanes, f))
+                for f in _QUEUE_STOP_FIELDS
+            })
             it = it + jnp.int32(1)
             c = (it, lanes, atm_l, lane_job, nxt, out)
             n_free = jnp.sum(lanes.is_done & (lane_job >= 0), dtype=jnp.int32)
