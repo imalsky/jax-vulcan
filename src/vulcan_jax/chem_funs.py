@@ -4,15 +4,11 @@ codegen chemistry RHS (chem_rhs_codegen)."""
 
 from __future__ import annotations
 
-import jax
-
 from .config import default_config
 from . import network as _network
 from . import chem as _chem
 from . import make_chem_funs as _make_chem_funs
 from ._paths import resolve_data_path
-
-jax.config.update("jax_enable_x64", True)
 
 _CFG = default_config()
 

@@ -33,8 +33,6 @@ else:  # see solver_fast.py
     from .solver_fast import factor as factor_block_thomas_diag_offdiag
     from .solver_fast import solve as solve_block_thomas_diag_offdiag
 
-jax.config.update("jax_enable_x64", True)
-
 _CFG = default_config()
 # Pure numerical floor for ysum denominators; not a tuning knob.
 _UNDERFLOW_DENOM = 1e-300

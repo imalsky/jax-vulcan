@@ -38,9 +38,6 @@ def _now() -> float:
     return time.time()
 
 
-jax.config.update("jax_enable_x64", True)
-
-
 # Underflow floor for `x / max(|denom|, .)` normalizations. Not a tuning
 # knob: 1e-300 is well above the float64 denormal tail (~5e-324) and below
 # any physical value, so it only keeps exact-zero divisors positive.

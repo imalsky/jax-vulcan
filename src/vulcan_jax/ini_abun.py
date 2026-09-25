@@ -47,8 +47,6 @@ from .composition import (
 from .state import IniAbunOutputs
 from ._paths import resolve_data_path
 
-jax.config.update("jax_enable_x64", True)
-
 _CFG = default_config()
 
 # --- the equilibrium seed ---------------------------------------------------

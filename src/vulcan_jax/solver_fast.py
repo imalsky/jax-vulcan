@@ -49,8 +49,6 @@ import jax.numpy as jnp
 
 from . import solver as _ref
 
-jax.config.update("jax_enable_x64", True)
-
 BACKEND = os.environ.get("VULCAN_JAX_SOLVER", "fast")
 if BACKEND not in ("fast", "ffi"):
     raise ValueError(

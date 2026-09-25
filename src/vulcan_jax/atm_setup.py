@@ -20,9 +20,6 @@ from .phy_const import G_grav, Navo, au, kb, r_sun
 from ._paths import resolve_data_path
 from .atm_refresh import hydrostatic_step, recompute_vm_jax
 
-# x64 is required for the rate-constant dynamic range.
-jax.config.update("jax_enable_x64", True)
-
 _CFG = default_config()
 
 

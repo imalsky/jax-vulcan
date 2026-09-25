@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import numpy as np
-import jax
 import jax.numpy as jnp
 
 from .config import default_config
 from . import chem_funs
 from . import photo as _photo_mod
 from . import phy_const as _phy_const
-
-jax.config.update("jax_enable_x64", True)
 
 _CFG = default_config()
 _NETWORK = chem_funs._NETWORK   # the one parse per process

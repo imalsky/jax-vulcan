@@ -31,9 +31,6 @@ import numpy as np
 from .network import Network
 
 
-jax.config.update("jax_enable_x64", True)
-
-
 class NetworkArrays:
     """Network stoichiometry packed for JAX.
 

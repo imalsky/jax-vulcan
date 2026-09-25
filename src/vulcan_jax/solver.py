@@ -26,8 +26,6 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-jax.config.update("jax_enable_x64", True)
-
 
 def _lu_solve_perm(lu, perm, b):
     """lu_solve with the row permutation already materialized.
