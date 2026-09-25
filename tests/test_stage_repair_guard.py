@@ -25,6 +25,8 @@ raw solve; `inf` is the unguarded repair.
 
 from __future__ import annotations
 
+import json
+import platform
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +35,13 @@ from _helpers import run_child
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "tests" / "data"
+W39B_FIXTURE = DATA / "adj_state_w39b.npz"
+_MANIFEST = DATA / "FIXTURES.json"
+BUILT_ON = (
+    json.loads(_MANIFEST.read_text()).get("platform_machine")
+    if _MANIFEST.is_file()
+    else None
+)
 S_NETWORK = "thermo/SNCHO_photo_network.txt"
 BAND = slice(83, 95)  # W39b layers where H2S is a trace, not a reservoir
 _GAMMA = 1.0 + 2.0**-0.5
@@ -44,7 +53,8 @@ _GAMMA = 1.0 + 2.0**-0.5
 # (the unguarded stage-1 correction exceeds the cell in 2 of the 12 band cells
 # at dt 1e11, and those are the 2 the step inverts), 0 on the x86 runner of the
 # oracle workflow. The non-vacuity pin below is therefore read only off a
-# fixture built where it was measured, and pins only that the unguarded repair
+# fixture built where it was measured AND on that machine (the arm64 fixture on
+# an x86 host inverts no cell), and pins only that the unguarded repair
 # inverts SOMETHING; what the guard itself must deliver -- no inverted cell --
 # is pinned everywhere.
 PINNED_MACHINE = "arm64"
@@ -87,20 +97,17 @@ def step_solution(y, k1, k2):
 
 
 # The child selects SNCHO (network) and an S-bearing atom_list before the first
-# vulcan_jax import, then reuses this module's helper.
+# vulcan_jax import, then reuses this module's helper. It prints, per dt, how
+# many band H2S cells the guarded and the unguarded repair flip negative.
 _CHILD = r"""
 import json, os, sys
 os.environ["VULCAN_JAX_ATOM_LIST"] = "H,O,C,N,S"
 repo = sys.argv[1]
 sys.path.insert(0, os.path.join(repo, "tests"))
-import numpy as np
-from test_stage_repair_guard import BAND, PINNED_MACHINE, stage_arrays, step_solution
+from test_stage_repair_guard import BAND, stage_arrays, step_solution
 from vulcan_jax import jax_step
 
-manifest = json.loads(
-    open(os.path.join(repo, "tests", "data", "FIXTURES.json")).read())
-built_on = manifest.get("platform_machine")
-
+out = {}
 for dt in (1e8, 1e11):
     y, k1, k2 = stage_arrays("adj_state_w39b.npz", "W39b", dt, 0.0)
     raw = step_solution(y, k1, k2)
@@ -113,27 +120,43 @@ for dt in (1e8, 1e11):
         sol = step_solution(y, k1, k2)
         flipped = (sol[BAND, h2s] < 0.0) & (raw[BAND, h2s] > 0.0)
         counts[tag] = int(flipped.sum())
-    print(f"dt={dt:.0e} band H2S flipped negative: {counts}", flush=True)
-    assert counts["guarded"] == 0, (dt, counts)
-    if dt >= 1e11:
-        # Without the guard the band inverts somewhere; keeps the pin non-vacuous.
-        if built_on == PINNED_MACHINE:
-            assert counts["unguarded"] >= 1, (dt, counts)
-        else:
-            print(f"non-vacuity NOT checked: fixture built on {built_on!r}, "
-                  f"the unguarded count is pinned only on {PINNED_MACHINE!r}",
-                  flush=True)
-print("PASS")
+    out[repr(dt)] = counts
+print("COUNTS " + json.dumps(out))
 """
 
 
-@pytest.mark.skipif(
-    not (DATA / "adj_state_w39b.npz").is_file(),
+@pytest.fixture(scope="module")
+def w39b_band_counts():
+    """{dt: {"guarded": n, "unguarded": n}} from one SNCHO child run."""
+    res = run_child(_CHILD, network=S_NETWORK, label="stage-repair guard (W39b)")
+    line = next(ln for ln in res.stdout.splitlines() if ln.startswith("COUNTS "))
+    return {float(dt): c for dt, c in json.loads(line[len("COUNTS "):]).items()}
+
+
+_NEEDS_W39B = pytest.mark.skipif(
+    not W39B_FIXTURE.is_file(),
     reason="W39b fixture missing (npz artifacts are gitignored)",
 )
-def test_guard_keeps_the_w39b_trace_carrier_band_positive():
-    res = run_child(_CHILD, network=S_NETWORK, label="stage-repair guard (W39b)")
-    assert res.stdout.strip().endswith("PASS"), res.stdout
+
+
+@_NEEDS_W39B
+def test_guard_keeps_the_w39b_trace_carrier_band_positive(w39b_band_counts):
+    for dt, counts in w39b_band_counts.items():
+        assert counts["guarded"] == 0, (dt, counts)
+
+
+@_NEEDS_W39B
+@pytest.mark.skipif(
+    BUILT_ON != PINNED_MACHINE or platform.machine() != BUILT_ON,
+    reason=(
+        "non-vacuity NOT checked: the unguarded inversion count is pinned only "
+        f"on a fixture built and run on {PINNED_MACHINE!r}; this fixture was "
+        f"built on {BUILT_ON!r}, running on {platform.machine()!r}"
+    ),
+)
+def test_unguarded_repair_inverts_the_w39b_band(w39b_band_counts):
+    """Non-vacuity: without the guard the band inverts somewhere at dt 1e11."""
+    assert w39b_band_counts[1e11]["unguarded"] >= 1, w39b_band_counts
 
 
 @pytest.mark.skipif(
