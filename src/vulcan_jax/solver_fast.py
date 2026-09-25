@@ -9,8 +9,7 @@ Same call shape as `solver.py`: `factor(diag, sup_d, sub_d)` once, then
    factorisation, instead of differentiating through the pivoted LU (`lu`'s
    tangent rule was ~85% of the jvp linear algebra, notes §1.4). The primal is
    the same code on the same inputs and is bit-identical. Reverse mode
-   transposes the primal sweep on the same factors (`fast`; bit-identical to
-   today's cotangent) or factors the transposed system (`ffi`).
+   transposes the primal sweep on the same factors, on either backend.
 2. With `VULCAN_JAX_SOLVER=ffi` the raw factor and solve are one C++ call each
    (`csrc/block_thomas_cpu.cc`, built by `python -m vulcan_jax.solver_fast`):
    the CPU reference for the fused GPU kernel. `custom_linear_solve` is what

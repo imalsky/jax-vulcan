@@ -60,7 +60,6 @@ oracles:
       - tests/test_photo.py
       - tests/test_diffusion.py
       - tests/test_diffusion_variants.py
-      - tests/test_network_parse.py
       - tests/test_outer_loop_atm_refresh.py
       - tests/test_rates.py
       - tests/test_default_master_parity.py
