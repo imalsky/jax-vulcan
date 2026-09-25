@@ -452,25 +452,6 @@ def column_atoms(y, dz, compo_arr=compo_array):
     return jnp.einsum("z,zi,ia->a", w, jnp.asarray(y, dtype=jnp.float64), compo_arr)
 
 
-def column_atom_loss(y, y_ini, dz, compo_arr=compo_array):
-    """Operator-weighted column-conservation residual per atom. Returns (n_atoms,).
-
-    Relative change, between `y_ini` and `y`, of the column integral
-    `Σ_z w_z * compo[i,a] * y[z,i]` with `w = operator_column_weights(dz)` —
-    the quantity the discretized transport actually conserves on a
-    nonuniform grid. Step acceptance uses the unweighted `atom_loss`
-    (master parity); this is the `report_column_atom_loss` print. Both
-    columns are weighted on the `dz` passed in, so a grid refresh moves the
-    result; the certificate's C23 term accumulates the per-step change
-    instead, each step on its own grid (`outer_loop`, `budget_err`).
-    """
-    col = column_atoms(y, dz, compo_arr)
-    col0 = column_atoms(y_ini, dz, compo_arr)
-    # compo_arr spans every composition-table element; atoms absent from the
-    # loaded network have a zero column and no budget — report 0, not 0/0.
-    return jnp.where(col0 == 0.0, 0.0, (col - col0) / jnp.where(col0 == 0.0, 1.0, col0))
-
-
 def _build_charge_list_if_ion(charge_list: list[str]) -> None:
     """Append every species with non-zero electron count to `charge_list`."""
     for sp in species:

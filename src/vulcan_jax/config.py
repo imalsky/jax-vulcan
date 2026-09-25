@@ -123,6 +123,12 @@ _REMOVED_KEYS: dict[str, str] = {
         "of `atom_list`, or point `fastchem_solar_abundance_file` at a "
         "different preset (drop the key)"
     ),
+    "report_column_atom_loss": (
+        "the end-of-run column print was removed; the certificate's element "
+        "budget term (`element_budget_tol`) holds the operator-weighted "
+        "column on every run, and `ini_abun.column_atoms` computes it "
+        "(drop the key)"
+    ),
     **dict.fromkeys(
         ("use_pi_controller", "pi_controller_alpha", "pi_controller_beta"),
         "the Gustafsson PI step-size controller was removed; the master-faithful "

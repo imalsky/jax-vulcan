@@ -28,7 +28,7 @@ from . import photo as _photo_mod
 from . import atm_refresh as _atm_refresh_mod
 from . import conden as _conden_mod
 from . import state as _state_mod
-from .ini_abun import column_atom_loss, column_atoms
+from .ini_abun import column_atoms
 from .jax_step import AtmStatic, jax_ros2_step, make_atm_static
 from .runtime_validation import validate_runtime_config
 
@@ -250,29 +250,6 @@ def _compute_atom_loss(
     """
     atom_sum = jnp.einsum("zi,ia->a", y, compo_arr)
     return (atom_sum - atom_ini_arr) / atom_ini_arr
-
-
-def _print_column_atom_loss(cfg, y, y_ini, dz) -> None:
-    """Opt-in end-of-run operator-weighted column budget (`report_column_atom_loss`).
-
-    Per-atom print of the y_ini-anchored operator-weighted column drift on
-    the final grid (`ini_abun.column_atom_loss`) — what the discretized
-    transport actually conserves on a nonuniform grid. Step acceptance keeps
-    the unweighted master-parity `atom_loss`; the certificate's term (C23) is
-    `budget_drift`, the per-step column changes accumulated on each step's own
-    grid over the fixed t=0 column.
-    """
-    if not bool(getattr(cfg, "report_column_atom_loss", False)):
-        return
-    from .composition import atom_list as _compo_atoms
-
-    drift = np.asarray(column_atom_loss(y, y_ini, dz))
-    loss_ex = list(getattr(cfg, "loss_ex", []) or [])
-    print("column atom budget (operator-weighted; the certificate's C23 term):")
-    # Mirror print_end_msg: only the atoms this config tracks, minus loss_ex.
-    for name in getattr(cfg, "atom_list", []):
-        if name in _compo_atoms and name not in loss_ex:
-            print(f"{name}: {drift[_compo_atoms.index(name)]:.4e} ")
 
 
 def _step_size(
@@ -3322,11 +3299,11 @@ class OuterLoop:
         return 5
 
     def _report_end(self, end_case, reason, count, longdy, longdydt,
-                    aflux_change, var, para, y, y_ini, dz) -> None:
+                    aflux_change, var, para) -> None:
         """End-of-run printing (op.py:1069-1085 and op.stop): the end-case
-        message, print_prog, the summary and the column atom loss. Master
-        only calls print_end_msg (end_case 1); this also calls
-        print_unconverged_msg for 2 / 3 / 5."""
+        message, print_prog and the summary. Master only calls
+        print_end_msg (end_case 1); this also calls print_unconverged_msg
+        for 2 / 3 / 5."""
         if end_case == 3:
             print(
                 "Integration not completed...\nMaximal allowed steps "
@@ -3357,16 +3334,11 @@ class OuterLoop:
                 f"Actinic flux change: {aflux_change:.2E}"
             )
         if self._cfg.use_print_prog:
-            # print_prog reads para.where_varies_most; set a sentinel so the
-            # read doesn't crash when unset.
-            if getattr(para, "where_varies_most", None) is None:
-                para.where_varies_most = np.zeros_like(np.asarray(y))
             self.output.print_prog(var, para)
         if end_case == 1:
             self.output.print_end_msg(var, para)
         elif end_case in (2, 3, 5):
             self.output.print_unconverged_msg(var, para, end_case)
-        _print_column_atom_loss(self._cfg, y, y_ini, dz)
 
     def __call__(self, rs):
         """Integrate a fresh `RunState` to convergence / runtime / count cap
@@ -3428,8 +3400,7 @@ class OuterLoop:
         aflux = (rs_out.photo_runtime.aflux_change
                  if rs_out.photo_runtime is not None else 0.0)
         self._report_end(end_case, reason, count, rs_out.step.longdy,
-                         rs_out.step.longdydt, aflux, var_shim, para_shim,
-                         rs_out.step.y, rs_out.metadata.y_ini, rs_out.atm.dz)
+                         rs_out.step.longdydt, aflux, var_shim, para_shim)
         return rs_out
 
     def prepare_runstate(self, rs):

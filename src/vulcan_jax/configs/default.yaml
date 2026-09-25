@@ -223,11 +223,6 @@ photo_switch_longdydt_thresh: 1.0e-06
 # bottom mixing ratios are snapshotted and pinned. Inert otherwise.
 hycean_pin_time: 1000000.0
 loss_ex: []
-# Opt-in end-of-run report of the operator-weighted column budget
-# (ini_abun.column_atom_loss): the invariant the discrete transport operator
-# conserves, not a physical dz-weighted column. Diagnostic only; step
-# acceptance always uses the unweighted master-parity atom_loss.
-report_column_atom_loss: false
 # Shared by the EQ Gibbs seed and the const_lowT Newton solve. 450 is 2.1x
 # the worst iteration count measured over the prior box (214, an isothermal
 # 300 K column); the loop exits on the residual, so headroom costs nothing.

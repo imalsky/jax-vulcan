@@ -53,13 +53,10 @@ def main() -> int:
     vulcan_cfg.use_vm_mol = False
     vulcan_cfg.use_hybrid_vm_mol = False
     vulcan_cfg.use_print_prog = False
-    # Exercise the opt-in operator-weighted column budget alongside the parity metric.
-    vulcan_cfg.report_column_atom_loss = True
 
     import numpy as np
 
     import vulcan_jax.op_jax as op_jax
-    from vulcan_jax.ini_abun import column_atom_loss
     from vulcan_jax.state import RunState
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
@@ -118,20 +115,6 @@ def main() -> int:
     # 5. t is finite and positive.
     if not (t > 0 and math.isfinite(float(t))):
         print(f"FAIL: t = {t:.3e} not finite-positive after 50 steps")
-        ok = False
-
-    # 6. The operator-weighted column budget must agree with the
-    # unweighted parity metric to within a factor: on this grid the two were
-    # measured ~10% apart, so a large split means the weights or the wiring
-    # broke.
-    col = np.asarray(column_atom_loss(rs_out.step.y, rs.metadata.y_ini, rs_out.atm.dz))
-    max_col = float(np.max(np.abs(col)))
-    max_unw = max(abs(v) for v in atom_loss.values())
-    if not np.all(np.isfinite(col)) or max_col > 2.0 * max_unw:
-        print(
-            f"FAIL: column atom budget max {max_col:.3e} vs unweighted "
-            f"{max_unw:.3e}; expected the same order."
-        )
         ok = False
 
     print()
