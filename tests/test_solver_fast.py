@@ -1,5 +1,5 @@
 """The default solver path (`vulcan_jax.solver_fast`, `VULCAN_JAX_SOLVER=fast|ffi`)
-against the reference `solver.block_thomas_diag_offdiag`.
+against the reference factor/solve pair in `solver` (`_oracles.block_thomas_diag_offdiag`).
 
 What must hold, for both backends: the primal is the same solution (bit-identical
 for `fast`, which runs the same scans; residual-matched for the C++ `ffi` kernel),
@@ -24,7 +24,8 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
-import vulcan_jax.solver as ref
+from _oracles import block_thomas_diag_offdiag
+
 import vulcan_jax.solver_fast as fast_mod
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -53,7 +54,7 @@ def _resid(diag, sup, sub, x, b):
 
 
 def _cur(diag, sup, sub, rhs):
-    return ref.block_thomas_diag_offdiag(diag, sup, sub, rhs)
+    return block_thomas_diag_offdiag(diag, sup, sub, rhs)
 
 
 def _cand(diag, sup, sub, rhs):

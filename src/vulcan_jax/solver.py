@@ -5,18 +5,17 @@ forward elimination computes `A'_j = A_j - C_j @ inv(A'_{j-1}) @ B_{j-1}`
 via an LU factorization and solve per block. Cost is O(nz * ni^3);
 differentiable, JIT-friendly, GPU-ready.
 
-Both routines below materialize `inv(A'_{j-1})` explicitly by solving against
-`eye_ni`. The reference `block_thomas` needs it because its off-blocks are
-dense. The hot-path `block_thomas_diag_offdiag` needs it too:
-with diagonal off-blocks the update becomes the ELEMENTWISE product
+The factorization materializes `inv(A'_{j-1})` explicitly by solving against
+`eye_ni`: with diagonal off-blocks the update becomes the ELEMENTWISE product
 `A_j - (c[:, None] * b[None, :]) * inv(A'_{j-1})`, which reads every one of
 the ni^2 entries. What the diagonal structure buys is replacing an O(ni^3)
 matmul with an O(ni^2) elementwise scaling; it does NOT avoid the inversion,
 and forming the inverse keeps the sweep O(nz * ni^3) either way.
 
-The hot path factors with `lax.linalg.lu` and keeps the row permutation in the
-factors. `block_thomas` stays on `jax.scipy.linalg.lu_factor`/`lu_solve` so it
-remains an independent oracle for the tests.
+It factors with `lax.linalg.lu` and keeps the row permutation in the factors,
+so the two Ros2 stages share one factorization (`factor_...` once, `solve_...`
+per stage). The dense-off-block oracle `block_thomas`, on
+`jax.scipy.linalg.lu_factor`/`lu_solve`, lives in `tests/_oracles.py`.
 """
 
 from __future__ import annotations
@@ -142,76 +141,4 @@ def solve_block_thomas_diag_offdiag(factors: BlockThomasDiagFactors, rhs):
         ),
         reverse=True,
     )
-    return jnp.concatenate([k_head, k_last[None]], axis=0)
-
-
-def block_thomas_diag_offdiag(diag, sup_d, sub_d, rhs):
-    """Block-tridiagonal Thomas with diagonal super/sub blocks.
-
-    With diagonal `B = diag(b)` and `C = diag(c)`, the rank update
-    `A_j - C @ inv(A_prev) @ B` reduces to `A_j - (c[:,None]*b[None,:])
-    * A_prev_inv`, dropping an O(ni^3) matmul to O(ni^2). Used by the
-    Ros2 hot path; both Ros2 stages share the factorisation.
-
-    Shapes: diag (nz, ni, ni), sup_d/sub_d (nz-1, ni), rhs (nz, ni) → (nz, ni).
-    """
-    factors = factor_block_thomas_diag_offdiag(diag, sup_d, sub_d)
-    return solve_block_thomas_diag_offdiag(factors, rhs)
-
-
-def block_thomas(diag, sup, sub, rhs):
-    """Generic dense block-tridiagonal Thomas solve.
-
-    Use `block_thomas_diag_offdiag` instead when the off-diagonal blocks are
-    diagonal-in-species (the hot path). Measured, the two effects split:
-    1.10x from the rank update itself (the flop saving does not convert
-    at ni~69, which is memory/latency-bound) and 2.10x from reusing one
-    factorization across both Ros2 stages, which only the split
-    factor/solve entry points above expose.
-
-    Shapes: diag (nz, ni, ni), sup/sub (nz-1, ni, ni), rhs (nz, ni) → (nz, ni).
-    """
-    lu_factor = jax.scipy.linalg.lu_factor
-    lu_solve = jax.scipy.linalg.lu_solve
-
-    A0_lu = lu_factor(diag[0])
-    rhs0 = rhs[0]
-
-    def fwd_step(carry, inputs):
-        A_prev_lu, rhs_prev = carry
-        A_j, B_jm1, C_j, rhs_j = inputs
-        invA_B = lu_solve(A_prev_lu, B_jm1)
-        invA_r = lu_solve(A_prev_lu, rhs_prev)
-
-        A_new = A_j - C_j @ invA_B
-        rhs_new = rhs_j - C_j @ invA_r
-        A_new_lu = lu_factor(A_new)
-        return (A_new_lu, rhs_new), (A_new_lu, rhs_new)
-
-    inputs = (diag[1:], sup, sub, rhs[1:])
-
-    _, (A_lu_stack, rhs_mod_stack) = jax.lax.scan(fwd_step, (A0_lu, rhs0), inputs)
-
-    A_lu_full = jax.tree.map(
-        lambda a, b: jnp.concatenate([a[None], b], axis=0), A0_lu, A_lu_stack
-    )
-    rhs_mod_full = jnp.concatenate([rhs0[None], rhs_mod_stack], axis=0)
-
-    k_last = lu_solve(jax.tree.map(lambda x: x[-1], A_lu_full), rhs_mod_full[-1])
-
-    # Back sweep as a reverse scan, as in `solve_block_thomas_diag_offdiag`.
-    def bwd_step(carry, inputs):
-        k_next = carry
-        A_lu, rhs_mod, B = inputs
-        rhs_local = rhs_mod - B @ k_next
-        k_curr = lu_solve(A_lu, rhs_local)
-        return k_curr, k_curr
-
-    bwd_inputs = (
-        jax.tree.map(lambda x: x[:-1], A_lu_full),
-        rhs_mod_full[:-1],
-        sup,
-    )
-    _, k_head = jax.lax.scan(bwd_step, k_last, bwd_inputs, reverse=True)
-
     return jnp.concatenate([k_head, k_last[None]], axis=0)

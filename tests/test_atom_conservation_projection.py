@@ -192,6 +192,7 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch):
     import jax
     import jax.numpy as jnp
     import vulcan_jax.jax_step as jax_step
+    from _oracles import stage_defects
 
     y, k_arr, atm, net = _hd189_step_inputs()
     y, k_arr = jnp.asarray(y), jnp.asarray(k_arr)
@@ -209,7 +210,7 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch):
     # `jax_ros2_step.__wrapped__` itself would reuse a trace made with the
     # shipped value if anything compiled it earlier in this process.
     monkeypatch.setattr(jax_step, "_REPAIR_MAX_CELL_FRAC", float("inf"))
-    defects = jax.jit(lambda *a: jax_step._stage_defects(*a))
+    defects = jax.jit(lambda *a: stage_defects(*a))
     step = jax.jit(lambda *a: jax_step.jax_ros2_step.__wrapped__(*a))
     identity, closed = {}, {}
     for dt in (1e8, 1e11, 1e13, 1e15):

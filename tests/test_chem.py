@@ -142,7 +142,9 @@ def main() -> int:
         )
 
     # === 4. Compute JAX chem_jac ===
-    Jblk_jax = np.asarray(chem_mod.chem_jac(y_j, M_j, k_j, net_jax))
+    from _oracles import chem_jac
+
+    Jblk_jax = np.asarray(chem_jac(y_j, M_j, k_j, net_jax))
     print(f"chem_jac shape: {Jblk_jax.shape}, J_ref shape: {J_ref.shape}")
 
     # symjac layout: per-layer (ni, ni) blocks live at J_ref[j*ni:(j+1)*ni, j*ni:(j+1)*ni]

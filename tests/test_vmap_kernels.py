@@ -77,9 +77,10 @@ def test_chem_rhs_codegen_vmap_consistency() -> None:
 
 
 def test_chem_rhs_segment_sum_reference_vmap_consistency() -> None:
-    """The preserved segment_sum reference RHS remains vmap-consistent."""
+    """The segment_sum reference RHS remains vmap-consistent."""
     import jax
     import jax.numpy as jnp
+    from _oracles import chem_rhs_segment_sum
     from vulcan_jax.config import default_config
 
     vulcan_cfg = default_config()
@@ -102,10 +103,10 @@ def test_chem_rhs_segment_sum_reference_vmap_consistency() -> None:
     )
 
     single = [
-        chem_mod.chem_rhs_segment_sum(y_batch[b], M, k_arr, net_jax)
+        chem_rhs_segment_sum(y_batch[b], M, k_arr, net_jax)
         for b in range(BATCH)
     ]
-    batched = jax.vmap(chem_mod.chem_rhs_segment_sum, in_axes=(0, None, None, None))(
+    batched = jax.vmap(chem_rhs_segment_sum, in_axes=(0, None, None, None))(
         y_batch, M, k_arr, net_jax
     )
 
@@ -158,7 +159,7 @@ def test_block_thomas_diag_offdiag_vmap_consistency() -> None:
     """`vmap(block_thomas_diag_offdiag)` agrees with single calls."""
     import jax
     import jax.numpy as jnp
-    import vulcan_jax.solver as solver_mod
+    from _oracles import block_thomas_diag_offdiag
 
     rng = np.random.default_rng(2)
     nz, ni = 16, 8
@@ -187,8 +188,8 @@ def test_block_thomas_diag_offdiag_vmap_consistency() -> None:
     sub_b = jnp.stack([s[2] for s in systems], axis=0)
     rhs_b = jnp.stack([s[3] for s in systems], axis=0)
 
-    single = [solver_mod.block_thomas_diag_offdiag(*systems[b]) for b in range(BATCH)]
-    batched = jax.vmap(solver_mod.block_thomas_diag_offdiag, in_axes=(0, 0, 0, 0))(
+    single = [block_thomas_diag_offdiag(*systems[b]) for b in range(BATCH)]
+    batched = jax.vmap(block_thomas_diag_offdiag, in_axes=(0, 0, 0, 0))(
         diag_b, sup_b, sub_b, rhs_b
     )
 

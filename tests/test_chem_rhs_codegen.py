@@ -273,9 +273,9 @@ def test_hd209_jit_rhs_projection_removes_atom_residual() -> None:
     """
     import jax
     import jax.numpy as jnp
-    import vulcan_jax.chem as chem_mod
     import vulcan_jax.make_chem_funs as mcf
     import vulcan_jax.jax_step as jax_step
+    from _oracles import chem_rhs_numpy
 
     y, M, k_arr, net, atoms, atom_counts = _hd209_repeated_final_layer_fixture()
     ns: dict = {}
@@ -288,7 +288,7 @@ def test_hd209_jit_rhs_projection_removes_atom_residual() -> None:
     out_jit = np.asarray(raw_jit(y_j, M_j, k_j).block_until_ready())
     with jax.disable_jit():
         out_nojit = np.asarray(raw_jit(y_j, M_j, k_j))
-    out_numpy = chem_mod.chem_rhs_numpy(y, M, k_arr, net)
+    out_numpy = chem_rhs_numpy(y, M, k_arr, net)
 
     np.testing.assert_array_equal(out_nojit, out_numpy)
 
@@ -378,12 +378,12 @@ def test_codegen_matches_numpy_oracle():
     y = y * np.exp(np.random.default_rng(0).uniform(-1.0, 1.0, y.shape))
 
     import jax.numpy as jnp
-    import vulcan_jax.chem as chem_mod
     import vulcan_jax.make_chem_funs as mcf
+    from _oracles import chem_rhs_numpy
 
     fn = mcf.build_chem_rhs(net)
     out_codegen = np.asarray(fn(jnp.asarray(y), jnp.asarray(M), jnp.asarray(k_arr)))
-    out_numpy = chem_mod.chem_rhs_numpy(y, M, k_arr, net)
+    out_numpy = chem_rhs_numpy(y, M, k_arr, net)
 
     per_species_max = np.maximum(np.abs(out_numpy).max(axis=0), 1e-30)
     denom = np.maximum(np.abs(out_numpy), 1e-12 * per_species_max[None, :])

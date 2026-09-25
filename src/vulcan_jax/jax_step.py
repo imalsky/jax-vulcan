@@ -834,26 +834,6 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
     return sol, delta_arr
 
 
-def _stage_defects(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays):
-    """Test surface: per-layer, per-atom defect of each stage vector against
-    its element identity, and the bound the repair leaves it under:
-    `max(_DEFECT_FLOOR * scale, REPAIR_ABS_FLOOR * c0 * n_tot)` with
-    `scale` the atom-weighted sum of the identity's terms (`c0 |k|`, `|T k|`
-    contributions, `|b_tr|`). Returns (k1, k2, defect1, defect2, bound)."""
-    k1, k2, _, (c0, diag_d, sup_d, sub_d, b1, b2) = _ros2_stages(
-        y, k_arr, dt, atm, net, None
-    )
-    n_tot = jnp.sum(y, axis=1, keepdims=True)
-
-    def parts(k, b):
-        return _stage_defect(k, b, c0, diag_d, sup_d, sub_d, with_scale=True)
-
-    d1, s1 = parts(k1, b1)
-    d2, s2 = parts(k2, b2)
-    bound = jnp.maximum(_DEFECT_FLOOR * jnp.maximum(s1, s2), REPAIR_ABS_FLOOR * c0 * n_tot)
-    return k1, k2, d1, d2, bound
-
-
 def make_atm_static(atm, ni: int, nz: int, cfg=None) -> AtmStatic:
     """Build an AtmStatic from a legacy AtmData container.
 
