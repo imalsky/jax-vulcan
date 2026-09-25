@@ -40,10 +40,23 @@ _NET_JAX = _chem_funs._NET_JAX
 
 # run_queue's refill defaults: refill once this many lanes are free (or every
 # lane still holding a job is), and at least every _QUEUE_REFILL_EVERY loop
-# iterations. Set by hand with run_queue (0.16.0), never tuned; vulcan-forward
-# passes its own values.
+# iterations. Untuned defaults, picked by hand; vulcan-forward passes its own
+# values.
 _QUEUE_REFILL_CHUNK = 8
 _QUEUE_REFILL_EVERY = 100
+
+# The loose convergence branch's slope threshold (s^-1), master's conv()
+# (exoclime@80f75b9 op.py:1028-1029): min over the interfaces of
+# Kzz / (0.1 Hp)^2, capped at 1e-8 and floored at 1e-10.
+_SLOPE_MIN_HP_FRAC = 0.1
+_SLOPE_MIN_CAP = 1e-8
+_SLOPE_MIN_FLOOR = 1e-10
+
+# A longdy counts as a new plateau minimum only below this fraction of the
+# running minimum (a 5% drop), so ULP-level jitter cannot reset
+# `count_since_new_min`. Hand-picked, JAX-only; vulcan-forward's ConvDiag
+# reads the counter.
+_PLATEAU_NEW_MIN_FRAC = 0.95
 
 
 class ProfileVars(NamedTuple):
@@ -857,10 +870,10 @@ def _make_runner(
 
     def _slope_min(s: JaxIntegState):
         slope_min = jnp.minimum(
-            jnp.min(s.pv.Kzz / (0.1 * s.Hp[:-1]) ** 2),
-            jnp.float64(1e-8),
+            jnp.min(s.pv.Kzz / (_SLOPE_MIN_HP_FRAC * s.Hp[:-1]) ** 2),
+            jnp.float64(_SLOPE_MIN_CAP),
         )
-        return jnp.maximum(slope_min, jnp.float64(1e-10))
+        return jnp.maximum(slope_min, jnp.float64(_SLOPE_MIN_FLOOR))
 
     def _two_branch(longdy, longdydt, slope_min):
         """Tight (yconv_cri, slope_cri) OR loose (yconv_min, slope_min)."""
@@ -1291,10 +1304,8 @@ def _make_runner(
             where_varies_most_new,
             s.where_varies_most,
         )
-        # Plateau counters, read by vulcan-forward's ConvDiag (and the hybrid
-        # flip resets them): require a >=5% relative drop to count as a new
-        # minimum (strict less-than would let ULP-floor jitter reset the
-        # counter forever). Gate on master's ready predicate (op.py:1069) so
+        # Plateau counters, read by vulcan-forward's ConvDiag (the hybrid
+        # flip resets them). Gate on master's ready predicate (op.py:1069) so
         # the early transient never counts.
         plateau_ready = (s.t > jnp.float64(trun_min)) & (
             accept_count_next > s.count_min_dyn
@@ -1302,7 +1313,7 @@ def _make_runner(
         significant_drop = (
             do_accept
             & plateau_ready
-            & (longdy_next < s.longdy_seen_min * jnp.float64(0.95))
+            & (longdy_next < s.longdy_seen_min * jnp.float64(_PLATEAU_NEW_MIN_FRAC))
         )
         longdy_seen_min_next = jnp.where(
             significant_drop, longdy_next, s.longdy_seen_min
