@@ -14,7 +14,8 @@ Five `ini_mix` modes:
 The EQ seed (`eq_seed`) is end-to-end JAX: it minimizes the Gibbs energy of
 the loaded network's own gas species using the same NASA-9 polynomials the
 reverse rates use, so the seed and the kinetics cannot disagree about
-thermochemistry. It jits and vmaps over columns. It is NOT a differentiable
+thermochemistry. It jits and vmaps over columns, and a lane's seed is bitwise
+the solo seed at any batch width. It is NOT a differentiable
 map: `custom_jvp` returns a zero tangent, because the seed is where the
 integration starts, not part of the steady state it converges to.
 """
@@ -234,6 +235,12 @@ def eq_seed(Tco, p_bar, b):
     The inputs are cast to float64: a float32 caller would otherwise give the
     minimizer a mixed-dtype loop carry.
     """
+    return _eq_seed_column(Tco, p_bar, b)
+
+
+@jax.custom_batching.custom_vmap
+def _eq_seed_column(Tco, p_bar, b):
+    """`eq_seed` on one column; under `vmap`, `_eq_seed_lanes`."""
     from exogibbs.api.gas import solve_profile
 
     setup, seed_idx, _ = _seed()
@@ -249,6 +256,23 @@ def eq_seed(Tco, p_bar, b):
     ok = jnp.all(diag["converged"]) & jnp.all(jnp.isfinite(res.x))
     y = jnp.zeros((Tco.shape[0], chem_funs.ni), dtype=jnp.float64)
     return y.at[:, jnp.asarray(seed_idx)].set(jnp.where(ok, res.x, jnp.nan))
+
+
+@_eq_seed_column.def_vmap
+def _eq_seed_lanes(axis_size, in_batched, Tco, p_bar, b):
+    """Batched seed: the unbatched program once per lane, in a `lax.map`.
+
+    A vmapped minimizer computes a lane in another order than the solo one
+    (up to 4.1e-15 in mixing ratio on the HD189 column), so a lane's seed
+    would depend on how many lanes are seeded with it, and the solver
+    amplifies that to the convergence scale. The map calls the wrapped
+    function, so a nested `vmap` also runs lane by lane.
+    """
+    args = tuple(
+        x if batched else jnp.broadcast_to(x, (axis_size,) + jnp.shape(x))
+        for x, batched in zip((Tco, p_bar, b), in_batched)
+    )
+    return jax.lax.map(lambda a: _eq_seed_column(*a), args), True
 
 
 @eq_seed.defjvp

@@ -479,12 +479,16 @@ def test_seed_setup_survives_being_built_inside_a_trace() -> None:
     _run(_TRACER_PROBE, PACKAGE_ROOT)
 
 
-def test_seed_is_batchable_and_carries_a_zero_tangent() -> None:
-    """`vmap` over columns equals the solo calls, and `jvp` gives zero.
+def test_seed_lane_is_bitwise_the_solo_seed_at_any_batch_width() -> None:
+    """A lane's seed is the solo seed bit for bit at any `vmap` width, nested
+    or under `jvp`, and the `jvp` tangent is exactly zero.
 
-    The seed runs per retrieval lane under `vmap`, and a `jvp` must never
-    reach ExoGibbs's kernel (it has a custom_vjp and no forward rule), so the
-    seed declares a zero tangent instead.
+    Callers vmap the seed over lanes (vulcan-forward's batched prep,
+    `run_queue`'s refill) and the solver amplifies a 1-ulp seed difference to
+    the convergence scale, so a lane must not depend on how many lanes are
+    seeded with it. A `jvp` must never reach ExoGibbs's kernel (a custom_vjp
+    with no forward rule), so the seed declares a zero tangent. Every side is
+    jitted: the eager and the jitted solo seed differ in the last bits.
     """
     import jax
     import jax.numpy as jnp
@@ -492,26 +496,41 @@ def test_seed_is_batchable_and_carries_a_zero_tangent() -> None:
     from vulcan_jax import ini_abun
 
     Tco, p_bar = _hd189_column()
-    b = ini_abun._element_vector()
-    columns = jnp.stack([jnp.asarray(Tco), jnp.asarray(Tco) * 1.05])
-    pressures = jnp.stack([jnp.asarray(p_bar)] * 2)
-    elements = jnp.stack([jnp.asarray(b)] * 2)
+    p = jnp.asarray(p_bar)
+    T = jnp.asarray(Tco) * jnp.asarray([1.0, 1.05, 0.95, 1.10, 0.90])[:, None]
+    B = jnp.tile(jnp.asarray(ini_abun._element_vector()), (5, 1))
+    seed = ini_abun.eq_seed
+    lanes = jax.vmap(seed, in_axes=(0, None, 0))   # vulcan-forward's pattern
 
-    batched = np.asarray(jax.vmap(ini_abun.eq_seed)(columns, pressures, elements))
-    solo = np.stack([
-        np.asarray(ini_abun.eq_seed(columns[k], pressures[k], elements[k]))
-        for k in range(2)
-    ])
-    np.testing.assert_allclose(batched, solo, rtol=1e-12, atol=0.0)
+    def lane_1(tree):
+        return jax.tree_util.tree_map(lambda x: x[1], tree)
 
-    def total_water(scale):
-        y = ini_abun.eq_seed(jnp.asarray(Tco) * scale, jnp.asarray(p_bar),
-                             jnp.asarray(b))
-        return jnp.sum(y)
-
-    primal, tangent = jax.jvp(total_water, (1.0,), (1.0,))
-    assert float(primal) == float(total_water(1.0))
-    assert float(tangent) == 0.0
+    widths = {
+        "width 1": lambda: lanes(T[1:2], p, B[:1])[0],
+        "width 2": lambda: lanes(T[:2], p, B[:2])[1],
+        "width 5": lambda: lanes(T, p, B)[1],
+        "nested 2x2": lambda: jax.vmap(lanes, in_axes=(0, None, 0))(
+            T[:4].reshape(2, 2, -1), p, B[:4].reshape(2, 2, -1))[0, 1],
+    }
+    jvps = {   # (primal, tangent) along d/d(T scale) at scale 1
+        "jvp": lambda: jax.jvp(lambda s: seed(T[1] * s, p, B[1]), (1.0,), (1.0,)),
+        "jvp of vmap": lambda: lane_1(
+            jax.jvp(lambda s: lanes(T * s, p, B), (1.0,), (1.0,))),
+        "vmap of jvp": lambda: lane_1(jax.vmap(
+            lambda t, b: jax.jvp(lambda s: seed(t * s, p, b), (1.0,), (1.0,))
+        )(T, B)),
+    }
+    solo = np.asarray(jax.jit(seed)(T[1], p, B[1]))
+    assert np.isfinite(solo).all()
+    for name, run in {**widths, **jvps}.items():
+        out = jax.jit(run)()
+        y, dy = (out, None) if name in widths else out
+        y = np.asarray(y)
+        assert np.array_equal(y, solo), (
+            f"{name}: {int(np.sum(y != solo))} entries differ from the solo "
+            f"seed, max {np.abs(y - solo).max():.3e}"
+        )
+        assert dy is None or not np.asarray(dy).any(), f"{name}: nonzero tangent"
 
 
 def _hd189_column() -> tuple[np.ndarray, np.ndarray]:
