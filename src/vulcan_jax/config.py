@@ -5,7 +5,8 @@ package (``vulcan_jax/configs/*.yaml``) and are overridable by a ``./configs/``
 directory in the current working directory (CWD-first), so a run can be tuned
 locally without editing packaged files.
 
-``load_config(name_or_path, **overrides)`` reads a YAML file, folds the
+``load_config(name_or_path, **overrides)`` reads a YAML file over the packaged
+``default.yaml`` (a knob the file omits takes that value), folds the
 import-frozen environment overrides, applies caller overrides, resolves the
 handful of values that are functions of other knobs, and returns a ``Config``
 namespace whose attribute surface is exactly what the runtime reads
@@ -175,10 +176,21 @@ def _known_config_keys() -> frozenset[str]:
     """
     global _KNOWN_KEYS
     if _KNOWN_KEYS is None:
-        pkg = resources.files("vulcan_jax").joinpath("configs", "default.yaml")
-        raw = yaml.load(pkg.read_text(), Loader=_StrictLoader)
-        _KNOWN_KEYS = frozenset(raw) | {name for name, _ in _DERIVED}
+        _KNOWN_KEYS = frozenset(_packaged_defaults()) | {name for name, _ in _DERIVED}
     return _KNOWN_KEYS
+
+
+_DEFAULTS: dict[str, Any] | None = None
+
+
+def _packaged_defaults() -> dict[str, Any]:
+    """The packaged ``default.yaml``, read raw once: the value of every knob a
+    config file omits."""
+    global _DEFAULTS
+    if _DEFAULTS is None:
+        pkg = resources.files("vulcan_jax").joinpath("configs", "default.yaml")
+        _DEFAULTS = yaml.load(pkg.read_text(), Loader=_StrictLoader)
+    return _DEFAULTS
 
 
 def _validate_keys(d: dict[str, Any], source: str) -> None:
@@ -280,7 +292,8 @@ def load_config(
     raw = yaml.load(_read_text(name_or_path), Loader=_StrictLoader)
     if not isinstance(raw, dict):
         raise ValueError(f"config {name_or_path!r} did not parse to a mapping.")
-    d: dict[str, Any] = dict(raw)
+    # A config file overlays default.yaml: a knob it omits takes that value.
+    d: dict[str, Any] = {**copy.deepcopy(_packaged_defaults()), **raw}
     _apply_frozen_env(d)
     d.update(overrides)
     _validate_keys(d, f"config {name_or_path!r}")

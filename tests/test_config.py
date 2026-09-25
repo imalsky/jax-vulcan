@@ -143,6 +143,9 @@ def test_loader_refuses_bad_input(tmp_path, monkeypatch):
         load_config("dup")
     cfg = load_config("sci")
     assert isinstance(cfg.runtime, float) and cfg.runtime == 1e22
+    # A knob the file omits takes default.yaml's value (the runner reads
+    # step_size_safety directly).
+    assert cfg.step_size_safety == load_config("default").step_size_safety
     assert isinstance(cfg.dt_min, float) and cfg.dt_min == 1e-14
 
 
