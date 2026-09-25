@@ -185,7 +185,7 @@ class JaxIntegState(NamedTuple):
     # Batched-runner termination state (unused by the single-profile path).
     # `is_done` freezes a finished lane while stragglers finish.
     # `termination_reason`: 0 running, 1 converged, 2 runtime, 3 step-count,
-    # 4 stalled-convergence, 5 non-finite.
+    # 5 non-finite (4 is unassigned).
     is_done: jnp.ndarray  # ()  bool
     termination_reason: jnp.ndarray  # ()  int32
 
@@ -551,8 +551,6 @@ class _Statics(NamedTuple):
     conv_step: int  # ring buffer length (cfg.conv_step)
     count_min: int
     count_max: int
-    use_conv_stall: bool  # enable the JAX-only stalled-convergence fallback
-    conv_stall_window: int  # accepted steps without longdy improvement -> stalled
     runtime: float
     trun_min: float
     st_factor: float
@@ -730,8 +728,6 @@ def _make_runner(
     # count_min/count_max/runtime seed the carry's live budget; the
     # termination test reads the carry (*_dyn fields) so the hybrid flip can
     # extend it -- intentionally not bound as closure locals.
-    use_conv_stall = statics.use_conv_stall
-    conv_stall_window = statics.conv_stall_window
     trun_min = statics.trun_min
     st_factor = statics.st_factor
     yconv_cri = statics.yconv_cri
@@ -873,8 +869,8 @@ def _make_runner(
         ) | ((longdy < jnp.float64(yconv_min)) & (longdydt < slope_min))
 
     def _convergence_ok(s: JaxIntegState):
-        """Convergence predicate shared by `_real_terminate` and the hybrid
-        phase-flip. Returns (is_converged, conv_normal, is_stalled).
+        """Convergence predicate shared by `_real_terminate`, the certificate
+        candidate and the hybrid phase-flip.
 
         `slope_min` is recomputed from the live Hp because atm refresh can
         change it mid-run.
@@ -888,24 +884,7 @@ def _make_runner(
         (.oracles/vulcan2_ncho/op.py:1056), so this is inherited.
         """
         conv_normal = _two_branch(s.longdy, s.longdydt, _slope_min(s))
-        conv_normal = conv_normal & (s.aflux_change < jnp.float64(flux_cri))
-
-        # Stall fallback: no >=5% longdy improvement for conv_stall_window
-        # accepted steps while both the historical minimum and the current
-        # longdy sit below yconv_min (ULP-floor oscillation, not evolution).
-        # JAX-only -- no VULCAN 2.0 / vm_branch counterpart; NO SHIPPED CONFIG
-        # enables it and none ever should. Static gate: when off the predicate
-        # folds away at trace time (bit-identical run).
-        if use_conv_stall:
-            is_stalled = (
-                (s.count_since_new_min > jnp.int32(conv_stall_window))
-                & (s.longdy_seen_min < jnp.float64(yconv_min))
-                & (s.longdy < jnp.float64(yconv_min))
-                & (s.aflux_change < jnp.float64(flux_cri))
-            )
-        else:
-            is_stalled = jnp.zeros_like(conv_normal)
-        return (conv_normal | is_stalled), conv_normal, is_stalled
+        return conv_normal & (s.aflux_change < jnp.float64(flux_cri))
 
     def _real_terminate(s: JaxIntegState, tangent_ok=True):
         """Real (non-chunk) termination predicate + reason code.
@@ -913,8 +892,8 @@ def _make_runner(
         Reason priority matches master's stop() (op.py:1065-1085): converged
         over runtime over step-count, so a step that is both converged and at
         a cap reports success. Codes: 0 running, 1 converged, 2 runtime
-        exceeded, 3 step-count exceeded, 4 stalled-convergence, 5 non-finite
-        (which outranks the rest).
+        exceeded, 3 step-count exceeded, 5 non-finite (which outranks the
+        rest); 4 is unassigned.
 
         `tangent_ok` is the sensitivity certificate of `runner_jvp`; the
         primal runner passes the default, which folds away at trace time.
@@ -924,7 +903,7 @@ def _make_runner(
         too_long = s.t > s.runtime_dyn
         too_many = s.accept_count > s.count_max_dyn
 
-        is_converged, conv_normal, is_stalled = _convergence_ok(s)
+        is_converged = _convergence_ok(s)
 
         ready = (s.t > jnp.float64(trun_min)) & (s.accept_count > s.count_min_dyn)
         # `geom_ok` / `budget_ok` are written by the body on the candidate
@@ -937,7 +916,7 @@ def _make_runner(
             # (central difference) and extends the budget instead (vm_branch
             # stop()). A run stopping through this predicate is in phase 1 --
             # a central-difference fixed point only if phase 1 converged
-            # (reason 1/4). Bypass exits (host wall-clock bail-out, the
+            # (reason 1). Bypass exits (host wall-clock bail-out, the
             # non-finite exit below) can still return in phase 0.
             real_term = real_term & (s.hybrid_use_vm < jnp.float64(0.5))
         # A non-finite state can never recover, so stop at once with the
@@ -950,16 +929,12 @@ def _make_runner(
             non_finite,
             jnp.int32(5),
             jnp.where(
-                conv_term & conv_normal,
+                conv_term,
                 jnp.int32(1),
                 jnp.where(
-                    conv_term & is_stalled,
-                    jnp.int32(4),
-                    jnp.where(
-                        too_long,
-                        jnp.int32(2),
-                        jnp.where(too_many, jnp.int32(3), jnp.int32(0)),
-                    ),
+                    too_long,
+                    jnp.int32(2),
+                    jnp.where(too_many, jnp.int32(3), jnp.int32(0)),
                 ),
             ),
         )
@@ -1316,16 +1291,17 @@ def _make_runner(
             where_varies_most_new,
             s.where_varies_most,
         )
-        # Stall bookkeeping: require a >=5% relative drop to count as a new
+        # Plateau counters, read by vulcan-forward's ConvDiag (and the hybrid
+        # flip resets them): require a >=5% relative drop to count as a new
         # minimum (strict less-than would let ULP-floor jitter reset the
         # counter forever). Gate on master's ready predicate (op.py:1069) so
-        # the early transient never charges the stall window.
-        stall_ready = (s.t > jnp.float64(trun_min)) & (
+        # the early transient never counts.
+        plateau_ready = (s.t > jnp.float64(trun_min)) & (
             accept_count_next > s.count_min_dyn
         )
         significant_drop = (
             do_accept
-            & stall_ready
+            & plateau_ready
             & (longdy_next < s.longdy_seen_min * jnp.float64(0.95))
         )
         longdy_seen_min_next = jnp.where(
@@ -1335,15 +1311,14 @@ def _make_runner(
             significant_drop,
             jnp.int32(0),
             jnp.where(
-                do_accept & stall_ready,
+                do_accept & plateau_ready,
                 s.count_since_new_min + jnp.int32(1),
                 s.count_since_new_min,
             ),
         )
 
         # Certificate candidate: the chemistry certificate holds on the state
-        # this step produced (`_convergence_ok` on the post-step longdy; the
-        # stall exit counts too). The atm refresh below fires on that step
+        # this step produced (`_convergence_ok` on the post-step longdy). The atm refresh below fires on that step
         # whatever the cadence says, and `geom_ok` records whether it moved
         # mu/g/Hp/dzi/Hpi by less than geom_conv_tol; `_real_terminate`
         # requires it, so a run may end only on geometry consistent with its
@@ -1355,7 +1330,7 @@ def _make_runner(
                             t=t_next, accept_count=accept_count_next,
                             longdy_seen_min=longdy_seen_min_next,
                             count_since_new_min=count_since_new_min_next)
-        is_conv_cand, _, _ = _convergence_ok(s_cand)
+        is_conv_cand = _convergence_ok(s_cand)
         candidate = (
             do_accept
             & is_conv_cand
@@ -1525,7 +1500,7 @@ def _make_runner(
                 accept_count=accept_count_next,
                 Hp=Hp_next,
             )
-            is_conv_after, _, _ = _convergence_ok(s_after)
+            is_conv_after = _convergence_ok(s_after)
             in_phase0 = s.hybrid_use_vm > jnp.float64(0.5)
             ready_after = (t_next > jnp.float64(trun_min)) & (
                 accept_count_next > s.count_min_dyn
@@ -1715,9 +1690,8 @@ def _make_runner(
             lambda s: body_fn(s, atm_static),
             state,
         )
-        # Re-evaluate the reason once on the terminal state -- the only way
-        # the single-profile path can tell normal (1) from stall (4)
-        # convergence. A chunked exit reports 0 (still running).
+        # The single-profile body never writes termination_reason; evaluate
+        # it once on the terminal state.
         _real_term, reason = _real_terminate(final)
         return final._replace(termination_reason=reason)
 
@@ -2461,10 +2435,6 @@ class OuterLoop:
             conv_step=int(self._cfg.conv_step),
             count_min=int(self._cfg.count_min),
             count_max=int(self._cfg.count_max),
-            # Default FALSE: the stall fallback has no VULCAN counterpart and
-            # no shipped config enables it; opting in must be deliberate.
-            use_conv_stall=bool(getattr(self._cfg, "use_conv_stall", False)),
-            conv_stall_window=int(getattr(self._cfg, "conv_stall_window", 200)),
             runtime=float(self._cfg.runtime),
             trun_min=float(self._cfg.trun_min),
             st_factor=float(self._cfg.st_factor),
@@ -3294,8 +3264,8 @@ class OuterLoop:
         reason = int(state.termination_reason)
         if reason in (2, 3):
             return reason
-        if reason in (1, 4) and bool(jnp.all(jnp.isfinite(state.y))):
-            return 1  # the JAX-only stall fallback (4) shares end_case=1
+        if reason == 1 and bool(jnp.all(jnp.isfinite(state.y))):
+            return 1
         return 5
 
     def _report_end(self, end_case, reason, count, longdy, longdydt,
@@ -3321,15 +3291,8 @@ class OuterLoop:
                 "state may be non-finite."
             )
         else:
-            # Reason 4 (JAX-only stall fallback) shares end_case=1 with a real
-            # convergence; say so in the message.
-            how = (
-                "via the stall fallback (JAX-only; no VULCAN 2.0 counterpart)"
-                if reason == 4
-                else "on the standard convergence criterion"
-            )
             print(
-                f"Integration successful {how} with {count} steps and "
+                f"Integration successful with {count} steps and "
                 f"long dy, long dydt = {longdy}, {longdydt}\n"
                 f"Actinic flux change: {aflux_change:.2E}"
             )

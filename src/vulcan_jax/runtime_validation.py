@@ -325,8 +325,7 @@ def _validate_numerical_bounds(cfg) -> list[str]:
             )
 
     # Positive integer counters
-    for key in ("count_min", "count_max", "update_frq", "conv_step",
-                "conv_stall_window"):
+    for key in ("count_min", "count_max", "update_frq", "conv_step"):
         if not hasattr(cfg, key):
             continue
         v = int(getattr(cfg, key))

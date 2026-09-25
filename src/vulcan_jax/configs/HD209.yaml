@@ -133,13 +133,6 @@ use_ini_cold_trap: false
 use_sat_surfaceH2O: false
 st_factor: 0.5
 conv_step: 500
-# JAX-ONLY convergence fallback. No counterpart in VULCAN 2.0 master or
-# vm_branch, so a VULCAN 2 parity run must keep this false. When false the
-# predicate is folded away at trace time (bit-identical to not having it).
-# `conv_stall_window` is the lookback and is NOT an off switch: it must be
-# >= 1, and a small value makes the fallback fire sooner, not never.
-use_conv_stall: false
-conv_stall_window: 200
 ode_solver: Ros2
 use_print_prog: true
 print_prog_num: 500

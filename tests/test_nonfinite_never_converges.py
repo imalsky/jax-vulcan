@@ -75,10 +75,10 @@ def test_all_nan_state_is_never_converged():
     longdy = float(_longdy(y_nan, ymix_nan, y_old, n_0))
     assert longdy == np.inf, f"all-NaN state scored longdy={longdy}"
 
-    # Both convergence routes must stay shut (outer_loop._convergence_ok).
+    # Both branches of outer_loop._convergence_ok must stay shut.
     yconv_cri, yconv_min = 0.01, 0.1
-    assert not (longdy < yconv_cri), "normal convergence branch admitted a NaN state"
-    assert not (longdy < yconv_min), "stall fallback admitted a NaN state"
+    assert not (longdy < yconv_cri), "tight convergence branch admitted a NaN state"
+    assert not (longdy < yconv_min), "loose convergence branch admitted a NaN state"
 
 
 def test_inf_state_is_never_converged():

@@ -7,8 +7,7 @@
 # feature set.
 #
 # Every knob below that differs from HD189.yaml is a vm_branch value, cited to
-# the fetched file, EXCEPT `use_conv_stall`, which is a VULCAN-JAX-only
-# convergence fallback with no upstream counterpart and is flagged as such.
+# the fetched file.
 #
 # Authored surface: edit values here (or a CWD ./configs/HD189_vulcan3.yaml).
 # Derived at load time (see config._DERIVED), do NOT add here:
@@ -152,23 +151,6 @@ use_ini_cold_trap: false
 use_sat_surfaceH2O: false
 st_factor: 0.5
 conv_step: 500
-# JAX-ONLY convergence fallback. No counterpart in VULCAN 2.0 master or
-# vm_branch, so a VULCAN 2 parity run must keep this false. When false the
-# predicate is folded away at trace time (bit-identical to not having it).
-# `conv_stall_window` is the lookback and is NOT an off switch: it must be
-# >= 1, and a small value makes the fallback fire sooner, not never.
-#
-# OFF here too, since 2026-07-30. This preset converges on the normal criterion
-# at 2820 accepted steps (termination_reason 1), so the fallback never fired
-# even when it was enabled. Every other consumer in the workspace was already
-# disabling it by hand -- vulcan-jwst-tool/adjoint_diag.py and three
-# jax_paper/scripts/adj_*.py set conv_stall_window = 10**9 for exactly that
-# purpose. Nothing shipped now decides convergence on a non-VULCAN criterion.
-# Set it true deliberately if you want the shortcut; the counters it uses
-# (longdy_seen_min, count_since_new_min) stay available as diagnostics either
-# way, which is what vulcan-forward and vulcan-retrieval read.
-use_conv_stall: false
-conv_stall_window: 200
 ode_solver: Ros2
 use_print_prog: true
 print_prog_num: 500

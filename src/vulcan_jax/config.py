@@ -123,6 +123,12 @@ _REMOVED_KEYS: dict[str, str] = {
         "of `atom_list`, or point `fastchem_solar_abundance_file` at a "
         "different preset (drop the key)"
     ),
+    **dict.fromkeys(
+        ("use_conv_stall", "conv_stall_window"),
+        "the JAX-only stalled-convergence fallback was removed (no shipped "
+        "config enabled it); a run ends on the convergence certificate or a "
+        "cap (drop the key)",
+    ),
     "report_column_atom_loss": (
         "the end-of-run column print was removed; the certificate's element "
         "budget term (`element_budget_tol`) holds the operator-weighted "

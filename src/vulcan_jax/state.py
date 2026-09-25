@@ -143,11 +143,10 @@ class ParamInputs(NamedTuple):
     pic_count: int
     where_varies_most: jnp.ndarray  # shape: (nz, ni)
     fix_species_start: bool
-    # Why the integration stopped, finer than `end_case` (which reports 1 for
-    # both normal and stall convergence): 0 running, 1 converged, 2 runtime,
-    # 3 step-count, 4 stall, 5 non-finite. Codes match the runner's
-    # `JaxIntegState.termination_reason`. Defaulted so positional callers
-    # keep working.
+    # Why the integration stopped: 0 running, 1 converged, 2 runtime,
+    # 3 step-count, 5 non-finite (4 is unassigned). Codes match the runner's
+    # `JaxIntegState.termination_reason`; `end_case` is the coarser master
+    # code. Defaulted so a positional constructor may omit it.
     termination_reason: int = 0
 
 

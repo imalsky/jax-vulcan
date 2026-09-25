@@ -415,8 +415,8 @@ def _synthesize_save_dicts(runstate, cfg, photo_static=None):
         para_save["small_y"] = float(p.small_y)
         para_save["nega_y"] = float(p.nega_y)
         para_save["end_case"] = int(getattr(p, "end_case", 0))
-        # VULCAN-JAX addition: end_case cannot separate a normal
-        # convergence from the JAX-only stall fallback (both are 1).
+        # VULCAN-JAX addition: the runner's termination code, finer than
+        # end_case (end_case 5 does not say why the run stopped).
         para_save["termination_reason"] = int(getattr(p, "termination_reason", 0))
         para_save["solver_str"] = "solver"
         para_save["switch_final_photo_frq"] = bool(

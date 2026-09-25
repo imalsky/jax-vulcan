@@ -8,10 +8,10 @@ during it, normalised by the fixed t=0 column (`budget_ref`), and may end only
 within `element_budget_tol`. A geometry refresh moves no atom, so it never
 enters the sum, and it cannot rescale a deficit already accumulated.
 
-The carry is seeded directly (the stall-gate idiom): the chemistry criteria
-are opened up so `conv_normal` holds on the first accepted step, leaving the
-budget term as the only discriminator, and the run terminates after that one
-step iff the column kept its elements.
+The carry is seeded directly: the chemistry criteria are opened up so
+`conv_normal` holds on the first accepted step, leaving the budget term as the
+only discriminator, and the run terminates after that one step iff the column
+kept its elements.
 """
 
 from __future__ import annotations
