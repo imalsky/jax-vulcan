@@ -19,11 +19,9 @@ preconditioning that tames the chemical stiffness.
 Four coupled ingredients make the solve work on a real closed column:
 
 1. The SOLVER MAP, not the residual Jacobian: only the integrator's step
-   reproduces its own conditioning. `solver_map="renorm"` (DEFAULT)
-   linearizes the hydrostatic-renormalized step the runner actually iterates,
-   so `y*` is a tight fixed point (fp_err ~1e-9); `"bare"` (raw Ros2 step,
-   fp_err ~1e-4) exists only to reproduce pre-2026-07 legacy results and
-   carries a ~few-% bias no tuning removes (see `SOLVER_MAP_DEFAULT`).
+   reproduces its own conditioning. The map is the hydrostatic-renormalized
+   step the runner actually iterates, so `y*` is a tight fixed point (fp_err
+   ~1e-9; see `SOLVER_MAP`).
 2. Log-abundance coordinates `eta = ln y`: the similarity transform
    `A_eta z = z - y* .* vjp_Gy(z ./ y*)` rescales the operator norm from ~1e6
    to ~1e2 and the cotangent from ~1e-12 to O(1). Zero-clipped species are
@@ -48,8 +46,8 @@ Limitations (read before using):
 * Photolysis feedback: `J(y)` depends on y through optical depth. The default
   `photo_recompute_k="auto"` rebuilds J from the finished runner context so
   `dG/dy` carries dJ/dy -- REQUIRED on photo-on columns (W39b OH+H2 ~11% ->
-  ~0.2% vs re-converged FD); pass `photo_recompute_k=None` only to reproduce
-  the frozen-photolysis legacy result. Costs an RT solve per Krylov matvec.
+  ~0.2% vs re-converged FD); on a photo-off column it resolves to no
+  photolysis feedback. Costs an RT solve per Krylov matvec.
 * `body_dt` is an adjoint-only probe knob with a column-dependent usable
   window: scan `BODY_MAP_DT_CANDIDATES` on a new column and keep the
   lowest-residual, low-spread solution. (No built-in scan wrapper: every
@@ -75,8 +73,7 @@ Pair sums: a physical detailed-balance perturbation of a reversible thermal
 reaction uses the pair sum `g[fwd] + g[rev]` (photolysis and other one-way
 rows stay single entries). The renorm + photo default is FD-validated for the
 pair sums too, not only the forward rows. Do NOT read `info["pair_antisym"]`
-as an error signal for the renorm map: it is a bare-map-calibrated diagnostic
-and reads ~1 on a genuinely non-zero pair-sum that the bare map over-cancels.
+as an error signal: it reads ~1 on a genuinely non-zero pair sum.
 
 Do not re-walk the failed routes: direct adjoints of the residual
 `f = chem_rhs + diffusion` (frozen-coefficient block-Thomas with defect
@@ -113,22 +110,19 @@ jax.config.update("jax_enable_x64", True)
 
 # --- Solver-map / LGMRES knobs (adjoint-only constants) ---
 
-SOLVER_MAP_DEFAULT = "renorm"
-# Which one-step map the adjoint linearizes at the converged state:
-#   "renorm" -> G(y) = M * ros2_step(y, k, dt) / sum_i ros2_step   (DEFAULT)
-#   "bare"   -> G(y) = ros2_step(y, k, dt)                         (legacy)
-# The forward runner iterates the hydrostatic-renormalized map, so y_star is a
-# tight fixed point of "renorm" (fp_err ~1e-9) but only ~1e-4 for "bare",
-# which biases the gradient at the few-percent level no matter how
-# body_dt/LGMRES/convergence are tuned (HD189 CH4 ~6-8% bare -> ~0.7% renorm;
-# HD209 forward rows ~35% -> ~1%). "bare" exists only to reproduce pre-2026-07
-# results. On photo-on columns also pass photo_recompute_k so dG/dy carries
-# dJ/dy (W39b OH+H2 ~11% -> ~0.2%). Do NOT deflate the per-layer total-density
-# direction on top of "renorm": measured to over-correct (HD189 0.7% -> 2.5%).
-SOLVER_MAP_CHOICES = ("bare", "renorm")
+SOLVER_MAP = "renorm"
+# The one-step map the adjoint linearizes at the converged state (reported as
+# info["solver_map"]): G(y) = M * ros2_step(y, k, dt) / sum_i ros2_step, the
+# hydrostatic-renormalized step the forward runner iterates, so y_star is a
+# tight fixed point of it (fp_err ~1e-9). The raw step is only a ~1e-4 fixed
+# point and biases the gradient by a few percent whatever the tuning (HD189
+# CH4 ~6-8% -> ~0.7%; HD209 forward rows ~35% -> ~1%). On photo-on columns
+# photo_recompute_k carries dJ/dy (W39b OH+H2 ~11% -> ~0.2%). Do NOT deflate
+# the per-layer total-density direction on top: measured to over-correct
+# (HD189 0.7% -> 2.5%).
 
 PHOTO_RECOMPUTE_AUTO = "auto"
-PhotoRecomputeArg = Callable[[jnp.ndarray], jnp.ndarray] | Literal["auto"] | None
+PhotoRecomputeArg = Callable[[jnp.ndarray], jnp.ndarray] | Literal["auto"]
 
 BODY_MAP_DT = 1e7
 # Probe step (s) for the adjoint body map. ADJOINT-ONLY: never touches the
@@ -188,11 +182,10 @@ _FP_ERR_WARN = 1e-2
 # Warn above this body-map fixed-point error: y_star is off the steady-state
 # manifold of the chosen map.
 #
-# NOTE: info["pair_antisym"] is deliberately NOT warning-gated. It is a
-# bare-map-calibrated diagnostic that reads ~1 for the renorm default on some
-# pairs even though the FD-validated pair-sums are MORE accurate than bare's
-# (W39b SO+OH pair-sum 0.8% vs bare 17%); gating on it would fire on the
-# accurate default path. See the "Pair sums" module-docstring section.
+# NOTE: info["pair_antisym"] is deliberately NOT warning-gated: it reads ~1 on
+# some pairs whose FD-validated pair sums are accurate (W39b SO+OH pair sum
+# 0.8%), so gating on it would fire on an accurate result. See the "Pair sums"
+# module-docstring section.
 
 _NULL_BASIS_RANK_TOL = 1e-10
 # Rank guard for the deflation basis: after column normalization, |R_jj| from
@@ -359,9 +352,7 @@ def _clip_dead_mask(G, ymix_old, cfg) -> np.ndarray:
     return dead | ((np.asarray(ymix_old) < mtol) & (G < 0.0))
 
 
-def _make_body_map(
-    y_star, k_arr, atm, net, body_dt, solver_map, photo_recompute_k, body_terms=None
-):
+def _make_body_map(y_star, k_arr, atm, net, body_dt, photo_recompute_k, body_terms=None):
     """Build the one-step body map `G(y)` the adjoint linearizes (unjitted).
 
     Returns `(apply_post_map, body_map, body_map_k, step_fn)`:
@@ -375,8 +366,6 @@ def _make_body_map(
     `audit_adjoint_scope` build from here, so the audited map is exactly the
     solved one by construction.
     """
-    if solver_map not in SOLVER_MAP_CHOICES:
-        raise ValueError(f"solver_map={solver_map!r} not in {SOLVER_MAP_CHOICES}.")
     t = body_terms
     has_terms = t is not None and (
         t.conden_static is not None
@@ -384,22 +373,13 @@ def _make_body_map(
         or t.fix_mask is not None
         or t.bot_idx is not None
     )
-    if has_terms and solver_map != "renorm":
-        raise ValueError(
-            "body_terms requires solver_map='renorm': the terms reproduce the "
-            "runner's renormalized composite step; the raw 'bare' map "
-            "contradicts them."
-        )
     # Per-layer total density for the runner's post-step hydrostatic renorm.
     M_col_default = atm.M[:, None]
     dt64 = jnp.float64(body_dt)
 
     def apply_post_map(sol, M_col=None):
-        # "renorm" reproduces the runner's rebalance so y_star is a tight
-        # fixed point; "bare" leaves the raw step (see SOLVER_MAP_DEFAULT).
+        # The runner's rebalance, so y_star is a tight fixed point (SOLVER_MAP).
         M_c = M_col_default if M_col is None else M_col
-        if solver_map != "renorm":
-            return sol
         if not has_terms:
             return M_c * sol / jnp.sum(sol, axis=1, keepdims=True)
         # Runner composite (body_fn, clip omitted as identity-a.e.): gas-only
@@ -623,26 +603,32 @@ def _resolve_photo_recompute_k(
     photo_recompute_k: PhotoRecomputeArg,
     k_arr,
     net,
-    solver_map: str,
     *,
     runner_photo_static=None,
     converged_state=None,
     integ=None,
     network=None,
 ) -> Callable[[jnp.ndarray], jnp.ndarray] | None:
-    """Resolve the public photo-feedback default for sensitivity calls.
+    """Resolve the public photo-feedback argument for sensitivity calls.
 
     "auto" builds the recompute callable from the finished runner when
-    possible; if active photolysis rows are present but the default renorm
-    path lacks that context, refuse rather than silently return the
-    lower-accuracy frozen-photolysis adjoint. `None` stays the explicit
-    legacy/frozen choice.
+    possible and resolves to None (no photolysis feedback) when `k_arr` has
+    no active photolysis rows; if active rows are present but the runner
+    context is missing, refuse rather than return a frozen-photolysis
+    adjoint.
     """
-    if photo_recompute_k is None or callable(photo_recompute_k):
+    if callable(photo_recompute_k):
         return photo_recompute_k
+    if photo_recompute_k is None:
+        raise ValueError(
+            "photo_recompute_k=None (the frozen-photolysis adjoint) is not "
+            "offered: it omits dJ/dy (11% on W39b OH+H2). Pass "
+            f"{PHOTO_RECOMPUTE_AUTO!r} (the default; no photolysis feedback on "
+            "a photo-off column) or make_photo_recompute_k(...)."
+        )
     if photo_recompute_k != PHOTO_RECOMPUTE_AUTO:
         raise ValueError(
-            "photo_recompute_k must be a callable, None, or "
+            "photo_recompute_k must be a callable or "
             f"{PHOTO_RECOMPUTE_AUTO!r}; got {photo_recompute_k!r}."
         )
 
@@ -653,22 +639,16 @@ def _resolve_photo_recompute_k(
 
     if not _active_photolysis_rows(k_arr, net, network=network):
         return None
-    if solver_map != SOLVER_MAP_DEFAULT:
-        return None
     raise ValueError(
         "photo_recompute_k='auto' is the default on active photochemistry "
         "columns, but it needs the finished runner's photolysis state. Pass "
         "`runner_photo_static=integ._photo_static` and "
         "`converged_state=final_state` (or `integ=integ, "
-        "converged_state=final_state`) so the adjoint carries dJ/dy. To "
-        "explicitly reproduce the legacy frozen-photolysis result, pass "
-        "`photo_recompute_k=None`."
+        "converged_state=final_state`) so the adjoint carries dJ/dy."
     )
 
 
-def _guard_unmodeled_processes(
-    y_star, k_arr, net, body_terms, photo_recompute_k, network=None, species=None
-):
+def _guard_unmodeled_processes(y_star, k_arr, net, body_terms, network=None, species=None):
     """Fingerprint processes the body map would silently mistreat; raise/warn.
 
     `NetworkArrays` carries no photo/ion/conden row masks, so the checks use
@@ -678,8 +658,7 @@ def _guard_unmodeled_processes(
 
     Raises on nonzero ion rows (charge balance is in no body map) and on
     condensation fingerprints (nonzero conden rate rows, or a populated
-    condensate) without conden/fix-species body terms. Warns on active
-    photolysis rows without `photo_recompute_k` (frozen dJ/dy).
+    condensate) without conden/fix-species body terms.
     """
     if network is None or species is None:
         try:
@@ -780,17 +759,6 @@ def _guard_unmodeled_processes(
             "balance in the conden window, or the fix_species pins after "
             "it), or use forward-mode."
         )
-
-    if network is not None and photo_recompute_k is None:
-        photo_rows = np.asarray(network.is_photo, dtype=bool)
-        if photo_rows.any() and bool(np.any(k_np[photo_rows] != 0.0)):
-            warnings.warn(
-                "photolysis rows are active in k_arr but photo_recompute_k "
-                "was not passed: dJ/dy is omitted and photo-coupled "
-                "sensitivities are leading-order only (~11% measured on W39b "
-                "OH+H2). Build it with make_photo_recompute_k(...).",
-                stacklevel=3,
-            )
 
 
 def _adjoint_solve_core(
@@ -912,7 +880,6 @@ def steady_state_reaction_sensitivity(
     compo_array: jnp.ndarray,
     dz: jnp.ndarray,
     body_dt: float = BODY_MAP_DT,
-    solver_map: str = SOLVER_MAP_DEFAULT,
     photo_recompute_k: PhotoRecomputeArg = PHOTO_RECOMPUTE_AUTO,
     runner_photo_static=None,
     converged_state=None,
@@ -949,9 +916,9 @@ def steady_state_reaction_sensitivity(
         e.g. `lambda y: jnp.log10(y[L, so2] / y[L].sum())`.
     y_star : (nz, ni)
         Converged state (number density, cm^-3) -- a tight fixed point of the
-        CHOSEN body map (`info["fp_err"]`; ~1e-9 for the renorm default). Do
-        NOT iterate the renorm map to tighten `fp_err`: it trades the deflation
-        basis for the fixed point and degrades `info["null_quality"]`.
+        body map (`info["fp_err"]`; ~1e-9). Do NOT iterate the map to tighten
+        `fp_err`: it trades the deflation basis for the fixed point and
+        degrades `info["null_quality"]`.
         Clip, charge balance, condensation, fix-species and bottom pins are in
         NEITHER map: run `audit_adjoint_scope(...)` first (its per-cell defect
         scan also catches what the global max-norm `fp_err` masks).
@@ -969,16 +936,12 @@ def steady_state_reaction_sensitivity(
         average `dzi`, which is not invertible to `dz`. Use `AtmInputs.dz`.
     body_dt
         Adjoint-only probe step in s (see `BODY_MAP_DT`); scan on a new column.
-    solver_map
-        `"renorm"` (default) linearizes the hydrostatic-renormalized map the
-        runner actually iterates (HD189 CH4 6.6% -> 0.7%); `"bare"` only
-        reproduces pre-2026-07 behavior. See `SOLVER_MAP_DEFAULT`.
     photo_recompute_k
         `"auto"` (default) builds a `k(y) -> k_arr` recompute from the runner
         context on photo-on columns so the state operator carries `dJ/dy`
-        (WASP-39b OH+H2 11% -> 0.2%); a callable overrides the builder; `None`
-        only for photo-off columns or the frozen-photolysis legacy result
-        (~11%). Costs an RT solve per Krylov matvec.
+        (WASP-39b OH+H2 11% -> 0.2%) and needs no context on photo-off
+        columns; a callable overrides the builder. `None` raises (no
+        frozen-photolysis adjoint). Costs an RT solve per Krylov matvec.
     runner_photo_static, converged_state, integ
         Context for `"auto"`: pass `runner_photo_static=integ._photo_static,
         converged_state=final_state` or `integ=integ,
@@ -989,7 +952,6 @@ def steady_state_reaction_sensitivity(
         layer-0 boundary pins). REQUIRED when the state converged with
         condensation active; build with `make_body_terms(integ,
         converged_state, atm_static)`, which also returns the spliced `atm`.
-        Requires `solver_map="renorm"`.
     lgmres_inner_m, lgmres_outer_k, lgmres_maxiter, lgmres_cycles, rtol
         LGMRES knobs (see the module constants).
     n_solves
@@ -1018,12 +980,11 @@ def steady_state_reaction_sensitivity(
         photo_recompute_k,
         k_arr,
         net,
-        solver_map,
         runner_photo_static=runner_photo_static,
         converged_state=converged_state,
         integ=integ,
     )
-    _guard_unmodeled_processes(y_star, k_arr, net, body_terms, photo_recompute_k)
+    _guard_unmodeled_processes(y_star, k_arr, net, body_terms)
     n_solves = max(1, int(n_solves))
 
     # Condensation active: the reaction gradient is CONDITIONAL -- the body
@@ -1053,7 +1014,7 @@ def steady_state_reaction_sensitivity(
     # dJ/dy rides through photo_recompute_k, the conden/relax/pin/balance
     # terms through body_terms.
     _, _body_map_raw, _body_map_k_raw, _ = _make_body_map(
-        y_star, k_arr, atm, net, body_dt, solver_map, photo_recompute_k, body_terms
+        y_star, k_arr, atm, net, body_dt, photo_recompute_k, body_terms
     )
 
     lams, resids, fp_err, null_quality, n_matvec, n_null = _adjoint_solve_core(
@@ -1126,7 +1087,7 @@ def steady_state_reaction_sensitivity(
         "n_null": n_null,
         "n_solves": n_solves,
         "body_dt": float(body_dt),
-        "solver_map": solver_map,
+        "solver_map": SOLVER_MAP,
         "photo_feedback": photo_recompute_k is not None,
         "body_terms": body_terms is not None,
         "condensation_active": bool(_conden_pinned or _conden_in_window),
@@ -1148,7 +1109,6 @@ def steady_state_input_sensitivity(
     compo_array: jnp.ndarray,
     dz: jnp.ndarray,
     body_dt: float = BODY_MAP_DT,
-    solver_map: str = SOLVER_MAP_DEFAULT,
     photo_recompute_k: PhotoRecomputeArg = PHOTO_RECOMPUTE_AUTO,
     runner_photo_static=None,
     converged_state=None,
@@ -1263,12 +1223,11 @@ def steady_state_input_sensitivity(
         photo_recompute_k,
         k_arr,
         net,
-        solver_map,
         runner_photo_static=runner_photo_static,
         converged_state=converged_state,
         integ=integ,
     )
-    _guard_unmodeled_processes(y_star, k_arr, net, body_terms, photo_recompute_k)
+    _guard_unmodeled_processes(y_star, k_arr, net, body_terms)
     n_solves = max(1, int(n_solves))
 
     # rebuild(p0) must reproduce the map the state converged under.
@@ -1312,7 +1271,7 @@ def steady_state_input_sensitivity(
     conden_static = body_terms.conden_static if body_terms is not None else None
 
     apply_post, body_map_raw, _, step_fn = _make_body_map(
-        y_star, k_arr, atm, net, body_dt, solver_map, photo_recompute_k, body_terms
+        y_star, k_arr, atm, net, body_dt, photo_recompute_k, body_terms
     )
 
     lams, resids, fp_err, null_quality, n_matvec, n_null = _adjoint_solve_core(
@@ -1382,7 +1341,7 @@ def steady_state_input_sensitivity(
         "n_null": n_null,
         "n_solves": n_solves,
         "body_dt": float(body_dt),
-        "solver_map": solver_map,
+        "solver_map": SOLVER_MAP,
         "photo_feedback": photo_recompute_k is not None,
         "body_terms": body_terms is not None,
         "rebuild_consistency": consistency,
@@ -1733,13 +1692,11 @@ def _adjoint_scope_findings(
         if photo_recompute_k is None:
             add(
                 "photolysis_feedback",
-                "warning",
+                "error",
                 "use_photo=True with photo_recompute_k=None: the adjoint "
-                "holds J frozen at its converged value (dJ/dy omitted), so "
-                "photo-coupled rows are leading-order only (~11% measured on "
-                "W39b OH+H2). Pass photo_recompute_k = "
-                "make_photo_recompute_k(integ._photo_static, converged_state) "
-                "— the standard companion on photo-on columns (-> ~0.2%).",
+                "would hold J frozen at its converged value (dJ/dy omitted, "
+                "11% on W39b OH+H2). Pass photo_recompute_k = "
+                "make_photo_recompute_k(integ._photo_static, converged_state).",
             )
         else:
             add(
@@ -1820,7 +1777,6 @@ def audit_adjoint_scope(
     photo_recompute_k: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
     body_terms: BodyTerms | None = None,
     body_dt: float = BODY_MAP_DT,
-    solver_map: str = SOLVER_MAP_DEFAULT,
     species: Sequence[str] | None = None,
     min_ymix: float = _AUDIT_MIN_YMIX,
     top_k: int = 10,
@@ -1856,8 +1812,10 @@ def audit_adjoint_scope(
     step unless the runner's map contains a process this one lacks. Any
     defect inside the loss footprint is an ERROR.
 
-    Parameters mirror `steady_state_reaction_sensitivity` where shared.
-    `cfg` defaults to the process default config (pass the run's cfg for
+    Parameters mirror `steady_state_reaction_sensitivity` where shared,
+    except `photo_recompute_k`: the callable from `make_photo_recompute_k`
+    on a photo-on column, None on a photo-off one (None with `use_photo` is
+    an error finding). `cfg` defaults to the process default config (pass the run's cfg for
     `make_config`-driven runs); `final_state` is the converged `JaxIntegState`
     (sharpens the conden/pin checks, enables the stale-geometry check);
     `species` labels the worst-cell table (defaults to the import-locked
@@ -1875,18 +1833,6 @@ def audit_adjoint_scope(
         cfg = default_config()  # the runner's own default cfg surface
 
     findings = _adjoint_scope_findings(cfg, final_state, photo_recompute_k, body_terms)
-
-    if solver_map == "bare":
-        findings.append(
-            {
-                "code": "bare_solver_map",
-                "severity": "warning",
-                "message": "solver_map='bare' linearizes the raw Ros2 step, "
-                "for which y_star is only a ~1e-4 fixed point (the "
-                "renormalization correction) — a ~few-% gradient bias the "
-                "default 'renorm' removes. Legacy only.",
-            }
-        )
 
     # Stale-geometry check: the body map must see the SAME refreshed fields
     # the runner converged with, or the linearization is taken off-manifold.
@@ -1916,7 +1862,7 @@ def audit_adjoint_scope(
 
     # Per-cell fixed-point defect of the exact map the solver would use.
     _, body_map, _, _ = _make_body_map(
-        y_star, k_arr, atm, net, body_dt, solver_map, photo_recompute_k, body_terms
+        y_star, k_arr, atm, net, body_dt, photo_recompute_k, body_terms
     )
     G = jax.jit(body_map)(y_star)
     y_np = np.asarray(y_star)

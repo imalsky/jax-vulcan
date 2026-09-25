@@ -199,22 +199,6 @@ def test_body_dt_danger_zone_rejected():
         )
 
 
-def test_solver_map_invalid_rejected():
-    """An unknown solver_map is refused up front (before any heavy compute)."""
-    dummy = jnp.ones((2, 2))
-    with pytest.raises(ValueError, match="solver_map"):
-        steady_state_reaction_sensitivity(
-            lambda y: y.sum(),
-            dummy,
-            jnp.ones((3, 2)),
-            None,
-            None,
-            compo_array=jnp.ones((2, 1)),
-            dz=jnp.ones((2,)),
-            solver_map="hydrostatic",
-        )
-
-
 # --------------------------------------------------------------------------- #
 # Slow end-to-end regression on a real HD189 column                           #
 # --------------------------------------------------------------------------- #
@@ -229,11 +213,9 @@ def test_solver_map_invalid_rejected():
 def test_hd189_reaction_sensitivity_regression():
     """Reproduce the HD189 CH4 finite-difference anchors at percent level.
 
-    Full solver-map adjoint (defaults: renorm, body_dt=1e7, n_solves=3) on
-    the saved converged photo-off state. Renorm lands ~0.7% vs FD, so the
-    anchor tolerance is 3%; a `solver_map="bare"` cross-check must come out
-    looser (fp_err ~1e-4, ~6-8% vs FD), which is why renorm is the default.
-    Sign and top-6 ranking are the strongest assertions.
+    Full solver-map adjoint (defaults: body_dt=1e7, n_solves=3) on the saved
+    converged photo-off state. It lands ~0.7% vs FD, so the anchor tolerance
+    is 3%. Sign and top-6 ranking are the strongest assertions.
     """
     import vulcan_jax.chem_funs as chem_funs
     from vulcan_jax.jax_step import AtmStatic
@@ -274,13 +256,13 @@ def test_hd189_reaction_sensitivity_regression():
     )
     dLdlnk = np.asarray(dLdlnk)
 
-    assert info["solver_map"] == "renorm", "default solver_map should be renorm"
+    assert info["solver_map"] == "renorm"  # vulcan-jwst-tool writes this key
     assert info["fp_err"] < 1e-6, (
         f"renorm y* is not a tight fixed point: {info['fp_err']:.2e}"
     )
-    # null_quality: the renorm map conserves atoms only approximately near the
-    # fixed point, so its atom-count vectors are only approximately null
-    # (larger than bare's ~3e-5); broken conservation still reads O(1).
+    # null_quality: the renormalized map conserves atoms only approximately
+    # near the fixed point, so its atom-count vectors are only approximately
+    # null; broken conservation still reads O(1).
     assert info["null_quality"] < 1e-2
     # Solver-regime guards (calibrated per-twin residuals {0.29, 0.05, 0.10},
     # spread 0.047): the ensemble MEDIAN residual must stay out of the
@@ -292,10 +274,9 @@ def test_hd189_reaction_sensitivity_regression():
     assert info["ensemble_spread"] < 0.15, (
         f"ensemble spread {info['ensemble_spread']:.2e} — twins disagree"
     )
-    # pair_antisym is a bare-map-calibrated diagnostic; the renorm default can
-    # read O(1) even when the rows are FD-accurate, so it is NOT a strict gate
-    # here. Only assert it stays finite/bounded; FD agreement below is the
-    # real validation.
+    # pair_antisym can read O(1) even when the rows are FD-accurate, so it is
+    # NOT a strict gate here. Only assert it stays finite/bounded; FD
+    # agreement below is the real validation.
     assert 0.0 <= info["pair_antisym"] <= 1.1, info["pair_antisym"]
     assert np.all(np.isfinite(dLdlnk))
 
@@ -304,45 +285,11 @@ def test_hd189_reaction_sensitivity_regression():
     top = np.argsort(np.abs(dLdlnk[: net.nr + 1]))[::-1][:6]
     assert 13 in top or 14 in top, f"dominant CH4 reaction missing from top-6: {top}"
 
-    # Percent-level FD agreement with the DEFAULT renorm map (measured ~0.7%
-    # on this fixture; 3% gives headroom).
+    # Percent-level FD agreement (measured ~0.7% on this fixture; 3% gives
+    # headroom).
     for r in (13, 14):
         rel = abs(dLdlnk[r] - HD189_FD_ANCHORS[r]) / abs(HD189_FD_ANCHORS[r])
         assert rel < 0.03, (
             f"r{r}: {dLdlnk[r]:+.3e} vs FD {HD189_FD_ANCHORS[r]:+.3e} (rel {rel:.2f}) "
-            "— renorm default should be percent level"
+            "— the adjoint should be percent level"
         )
-
-    # Cross-check legacy solver_map="bare": on this renorm-polished fixture y*
-    # is only a ~1e-4 fixed point of the raw step, so bare must be strictly
-    # looser than renorm (bare ~6.6% vs renorm ~0.7% here) - the reason renorm
-    # is the default.
-    dLdlnk_b, info_b = steady_state_reaction_sensitivity(
-        loss,
-        y_star,
-        k_arr,
-        atm,
-        net,
-        compo_array=compo,
-        dz=dz,
-        solver_map="bare",
-        lgmres_inner_m=250,
-        lgmres_cycles=8,
-        return_info=True,
-    )
-    dLdlnk_b = np.asarray(dLdlnk_b)
-    assert info_b["fp_err"] > 10.0 * info["fp_err"], (
-        f"bare fp_err {info_b['fp_err']:.2e} not looser than renorm "
-        f"{info['fp_err']:.2e}"
-    )
-    rel_bare = max(
-        abs(dLdlnk_b[r] - HD189_FD_ANCHORS[r]) / abs(HD189_FD_ANCHORS[r])
-        for r in (13, 14)
-    )
-    rel_renorm = max(
-        abs(dLdlnk[r] - HD189_FD_ANCHORS[r]) / abs(HD189_FD_ANCHORS[r])
-        for r in (13, 14)
-    )
-    assert rel_bare > rel_renorm, (
-        f"bare rel {rel_bare:.3f} should exceed renorm rel {rel_renorm:.3f}"
-    )

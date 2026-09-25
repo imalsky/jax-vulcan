@@ -145,7 +145,7 @@ CASES = [
         None,
         None,
         None,
-        (("photolysis_feedback", "warning"),),
+        (("photolysis_feedback", "error"),),
     ),
     (
         "photo_with_recompute",
