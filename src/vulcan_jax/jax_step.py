@@ -21,7 +21,7 @@ from .chem import NetworkArrays, chem_jac_analytical
 from .chem_funs import chem_rhs_codegen as _chem_rhs
 from .chem_funs import spec_list as _SPEC_LIST
 from .config import REPAIR_ABS_FLOOR, default_config
-from .phy_const import Navo, kb
+from .phy_const import UNDERFLOW_DENOM, Navo, kb
 
 _SOLVER = os.environ.get("VULCAN_JAX_SOLVER", "fast")  # import-frozen: reference | fast | ffi
 if _SOLVER == "reference":
@@ -34,8 +34,6 @@ else:  # see solver_fast.py
     from .solver_fast import solve as solve_block_thomas_diag_offdiag
 
 _CFG = default_config()
-# Pure numerical floor for ysum denominators; not a tuning knob.
-_UNDERFLOW_DENOM = 1e-300
 
 # (atom, reservoir) pairs for the atom-conservation projection: each atom's
 # per-layer production residual is distributed onto its abundant reservoir
@@ -513,7 +511,7 @@ def _build_diff_coeffs_jax(y, atm: AtmStatic, grav: DiffGrav):
     nz = atm.Tco.shape[0]
 
     ysum = jnp.sum(jnp.where(atm.gas_indx_mask[None, :], y, 0.0), axis=1)
-    ysum = jnp.maximum(ysum, _UNDERFLOW_DENOM)
+    ysum = jnp.maximum(ysum, UNDERFLOW_DENOM)
 
     # Build full nz arrays of interior values, then overwrite the boundaries.
     j_int = jnp.arange(1, nz - 1)

@@ -25,11 +25,7 @@ from typing import NamedTuple, Tuple
 
 import jax.numpy as jnp
 
-from .phy_const import Navo, kb
-
-# Numerical floor for `/max(|x|, .)`-style denominators (mirrors the same
-# named constant in outer_loop.py). Not a tuning knob — just below-which-is-zero.
-_UNDERFLOW_DENOM = 1e-300
+from .phy_const import UNDERFLOW_DENOM, Navo, kb
 
 # Gas-phase condensates with a full runtime kinetics path (exactly master's
 # op.conden branch set). H2S has saturation data only (atm_setup), no kinetics;
@@ -367,7 +363,7 @@ def apply_h2o_relax_jax(
     # there tau becomes ~+1e300, so dt/tau ~ 0 makes y_conden ~ ymix and the
     # condensation delta is effectively zero.
     denom = st.h2o_Dg * st.h2o_m_over_rho_r2 * (y[:, h2o] - st.h2o_sat)
-    denom_safe = jnp.where(jnp.abs(denom) < _UNDERFLOW_DENOM, _UNDERFLOW_DENOM, denom)
+    denom_safe = jnp.where(jnp.abs(denom) < UNDERFLOW_DENOM, UNDERFLOW_DENOM, denom)
     tau = 1.0 / denom_safe
 
     sat_mix = st.h2o_sat / st.n_0
@@ -415,7 +411,7 @@ def apply_nh3_relax_jax(
     nz = y.shape[0]
 
     denom = st.nh3_Dg * st.nh3_m_over_rho_r2 * (y[:, nh3] - st.nh3_sat)
-    denom_safe = jnp.where(jnp.abs(denom) < _UNDERFLOW_DENOM, _UNDERFLOW_DENOM, denom)
+    denom_safe = jnp.where(jnp.abs(denom) < UNDERFLOW_DENOM, UNDERFLOW_DENOM, denom)
     tau = 1.0 / denom_safe
 
     sat_mix = st.nh3_sat / st.n_0

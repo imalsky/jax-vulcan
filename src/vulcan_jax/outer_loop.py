@@ -22,6 +22,7 @@ import jax.numpy as jnp
 
 from .config import default_config, DT_MAX_S
 from . import phy_const as _phy_const
+from .phy_const import UNDERFLOW_DENOM
 
 from . import chem_funs as _chem_funs
 from . import photo as _photo_mod
@@ -36,12 +37,6 @@ from .runtime_validation import validate_runtime_config
 def _now() -> float:
     """Wall-clock seconds since the epoch (used for runtime print stamping)."""
     return time.time()
-
-
-# Underflow floor for `x / max(|denom|, .)` normalizations. Not a tuning
-# knob: 1e-300 is well above the float64 denormal tail (~5e-324) and below
-# any physical value, so it only keeps exact-zero divisors positive.
-_UNDERFLOW_DENOM = 1e-300
 
 
 # The network chem_funs parsed at import: one parse per process. After editing
@@ -305,7 +300,7 @@ def _step_size(
     `zero_delta_frac * rtol`. Production passes `safety`/`zero_delta_frac`
     from cfg; the defaults serve direct callers (tests / standalone).
     """
-    delta_eff = jnp.where(delta < _UNDERFLOW_DENOM, zero_delta_frac * rtol, delta)
+    delta_eff = jnp.where(delta < UNDERFLOW_DENOM, zero_delta_frac * rtol, delta)
     h_factor = safety * (rtol / delta_eff) ** 0.5
     h_factor = jnp.clip(h_factor, dt_var_min, dt_var_max)
     return jnp.clip(dt * h_factor, dt_min, dt_max)
@@ -375,7 +370,7 @@ def _make_clip_fn(
             # is enough (0/0 guard), and it is a no-op on the physical path
             # where ysum ~ n_0 >> 1e-300.
             ysum = jnp.sum(y_clip, axis=1, keepdims=True)
-            ysum = jnp.maximum(ysum, _UNDERFLOW_DENOM)
+            ysum = jnp.maximum(ysum, UNDERFLOW_DENOM)
             return y_clip, y_clip / ysum, small_y_inc, nega_y_inc
 
     return clip_fn
@@ -407,7 +402,7 @@ def _make_aggregate_delta_fn(
         # density gives a `0 * den**-2 = 0 * inf` NaN tangent that the
         # `jnp.max` JVP (a multiply by 0/1, not a select) propagates. Primal
         # unchanged (0/x == 0/1); a live numerator implies den >= atol.
-        den = jnp.where(masked == 0.0, 1.0, jnp.maximum(jnp.abs(sol), _UNDERFLOW_DENOM))
+        den = jnp.where(masked == 0.0, 1.0, jnp.maximum(jnp.abs(sol), UNDERFLOW_DENOM))
         ratio = jnp.where(sol > 0, masked / den, 0.0)
         return jnp.max(ratio)
 
@@ -508,7 +503,7 @@ def _make_photo_branch(photo_static: _PhotoStatic):
         mask = aflux_new > flux_atol
         diff = jnp.abs(aflux_new - s.aflux)
         ratio = jnp.where(
-            mask, diff / jnp.maximum(jnp.abs(aflux_new), _UNDERFLOW_DENOM), 0.0
+            mask, diff / jnp.maximum(jnp.abs(aflux_new), UNDERFLOW_DENOM), 0.0
         )
         aflux_change_new = jnp.where(jnp.any(mask), jnp.max(ratio), jnp.float64(0.0))
 
@@ -902,7 +897,7 @@ def _make_runner(
             ignore_mask=conver_ignore_mask[None, :],
             condense_mask=condense_zero_conv_mask,
         )
-        dt_lookback = jnp.maximum(s.t - s.t_time_ring[indx], _UNDERFLOW_DENOM)
+        dt_lookback = jnp.maximum(s.t - s.t_time_ring[indx], UNDERFLOW_DENOM)
         longdydt_new = longdy_new / dt_lookback
         return longdy_new, longdydt_new, ratio
 
@@ -1498,7 +1493,7 @@ def _make_runner(
             ) = out
             geom_rel = jnp.max(
                 jnp.stack([
-                    jnp.max(jnp.abs(new - old) / jnp.maximum(jnp.abs(new), _UNDERFLOW_DENOM))
+                    jnp.max(jnp.abs(new - old) / jnp.maximum(jnp.abs(new), UNDERFLOW_DENOM))
                     for new, old in (
                         (mu_next, s.mu), (g_next, s.g), (Hp_next, s.Hp),
                         (dzi_next, s.dzi), (Hpi_next, s.Hpi),
@@ -1780,7 +1775,7 @@ def _make_runner(
         primal."""
         indx = _lookback_index(s_next, s_next.accept_count)
         dt_lookback = jnp.maximum(
-            s_next.t - s_next.t_time_ring[indx], _UNDERFLOW_DENOM
+            s_next.t - s_next.t_time_ring[indx], UNDERFLOW_DENOM
         )
 
         def one_dir(dy, dy_ring):
@@ -2405,7 +2400,7 @@ def _longdy_reduce(
     # Zeroed numerator -> denominator 1, for the same reason as in
     # `_make_aggregate_delta_fn`: a sub-mtol_conv ymix would make the tangent
     # `0 * inf` and the max JVP does not discard it. Primal unchanged.
-    den = jnp.where(longdy_arr == 0.0, 1.0, jnp.maximum(ymix, _UNDERFLOW_DENOM))
+    den = jnp.where(longdy_arr == 0.0, 1.0, jnp.maximum(ymix, UNDERFLOW_DENOM))
     ratio = jnp.where(ymix > 0, longdy_arr / den, 0.0)
     longdy = jnp.max(ratio)
     # NaN guard: the masks above are all False for NaN, so an all-NaN state
