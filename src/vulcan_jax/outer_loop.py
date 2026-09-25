@@ -2268,13 +2268,12 @@ class OuterLoop:
             )
         self.output = output
         self.odesolver = odesolver
-        self.loss_criteria = float(getattr(self._cfg, "loss_criteria", 0.0005))
 
         self._species = list(_NETWORK.species)
 
         # Atom ordering captured ONCE at init; dict↔array conversion relies on it.
         self._atom_order = [
-            a for a in self._cfg.atom_list if a not in getattr(self._cfg, "loss_ex", [])
+            a for a in self._cfg.atom_list if a not in self._cfg.loss_ex
         ]
 
         # compo_arr (ni, n_atoms): rows = species, cols = atom_order.
@@ -2332,7 +2331,7 @@ class OuterLoop:
 
         # conver_ignore species are zeroed in the longdy reduction (op.py:1045-1046).
         conver_ignore_np = np.zeros(ni, dtype=bool)
-        for sp in getattr(self._cfg, "conver_ignore", []):
+        for sp in self._cfg.conver_ignore:
             if sp in _NETWORK.species_idx:
                 conver_ignore_np[_NETWORK.species_idx[sp]] = True
 
@@ -2364,7 +2363,7 @@ class OuterLoop:
             charge_np = np.zeros(ni, dtype=np.float64)
             e_idx = 0
 
-        use_fix_all_bot = bool(getattr(self._cfg, "use_fix_all_bot", False))
+        use_fix_all_bot = bool(self._cfg.use_fix_all_bot)
         if use_fix_all_bot:
             # Pin bottom layer to chemical-EQ mixing ratios captured at
             # init time, scaled by static n_0[0] (op.py:3019, 3047-3048; a solver upstream never selects,
@@ -2373,7 +2372,7 @@ class OuterLoop:
         else:
             bottom_n_np = np.zeros(ni, dtype=np.float64)
 
-        fix_sp_bot_cfg = getattr(self._cfg, "use_fix_sp_bot", {}) or {}
+        fix_sp_bot_cfg = self._cfg.use_fix_sp_bot or {}
         use_fix_sp_bot = bool(fix_sp_bot_cfg)
         if use_fix_sp_bot:
             fix_sp_bot_idx = np.asarray(
@@ -2388,7 +2387,7 @@ class OuterLoop:
             fix_sp_bot_idx = np.zeros((0,), dtype=np.int32)
             fix_sp_bot_mix = np.zeros((0,), dtype=np.float64)
 
-        use_fix_H2He = bool(getattr(self._cfg, "use_fix_H2He", False))
+        use_fix_H2He = bool(self._cfg.use_fix_H2He)
         if use_fix_H2He:
             h2_idx = int(_NETWORK.species_idx["H2"])
             he_idx = int(_NETWORK.species_idx["He"])
@@ -2396,7 +2395,7 @@ class OuterLoop:
             h2_idx = -1
             he_idx = -1
 
-        fix_species_cfg = list(getattr(self._cfg, "fix_species", []) or [])
+        fix_species_cfg = list(self._cfg.fix_species or [])
         use_fix_species = bool(self._cfg.use_condense and fix_species_cfg)
         if use_fix_species:
             wholecol_species = {"H2O_l_s", "H2SO4_l", "NH3_l_s", "S8_l_s"}
@@ -2431,7 +2430,7 @@ class OuterLoop:
             dt_var_max=float(self._cfg.dt_var_max),
             dt_min=float(self._cfg.dt_min),
             dt_max=float(self._cfg.dt_max),
-            batch_max_retries=int(getattr(self._cfg, "batch_max_retries", 110)),
+            batch_max_retries=int(self._cfg.batch_max_retries),
             conv_step=int(self._cfg.conv_step),
             count_min=int(self._cfg.count_min),
             count_max=int(self._cfg.count_max),
@@ -2442,8 +2441,8 @@ class OuterLoop:
             yconv_min=float(self._cfg.yconv_min),
             slope_cri=float(self._cfg.slope_cri),
             flux_cri=float(self._cfg.flux_cri),
-            geom_conv_tol=float(getattr(self._cfg, "geom_conv_tol", 1e-3)),
-            element_budget_tol=float(getattr(self._cfg, "element_budget_tol", 1e-2)),
+            geom_conv_tol=float(self._cfg.geom_conv_tol),
+            element_budget_tol=float(self._cfg.element_budget_tol),
             budget_ref_atom=self._atom_order.index("H"),
             mtol_conv=float(self._cfg.mtol_conv),
             conver_ignore_mask=jnp.asarray(conver_ignore_np),
@@ -2452,47 +2451,30 @@ class OuterLoop:
             Kzz=jnp.asarray(atm.Kzz, dtype=jnp.float64),
             use_photo=bool(self._cfg.use_photo),
             use_atm_refresh=True,
-            use_vm_mol=bool(
-                getattr(self._cfg, "use_vm_mol", False)
-                and getattr(self._cfg, "use_moldiff", True)
-            ),
+            use_vm_mol=bool(self._cfg.use_vm_mol and self._cfg.use_moldiff),
             hybrid_vm_mol=bool(
-                getattr(self._cfg, "use_vm_mol", False)
-                and getattr(self._cfg, "use_hybrid_vm_mol", False)
-                and getattr(self._cfg, "use_moldiff", True)
+                self._cfg.use_vm_mol
+                and self._cfg.use_hybrid_vm_mol
+                and self._cfg.use_moldiff
             ),
             use_conden=bool(self._cfg.use_condense),
-            final_update_photo_frq=int(getattr(self._cfg, "final_update_photo_frq", 5)),
+            final_update_photo_frq=int(self._cfg.final_update_photo_frq),
             update_frq=int(self._cfg.update_frq),
-            use_adapt_rtol=bool(getattr(self._cfg, "use_adapt_rtol", False)),
+            use_adapt_rtol=bool(self._cfg.use_adapt_rtol),
             rtol_accept=float(self._cfg.rtol),
-            rtol_min=float(getattr(self._cfg, "rtol_min", 0.0)),
-            rtol_max=float(getattr(self._cfg, "rtol_max", 1.0)),
-            adapt_rtol_dec_period=int(getattr(self._cfg, "adapt_rtol_dec_period", 10)),
-            adapt_rtol_inc_period=int(
-                getattr(self._cfg, "adapt_rtol_inc_period", 1000)
-            ),
-            adapt_rtol_dec=float(getattr(self._cfg, "adapt_rtol_dec", 0.5)),
-            adapt_rtol_inc=float(getattr(self._cfg, "adapt_rtol_inc", 1.25)),
-            adapt_rtol_loss_mul=float(getattr(self._cfg, "adapt_rtol_loss_mul", 2.0)),
-            adapt_rtol_inc_loss_thresh=float(
-                getattr(self._cfg, "adapt_rtol_inc_loss_thresh", 2e-4)
-            ),
-            photo_switch_longdy_thresh=float(
-                getattr(
-                    self._cfg,
-                    "photo_switch_longdy_thresh",
-                    float(self._cfg.yconv_min) * 10.0,
-                )
-            ),
-            photo_switch_longdydt_thresh=float(
-                getattr(self._cfg, "photo_switch_longdydt_thresh", 1e-6)
-            ),
-            hycean_pin_time=float(getattr(self._cfg, "hycean_pin_time", 1e6)),
-            step_size_safety=float(getattr(self._cfg, "step_size_safety", 0.9)),
-            step_size_zero_delta_frac=float(
-                getattr(self._cfg, "step_size_zero_delta_frac", 0.01)
-            ),
+            rtol_min=float(self._cfg.rtol_min),
+            rtol_max=float(self._cfg.rtol_max),
+            adapt_rtol_dec_period=int(self._cfg.adapt_rtol_dec_period),
+            adapt_rtol_inc_period=int(self._cfg.adapt_rtol_inc_period),
+            adapt_rtol_dec=float(self._cfg.adapt_rtol_dec),
+            adapt_rtol_inc=float(self._cfg.adapt_rtol_inc),
+            adapt_rtol_loss_mul=float(self._cfg.adapt_rtol_loss_mul),
+            adapt_rtol_inc_loss_thresh=float(self._cfg.adapt_rtol_inc_loss_thresh),
+            photo_switch_longdy_thresh=float(self._cfg.photo_switch_longdy_thresh),
+            photo_switch_longdydt_thresh=float(self._cfg.photo_switch_longdydt_thresh),
+            hycean_pin_time=float(self._cfg.hycean_pin_time),
+            step_size_safety=float(self._cfg.step_size_safety),
+            step_size_zero_delta_frac=float(self._cfg.step_size_zero_delta_frac),
             use_ion=use_ion,
             e_idx=int(e_idx),
             charge_arr=jnp.asarray(charge_np),
@@ -2506,23 +2488,21 @@ class OuterLoop:
             he_idx=he_idx,
             use_fix_species=use_fix_species,
             post_conden_rtol=float(self._cfg.post_conden_rtol),
-            fix_species_from_coldtrap_lev=bool(
-                getattr(self._cfg, "fix_species_from_coldtrap_lev", True)
-            ),
+            fix_species_from_coldtrap_lev=bool(self._cfg.fix_species_from_coldtrap_lev),
             fix_species_idx=jnp.asarray(fix_species_idx),
             fix_species_sat_mix=jnp.asarray(fix_species_sat_mix),
             fix_species_wholecol=jnp.asarray(fix_species_wholecol),
-            save_evolution=bool(getattr(self._cfg, "save_evolution", False)),
-            save_evo_frq=int(getattr(self._cfg, "save_evo_frq", 10)),
+            save_evolution=bool(self._cfg.save_evolution),
+            save_evo_frq=int(self._cfg.save_evo_frq),
             save_evo_n_max=(
                 int(
                     np.ceil(
                         int(self._cfg.count_max)
-                        / max(int(getattr(self._cfg, "save_evo_frq", 10)), 1)
+                        / max(int(self._cfg.save_evo_frq), 1)
                     )
                 )
                 + 1
-                if bool(getattr(self._cfg, "save_evolution", False))
+                if bool(self._cfg.save_evolution)
                 else 1
             ),
         )
@@ -2569,8 +2549,8 @@ class OuterLoop:
             jnp.asarray(cond_mask_np),
             # When use_condense=True, only gas columns get rebalanced after Ros2.
             bool(self._cfg.use_condense),
-            float(getattr(self._cfg, "start_conden_time", 0.0)),
-            float(getattr(self._cfg, "stop_conden_time", 100000.0)),
+            float(self._cfg.start_conden_time),
+            float(self._cfg.stop_conden_time),
             photo_static=self._photo_static,
             refresh_static=self._refresh_static,
             conden_static=self._conden_static,
@@ -2900,7 +2880,7 @@ class OuterLoop:
         nz = int(rs.atm.Tco.shape[0])
         ni = _NETWORK.ni
         conv_step = int(self._cfg.conv_step)
-        ini_frq = int(getattr(self._cfg, "ini_update_photo_frq", 100))
+        ini_frq = int(self._cfg.ini_update_photo_frq)
         return dict(
             y_time_ring=jnp.zeros((conv_step, nz, ni), dtype=jnp.float64),
             t_time_ring=jnp.zeros((conv_step,), dtype=jnp.float64),
@@ -2913,7 +2893,7 @@ class OuterLoop:
             longdy_seen_min=jnp.float64(jnp.inf),
             count_since_new_min=jnp.int32(0),
             rtol=jnp.float64(float(self._cfg.rtol)),
-            loss_criteria=jnp.float64(float(getattr(self, "loss_criteria", 0.0005))),
+            loss_criteria=jnp.float64(float(self._cfg.loss_criteria)),
             update_photo_frq=jnp.int32(ini_frq),
             is_final_photo_frq=jnp.bool_(False),
             geom_ok=jnp.bool_(False),
@@ -3213,7 +3193,7 @@ class OuterLoop:
             photo_runtime_out = None
 
         nz = int(rs_entry.atm.Tco.shape[0])
-        fix_species_cfg = list(getattr(self._cfg, "fix_species", []) or [])
+        fix_species_cfg = list(self._cfg.fix_species or [])
         if fix_species_cfg:
             fix_y_full = np.asarray(state.fix_y, dtype=np.float64)
             fix_y_per_sp = np.zeros((len(fix_species_cfg), nz), dtype=np.float64)
@@ -3324,7 +3304,6 @@ class OuterLoop:
                 "resumed run would restart all three from zero."
             )
         validate_runtime_config(self._cfg)
-        self.loss_criteria = float(getattr(self._cfg, "loss_criteria", 0.0005))
 
         var, atm, _ = _state_mod.legacy_view(rs, cfg=self._cfg)
 
@@ -3378,7 +3357,6 @@ class OuterLoop:
         setup `__call__` does up to (but not including) the runner call.
         """
         validate_runtime_config(self._cfg)
-        self.loss_criteria = float(getattr(self._cfg, "loss_criteria", 0.0005))
         var, atm, _ = _state_mod.legacy_view(rs, cfg=self._cfg)
         if (
             rs.photo_static is not None

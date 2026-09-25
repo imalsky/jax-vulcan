@@ -11,11 +11,11 @@ from . import chem_funs
 
 
 # The validator bound-checks knobs a config DECLARES; it never supplies one.
-# A literal default here would be a second copy of a number the YAML owns --
-# and outer_loop.py already owns the runtime back-compat fallback -- so the
-# two could drift and this module would then validate a value the run never
-# uses. `_declared` returns None for an undeclared knob and the caller skips
-# it. `tests/test_runtime_validation_knobs.py` pins that every shipped config
+# A literal default here would be a second copy of a number the YAML owns, so
+# the two could drift and this module would then validate a value the run
+# never uses. `_declared` returns None for an undeclared knob and the caller
+# skips it (the runner reads the knob itself and fails there).
+# `tests/test_runtime_validation_knobs.py` pins that every shipped config
 # declares every knob checked here, so the skip cannot hide anything in
 # practice.
 _ABSENT = object()
@@ -271,6 +271,15 @@ def _validate_numerical_bounds(cfg) -> list[str]:
             f"pressure and P_t the top. Inverting them yields a "
             f"negative-thickness atmosphere that still runs to completion."
         )
+
+    # The certificate tolerances (C21, C23) are required: an undeclared one
+    # would reach the runner as an AttributeError instead of this message.
+    for key in ("geom_conv_tol", "element_budget_tol"):
+        if not hasattr(cfg, key):
+            errors.append(
+                f"{key} is not declared; every config must set it "
+                "(see configs/default.yaml)."
+            )
 
     # Strictly-positive scalars. Each would produce NaN/garbage rather than an
     # error if left unchecked.
