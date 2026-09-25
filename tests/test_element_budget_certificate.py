@@ -66,6 +66,7 @@ def test_certificate_requires_the_column_element_budget(drain, scale, reason, wh
     the term is measured relative to H, so a common factor (the
     hydrostatic renormalisation) must still certify.
     """
+    import vulcan_jax
     import vulcan_jax.legacy_io as op
     from vulcan_jax import op_jax, outer_loop
     from vulcan_jax.ini_abun import column_atoms
@@ -102,6 +103,11 @@ def test_certificate_requires_the_column_element_budget(drain, scale, reason, wh
     # The geometry term is satisfied in both cases: the budget is the only
     # thing that changed the outcome.
     assert bool(final.geom_ok)
+    # The exported certificate (vulcan-forward's ConvDiag reads it) gives the
+    # runner's own verdict on the exit carry; the tight branch, as yconv_cri
+    # is opened.
+    ok, branch = vulcan_jax.conv_normal(final, c)
+    assert (bool(ok), int(branch)) == ((True, 1) if reason == 1 else (False, 0))
 
 
 @pytest.mark.parametrize(

@@ -26,6 +26,7 @@ __all__ = [
     "load_config",
     "default_config",
     "make_config",
+    "conv_normal",
 ]
 
 
@@ -38,3 +39,13 @@ def make_config(**overrides: Any) -> Config:
         rs = vulcan_jax.RunState.with_pre_loop_setup(cfg)
     """
     return load_config("default", **overrides)
+
+
+def __getattr__(name: str) -> Any:
+    # Lazy: outer_loop imports jax_step, which freezes $VULCAN_JAX_SOLVER;
+    # `import vulcan_jax` must leave that choice open.
+    if name == "conv_normal":
+        from .outer_loop import conv_normal
+
+        return conv_normal
+    raise AttributeError(f"module 'vulcan_jax' has no attribute {name!r}")

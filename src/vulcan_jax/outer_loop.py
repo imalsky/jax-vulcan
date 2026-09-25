@@ -680,6 +680,73 @@ def _freeze_slot(old, new, keep_old, idx):
     return new.at[idx].set(jnp.where(keep_old, old[idx], new[idx]))
 
 
+# The convergence certificate. `c` is the runner's `_Statics` or a config:
+# both carry yconv_cri, yconv_min, slope_cri and flux_cri under these names.
+def _slope_min(s: JaxIntegState):
+    slope_min = jnp.minimum(
+        jnp.min(s.pv.Kzz / (_SLOPE_MIN_HP_FRAC * s.Hp[:-1]) ** 2),
+        jnp.float64(_SLOPE_MIN_CAP),
+    )
+    return jnp.maximum(slope_min, jnp.float64(_SLOPE_MIN_FLOOR))
+
+
+def _branches(longdy, longdydt, slope_min, c):
+    """(tight, loose): (yconv_cri, slope_cri) and (yconv_min, slope_min)."""
+    tight = (longdy < jnp.float64(c.yconv_cri)) & (
+        longdydt < jnp.float64(c.slope_cri)
+    )
+    loose = (longdy < jnp.float64(c.yconv_min)) & (longdydt < slope_min)
+    return tight, loose
+
+
+def _convergence_ok(s: JaxIntegState, c):
+    """Convergence predicate shared by `_real_terminate`, the certificate
+    candidate and the hybrid phase-flip.
+
+    `slope_min` is recomputed from the live Hp because atm refresh can
+    change it mid-run.
+
+    The two branches are not equivalent, and every shipped config exits on
+    the LOOSE one: HD189 longdy ~0.09, HD209 ~0.03, W39b ~0.10 at the
+    step-count gates (notes §0), against `yconv_cri` 0.01 and `yconv_min`
+    0.1. Quote the
+    realised `longdy` next to any "converged" claim rather than naming the
+    criterion -- 0.099 against a 0.1 threshold is a weaker statement than
+    0.01. The identical two-branch predicate is upstream's
+    (.oracles/vulcan2_ncho/op.py:1056), so this is inherited.
+    """
+    tight, loose = _branches(s.longdy, s.longdydt, _slope_min(s), c)
+    return (tight | loose) & (s.aflux_change < jnp.float64(c.flux_cri))
+
+
+def _certified(s: JaxIntegState, c):
+    """`_convergence_ok` AND the geometry (C21) and element-budget (C23)
+    terms. `geom_ok` / `budget_ok` are written by the body on the candidate
+    step (see there): the refreshed geometry agreed with the composition,
+    and the column kept its elements since t=0."""
+    return _convergence_ok(s, c) & s.geom_ok & s.budget_ok
+
+
+def conv_normal(final: JaxIntegState, cfg):
+    """The runner's convergence certificate on a carry, e.g. its exit state.
+
+    The terms `_real_terminate` ends a run on, read with `cfg`'s thresholds:
+    tight OR loose branch, the photo-flux gate, and the geometry and
+    element-budget terms. Not its ready gate, hybrid-phase gate or
+    non-finite exit; a forward-mode caller ANDs in `run_jvp`'s tangent
+    certificate itself. On a finished non-hybrid run `ok` is
+    `termination_reason == 1`: the body sets `geom_ok` / `budget_ok` only on
+    a step past the ready gate.
+
+    Returns `(ok, branch)`: a () bool, and a () int32 that is 1 when the
+    tight branch certified, 2 the loose one, 0 when `ok` is False.
+    """
+    ok = _certified(final, cfg)
+    tight, _ = _branches(final.longdy, final.longdydt, _slope_min(final), cfg)
+    branch = jnp.where(ok, jnp.where(tight, jnp.int32(1), jnp.int32(2)), jnp.int32(0))
+    return ok, branch
+
+
 def _make_runner(
     net,
     statics: _Statics,
@@ -743,10 +810,6 @@ def _make_runner(
     # extend it -- intentionally not bound as closure locals.
     trun_min = statics.trun_min
     st_factor = statics.st_factor
-    yconv_cri = statics.yconv_cri
-    yconv_min = statics.yconv_min
-    slope_cri = statics.slope_cri
-    flux_cri = statics.flux_cri
     mtol_conv = statics.mtol_conv
     geom_conv_tol = statics.geom_conv_tol
     element_budget_tol = statics.element_budget_tol
@@ -868,37 +931,10 @@ def _make_runner(
         longdydt_new = longdy_new / dt_lookback
         return longdy_new, longdydt_new, ratio
 
-    def _slope_min(s: JaxIntegState):
-        slope_min = jnp.minimum(
-            jnp.min(s.pv.Kzz / (_SLOPE_MIN_HP_FRAC * s.Hp[:-1]) ** 2),
-            jnp.float64(_SLOPE_MIN_CAP),
-        )
-        return jnp.maximum(slope_min, jnp.float64(_SLOPE_MIN_FLOOR))
-
     def _two_branch(longdy, longdydt, slope_min):
         """Tight (yconv_cri, slope_cri) OR loose (yconv_min, slope_min)."""
-        return (
-            (longdy < jnp.float64(yconv_cri)) & (longdydt < jnp.float64(slope_cri))
-        ) | ((longdy < jnp.float64(yconv_min)) & (longdydt < slope_min))
-
-    def _convergence_ok(s: JaxIntegState):
-        """Convergence predicate shared by `_real_terminate`, the certificate
-        candidate and the hybrid phase-flip.
-
-        `slope_min` is recomputed from the live Hp because atm refresh can
-        change it mid-run.
-
-        The two branches are not equivalent, and every shipped config exits on
-        the LOOSE one: HD189 longdy ~0.09, HD209 ~0.03, W39b ~0.10 at the
-        step-count gates (notes §0), against `yconv_cri` 0.01 and `yconv_min`
-        0.1. Quote the
-        realised `longdy` next to any "converged" claim rather than naming the
-        criterion -- 0.099 against a 0.1 threshold is a weaker statement than
-        0.01. The identical two-branch predicate is upstream's
-        (.oracles/vulcan2_ncho/op.py:1056), so this is inherited.
-        """
-        conv_normal = _two_branch(s.longdy, s.longdydt, _slope_min(s))
-        return conv_normal & (s.aflux_change < jnp.float64(flux_cri))
+        tight, loose = _branches(longdy, longdydt, slope_min, statics)
+        return tight | loose
 
     def _real_terminate(s: JaxIntegState, tangent_ok=True):
         """Real (non-chunk) termination predicate + reason code.
@@ -917,13 +953,8 @@ def _make_runner(
         too_long = s.t > s.runtime_dyn
         too_many = s.accept_count > s.count_max_dyn
 
-        is_converged = _convergence_ok(s)
-
         ready = (s.t > jnp.float64(trun_min)) & (s.accept_count > s.count_min_dyn)
-        # `geom_ok` / `budget_ok` are written by the body on the candidate
-        # step (see there): the refreshed geometry agreed with the
-        # composition, and the column kept its elements since t=0.
-        conv_term = ready & is_converged & s.geom_ok & s.budget_ok & tangent_ok
+        conv_term = ready & _certified(s, statics) & tangent_ok
         real_term = too_long | too_many | conv_term
         if hybrid_vm_static:
             # Phase 0 (upwind) NEVER terminates here: the body flips to phase 1
@@ -1342,7 +1373,7 @@ def _make_runner(
                             t=t_next, accept_count=accept_count_next,
                             longdy_seen_min=longdy_seen_min_next,
                             count_since_new_min=count_since_new_min_next)
-        is_conv_cand = _convergence_ok(s_cand)
+        is_conv_cand = _convergence_ok(s_cand, statics)
         candidate = (
             do_accept
             & is_conv_cand
@@ -1512,7 +1543,7 @@ def _make_runner(
                 accept_count=accept_count_next,
                 Hp=Hp_next,
             )
-            is_conv_after = _convergence_ok(s_after)
+            is_conv_after = _convergence_ok(s_after, statics)
             in_phase0 = s.hybrid_use_vm > jnp.float64(0.5)
             ready_after = (t_next > jnp.float64(trun_min)) & (
                 accept_count_next > s.count_min_dyn
