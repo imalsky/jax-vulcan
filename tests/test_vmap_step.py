@@ -63,7 +63,7 @@ def main() -> int:
     # Time second call (warm)
     t0 = time.time()
     for _ in range(10):
-        sol_warm, delta_warm = js_mod.jax_ros2_step(
+        sol_warm, _ = js_mod.jax_ros2_step(
             jnp.asarray(y0), jnp.asarray(k_arr), data_var.dt, atm_static, net_jax
         )
         sol_warm.block_until_ready()
@@ -86,7 +86,7 @@ def main() -> int:
 
     print(f"\nCompiling vmap'd step (batch={BATCH}) ...")
     t0 = time.time()
-    sol_batch, delta_batch = vstep(y_batch, k_batch, data_var.dt, atm_static, net_jax)
+    sol_batch, _ = vstep(y_batch, k_batch, data_var.dt, atm_static, net_jax)
     sol_batch.block_until_ready()
     print(f"  first vmap call: {time.time() - t0:.2f}s")
 
@@ -100,17 +100,19 @@ def main() -> int:
         f"  10 warm vmap calls: {time.time() - t0:.2f}s ({(time.time() - t0) / 10 * 1000:.1f}ms/step)"
     )
 
-    # Verify all batch elements equal the single-step result
-    sol_batch_np = np.asarray(sol_batch)
-    sol_single_np = np.asarray(sol_single)
+    # Verify all batch elements equal the single-step result: the solution
+    # and the truncation-error array the step controller reads.
     relerr = 0.0
-    for b in range(BATCH):
-        e = np.max(
-            np.abs(sol_batch_np[b] - sol_single_np)
-            / np.maximum(np.abs(sol_single_np), 1e-30)
-        )
-        relerr = max(relerr, e)
-    print(f"\nVmap consistency (batch element vs single): max relerr = {relerr:.3e}")
+    for batched, single in ((sol_batch, sol_single), (delta_batch, delta_single)):
+        single_np = np.asarray(single)
+        for b in range(BATCH):
+            e = np.max(
+                np.abs(np.asarray(batched)[b] - single_np)
+                / np.maximum(np.abs(single_np), 1e-30)
+            )
+            relerr = max(relerr, e)
+    print(f"\nVmap consistency (batch element vs single, sol and delta): "
+          f"max relerr = {relerr:.3e}")
 
     print()
     ok = relerr < 1e-12
