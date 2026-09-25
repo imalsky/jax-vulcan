@@ -52,7 +52,7 @@ YMIX_FLOOR = 1e-15
 SCALE_TOL = 1e-4
 
 
-def _pin_cfg():
+def _pin_cfg(**extra):
     """Pin vulcan_cfg for a small photo-ON batched run: isothermal T-P,
     const_mix init, lowered photo cadence so the branch fires within
     COUNT_MAX. Mirrors test_vmap_while_loop._pin_cfg.
@@ -64,16 +64,17 @@ def _pin_cfg():
     different per-layer cross sections, which is exactly the per-lane data
     this test must prove rides the carry.
     """
-    return fast_cfg(
-        count_max=COUNT_MAX,
-        use_photo=True,
-        ini_mix="const_mix",
-        use_vm_mol=False,
-        use_hybrid_vm_mol=False,
-        nz=40,
-        ini_update_photo_frq=5,
-        T_cross_sp=["H2O"],
-    )
+    return fast_cfg(**{
+        "count_max": COUNT_MAX,
+        "use_photo": True,
+        "ini_mix": "const_mix",
+        "use_vm_mol": False,
+        "use_hybrid_vm_mol": False,
+        "nz": 40,
+        "ini_update_photo_frq": 5,
+        "T_cross_sp": ["H2O"],
+        **extra,
+    })
 def _build_rs(vulcan_cfg, *, Tiso):
     from vulcan_jax.state import RunState
 
@@ -271,6 +272,42 @@ def test_queue_without_refill_is_the_photo_batch():
         ("termination_reason", reason, ref.termination_reason),
     ):
         assert np.array_equal(np.asarray(a), np.asarray(b)), name
+
+
+@pytest.mark.strict_isolation
+def test_refill_on_a_photo_tick_applies_photolysis_once():
+    """A lane refilled at a tick on its photolysis cadence takes photolysis
+    once, from its first step's own gate, as a plain-batch lane does at tick
+    0. With the photo and geometry cadences at 1 every tick is on cadence, so
+    the refilled job sees the ticks it would see alone and the two results
+    are bitwise equal. A second application at the refill moves prev_aflux
+    and aflux_change, and aflux_change gates the convergence certificate.
+    """
+    from vulcan_jax import outer_loop
+
+    vulcan_cfg = _pin_cfg(ini_update_photo_frq=1, final_update_photo_frq=1,
+                          update_frq=1)
+    integ = _build_integ()
+    sA, atmA = integ.prepare_runstate(_build_rs(vulcan_cfg, Tiso=900.0))
+    sB, atmB = integ.prepare_runstate(_build_rs(vulcan_cfg, Tiso=1600.0))
+    fields = ("y", "t", "accept_count", "termination_reason", "aflux_change")
+
+    def out_fn(f):
+        return tuple(getattr(f, name) for name in fields)
+
+    pair, _ = integ.run_queue(
+        lambda job: job,
+        (outer_loop.stack_integ_states([sA, sB]),
+         outer_loop.stack_atm_statics([atmA, atmB])),
+        n_lanes=1, out_fn=out_fn, chunk=1,
+    )
+    alone, _ = integ.run_queue(
+        lambda job: job,
+        (outer_loop.stack_integ_states([sB]), outer_loop.stack_atm_statics([atmB])),
+        n_lanes=1, out_fn=out_fn,
+    )
+    for name, refilled, own in zip(fields, pair, alone):
+        assert np.array_equal(np.asarray(refilled[1]), np.asarray(own[0])), name
 
 
 if __name__ == "__main__":

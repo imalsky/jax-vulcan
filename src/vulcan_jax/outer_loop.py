@@ -2003,13 +2003,12 @@ def _make_runner(
         refill can swap a lane's, and wall time follows total work / n_lanes
         instead of the slowest job.
 
-        Every lane starts on its own photolysis fields, but the two fills
-        reach that differently. The initial fill does NOT apply the photo
-        branch here: those lanes enter at tick 0 and `body_fn`'s cadence
-        (`it % update_photo_frq == 0`) applies it inside their first step,
-        exactly as `runner_batch` does. A refill enters at an arbitrary tick,
-        so it applies the branch at entry; otherwise the job would take its
-        first chemistry steps on the previous occupant's RT state.
+        Every lane starts on its own photolysis fields, applied exactly once
+        before its first chemistry step. A lane whose first tick is on its
+        photo cadence (`it % update_photo_frq == 0`, always true at tick 0)
+        gets them from `body_fn`'s gate inside that step, as in
+        `runner_batch`; a lane refilled off its cadence gets them at entry,
+        or it would step on the previous occupant's RT state.
 
         With `n_lanes >= n_jobs` nothing is ever refilled and every lane runs
         the ticks `runner_batch` would give it, so the result is bitwise
@@ -2048,18 +2047,29 @@ def _make_runner(
                 lambda x: x[j] if jnp.ndim(x) > 0 else x, jobs
             )
 
-        def fresh(j, *, photo):
+        def fresh(j, *, first_tick):
             """(k,) job ids -> k fresh lane states, their atmosphere ARRAYS,
             and the AtmStatic the arrays belong to (toggles unmapped).
 
-            `photo=True` puts the state on its own photolysis fields here;
-            see the two fills in the docstring."""
+            `first_tick` is the tick of the lanes' first step; a lane off its
+            photo cadence there is put on its own photolysis fields here (see
+            the docstring). The initial fill passes 0, which is on every
+            cadence."""
             st, atm = jax.vmap(
                 lambda jj: init_fn(job_at(jj)),
                 out_axes=(0, _ATM_STATIC_BATCH_AXES),
             )(j)
-            if photo and photo_branch is not None and use_photo_static:
-                st = jax.vmap(photo_branch)(st)
+            if (photo_branch is not None and use_photo_static
+                    and not isinstance(first_tick, int)):
+                off = jnp.mod(first_tick, st.update_photo_frq) != jnp.int32(0)
+                lit = jax.vmap(photo_branch)(st)
+                st = st._replace(**{
+                    f: jnp.where(
+                        off.reshape((-1,) + (1,) * (jnp.ndim(getattr(lit, f)) - 1)),
+                        getattr(lit, f), getattr(st, f),
+                    )
+                    for f in _PHOTO_FIELDS
+                })
             return st, {f: getattr(atm, f) for f in arr_fields}, atm
 
         step = jax.vmap(
@@ -2069,7 +2079,7 @@ def _make_runner(
         )
 
         j0 = jnp.arange(n_lanes, dtype=jnp.int32)
-        lanes, atm_l, atm_tmpl = fresh(j0, photo=False)
+        lanes, atm_l, atm_tmpl = fresh(j0, first_tick=0)
         # Only the toggles are kept from the template: the array fields ride
         # the carry, so holding the initial ones here would bake n_lanes
         # columns into the program as constants.
@@ -2116,7 +2126,7 @@ def _make_runner(
             jid = nxt + jnp.cumsum(sel_free, dtype=jnp.int32) - jnp.int32(1)
             got = sel_free & (jid < jnp.int32(n_jobs))
             # `init_fn` runs on every slot, valid or not: shapes are fixed.
-            new_st, new_atm, _ = fresh(jid, photo=True)
+            new_st, new_atm, _ = fresh(jid, first_tick=it)
 
             def put(lane_arr, new):
                 g = got.reshape((-1,) + (1,) * (new.ndim - 1))
