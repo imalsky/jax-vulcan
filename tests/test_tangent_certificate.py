@@ -128,7 +128,7 @@ def _check(case):
     # certified tangent must already be the settled one
     cont = final._replace(count_min_dyn=jnp.int32(n + CONTINUE_STEPS),
                           count_max_dyn=jnp.int32(n + 3 * CONTINUE_STEPS))
-    final2, dfinal2, tl2, ok2 = integ.run_jvp(cont, static, dfinal, datm)
+    final2, dfinal2, _tl2, ok2 = integ.run_jvp(cont, static, dfinal, datm)
     assert int(final2.termination_reason) == 1 and bool(ok2)
     dln_ad2 = np.asarray(dfinal2.ymix) / np.asarray(final2.ymix)
     moved = float(np.max(np.abs(dln_ad2 - dln_ad)[m]))

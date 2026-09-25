@@ -104,8 +104,7 @@ from .conden import (
     update_conden_rates,
 )
 from .jax_step import AtmStatic, jax_ros2_step
-
-jax.config.update("jax_enable_x64", True)
+from .phy_const import UNDERFLOW_DENOM as _UNDERFLOW_DENOM
 
 
 # --- Solver-map / LGMRES knobs (adjoint-only constants) ---
@@ -151,10 +150,6 @@ _SPREAD_WARN = 0.15
 # Warn above this ensemble spread (max over top-10 reactions by |mean| of
 # (max-min)/|mean|): the twins disagree on the reactions one would report;
 # treat magnitudes as ranking weights.
-
-_UNDERFLOW_DENOM = 1e-300
-# Numerical floor for `/max(|x|, .)` normalizers (norms, op-scale, pair sums).
-# Below-which-is-zero guard, not a tuning knob.
 
 LGMRES_INNER_M = 60
 # scipy.sparse.linalg.lgmres inner Krylov dimension.

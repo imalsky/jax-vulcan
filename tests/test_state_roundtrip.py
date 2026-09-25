@@ -1,9 +1,9 @@
-"""Typed pre-loop pytree round-trip.
+"""Typed pre-loop pytree schema.
 
-Asserts that `pytree_from_store(var, atm)` produces a `RunState` whose
-re-write via `apply_pytree_to_store` and re-read via
-`pytree_from_store` yields a tree-equal pytree. Pins the schema so
-future setup-pipeline edits cannot silently drop a field.
+`pytree_from_store(var, atm)` must carry every runner-visible field, and
+the RunState-backed `.vul` writer must expose VULCAN-master's parameter
+keys. Pins the schema so future setup-pipeline edits cannot silently drop
+a field.
 """
 
 from __future__ import annotations
@@ -12,59 +12,12 @@ import os
 import warnings
 from pathlib import Path
 
-import jax
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 
 warnings.filterwarnings("ignore")
-
-
-def _equal_leaf(a, b) -> bool:
-    """Bit-exact equality on a single leaf (handles both float scalars
-    and ndarrays / jax arrays)."""
-    a_arr = np.asarray(a)
-    b_arr = np.asarray(b)
-    if a_arr.shape != b_arr.shape:
-        return False
-    if a_arr.dtype.kind in {"f", "c"}:
-        return bool(np.array_equal(a_arr, b_arr, equal_nan=True))
-    return bool(np.array_equal(a_arr, b_arr))
-
-
-def _pytree_equal(p, q) -> bool:
-    leaves_p, treedef_p = jax.tree_util.tree_flatten(p)
-    leaves_q, treedef_q = jax.tree_util.tree_flatten(q)
-    if treedef_p != treedef_q:
-        return False
-    if len(leaves_p) != len(leaves_q):
-        return False
-    for la, lb in zip(leaves_p, leaves_q):
-        if not _equal_leaf(la, lb):
-            return False
-    return True
-
-
-def test_roundtrip_hd189(hd189_state):
-    """`pytree_from_store -> apply_pytree_to_store -> pytree_from_store`
-    is identity on the canonical HD189 reference state."""
-    from vulcan_jax.state import pytree_from_store, apply_pytree_to_store
-
-    var = hd189_state.var
-    atm = hd189_state.atm
-
-    # Snapshot once.
-    pt_a = pytree_from_store(var, atm)
-    # Round-trip through the legacy containers and snapshot again.
-    apply_pytree_to_store(pt_a, var, atm)
-    pt_b = pytree_from_store(var, atm)
-
-    assert _pytree_equal(pt_a, pt_b), (
-        "RunState round-trip is lossy — a field is being dropped or "
-        "perturbed by apply_pytree_to_store / pytree_from_store. Check "
-        "for missing arrays in state.AtmInputs / RateInputs / PhotoInputs."
-    )
 
 
 def test_roundtrip_field_set_complete(hd189_state):

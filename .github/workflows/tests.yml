@@ -41,18 +41,14 @@ jobs:
         #   test_nh3_conden_batch_subprocess: ~10 min, a local-only test.
         #   test_forward_jvp_physical: its one-step FD probe swings with CPU/XLA
         #     past the 30% bound (test_forward_jvp_integration is the FD gate).
-        #   test_batched_forward_mode_runner: a ~5 GiB compile; runs alone below.
         #   test_tangent_certificate: +8.3 / +5.7 GB of its own.
         #   the two test_atm_setup_matrix cases: ~8 and ~4 min (expn on the grid).
+        #   the queue-vs-batch jvp pin in test_run_queue: 6.4 GB peak, ~2 min.
         run: >-
           python -m pytest tests -n 3 -q --tb=short -ra --durations=15
           --deselect tests/test_nh3_conden_batch_subprocess.py
           --deselect tests/test_forward_jvp_physical.py
-          --deselect tests/test_vmap_while_loop.py::test_batched_forward_mode_runner
           --deselect tests/test_tangent_certificate.py
+          --deselect tests/test_run_queue.py::test_queue_jvp_without_refill_is_the_batch_jvp
           --deselect tests/test_atm_setup_matrix.py::test_TP_H14_matches_scipy_reference
           --deselect "tests/test_atm_setup_matrix.py::test_load_TPK_atm_types[analytical-1000000000.0-0.01-50-2140.0]"
-      - name: Run the batched forward-mode test alone
-        env:
-          VULCAN_JAX_ALLOW_MISSING_FIXTURES: "1"
-        run: python -m pytest tests/test_vmap_while_loop.py::test_batched_forward_mode_runner -q --tb=short -ra

@@ -133,13 +133,6 @@ use_ini_cold_trap: false
 use_sat_surfaceH2O: false
 st_factor: 0.5
 conv_step: 500
-# JAX-ONLY convergence fallback. No counterpart in VULCAN 2.0 master or
-# vm_branch, so a VULCAN 2 parity run must keep this false. When false the
-# predicate is folded away at trace time (bit-identical to not having it).
-# `conv_stall_window` is the lookback and is NOT an off switch: it must be
-# >= 1, and a small value makes the fallback fire sooner, not never.
-use_conv_stall: false
-conv_stall_window: 200
 use_print_prog: true
 dttry: 1.0e-10
 trun_min: 100.0
@@ -205,11 +198,6 @@ photo_switch_longdydt_thresh: 1.0e-06
 # bottom mixing ratios are snapshotted and pinned. Inert otherwise.
 hycean_pin_time: 1000000.0
 loss_ex: []
-# Opt-in end-of-run report of the operator-weighted column budget
-# (ini_abun.column_atom_loss): the invariant the discrete transport operator
-# conserves, not a physical dz-weighted column. Diagnostic only; step
-# acceptance always uses the unweighted master-parity atom_loss.
-report_column_atom_loss: false
 # Shared by the EQ Gibbs seed and the const_lowT Newton solve. 450 is 2.1x
 # the worst iteration count measured over the prior box (214, an isothermal
 # 300 K column); the loop exits on the residual, so headroom costs nothing.

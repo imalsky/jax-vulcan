@@ -25,6 +25,7 @@ import os
 import warnings
 from pathlib import Path
 
+import jax.numpy as jnp
 import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,7 +44,7 @@ def main() -> int:
     from vulcan_jax.state import RunState, legacy_view
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
-    data_var, data_atm, data_para = legacy_view(rs)
+    data_var, data_atm, _ = legacy_view(rs)
 
     # Perturb ymix so mu (hence the scale height and zco) is non-trivial
     # relative to the initial state — otherwise the refresh reproduces the
@@ -65,9 +66,8 @@ def main() -> int:
     Rp = float(st.Rp)
     pref_indx = int(st.pref_indx)
 
-    init_state = integ._pack_state(data_var, data_para, data_atm)
     _mu, g_j, _Hp, _dz, zco_j, _dzi, _Hpi = atm_refresh.update_mu_dz_jax(
-        init_state.ymix, st
+        jnp.asarray(data_var.ymix), st
     )
 
     g = np.asarray(g_j, dtype=np.float64)
@@ -105,7 +105,7 @@ def main() -> int:
     mol_mass = np.asarray(st.mol_mass, dtype=np.float64)
     Navo = float(st.Navo)
     kb = float(st.kb)
-    ymix = np.asarray(init_state.ymix, dtype=np.float64)
+    ymix = np.asarray(data_var.ymix, dtype=np.float64)
     mu = ymix @ mol_mass
 
     zco_const = np.zeros(nz, dtype=np.float64)

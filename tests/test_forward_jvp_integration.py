@@ -24,8 +24,7 @@ def _check_gradient():
 
     jax.config.update("jax_enable_x64", True)
     cfg = load_config("default", use_photo=False, use_print_prog=False,
-                      yconv_cri=1e-3, yconv_min=1e-3,
-                      conv_stall_window=10**9)
+                      yconv_cri=1e-3, yconv_min=1e-3)
     rs = RunState.with_pre_loop_setup(cfg)
     _, atm, para = legacy_view(rs)
     net = parse_network(cfg.network)

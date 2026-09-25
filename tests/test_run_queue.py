@@ -139,6 +139,44 @@ def test_queue_without_refill_is_the_batch(prepared):
     assert bool(np.all(np.asarray(done)))
 
 
+def test_queue_jvp_without_refill_is_the_batch_jvp():
+    """The queue stops the gradient of its certificate-only lane fields
+    (`outer_loop._QUEUE_STOP_FIELDS`: they steer predicates, never y). With
+    no refill a jvp through the queue must equal the jvp through the lockstep
+    batch bitwise on the CPU, primal and tangent: a stopped field that fed y
+    would zero part of the tangent. A small column keeps the two forward-mode
+    programs cheap."""
+    from _helpers import fast_cfg
+
+    from vulcan_jax import outer_loop
+
+    cfg = fast_cfg(count_max=8, nz=12, use_vm_mol=False, use_hybrid_vm_mol=False)
+    integ = _build_integ()
+    pairs = [integ.prepare_runstate(_build_rs(cfg, Tiso=T)) for T in (900.0, 1200.0)]
+    s0 = outer_loop.stack_integ_states([s for s, _ in pairs])
+    a0 = outer_loop.stack_atm_statics([a for _, a in pairs])
+
+    def jobs(x):
+        """Every lane's Kzz scaled by exp(x): d/d ln Kzz at x = 0."""
+        f = jnp.exp(x)
+        return (s0._replace(pv=s0.pv._replace(Kzz=s0.pv.Kzz * f)),
+                a0._replace(Kzz=a0.Kzz * f))
+
+    def batch_y(x):
+        return integ.run_batch(*jobs(x)).y
+
+    def queue_y(x):
+        (y, *_), _n_iter = integ.run_queue(_ident, jobs(x), n_lanes=2, out_fn=_out_fn)
+        return y
+
+    x0, dx = jnp.float64(0.0), jnp.float64(1.0)
+    y_b, dy_b = jax.jvp(batch_y, (x0,), (dx,))
+    y_q, dy_q = jax.jvp(queue_y, (x0,), (dx,))
+    assert float(jnp.max(jnp.abs(dy_b))) > 0.0, "vacuous: zero tangent"
+    assert np.array_equal(np.asarray(y_q), np.asarray(y_b))
+    assert np.array_equal(np.asarray(dy_q), np.asarray(dy_b))
+
+
 @pytest.mark.parametrize("n_lanes,chunk", [(2, 1), (2, 2), (3, 8)])
 def test_queue_refills_and_matches_the_batch_at_the_convergence_scale(
     prepared, n_lanes, chunk

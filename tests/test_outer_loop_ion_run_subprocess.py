@@ -76,8 +76,6 @@ cfg.use_fix_sp_bot = {}; cfg.use_ini_cold_trap = False
 cfg.count_min = 150; cfg.count_max = 400
 cfg.ini_update_photo_frq = 20; cfg.final_update_photo_frq = 5
 cfg.use_print_prog = False
-cfg.use_live_plot = False; cfg.use_live_flux = False
-cfg.use_save_movie = False; cfg.use_flux_movie = False
 
 # cfg is the process default config (mutated above); the runner/printer read it
 # via OuterLoop's default. The ion network was selected by $VULCAN_JAX_NETWORK
@@ -86,8 +84,7 @@ import vulcan_jax.outer_loop as outer_loop
 import vulcan_jax.legacy_io as op
 
 import vulcan_jax.op_jax as op_jax
-from vulcan_jax.atm_setup import Atm
-from vulcan_jax.state import RunState, legacy_view
+from vulcan_jax.state import RunState
 from vulcan_jax.chem_funs import spec_list as SL
 
 
@@ -128,26 +125,21 @@ i_H2p, i_Hp, i_e = SL.index("H2_p"), SL.index("H_p"), SL.index("e")
 y0 = np.asarray(rs.step.y, dtype=np.float64)
 ion0 = float(y0[:, [i_H2p, i_Hp]].max())  # initial ion density (expected ~0)
 
-# ---------- Drive the bounded integration (legacy path mutates var) ----------
-data_var, data_atm, data_para = legacy_view(rs)
-data_para.start_time = time.time()
-solver = op_jax.Ros2JAX()
-if rs.photo_static is not None:
-    solver._photo_static = rs.photo_static
-integ = outer_loop.OuterLoop(solver, op.Output())
-solver.naming_solver(data_para)
+# ---------- Drive the bounded integration ----------
+integ = outer_loop.OuterLoop(op_jax.Ros2JAX(), op.Output())
 t0 = time.time()
-integ(data_var, data_atm, data_para, Atm())
+rs_out = integ(rs)
+t_end, dt_end = float(rs_out.step.t), float(rs_out.step.dt)
 print("   ran count=%d t=%.3e dt=%.3e in %.1fs"
-      % (data_para.count, float(data_var.t), float(data_var.dt), time.time() - t0))
+      % (int(rs_out.params.count), t_end, dt_end, time.time() - t0))
 
-y = np.asarray(data_var.y, dtype=np.float64)
+y = np.asarray(rs_out.step.y, dtype=np.float64)
 
 # ---------- Check D (early): finite + advanced ----------
 if not np.isfinite(y).all():
     fail("non-finite abundances after run")
-if not (float(data_var.t) > 0.0 and np.isfinite(float(data_var.dt)) and float(data_var.dt) > 0.0):
-    fail("time/step not finite-positive (t=%r dt=%r)" % (data_var.t, data_var.dt))
+if not (t_end > 0.0 and np.isfinite(dt_end) and dt_end > 0.0):
+    fail("time/step not finite-positive (t=%r dt=%r)" % (t_end, dt_end))
 
 # ---------- Check B: photoionisation produced ions (0 -> >0) ----------
 H2p_max = float(y[:, i_H2p].max())
@@ -180,7 +172,7 @@ if float(np.max(cation)) <= 0.0:
 print("C NEUTRAL layers=%d max_rel_resid=%.3e e_max=%.3e cation_max=%.3e"
       % (int(mask.sum()), relresid, float(e_dens.max()), float(cation.max())))
 
-print("D STABLE finite=ok t=%.3e dt=%.3e" % (float(data_var.t), float(data_var.dt)))
+print("D STABLE finite=ok t=%.3e dt=%.3e" % (t_end, dt_end))
 print("PASS")
 """
 

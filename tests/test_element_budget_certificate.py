@@ -8,10 +8,10 @@ during it, normalised by the fixed t=0 column (`budget_ref`), and may end only
 within `element_budget_tol`. A geometry refresh moves no atom, so it never
 enters the sum, and it cannot rescale a deficit already accumulated.
 
-The carry is seeded directly (the stall-gate idiom): the chemistry criteria
-are opened up so `conv_normal` holds on the first accepted step, leaving the
-budget term as the only discriminator, and the run terminates after that one
-step iff the column kept its elements.
+The carry is seeded directly: the chemistry criteria are opened up so
+`conv_normal` holds on the first accepted step, leaving the budget term as the
+only discriminator, and the run terminates after that one step iff the column
+kept its elements.
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ def test_certificate_requires_the_column_element_budget(drain, scale, reason, wh
     that column to the present one: the run behaves as if it had lost that
     much carbon since t=0 (-0.73 of the C column at 4x, against
     `element_budget_tol` 1e-2). `scale` multiplies the whole starting column:
-    the term is measured relative to H (0.10.1), so a common factor (the
+    the term is measured relative to H, so a common factor (the
     hydrostatic renormalisation) must still certify.
     """
     import vulcan_jax.legacy_io as op

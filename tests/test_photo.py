@@ -169,7 +169,6 @@ def main() -> int:
 
     max_relerr3 = 0.0
     n_compared = 0
-    n_failed = 0
     for k in photo_J.branch_keys + photo_J.branch_T_keys:
         if k not in J_ref:
             continue
@@ -179,8 +178,6 @@ def main() -> int:
         if err > max_relerr3:
             max_relerr3 = err
         n_compared += 1
-        if err > 1e-6 and ref.max() > 1e-30:
-            n_failed += 1
     print(f"compute_J max relerr: {max_relerr3:.3e} (over {n_compared} branches)")
 
     print()

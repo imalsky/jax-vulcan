@@ -37,7 +37,7 @@ def main() -> int:
     import vulcan_jax.legacy_io as op
     import vulcan_jax.op_jax as op_jax
     import vulcan_jax.outer_loop as outer_loop
-    from vulcan_jax.state import RunState, legacy_view
+    from vulcan_jax.state import RunState, legacy_view, runstate_from_store
 
     # --- Build HD189 reference state with the photo pre-loop (as
     # `vulcan_jax.py` does before entering the integration loop). ---
@@ -100,20 +100,36 @@ def main() -> int:
     # --- Path B: photo branch inside the JAX runner ---
     integ = outer_loop.OuterLoop(solver, output)
     integ._ensure_runner(data_var, data_atm)
-    init_state = integ._pack_state(data_var, data_para, data_atm)
+    init_state = integ._pack_state_from_runstate(
+        runstate_from_store(data_var, data_atm, data_para)._replace(
+            photo_static=rs.photo_static
+        )
+    )
     photo_branch = outer_loop._make_photo_branch(integ._photo_static)
     final_state = photo_branch(init_state)
-    integ._unpack_state(final_state, data_var, data_para, data_atm)
 
-    tau_B = data_var.tau.copy()
-    aflux_B = data_var.aflux.copy()
-    sflux_B = data_var.sflux.copy()
-    dflux_d_B = data_var.dflux_d.copy()
-    dflux_u_B = data_var.dflux_u.copy()
-    prev_aflux_B = data_var.prev_aflux.copy()
-    aflux_change_B = float(data_var.aflux_change)
-    k_arr_B = data_var.k_arr.copy()
-    J_sp_B = {k: np.copy(v) for k, v in data_var.J_sp.items()}
+    tau_B = np.asarray(final_state.tau)
+    aflux_B = np.asarray(final_state.aflux)
+    sflux_B = np.asarray(final_state.sflux)
+    dflux_d_B = np.asarray(final_state.dflux_d)
+    dflux_u_B = np.asarray(final_state.dflux_u)
+    prev_aflux_B = np.asarray(final_state.prev_aflux)
+    aflux_change_B = float(final_state.aflux_change)
+    k_arr_B = np.asarray(final_state.k_arr)
+    # The per-branch J rows keyed as op.compute_J keys its dict (op.py:2764,
+    # 2783): one entry per (sp, branch) plus the per-species (sp, 0) total.
+    nz = aflux_B.shape[0]
+    J_sp_B = {
+        (sp, bn): np.zeros(nz)
+        for sp in data_var.photo_sp
+        for bn in range(data_var.n_branch[sp] + 1)
+    }
+    photo_J_data = integ._photo_static.photo_J_data
+    for keys, rows in ((photo_J_data.branch_keys, final_state.J_br),
+                       (photo_J_data.branch_T_keys, final_state.J_br_T)):
+        for i, key in enumerate(keys):
+            J_sp_B[key] = np.asarray(rows[i])
+            J_sp_B[(key[0], 0)] = J_sp_B[(key[0], 0)] + J_sp_B[key]
 
     ok = True
 

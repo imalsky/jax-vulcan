@@ -13,7 +13,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
-_UNDERFLOW_DENOM = 1e-300
+from .phy_const import UNDERFLOW_DENOM
 
 
 def hydrostatic_step(T, mu, g, p_lo, p_hi, kb, Navo):
@@ -22,11 +22,11 @@ def hydrostatic_step(T, mu, g, p_lo, p_hi, kb, Navo):
     The single definition of the formula: `atm_setup._scan_up_mu_dz_g` and
     `_scan_down_mu_dz_g` call it too. It lives here because `atm_setup`
     imports `atm_refresh`, not the other way round. The two integrations had
-    drifted -- only this one clamped the denominator -- and `_UNDERFLOW_DENOM`
+    drifted -- only this one clamped the denominator -- and `UNDERFLOW_DENOM`
     binds only when `mu*g` underflows to zero (a layer with no gas), so it is
     a no-op on any physical column.
     """
-    denom = jnp.maximum(mu / Navo * g, _UNDERFLOW_DENOM)
+    denom = jnp.maximum(mu / Navo * g, UNDERFLOW_DENOM)
     Hp = kb * T / denom
     return Hp, Hp * jnp.log(p_lo / p_hi)
 

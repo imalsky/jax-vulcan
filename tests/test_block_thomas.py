@@ -18,7 +18,7 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
-import vulcan_jax.solver as solver_mod
+from _oracles import block_thomas, block_thomas_diag_offdiag
 
 
 def _dense_from_blocks(diag, sup, sub):
@@ -65,8 +65,8 @@ def test_block_thomas_solvers_agree_with_dense_solve(case):
     x_ref = np.linalg.solve(_dense_from_blocks(diag_np, np.asarray(sup),
                                                np.asarray(sub)),
                             rhs_np.reshape(-1)).reshape(nz, ni)
-    x_dense = np.asarray(solver_mod.block_thomas(diag, sup, sub, rhs))
-    x_diag = np.asarray(solver_mod.block_thomas_diag_offdiag(
+    x_dense = np.asarray(block_thomas(diag, sup, sub, rhs))
+    x_diag = np.asarray(block_thomas_diag_offdiag(
         diag, jnp.asarray(sup_d), jnp.asarray(sub_d), rhs))
 
     err_dense = np.max(np.abs(x_dense - x_ref)
@@ -86,7 +86,7 @@ def test_grad_through_diag_offdiag_is_finite():
     rhs = jnp.asarray(rng.standard_normal((nz, ni)))
 
     def loss(d):
-        return jnp.sum(solver_mod.block_thomas_diag_offdiag(
+        return jnp.sum(block_thomas_diag_offdiag(
             d, sup_d, sub_d, rhs) ** 2)
 
     assert bool(jnp.all(jnp.isfinite(jax.grad(loss)(diag))))

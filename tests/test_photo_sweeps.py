@@ -80,7 +80,7 @@ def test_associative_sweeps_match_sequential():
     zeta_p = 0.5 * (1.0 + (1.0 - w0) ** 0.5)
     zeta_m = 0.5 * (1.0 - (1.0 - w0) ** 0.5)
     chi = zeta_m**2 * tran**2 - zeta_p**2
-    chi = np.where(chi > -photo_mod._UNDERFLOW_DENOM, -photo_mod._UNDERFLOW_DENOM, chi)
+    chi = np.where(chi > -photo_mod.UNDERFLOW_DENOM, -photo_mod.UNDERFLOW_DENOM, chi)
     xi = zeta_p * zeta_m * (1.0 - tran**2)
     phi = (zeta_m**2 - zeta_p**2) * tran
 

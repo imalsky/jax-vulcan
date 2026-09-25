@@ -133,5 +133,38 @@ def test_troe_oh_ch3_is_visscher_moses_eq14(T, Pr):
     assert abs(got - want) <= 1e-12 * want
 
 
+def test_lindemann_with_zero_k_inf_is_the_zero_rate_limit():
+    """`k_inf == 0` on a falloff row is the zero-rate limit: the row reads
+    exactly 0, with a finite tangent, not the guard value's low-pressure
+    `arr / (1 + arr*M)`. A mis-shaped M raises instead of broadcasting the
+    bottom layer's density over the column."""
+    from vulcan_jax import network as net_mod
+    from vulcan_jax import rates_jax
+    from vulcan_jax._paths import resolve_data_path
+    from vulcan_jax.config import default_config
+
+    net = net_mod.parse_network(str(resolve_data_path(default_config().network)))
+    falloff = np.logical_and(
+        np.asarray(net.has_kinf, dtype=bool),
+        np.logical_not(np.asarray(net.is_special, dtype=bool)),
+    )
+    rows = np.flatnonzero(falloff)
+    T = jnp.linspace(500.0, 2500.0, 6)
+    M = jnp.full(6, 1e18)
+    k_ref = rates_jax.compute_forward_k(net, T, M)
+    assert bool(jnp.any(k_ref[rows] > 0.0)), "no live falloff row to test"
+
+    a_inf = jnp.asarray(net.a_inf, dtype=jnp.float64).at[rows].set(0.0)
+    k, dk = jax.jvp(
+        lambda a: rates_jax.compute_forward_k(net, T, M, a_inf=a),
+        (a_inf,), (jnp.ones_like(a_inf),),
+    )
+    assert bool(jnp.all(k[rows] == 0.0))
+    assert bool(jnp.all(jnp.isfinite(k))) and bool(jnp.all(jnp.isfinite(dk)))
+
+    with pytest.raises(ValueError, match="same shape"):
+        rates_jax.compute_forward_k(net, T, M[:1])
+
+
 if __name__ == "__main__":
     raise SystemExit(main())

@@ -240,7 +240,7 @@ def test_charge_list_no_ions():
     assert cl == [], f"expected empty charge_list, got {cl}"
 
 
-def test_column_atom_loss_uses_the_operator_invariant():
+def test_column_atoms_uses_the_operator_invariant():
     """The column budget must weight by what transport conserves.
 
     A flux-form update `n_j += (F_{j-1/2} - F_{j+1/2}) / w_j` with zero
@@ -249,12 +249,16 @@ def test_column_atom_loss_uses_the_operator_invariant():
     on a nonuniform grid. On a uniform grid `w == dz`, so the budget reduces
     to the unweighted `atom_loss` relative change identically.
     """
-    from vulcan_jax.ini_abun import column_atom_loss, operator_column_weights
+    from vulcan_jax.ini_abun import column_atoms, operator_column_weights
 
     rng = np.random.default_rng(7)
     nz, ni, na = 12, 5, 3
     compo = rng.uniform(0.0, 3.0, (ni, na))
     y0 = rng.uniform(1e8, 1e10, (nz, ni))
+
+    def column_change(y, y0, dz):
+        c0 = np.asarray(column_atoms(y0, dz, compo))
+        return (np.asarray(column_atoms(y, dz, compo)) - c0) / c0
 
     # Nonuniform (jumpy) grid: apply random interface fluxes per species.
     dz = rng.uniform(1e5, 9e5, nz)
@@ -263,8 +267,7 @@ def test_column_atom_loss_uses_the_operator_invariant():
     y1 = y0 + (
         np.vstack([np.zeros((1, ni)), flux]) - np.vstack([flux, np.zeros((1, ni))])
     ) / w[:, None]
-    drift = np.asarray(column_atom_loss(y1, y0, dz, compo_arr=compo))
-    np.testing.assert_allclose(drift, 0.0, atol=1e-12)
+    np.testing.assert_allclose(column_change(y1, y0, dz), 0.0, atol=1e-12)
     dz_drift = np.einsum("z,zi,ia->a", dz, y1 - y0, compo)
     dz_ref = np.einsum("z,zi,ia->a", dz, y0, compo)
     assert np.max(np.abs(dz_drift / dz_ref)) > 1e-6, (
@@ -278,10 +281,6 @@ def test_column_atom_loss_uses_the_operator_invariant():
     unweighted = (
         np.einsum("zi,ia->a", y2, compo) - np.einsum("zi,ia->a", y0, compo)
     ) / np.einsum("zi,ia->a", y0, compo)
-    np.testing.assert_allclose(
-        np.asarray(column_atom_loss(y2, y0, dz_u, compo_arr=compo)),
-        unweighted,
-        rtol=1e-12,
-    )
+    np.testing.assert_allclose(column_change(y2, y0, dz_u), unweighted, rtol=1e-12)
 
 

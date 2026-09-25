@@ -21,7 +21,7 @@ from .chem import NetworkArrays, chem_jac_analytical
 from .chem_funs import chem_rhs_codegen as _chem_rhs
 from .chem_funs import spec_list as _SPEC_LIST
 from .config import REPAIR_ABS_FLOOR, default_config
-from .phy_const import Navo, kb
+from .phy_const import UNDERFLOW_DENOM, Navo, kb
 
 _SOLVER = os.environ.get("VULCAN_JAX_SOLVER", "fast")  # import-frozen: reference | fast | ffi
 if _SOLVER == "reference":
@@ -33,11 +33,7 @@ else:  # see solver_fast.py
     from .solver_fast import factor as factor_block_thomas_diag_offdiag
     from .solver_fast import solve as solve_block_thomas_diag_offdiag
 
-jax.config.update("jax_enable_x64", True)
-
 _CFG = default_config()
-# Pure numerical floor for ysum denominators; not a tuning knob.
-_UNDERFLOW_DENOM = 1e-300
 
 # (atom, reservoir) pairs for the atom-conservation projection: each atom's
 # per-layer production residual is distributed onto its abundant reservoir
@@ -515,7 +511,7 @@ def _build_diff_coeffs_jax(y, atm: AtmStatic, grav: DiffGrav):
     nz = atm.Tco.shape[0]
 
     ysum = jnp.sum(jnp.where(atm.gas_indx_mask[None, :], y, 0.0), axis=1)
-    ysum = jnp.maximum(ysum, _UNDERFLOW_DENOM)
+    ysum = jnp.maximum(ysum, UNDERFLOW_DENOM)
 
     # Build full nz arrays of interior values, then overwrite the boundaries.
     j_int = jnp.arange(1, nz - 1)
@@ -836,26 +832,6 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
     sol = y + (3.0 / (2.0 * r)) * k1 + (1.0 / (2.0 * r)) * k2
     delta_arr = jnp.abs(sol - yk2)
     return sol, delta_arr
-
-
-def _stage_defects(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays):
-    """Test surface: per-layer, per-atom defect of each stage vector against
-    its element identity, and the bound the repair leaves it under:
-    `max(_DEFECT_FLOOR * scale, REPAIR_ABS_FLOOR * c0 * n_tot)` with
-    `scale` the atom-weighted sum of the identity's terms (`c0 |k|`, `|T k|`
-    contributions, `|b_tr|`). Returns (k1, k2, defect1, defect2, bound)."""
-    k1, k2, _, (c0, diag_d, sup_d, sub_d, b1, b2) = _ros2_stages(
-        y, k_arr, dt, atm, net, None
-    )
-    n_tot = jnp.sum(y, axis=1, keepdims=True)
-
-    def parts(k, b):
-        return _stage_defect(k, b, c0, diag_d, sup_d, sub_d, with_scale=True)
-
-    d1, s1 = parts(k1, b1)
-    d2, s2 = parts(k2, b2)
-    bound = jnp.maximum(_DEFECT_FLOOR * jnp.maximum(s1, s2), REPAIR_ABS_FLOOR * c0 * n_tot)
-    return k1, k2, d1, d2, bound
 
 
 def make_atm_static(atm, ni: int, nz: int, cfg=None) -> AtmStatic:

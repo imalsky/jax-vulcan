@@ -143,11 +143,10 @@ class ParamInputs(NamedTuple):
     pic_count: int
     where_varies_most: jnp.ndarray  # shape: (nz, ni)
     fix_species_start: bool
-    # Why the integration stopped, finer than `end_case` (which reports 1 for
-    # both normal and stall convergence): 0 running, 1 converged, 2 runtime,
-    # 3 step-count, 4 stall, 5 non-finite. Codes match the runner's
-    # `JaxIntegState.termination_reason`. Defaulted so positional callers
-    # keep working.
+    # Why the integration stopped: 0 running, 1 converged, 2 runtime,
+    # 3 step-count, 5 non-finite (4 is unassigned). Codes match the runner's
+    # `JaxIntegState.termination_reason`; `end_case` is the coarser master
+    # code. Defaulted so a positional constructor may omit it.
     termination_reason: int = 0
 
 
@@ -213,21 +212,21 @@ class RunState(NamedTuple):
     atm: AtmInputs
     rate: RateInputs
     photo: PhotoInputs
-    # Runner-state slots. Default `None` so legacy callers of
-    # `pytree_from_store` (which only fills atm/rate/photo) keep working.
+    # Runner-state slots. Default `None`: `pytree_from_store` fills only
+    # atm/rate/photo.
     step: Optional[StepInputs] = None
     params: Optional[ParamInputs] = None
     atoms: Optional[AtomInputs] = None
     photo_runtime: Optional[PhotoRuntimeInputs] = None
     fix_species: Optional[FixSpeciesInputs] = None
-    # Host-side static metadata + photo cross-section pytree. `metadata`
-    # defaults to None so legacy `runstate_from_store` callers keep working;
-    # the canonical `with_pre_loop_setup(cfg)` builder populates both.
+    # Host-side static metadata + photo cross-section pytree. Both default
+    # to None for partial RunStates; `with_pre_loop_setup(cfg)` fills both
+    # (`runstate_from_store` fills `metadata` only).
     metadata: Optional[RunMetadata] = None
     photo_static: Optional[PhotoStaticInputs] = None
 
-    @classmethod
-    def with_pre_loop_setup(cls, cfg, *, skip_chem_warmup: bool = False) -> "RunState":
+    @staticmethod
+    def with_pre_loop_setup(cfg, *, skip_chem_warmup: bool = False) -> "RunState":
         """Build a fully-initialised `RunState` from a config.
 
         Runs the full pre-loop pipeline (atmosphere structure, rate constants
@@ -343,42 +342,6 @@ def pytree_from_store(var, atm) -> RunState:
     )
 
     return RunState(atm=atm_inputs, rate=rate_inputs, photo=photo_inputs)
-
-
-def apply_pytree_to_store(state: RunState, var, atm) -> None:
-    """Reverse adapter: write atm+rate+photo fields back into (var, atm)."""
-    atm.pco = np.asarray(state.atm.pco)
-    atm.pico = np.asarray(state.atm.pico)
-    atm.Tco = np.asarray(state.atm.Tco)
-    atm.Kzz = np.asarray(state.atm.Kzz)
-    atm.vz = np.asarray(state.atm.vz)
-    atm.M = np.asarray(state.atm.M)
-    atm.n_0 = np.asarray(state.atm.n_0)
-    atm.mu = np.asarray(state.atm.mu)
-    atm.g = np.asarray(state.atm.g)
-    atm.Hp = np.asarray(state.atm.Hp)
-    atm.Hpi = np.asarray(state.atm.Hpi)
-    atm.dz = np.asarray(state.atm.dz)
-    atm.dzi = np.asarray(state.atm.dzi)
-    atm.zco = np.asarray(state.atm.zco)
-    atm.zmco = np.asarray(state.atm.zmco)
-    atm.ms = np.asarray(state.atm.ms)
-    atm.alpha = np.asarray(state.atm.alpha)
-    atm.Dzz = np.asarray(state.atm.Dzz)
-    atm.Dzz_cen = np.asarray(state.atm.Dzz_cen)
-    atm.vm = np.asarray(state.atm.vm)
-    atm.vs = np.asarray(state.atm.vs)
-    atm.top_flux = np.asarray(state.atm.top_flux)
-    atm.bot_flux = np.asarray(state.atm.bot_flux)
-    atm.bot_vdep = np.asarray(state.atm.bot_vdep)
-    atm.bot_fix_sp = np.asarray(state.atm.bot_fix_sp)
-
-    var.k_arr = np.asarray(state.rate.k, dtype=np.float64)
-
-    if int(state.photo.sflux_top.shape[0]) > 0:
-        var.sflux_top = np.asarray(state.photo.sflux_top)
-    var.def_bin_min = float(state.photo.def_bin_min)
-    var.def_bin_max = float(state.photo.def_bin_max)
 
 
 def _atom_order_for(cfg) -> tuple:
@@ -513,71 +476,6 @@ def runstate_from_store(var, atm, para) -> RunState:
         fix_species=fix_species,
         metadata=_runmetadata_from_legacy(var, atm, para),
     )
-
-
-def runstate_to_store(state: RunState, var, atm, para) -> None:
-    """Reverse adapter: write all RunState slots back to (var, atm, para)."""
-    _cfg = default_config()
-
-    apply_pytree_to_store(state, var, atm)
-
-    if state.step is not None:
-        var.y = np.asarray(state.step.y, dtype=np.float64)
-        var.y_prev = np.asarray(state.step.y_prev, dtype=np.float64)
-        var.ymix = np.asarray(state.step.ymix, dtype=np.float64)
-        var.t = float(state.step.t)
-        var.dt = float(state.step.dt)
-        var.longdy = float(state.step.longdy)
-        var.longdydt = float(state.step.longdydt)
-
-    if state.params is not None:
-        para.count = int(state.params.count)
-        para.nega_count = int(state.params.nega_count)
-        para.loss_count = int(state.params.loss_count)
-        para.delta_count = int(state.params.delta_count)
-        para.delta = float(state.params.delta)
-        para.small_y = float(state.params.small_y)
-        para.nega_y = float(state.params.nega_y)
-        para.end_case = int(state.params.end_case)
-        para.termination_reason = int(state.params.termination_reason)
-        para.switch_final_photo_frq = bool(state.params.switch_final_photo_frq)
-        para.pic_count = int(state.params.pic_count)
-        para.where_varies_most = np.asarray(
-            state.params.where_varies_most,
-            dtype=np.float64,
-        )
-        para.tableau20 = master_tableau20()
-        para.fix_species_start = bool(state.params.fix_species_start)
-
-    if state.atoms is not None:
-        a = state.atoms
-        var.atom_ini = _atom_arr_to_dict(np.asarray(a.atom_ini), a.atom_order)
-        var.atom_loss = _atom_arr_to_dict(np.asarray(a.atom_loss), a.atom_order)
-        var.atom_loss_prev = _atom_arr_to_dict(
-            np.asarray(a.atom_loss_prev), a.atom_order
-        )
-        var.atom_sum = _atom_arr_to_dict(np.asarray(a.atom_sum), a.atom_order)
-
-    if state.photo_runtime is not None:
-        pr = state.photo_runtime
-        var.tau = np.asarray(pr.tau, dtype=np.float64)
-        var.aflux = np.asarray(pr.aflux, dtype=np.float64)
-        var.sflux = np.asarray(pr.sflux, dtype=np.float64)
-        var.dflux_d = np.asarray(pr.dflux_d, dtype=np.float64)
-        var.dflux_u = np.asarray(pr.dflux_u, dtype=np.float64)
-        var.prev_aflux = np.asarray(pr.prev_aflux, dtype=np.float64)
-        var.aflux_change = float(pr.aflux_change)
-
-    if state.fix_species is not None and len(state.fix_species.fix_species) > 0:
-        fs = state.fix_species
-        fix_y_np = np.asarray(fs.fix_y, dtype=np.float64)
-        var.fix_y = {sp: fix_y_np[i].copy() for i, sp in enumerate(fs.fix_species)}
-        if bool(getattr(_cfg, "fix_species_from_coldtrap_lev", True)):
-            cm = np.asarray(fs.conden_min_lev, dtype=np.int32)
-            for i, sp in enumerate(fs.fix_species):
-                if not hasattr(atm, "conden_min_lev") or atm.conden_min_lev is None:
-                    atm.conden_min_lev = {}
-                atm.conden_min_lev[sp] = int(cm[i])
 
 
 def _atm_metadata_from_atm(atm) -> dict:
@@ -984,8 +882,7 @@ def _var_save_list(*, use_photo, t_cross_sp, use_ion) -> list[str]:
 def legacy_view(rs: RunState, cfg=None):
     """Return a `(var, atm, para)` SimpleNamespace shim built from `rs`.
 
-    Mutations to the shim do NOT round-trip back to `rs`; for that, use
-    `runstate_to_store(rs, var, atm, para)` against real legacy containers.
+    Mutations to the shim do NOT round-trip back to `rs`.
 
     `cfg` must be the run's config whenever one is available: this runs at
     INTEGRATION time, after `_cfg_overlay` has restored the process default,

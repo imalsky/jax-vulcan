@@ -75,9 +75,8 @@ def test_every_shipped_config_declares_every_checked_knob(cfg_path):
 def test_the_validator_carries_no_literal_config_defaults():
     """No `getattr(cfg, "knob", <number>)` may come back.
 
-    Such a literal is a second copy of a YAML-owned value; outer_loop.py owns
-    the runtime back-compat fallback. If the two drift, this module validates a
-    number the run never uses.
+    Such a literal is a second copy of a YAML-owned value. If the two drift,
+    this module validates a number the run never uses.
     """
     tree = ast.parse(_validator_source())
     offenders = []

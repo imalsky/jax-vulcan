@@ -27,6 +27,8 @@ warnings.filterwarnings("ignore")
 
 def _check_jacobians(state) -> int:
     """Compare chem_jac_analytical vs jacrev path on the given HD189 state."""
+    from _oracles import chem_jac
+
     import vulcan_jax.chem as chem_mod
     import jax.numpy as jnp
     import vulcan_jax.network as net_mod
@@ -45,7 +47,7 @@ def _check_jacobians(state) -> int:
 
     print(f"State: nz={nz}, ni={ni}, nr={net.nr}")
 
-    J_dense = np.asarray(chem_mod.chem_jac(y, M, k_arr, net_jax))  # [nz, ni, ni]
+    J_dense = np.asarray(chem_jac(y, M, k_arr, net_jax))  # [nz, ni, ni]
     J_anal = np.asarray(
         chem_mod.chem_jac_analytical(y, M, k_arr, net_jax)
     )  # [nz, ni, ni]

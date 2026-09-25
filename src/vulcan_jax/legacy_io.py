@@ -1,7 +1,7 @@
 """Legacy I/O surface matching VULCAN-master/op.py's entry points.
 
 `ReadRate` keeps upstream's call signature (`ReadRate().read_rate(var,
-atm)`) but is no longer a parser: `network.parse_network` is the one
+atm)`) but is not a parser: `network.parse_network` is the one
 network parser, and this copies the host-side metadata the runtime reads
 off `var` (`var.Rf`, `var.pho_rate_index`, ...) from it. Rate *values*
 come from `rates_jax.build_rate_array`.
@@ -266,14 +266,6 @@ def _synthesize_J_sp_dict(
     return out
 
 
-def _is_runstate_arg(obj) -> bool:
-    """Return True iff `obj` is a `state.RunState` (avoids a circular import
-    at module-load time — `legacy_io` is imported very early in the
-    setup pipeline)."""
-    cls = type(obj)
-    return cls.__name__ == "RunState" and cls.__module__.endswith("state")
-
-
 def _synthesize_save_dicts(runstate, cfg, photo_static=None):
     """Build the three .vul top-level dicts from a `RunState`.
 
@@ -423,8 +415,8 @@ def _synthesize_save_dicts(runstate, cfg, photo_static=None):
         para_save["small_y"] = float(p.small_y)
         para_save["nega_y"] = float(p.nega_y)
         para_save["end_case"] = int(getattr(p, "end_case", 0))
-        # VULCAN-JAX addition: end_case cannot separate a normal
-        # convergence from the JAX-only stall fallback (both are 1).
+        # VULCAN-JAX addition: the runner's termination code, finer than
+        # end_case (end_case 5 does not say why the run stopped).
         para_save["termination_reason"] = int(getattr(p, "termination_reason", 0))
         para_save["solver_str"] = "solver"
         para_save["switch_final_photo_frq"] = bool(
@@ -607,20 +599,8 @@ class Output(object):
         with open(out_path, "w") as f:
             f.write("\n".join(lines) + "\n")
 
-    def save_out(self, *args, **kwargs):
-        """Write the `.vul` pickle output.
-
-        Canonical signature: `save_out(runstate, dname, photo_static=None,
-        cfg=None)`. The legacy `(var, atm, para, dname, ...)` form still
-        works.
-        """
-        # Resolve the polymorphic signature.
-        if args and _is_runstate_arg(args[0]):
-            return self._save_out_from_runstate(*args, **kwargs)
-        return self._save_out_legacy(*args, **kwargs)
-
-    def _save_out_from_runstate(self, runstate, dname, photo_static=None, cfg=None):
-        """Canonical .vul writer: reads everything from `runstate`."""
+    def save_out(self, runstate, dname, photo_static=None, cfg=None):
+        """Write the `.vul` pickle output; reads everything from `runstate`."""
         cfg_mod = cfg if cfg is not None else self._cfg
         var_save, atm_save, para_save = _synthesize_save_dicts(
             runstate, cfg_mod, photo_static=photo_static
@@ -634,60 +614,6 @@ class Output(object):
         with open(output_file, "wb") as outfile:
             pickle.dump(
                 {"variable": var_save, "atm": atm_save, "parameter": para_save},
-                outfile,
-                protocol=4,
-            )
-
-    def _save_out_legacy(self, var, atm, para, dname, photo_static=None, runstate=None):
-        """Legacy `(var, atm, para)` .vul writer; kept for hybrid oracle
-        tests that share `(var, atm)` with master."""
-        if runstate is not None:
-            from .state import runstate_to_store as _runstate_to_store
-
-            _runstate_to_store(runstate, var, atm, para)
-
-        output_dir, out_name = self._cfg.output_dir, self._cfg.out_name
-        target_dir = os.path.join(dname, output_dir)
-        os.makedirs(target_dir, exist_ok=True)
-        output_file = os.path.join(target_dir, out_name)
-
-        for key in var.var_evol_save:
-            as_nparray = np.array(getattr(var, key))
-            setattr(var, key, as_nparray)
-
-        var_save = {"species": species, "nr": nr}
-
-        # Build the photo-static pytree lazily from (var, atm) when absent;
-        # cross-section dicts are synthesised at pickle time.
-        if photo_static is None and bool(getattr(self._cfg, "use_photo", False)):
-            from . import photo_setup as _photo_setup
-
-            photo_static = _photo_setup._build_photo_static_dense(var, atm)
-            if hasattr(var, "sflux_din12_indx"):
-                photo_static = photo_static.with_din12_indx(int(var.sflux_din12_indx))
-        photo_dicts = (
-            _synthesize_cross_dicts(photo_static) if photo_static is not None else None
-        )
-
-        for key in var.var_save:
-            if key == "k":
-                # Build the legacy `{i: array(nz)}` dict from var.k_arr at
-                # write time so plot_py/ scripts indexing `d['k'][i]` work.
-                k_arr = np.asarray(var.k_arr, dtype=np.float64)
-                var_save[key] = {i: k_arr[i].copy() for i in range(1, k_arr.shape[0])}
-            elif photo_dicts is not None and key in photo_dicts:
-                var_save[key] = photo_dicts[key]
-            else:
-                var_save[key] = getattr(var, key)
-        if self._cfg.save_evolution:
-            # The runner already captured y_time/t_time at save_evo_frq cadence;
-            # don't slice [::fq] again here.
-            for key in var.var_evol_save:
-                var_save[key] = getattr(var, key)
-
-        with open(output_file, "wb") as outfile:
-            pickle.dump(
-                {"variable": var_save, "atm": vars(atm), "parameter": vars(para)},
                 outfile,
                 protocol=4,
             )

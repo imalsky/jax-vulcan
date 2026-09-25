@@ -45,7 +45,6 @@ from __future__ import annotations
 
 from typing import NamedTuple
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -61,8 +60,6 @@ from .atm_setup import (
 )
 from .jax_step import AtmStatic
 from .phy_const import kb
-
-jax.config.update("jax_enable_x64", True)
 
 
 class PhysicalInputs(NamedTuple):

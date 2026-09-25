@@ -54,7 +54,7 @@ def main() -> int:
     import vulcan_jax.outer_loop as outer_loop
     from vulcan_jax import atm_refresh
     from vulcan_jax.atm_setup import Atm
-    from vulcan_jax.state import RunState, legacy_view
+    from vulcan_jax.state import RunState, legacy_view, runstate_from_store
 
     # --- Build HD189 reference state ---
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
@@ -104,7 +104,11 @@ def main() -> int:
     # Drive the refresh kernels directly on a packed initial state: this
     # exercises update_mu_dz_jax + update_phi_esc_jax wiring without
     # depending on the photo branch / chem step.
-    init_state = integ._pack_state(data_var, data_para, data_atm)
+    init_state = integ._pack_state_from_runstate(
+        runstate_from_store(data_var, data_atm, data_para)._replace(
+            photo_static=rs.photo_static
+        )
+    )
     st = integ._refresh_static
     mu_B, g_B, Hp_B, dz_B, zco_B, dzi_B, Hpi_B = atm_refresh.update_mu_dz_jax(
         init_state.ymix, st
