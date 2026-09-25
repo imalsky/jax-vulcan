@@ -338,7 +338,9 @@ def _assert_reversible_thermo_present(net: Network, present: np.ndarray) -> None
     A missing `thermo/NASA9/<sp>.txt` leaves that species' Gibbs coefficients
     zero (`load_nasa9` returns `present[j] = False`), which silently corrupts
     `K_eq` and every reverse rate the species participates in. VULCAN-master
-    raises `FileNotFoundError` here; we mirror that instead of returning a
+    raises `FileNotFoundError` here: its generated chem_funs.py:2985 loads
+    NASA-9 for every species at import, before `remove_list` is read
+    (op.py:300, :314); we mirror that instead of returning a
     plausible-but-wrong rate array. Only species used in a *reversible* reaction
     (index below `stop_rev_indx`) need thermo -- condensate/photo/ion-only
     species legitimately have no NASA-9 file.
@@ -362,7 +364,8 @@ def _assert_reversible_thermo_present(net: Network, present: np.ndarray) -> None
             "Missing NASA-9 thermo file(s) for species used in reversible "
             f"reactions: {', '.join(missing)}. Each needs thermo/NASA9/<sp>.txt "
             "(a missing file silently zeros its Gibbs energy and corrupts the "
-            "reverse rates). Add the file or list the reaction in remove_list."
+            "reverse rates). Add the file or delete the reactions from the "
+            "network file; remove_list cannot help, the check runs before it."
         )
 
 
