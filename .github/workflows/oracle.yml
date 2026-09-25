@@ -2,8 +2,10 @@ name: oracle
 
 # The upstream-comparison suite, run against a REAL pinned checkout of
 # exoclime/VULCAN. Separate from `tests.yml` because it is slow and needs an
-# upstream clone plus a FastChem build (upstream's own EQ initializer, which
-# the agreement test compares this port's Gibbs seed against).
+# upstream clone, from which the tests compile upstream's own FastChem (its EQ
+# initializer, which the agreement test compares this port's Gibbs seed
+# against; tests/oracle.py). It also runs test_solver_fast.py, whose
+# real-block cases need the fixtures built below.
 #
 # VULCAN_JAX_REQUIRE_ORACLE=1 is the point of this workflow: it turns a
 # missing or wrong-revision oracle into a FAILURE instead of a skip. Without
@@ -32,6 +34,7 @@ jobs:
               tests/test_oracle_pinning.py tests/test_outer_loop_atm_refresh.py
               tests/test_photo.py tests/test_rates.py tests/test_ros2_step.py
               tests/test_photo_setup.py tests/test_stage_repair_guard.py
+              tests/test_solver_fast.py
 
     steps:
       - uses: actions/checkout@v5
