@@ -68,7 +68,7 @@ def build_hd189(out_dir: Path) -> Path:
     from vulcan_jax.config import load_config
 
     cfg = load_config("default")
-    cfg.use_live_plot = cfg.use_live_flux = cfg.use_print_prog = False
+    cfg.use_print_prog = False
     cfg.use_photo = False
     cfg.yconv_cri = 1e-3
     cfg.count_max = 3000
@@ -160,7 +160,7 @@ def build_w39b(out_dir: Path) -> Path:
     from vulcan_jax.config import load_config
 
     cfg = load_config("W39b")
-    cfg.use_live_plot = cfg.use_live_flux = cfg.use_print_prog = False
+    cfg.use_print_prog = False
     cfg.yconv_cri = 1e-3
 
     from vulcan_jax import composition, network as net_mod

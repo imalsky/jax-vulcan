@@ -32,8 +32,6 @@ def fast_cfg(**overrides):
     cfg = default_config()
     cfg.count_min = 1
     cfg.use_print_prog = False
-    cfg.use_live_plot = False
-    cfg.use_live_flux = False
     cfg.use_photo = False
     cfg.use_ion = False
     cfg.atm_type = "isothermal"

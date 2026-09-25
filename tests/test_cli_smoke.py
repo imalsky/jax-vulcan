@@ -35,12 +35,6 @@ def test_cli_main_produces_vul():
         "trun_min": 1e22,
         "runtime": 1e22,
         "use_print_prog": False,
-        "use_live_plot": False,
-        "use_live_flux": False,
-        "use_plot_end": False,
-        "use_plot_evo": False,
-        "use_save_movie": False,
-        "use_flux_movie": False,
         "save_evolution": False,
         "output_dir": "output/",
     }
@@ -53,7 +47,6 @@ def test_cli_main_produces_vul():
         try:
             os.chdir(tmp)
             (Path(tmp) / "output").mkdir(exist_ok=True)
-            (Path(tmp) / "plot").mkdir(exist_ok=True)
             cfg_path = Path(tmp) / "cli_smoke.yaml"
             dump_config(cfg, cfg_path)
 

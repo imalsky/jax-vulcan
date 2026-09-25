@@ -620,20 +620,23 @@ CONDEN_KNOBS = {
     "count_min": CONDEN_STEPS + 1,
     "trun_min": 1.0e22,
     "use_print_prog": False,
+    "save_evolution": False,
+}
+# Master-only knobs: `use_print_delta` and the plotter / live-UI switches,
+# which JAX's default.yaml does not carry, set off so master's plotter stays
+# quiet. The vm knobs are the same PRE-FLIP baseline as the HD189 cases above:
+# the pinned VULCAN 2 oracle has no refreshed-interface vm, and the hybrid
+# phase flip breaks the matched-count contract.
+CONDEN_MASTER_ONLY = {
+    "use_print_delta": False,
     "use_live_plot": False,
     "use_live_flux": False,
     "use_plot_end": False,
     "use_plot_evo": False,
     "use_save_movie": False,
     "use_flux_movie": False,
-    "save_evolution": False,
     "plot_TP": False,
 }
-# Master's HD189 example does not define these; JAX's default.yaml does not
-# carry `use_print_delta`. The vm knobs are the same PRE-FLIP baseline as the
-# HD189 cases above: the pinned VULCAN 2 oracle has no refreshed-interface vm,
-# and the hybrid phase flip breaks the matched-count contract.
-CONDEN_MASTER_ONLY = {"use_print_delta": False}
 CONDEN_JAX_ONLY = {
     "use_vm_mol": False, "use_hybrid_vm_mol": False, "high_temp_cut": False,
 }

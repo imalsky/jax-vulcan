@@ -21,7 +21,7 @@ import warnings
 from .config import default_config
 from . import chem_funs
 from .chem_funs import ni, nr
-from .live_ui import import_plt, master_tableau20
+from .live_ui import master_tableau20
 
 _CFG = default_config()
 species = chem_funs.spec_list
@@ -461,29 +461,19 @@ def _synthesize_save_dicts(runstate, cfg, photo_static=None):
 
 
 class Output(object):
-    """Per-run output: cfg copy, .vul writer, post-run plotters, progress prints.
-
-    Set `VULCAN_HEADLESS_PLOT=1` to force the matplotlib Agg backend
-    (useful in CI).
-    """
+    """Per-run output: cfg copy, .vul writer, progress prints."""
 
     def __init__(self, cfg=None):
-        """Set up the `.vul` writer for one run: create the output/plot dirs
-        and warn if the target file already exists.
+        """Set up the `.vul` writer for one run: create the output dir and
+        warn if the target file already exists.
         """
         # cfg defaults to the process default; load_config() users pass their
         # namespace so output honors the same cfg as setup and the runner.
         # Pair with OuterLoop(cfg=cfg); save_out(..., cfg=...) overrides.
         self._cfg = cfg if cfg is not None else default_config()
 
-        output_dir, out_name, plot_dir = (
-            self._cfg.output_dir,
-            self._cfg.out_name,
-            self._cfg.plot_dir,
-        )
-
+        output_dir, out_name = self._cfg.output_dir, self._cfg.out_name
         os.makedirs(output_dir, exist_ok=True)
-        os.makedirs(plot_dir, exist_ok=True)
 
         if os.path.isfile(output_dir + out_name):
             print("Warning... the output file: " + str(out_name) + " already exists.\n")
@@ -550,8 +540,6 @@ class Output(object):
         print(para.loss_count)
         print("delta rejected counter:")
         print(para.delta_count)
-        if getattr(self._cfg, "use_shark", False):
-            print("It's a long journey to this shark planet. Don't stop bleeding.")
         print("------ Live long and prosper \\V/ ------")
 
     def print_unconverged_msg(self, var, para, case):
@@ -644,16 +632,11 @@ class Output(object):
         output_file = os.path.join(target_dir, out_name)
 
         with open(output_file, "wb") as outfile:
-            if cfg_mod.output_humanread:
-                outfile.write(
-                    str({"variable": var_save, "atm": atm_save, "parameter": para_save})
-                )
-            else:
-                pickle.dump(
-                    {"variable": var_save, "atm": atm_save, "parameter": para_save},
-                    outfile,
-                    protocol=4,
-                )
+            pickle.dump(
+                {"variable": var_save, "atm": atm_save, "parameter": para_save},
+                outfile,
+                protocol=4,
+            )
 
     def _save_out_legacy(self, var, atm, para, dname, photo_static=None, runstate=None):
         """Legacy `(var, atm, para)` .vul writer; kept for hybrid oracle
@@ -703,135 +686,8 @@ class Output(object):
                 var_save[key] = getattr(var, key)
 
         with open(output_file, "wb") as outfile:
-            if self._cfg.output_humanread:  # human-readable form, less efficient
-                outfile.write(
-                    str(
-                        {
-                            "variable": var_save,
-                            "atm": vars(atm),
-                            "parameter": vars(para),
-                        }
-                    )
-                )
-            else:
-                pickle.dump(
-                    {"variable": var_save, "atm": vars(atm), "parameter": vars(para)},
-                    outfile,
-                    protocol=4,
-                )
-
-    # Post-run plotters (live UI lives in live_ui.py). Each saves a PNG to
-    # plot_dir, optionally popping it up via PIL when `use_PIL=True`. plt
-    # is imported lazily so non-plotting tests don't pull matplotlib in.
-
-    def plot_end(self, var, atm, para):
-        """Save the final mixing-ratio profile (`cfg.plot_spec`) vs pressure
-        (or height when `cfg.plot_height`) to `plot_dir/mix2.png`.
-        """
-        plt = import_plt()
-        plot_dir = self._cfg.plot_dir
-        colors = [
-            "b",
-            "g",
-            "r",
-            "c",
-            "m",
-            "y",
-            "k",
-            "orange",
-            "pink",
-            "grey",
-            "darkred",
-            "darkblue",
-            "salmon",
-            "chocolate",
-            "mediumspringgreen",
-            "steelblue",
-            "plum",
-            "hotpink",
-        ]
-        ymix = np.asarray(var.ymix)
-        plt.figure("mixing ratios")
-        for color_index, sp in enumerate(self._cfg.plot_spec):
-            color = colors[color_index % len(colors)]
-            if not self._cfg.plot_height:
-                plt.plot(
-                    ymix[:, species.index(sp)], atm.pco / 1.0e6, color=color, label=sp
-                )
-                plt.gca().set_yscale("log")
-                plt.gca().invert_yaxis()
-                plt.ylabel("Pressure (bar)")
-                plt.ylim((self._cfg.P_b / 1.0e6, self._cfg.P_t / 1.0e6))
-            else:
-                plt.plot(
-                    ymix[:, species.index(sp)], atm.zmco / 1.0e5, color=color, label=sp
-                )
-                plt.ylim((atm.zco[0] / 1e5, atm.zco[0] / 1e5))
-                plt.ylabel("Height (km)")
-        plt.title(str(para.count) + " steps and " + "{:.2e}".format(var.t) + " s")
-        plt.gca().set_xscale("log")
-        plt.xlim(1.0e-20, 1.0)
-        plt.legend(frameon=0, prop={"size": 14}, loc=3)
-        plt.xlabel("Mixing Ratios")
-        plt.savefig(plot_dir + "mix2.png")
-
-        # use_live_plot keeps the figure on screen; use_PIL pops the PNG in
-        # an external viewer; otherwise close so figures don't accumulate.
-        if getattr(self._cfg, "use_live_plot", False):
-            plt.draw()
-        elif getattr(self._cfg, "use_PIL", True):
-            from PIL import Image
-
-            Image.open(plot_dir + "mix2.png").show()
-            plt.close()
-        else:
-            plt.close()
-
-    def plot_evo(self, var, atm, plot_j=-1, plot_ymin=1e-20, dn=1):
-        """Save the mixing-ratio time evolution for `cfg.plot_spec` to
-        `plot_dir/evo.png`. `plot_j` selects the layer (-1 = top), `plot_ymin`
-        sets the y-axis floor, `dn` strides the stored time samples.
-        """
-        plt = import_plt()
-        plot_spec = self._cfg.plot_spec
-        plot_dir = self._cfg.plot_dir
-        plt.figure("evolution")
-        ymix_time = np.array(np.asarray(var.y_time) / atm.n_0[:, np.newaxis])
-        for i, sp in enumerate(plot_spec):
-            plt.plot(
-                np.asarray(var.t_time)[::dn],
-                ymix_time[::dn, plot_j, species.index(sp)],
-                c=plt.cm.rainbow(float(i) / len(plot_spec)),
-                label=sp,
+            pickle.dump(
+                {"variable": var_save, "atm": vars(atm), "parameter": vars(para)},
+                outfile,
+                protocol=4,
             )
-        plt.gca().set_xscale("log")
-        plt.gca().set_yscale("log")
-        plt.xlabel("time")
-        plt.ylabel("mixing ratios")
-        plt.ylim((plot_ymin, 1.0))
-        plt.legend(frameon=0, prop={"size": 14}, loc="best")
-        plt.savefig(plot_dir + "evo.png")
-        plt.close()
-
-    def plot_TP(self, atm):
-        """Save the temperature and Kzz profiles vs pressure (or height when
-        `cfg.plot_height`) on twin x-axes to `plot_dir/TPK.png`.
-        """
-        plt = import_plt()
-        plot_dir = self._cfg.plot_dir
-        _fig, ax1 = plt.subplots()
-        ax2 = ax1.twiny()
-        if not self._cfg.plot_height:
-            ax1.semilogy(atm.Tco, atm.pco / 1.0e6, c="black")
-            ax2.loglog(atm.Kzz, atm.pico[1:-1] / 1.0e6, c="k", ls="--")
-            plt.gca().invert_yaxis()
-            plt.ylim((self._cfg.P_b / 1.0e6, self._cfg.P_t / 1.0e6))
-            ax1.set_ylabel("Pressure (bar)")
-        else:
-            ax1.plot(atm.Tco, atm.zmco / 1.0e5, c="black")
-            ax2.semilogx(atm.Kzz, atm.zmco[1:] / 1.0e5, c="k", ls="--")
-            ax1.set_ylabel("Height (km)")
-        ax1.set_xlabel("Temperature (K)")
-        ax2.set_xlabel(r"K$_{zz}$ (cm$^2$s$^{-1}$)")
-        plt.savefig(plot_dir + "TPK.png")
-        plt.close()

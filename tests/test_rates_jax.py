@@ -26,9 +26,7 @@ def main() -> int:
     from vulcan_jax.gibbs import load_nasa9
     from vulcan_jax._paths import resolve_data_path
 
-    vulcan_cfg.use_live_plot = vulcan_cfg.use_live_flux = vulcan_cfg.use_print_prog = (
-        False
-    )
+    vulcan_cfg.use_print_prog = False
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
     _, atm, _ = legacy_view(rs)
     network = net_mod.parse_network(str(resolve_data_path(vulcan_cfg.network)))

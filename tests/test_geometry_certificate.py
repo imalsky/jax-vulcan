@@ -28,8 +28,7 @@ def _run(update_frq):
     from vulcan_jax.outer_loop import OuterLoop
     from vulcan_jax.state import RunState, legacy_view
 
-    cfg = load_config("HD209", use_photo=False, use_live_plot=False,
-                      use_live_flux=False, use_print_prog=False,
+    cfg = load_config("HD209", use_photo=False, use_print_prog=False,
                       count_max=6000, update_frq=update_frq)
     rs = RunState.with_pre_loop_setup(cfg)
     var, atm, para = legacy_view(rs)

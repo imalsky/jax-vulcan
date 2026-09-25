@@ -418,26 +418,13 @@ def _validate_condensation(cfg) -> list[str]:
 def validate_runtime_config(cfg, root: Path | None = None) -> None:
     """Raise RuntimeError if cfg is unsupported or required files are missing.
 
-    Aggregates every configuration error (solver/flag consistency, required
+    Aggregates every configuration error (flag consistency, required
     files, network assets, abundance preset, numerical bounds) and raises once
     so the user sees all problems at once; returns None on success. `root`
     sets where relative asset paths resolve (defaults to the package dir).
     """
     root = Path(__file__).resolve().parent if root is None else Path(root)
     errors: list[str] = []
-
-    ode_solver = getattr(cfg, "ode_solver", None)
-    if ode_solver != "Ros2":
-        errors.append(
-            f"ode_solver={ode_solver!r} is unsupported; VULCAN-JAX only supports 'Ros2'."
-        )
-
-    if bool(getattr(cfg, "use_live_flux", False)) and not bool(
-        getattr(cfg, "use_photo", False)
-    ):
-        errors.append(
-            "use_live_flux=True requires use_photo=True (no diffuse fluxes without photochemistry)."
-        )
 
     if bool(getattr(cfg, "use_ion", False)) and not bool(
         getattr(cfg, "use_photo", False)
@@ -491,7 +478,6 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
 
     required_paths = [
         ("network", getattr(cfg, "network", None)),
-        ("gibbs_text", getattr(cfg, "gibbs_text", None)),
         ("com_file", getattr(cfg, "com_file", None)),
         ("atm_file", getattr(cfg, "atm_file", None)),
     ]

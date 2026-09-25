@@ -1112,6 +1112,7 @@ class Atm:
 
     def f_mu_dz(self, data_var, data_atm, output):
         """Hydrostatic-balance refresh: rebuild `mu, g, Hp, dz, zco, vs` and friends."""
+        del output  # build_atm.py:527 signature; master uses it only for plot_TP (:616)
         from .composition import species
 
         ni = len(species)
@@ -1147,8 +1148,6 @@ class Atm:
                 rho_p=getattr(data_atm, "rho_p", {}),
                 r_p=getattr(data_atm, "r_p", {}),
             )
-        if _CFG.plot_TP:
-            output.plot_TP(data_atm)
         if np.any(np.logical_or(data_atm.Tco < 200, data_atm.Tco > 6000)):
             print("Temperatures exceed the valid range of Gibbs free energy.\n")
         return data_atm

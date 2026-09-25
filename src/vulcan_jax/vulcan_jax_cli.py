@@ -167,19 +167,6 @@ def cli_main(argv=None):
     print(f"VULCAN-JAX done. Saving output to {cfg.output_dir}{cfg.out_name}")
     output.save_out(runstate, dname)
 
-    if getattr(cfg, "use_plot_end", False) or (
-        getattr(cfg, "use_plot_evo", False) and getattr(cfg, "save_evolution", False)
-    ):
-        from .state import legacy_view
-
-        _var, _atm, _para = legacy_view(runstate, cfg=cfg)
-        if getattr(cfg, "use_plot_end", False):
-            output.plot_end(_var, _atm, _para)
-        if getattr(cfg, "use_plot_evo", False) and getattr(
-            cfg, "save_evolution", False
-        ):
-            output.plot_evo(_var, _atm)
-
     print(f"Total wall time: {time.time() - runstate.metadata.start_time:.1f}s")
 
 

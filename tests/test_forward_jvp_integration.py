@@ -23,8 +23,7 @@ def _check_gradient():
     from vulcan_jax.network import parse_network
 
     jax.config.update("jax_enable_x64", True)
-    cfg = load_config("default", use_photo=False, use_live_plot=False,
-                      use_live_flux=False, use_print_prog=False,
+    cfg = load_config("default", use_photo=False, use_print_prog=False,
                       yconv_cri=1e-3, yconv_min=1e-3,
                       conv_stall_window=10**9)
     rs = RunState.with_pre_loop_setup(cfg)

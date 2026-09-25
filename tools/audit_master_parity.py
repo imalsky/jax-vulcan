@@ -131,29 +131,7 @@ JAX_ONLY_RUNTIME_FILES: frozenset[str] = frozenset(
     }
 )
 
-UI_OUTPUT_KEYS = {
-    "output_dir",
-    "plot_dir",
-    "movie_dir",
-    "out_name",
-    "plot_TP",
-    "use_live_plot",
-    "use_live_flux",
-    "use_plot_end",
-    "use_plot_evo",
-    "use_save_movie",
-    "use_flux_movie",
-    "plot_height",
-    "use_PIL",
-    "live_plot_frq",
-    "save_movie_rate",
-    "y_time_freq",
-    "plot_spec",
-    "output_humanread",
-    "use_shark",
-    "save_evolution",
-    "save_evo_frq",
-}
+UI_OUTPUT_KEYS = {"output_dir", "out_name", "save_evolution", "save_evo_frq"}
 
 IGNORED_RUNTIME_FILENAMES = {".DS_Store"}
 # `.md` is documentation, not runtime data: master's vendored trees carry

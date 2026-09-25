@@ -53,8 +53,7 @@ def _build(case, kzz_scale=1.0):
     from vulcan_jax.state import RunState, legacy_view
 
     name, use_photo = CASES[case][:2]
-    cfg = load_config(name, use_photo=use_photo, use_live_plot=False,
-                      use_live_flux=False, use_print_prog=False,
+    cfg = load_config(name, use_photo=use_photo, use_print_prog=False,
                       count_max=6000)
     rs = RunState.with_pre_loop_setup(cfg)
     var, atm, para = legacy_view(rs, cfg=cfg)

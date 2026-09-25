@@ -105,10 +105,6 @@ def build_cfg(nz: int, count_max: int):
         # can pass the longdy test in a few dozen steps, before transport has
         # had any simulated time to drive them away from equilibrium.
         use_print_prog=False,
-        use_live_plot=False,
-        use_live_flux=False,
-        use_save_movie=False,
-        use_flux_movie=False,
     )
 
 

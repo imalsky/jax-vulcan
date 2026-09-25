@@ -128,6 +128,27 @@ _REMOVED_KEYS: dict[str, str] = {
         "the Gustafsson PI step-size controller was removed; the master-faithful "
         "I-controller is the only dt control (drop the key)",
     ),
+    **dict.fromkeys(
+        (
+            "plot_dir", "movie_dir", "plot_TP", "use_live_plot", "use_live_flux",
+            "use_plot_end", "use_plot_evo", "use_save_movie", "use_flux_movie",
+            "plot_height", "use_PIL", "live_plot_frq", "save_movie_rate",
+            "y_time_freq", "plot_spec",
+        ),
+        "VULCAN-JAX has no plotter or live UI; plot the `.vul` output with "
+        "VULCAN's plot_py/ scripts (drop the key)",
+    ),
+    "print_prog_num": (
+        "`use_print_prog` prints one progress block at the end of the run; "
+        "there is no per-N-step print (drop the key)"
+    ),
+    "output_humanread": "the `.vul` output is always a pickle (drop the key)",
+    "use_shark": "master's end-of-run shark message was not ported (drop the key)",
+    "ode_solver": "Ros2 is the only solver (drop the key)",
+    "gibbs_text": (
+        "reverse rates read thermo/NASA9/<species>.txt directly (gibbs.py), "
+        "not master's Gibbs code template (drop the key)"
+    ),
 }
 
 _KNOWN_KEYS: frozenset[str] | None = None

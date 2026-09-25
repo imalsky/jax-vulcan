@@ -884,7 +884,6 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
     para.start_time = time.time()
 
     make_atm = Atm()
-    output = _io.Output()
 
     atm = make_atm.f_pico(atm)
     atm = make_atm.load_TPK(atm)
@@ -904,7 +903,7 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
     var = ini.ini_y(var, atm)
     var = ini.ele_sum(var)
 
-    atm = make_atm.f_mu_dz(var, atm, output)
+    atm = make_atm.f_mu_dz(var, atm, None)
     make_atm.mol_diff(atm)
     make_atm.BC_flux(atm)
 

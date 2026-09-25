@@ -93,7 +93,7 @@ def test_cwd_configs_override(tmp_path, monkeypatch):
             """
             runtime: 5.0e19
             yconv_min: 0.2
-            live_plot_frq: 7
+            save_evo_frq: 7
             para_warm: [1, 2, 3]
             count_max: 1e4
             network: thermo/NCHO_photo_network.txt
@@ -123,7 +123,7 @@ def test_loader_refuses_bad_input(tmp_path, monkeypatch):
         load_config("W39b", gss=8888.0)
     cfgdir = tmp_path / "configs"
     cfgdir.mkdir()
-    base = ("runtime: 1e22\ndt_min: 1e-14\nyconv_min: 0.1\nlive_plot_frq: 10\n"
+    base = ("runtime: 1e22\ndt_min: 1e-14\nyconv_min: 0.1\nsave_evo_frq: 10\n"
             "para_warm: [1.0]\ncount_max: 30000\n"
             "network: thermo/NCHO_photo_network.txt\n"
             "atom_list: [H, O, C, N]\ncom_file: thermo/all_compose.txt\n")

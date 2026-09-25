@@ -50,12 +50,6 @@ from vulcan_jax.config import load_config
 
 cfg = load_config(cfg_name)
 cfg.use_print_prog = False
-cfg.use_live_plot = False
-cfg.use_live_flux = False
-cfg.use_plot_end = False
-cfg.use_plot_evo = False
-cfg.use_save_movie = False
-cfg.use_flux_movie = False
 cfg.save_evolution = False
 cfg.count_max = 1
 cfg.count_min = 1

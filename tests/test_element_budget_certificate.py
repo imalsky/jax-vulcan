@@ -39,8 +39,6 @@ def _cfg():
     c.use_vm_mol = False
     c.use_hybrid_vm_mol = False
     c.use_print_prog = False
-    c.use_live_plot = False
-    c.use_live_flux = False
     c.count_min = 5
     # Isolate the budget term: any post-step longdy/longdydt passes the tight
     # branch, so `candidate` fires on the first accepted step.
