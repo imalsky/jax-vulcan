@@ -347,11 +347,3 @@ def oracle_worktree(
                     "Upstream code must only ever run against the temporary "
                     "copy.\nDirty files now:\n"
                     + "\n".join(f"    {ln}" for ln in dirty.splitlines()[:20]))
-
-
-def assert_oracle_unchanged(path: Path, before: str) -> None:
-    """Explicit check for tests that manage their own copy."""
-    after = tree_fingerprint(path)
-    assert after == before, (
-        f"oracle checkout {path} changed during the test "
-        f"(fingerprint {before[:12]} -> {after[:12]})")
