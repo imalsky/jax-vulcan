@@ -1,34 +1,16 @@
 # Science-source manifest: what this release claims to carry, and from where.
 #
-# WHY THIS FILE EXISTS
-# --------------------
-# Several oracle tests used to auto-detect `../VULCAN-master/` and compare
-# against whatever commit happened to be sitting there. That is not a definition
-# of parity -- it is a definition of "whatever is on this laptop". Two concrete
-# failures followed:
+# Each oracle-test family names the exact upstream commit it is valid against,
+# and the tests verify `git rev-parse HEAD` plus a clean worktree BEFORE they
+# compute anything. A checkout at another commit is not a parity reference: the
+# vendored NCHO network carries `NH3 + CH -> NH2 + CH2`, which upstream deleted
+# in 39f1906, so a later revision shifts every reaction index past it. A tree
+# carrying VULCAN-JAX's own code is refused outright
+# (`tools/audit_master_parity.py`, `_check_oracle_is_pristine`).
 #
-#   * The vendored NCHO network carries `NH3 + CH -> NH2 + CH2`, which upstream
-#     DELETED in commit 39f1906. Current public master therefore parses 438
-#     forward rows where the vendored file has 439, so every raw reaction index
-#     shifts and Gibbs/rate comparisons fail for reasons that have nothing to do
-#     with the ported kernels -- a cascade of confusing numerical failures where
-#     the honest answer is "unsupported oracle revision".
-#   * The local `../VULCAN-master/` copy is not a git checkout at all and was
-#     found in 2026-07-30 to contain VULCAN-JAX's OWN stall detector, knobs, and
-#     13-species `conver_ignore` list, which had then been cited as proof those
-#     were upstream. `tools/audit_master_parity.py` refuses such a tree now
-#     (`_check_oracle_is_pristine`), but refusing contamination is not the same
-#     as pinning a revision.
-#
-# So: each oracle-test family names the exact upstream commit it is valid
-# against, and the tests verify `git rev-parse HEAD` plus a clean worktree
-# BEFORE they compute anything.
-#
-# WHAT THIS FILE IS NOT
-# ---------------------
-# Not a cross-version network mapper. If upstream moves, the answer is to pin a
-# new revision here deliberately (and re-measure), never to teach the audit to
-# translate between reaction numbering schemes.
+# Not a cross-version network mapper: if upstream moves, pin a new revision
+# here deliberately (and re-measure), never teach the audit to translate
+# between reaction numbering schemes.
 
 schema_version: 1
 

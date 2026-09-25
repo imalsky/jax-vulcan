@@ -159,20 +159,7 @@ flux_cri: 0.1
 flux_atol: 1.0
 geom_conv_tol: 1.0e-3
 element_budget_tol: 1.0e-2
-# VULCAN 2 parity: the HD189 example the oracle tests pin
-# (exoclime/VULCAN@80f75b9 cfg_examples/vulcan_cfg_HD189.py:148) ships the
-# empty list. That revision's ROOT vulcan_cfg.py:153 -- and current exoclime
-# and shami-EEG master, and vm_branch:157 -- ship ['HC3N'], the VULCAN 3 value
-# that lives in HD189_vulcan3.yaml. Measured identical on HD189 (below).
-#
-# A 13-heavy-hydrocarbon list used to sit here, credited to "VULCAN-master
-# cfg:149". That attribution was false: the list exists in NO upstream
-# repository. It is VULCAN-JAX's own early test list (Shami, 2026-07-14:
-# "Usually, I only have HC3N"), and it had been written into the local
-# ../VULCAN-master copy, which was then cited as proof it was upstream.
-# Measured 2026-07-30, HD189, stall fallback off: [] and ['HC3N'] are
-# IDENTICAL (1495 steps, longdy 0.09172, same controlling cell); the
-# 13-species list is what produced 1296. Do not restore it to buy a step count.
+# The pinned HD189 example's [] (cfg_examples/vulcan_cfg_HD189.py:148); notes §1.2.
 conver_ignore: []
 rtol: 0.2
 post_conden_rtol: 0.1

@@ -30,37 +30,20 @@ jobs:
           python -m pip install -e ".[dev,plot]" "jax==0.6.2"
       - name: Show resolved versions
         run: python -c "import jax, numpy, scipy, vulcan_jax; print('jax', jax.__version__, '| numpy', numpy.__version__, '| scipy', scipy.__version__, '| vulcan_jax', vulcan_jax.__version__)"
-      # The master-oracle comparison tests skip on their own: $VULCAN_MASTER_DIR
-      # is unset here, so require_oracle() skips with the clone commands. They
-      # are ENFORCED in the separate `oracle.yml` workflow (manual dispatch +
-      # weekly), which clones the pinned upstream revision and sets
-      # VULCAN_JAX_REQUIRE_ORACLE=1 so a missing oracle FAILS instead of
-      # skipping. Keeping it out of this
-      # per-push job is deliberate: it is slow and needs an upstream clone.
-      # The NH3 batched-condensation subprocess test takes ~10 min on
-      # a laptop and longer on this runner, so it stays a local-only test.
-      # ALLOW_MISSING_FIXTURES: the large .npz test fixtures are not in the git
-      # repo; this is the suite's own reduced-coverage switch for such machines.
-      # test_forward_jvp_physical is deselected as platform-marginal, not wrong:
-      # its jvp is stable everywhere (-4.887e13 on every platform/jax tried) but
-      # the coarse one-step FINITE-DIFFERENCE probe it cross-checks against
-      # swings with CPU/XLA (-7.0e13 to -8.0e13 on x86 linux vs in-bounds on
-      # arm64 macOS), overshooting the test's 30% sanity bound. The tight
-      # end-to-end FD validation runs in test_forward_jvp_integration below,
-      # with cold setup and no saved-fixture dependency.
+      # The master-oracle tests skip here ($VULCAN_MASTER_DIR is unset); the
+      # release gate oracle.yml runs them against the pinned upstream clone.
+      # ALLOW_MISSING_FIXTURES: the .npz fixtures are gitignored; their cases skip.
       - name: Run tests
         env:
           VULCAN_JAX_ALLOW_MISSING_FIXTURES: "1"
-        # Memory on the 16 GB runner (a local profile of every test's peak RSS,
-        # worker plus children): four workers reached ~16 GB together, and the
-        # runner was killed mid-suite (exit 143) in two runs of six. Compiled
-        # programs piled up per worker; tests/conftest.py now drops them after
-        # each module. Three workers, and four tests run only in the local
-        # suite: the two tangent-certificate cases (+8.3 / +5.7 GB of their
-        # own) and the two slowest atmosphere-setup cases (~8 and ~4 min
-        # locally; both evaluate JAX's expn over the full pressure grid). The
-        # batched forward-mode test (a ~5 GiB compile, ~7 GB RSS) still runs
-        # alone.
+        # Three workers: four together ran the 16 GB runner out of memory.
+        # Deselected, one reason each:
+        #   test_nh3_conden_batch_subprocess: ~10 min, a local-only test.
+        #   test_forward_jvp_physical: its one-step FD probe swings with CPU/XLA
+        #     past the 30% bound (test_forward_jvp_integration is the FD gate).
+        #   test_batched_forward_mode_runner: a ~5 GiB compile; runs alone below.
+        #   test_tangent_certificate: +8.3 / +5.7 GB of its own.
+        #   the two test_atm_setup_matrix cases: ~8 and ~4 min (expn on the grid).
         run: >-
           python -m pytest tests -n 3 -q --tb=short -ra --durations=15
           --deselect tests/test_nh3_conden_batch_subprocess.py

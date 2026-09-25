@@ -1,8 +1,8 @@
 # VULCAN-JAX configuration -- HD 189733 b, VULCAN 3 preset.
 #
 # This is the EXPLICIT VULCAN 3 configuration. It is HD189.yaml's physics with
-# the numerics of shami-EEG/VULCAN `vm_branch` (fetched 2026-07-30), which is
-# the branch VULCAN 3 is being built from. Use HD189.yaml for a VULCAN 2 parity
+# the numerics of shami-EEG/VULCAN `vm_branch` (the commit tests/science_sources.yaml
+# pins), the branch VULCAN 3 is being built from. Use HD189.yaml for a VULCAN 2 parity
 # run against exoclime/VULCAN `master`; use this one to exercise the VULCAN 3
 # feature set.
 #
@@ -192,8 +192,7 @@ geom_conv_tol: 1.0e-3
 element_budget_tol: 1.0e-2
 # shami-EEG/VULCAN vm_branch vulcan_cfg.py:157; exoclime master's root
 # vulcan_cfg.py ships the same ['HC3N'] (only its HD189 example ships []).
-# This single entry is the VULCAN 3 value and matches Shami's own practice
-# (2026-07-14: "Usually, I only have HC3N").
+# This single entry is the VULCAN 3 value (notes §1.2).
 conver_ignore:
 - HC3N
 # vm_branch vulcan_cfg.py:161
