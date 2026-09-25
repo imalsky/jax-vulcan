@@ -24,6 +24,13 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
+if os.environ.get("VULCAN_JAX_SOLVER") == "reference":
+    pytest.skip(
+        "VULCAN_JAX_SOLVER=reference: solver_fast refuses to import under the "
+        "reference solver, so the fast/ffi comparisons do not run",
+        allow_module_level=True,
+    )
+
 import vulcan_jax.solver as ref
 import vulcan_jax.solver_fast as fast_mod
 
