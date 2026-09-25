@@ -91,8 +91,7 @@ def test_one_outer_loop_runs_fresh_runstates_each_on_its_own_atoms():
 
     import vulcan_jax
     import vulcan_jax.legacy_io as op
-    import vulcan_jax.op_jax as op_jax
-    from vulcan_jax import outer_loop
+    from vulcan_jax import op_jax, outer_loop
     from vulcan_jax.state import RunState
 
     cfg = vulcan_jax.make_config(

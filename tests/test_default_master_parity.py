@@ -259,7 +259,6 @@ from __future__ import annotations
 
 import os
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
@@ -290,15 +289,6 @@ vulcan_cfg.diff_esc = diff_esc
 vulcan_cfg.use_vm_mol = False
 vulcan_cfg.use_hybrid_vm_mol = False
 vulcan_cfg.use_print_prog = False
-vulcan_cfg.use_print_delta = False
-vulcan_cfg.use_live_plot = False
-vulcan_cfg.use_live_flux = False
-vulcan_cfg.use_plot_end = False
-vulcan_cfg.use_plot_evo = False
-vulcan_cfg.use_save_movie = False
-vulcan_cfg.use_flux_movie = False
-vulcan_cfg.save_evolution = False
-vulcan_cfg.plot_TP = False
 
 from vulcan_jax.runtime_validation import validate_runtime_config
 
@@ -324,43 +314,27 @@ import vulcan_jax.chem_funs as chem_funs
 import vulcan_jax.legacy_io as op
 import vulcan_jax.op_jax as op_jax
 import vulcan_jax.outer_loop as outer_loop
-from vulcan_jax.atm_setup import Atm
-from vulcan_jax.state import RunState, legacy_view
+from vulcan_jax.state import RunState
 
 rs = RunState.with_pre_loop_setup(vulcan_cfg)
-data_var, data_atm, data_para = legacy_view(rs)
-data_para.start_time = time.time()
-y_ini = np.asarray(data_var.y_ini, dtype=np.float64).copy()
-pco = np.asarray(data_atm.pco, dtype=np.float64).copy()
-Tco = np.asarray(data_atm.Tco, dtype=np.float64).copy()
-Kzz = np.asarray(data_atm.Kzz, dtype=np.float64).copy()
-
-solver = op_jax.Ros2JAX()
-if vulcan_cfg.use_photo and rs.photo_static is not None:
-    solver._photo_static = rs.photo_static
-integ = outer_loop.OuterLoop(solver, op.Output())
-make_atm = Atm()
-solver.naming_solver(data_para)
-integ(data_var, data_atm, data_para, make_atm)
+rs_out = outer_loop.OuterLoop(op_jax.Ros2JAX(), op.Output())(rs)
 
 np.savez_compressed(
     out_npz,
     species=np.array(list(chem_funs.spec_list), dtype=object),
     nr=np.int64(chem_funs.nr),
-    y_ini=y_ini,
-    pco=pco,
-    Tco=Tco,
-    Kzz=Kzz,
-    y=np.asarray(data_var.y, dtype=np.float64),
-    ymix=np.asarray(data_var.ymix, dtype=np.float64),
-    t=np.float64(data_var.t),
-    dt=np.float64(data_var.dt),
-    longdy=np.float64(data_var.longdy),
-    count=np.int64(data_para.count),
-    atom_loss_keys=np.array(list(data_var.atom_loss.keys()), dtype=object),
-    atom_loss_vals=np.array(
-        [float(v) for v in data_var.atom_loss.values()], dtype=np.float64,
-    ),
+    y_ini=np.asarray(rs.metadata.y_ini, dtype=np.float64),
+    pco=np.asarray(rs.atm.pco, dtype=np.float64),
+    Tco=np.asarray(rs.atm.Tco, dtype=np.float64),
+    Kzz=np.asarray(rs.atm.Kzz, dtype=np.float64),
+    y=np.asarray(rs_out.step.y, dtype=np.float64),
+    ymix=np.asarray(rs_out.step.ymix, dtype=np.float64),
+    t=np.float64(rs_out.step.t),
+    dt=np.float64(rs_out.step.dt),
+    longdy=np.float64(rs_out.step.longdy),
+    count=np.int64(rs_out.params.count),
+    atom_loss_keys=np.array(list(rs_out.atoms.atom_order), dtype=object),
+    atom_loss_vals=np.asarray(rs_out.atoms.atom_loss, dtype=np.float64),
 )
 print("JAX_OK")
 """
@@ -742,7 +716,6 @@ print("MASTER_OK")
 _CONDEN_JAX_SCRIPT = r'''
 import os
 import sys
-import time
 from pathlib import Path
 
 import numpy as np
@@ -763,35 +736,28 @@ import vulcan_jax.chem_funs as chem_funs
 import vulcan_jax.legacy_io as op
 import vulcan_jax.op_jax as op_jax
 import vulcan_jax.outer_loop as outer_loop
-from vulcan_jax.atm_setup import Atm
 from vulcan_jax.config import default_config
-from vulcan_jax.state import RunState, legacy_view
+from vulcan_jax.state import RunState
 
 cfg = default_config()
 %(jax_cfg)s
 
 rs = RunState.with_pre_loop_setup(cfg)
-data_var, data_atm, data_para = legacy_view(rs)
-data_para.start_time = time.time()
-y_ini = np.asarray(data_var.y_ini, dtype=np.float64).copy()
-pco = np.asarray(data_atm.pco, dtype=np.float64).copy()
-Tco = np.asarray(data_atm.Tco, dtype=np.float64).copy()
-
-solver = op_jax.Ros2JAX()
-solver.naming_solver(data_para)
-outer_loop.OuterLoop(solver, op.Output(cfg=cfg), cfg=cfg)(
-    data_var, data_atm, data_para, Atm())
+rs_out = outer_loop.OuterLoop(op_jax.Ros2JAX(), op.Output(cfg=cfg), cfg=cfg)(rs)
+p = rs_out.params
 
 np.savez_compressed(
     out_npz,
     species=np.array(list(chem_funs.spec_list), dtype=object),
-    y_ini=y_ini, pco=pco, Tco=Tco,
-    y=np.asarray(data_var.y, dtype=np.float64),
-    ymix=np.asarray(data_var.ymix, dtype=np.float64),
-    t=np.float64(data_var.t), dt=np.float64(data_var.dt),
-    count=np.int64(data_para.count),
-    rejections=np.array([data_para.nega_count, data_para.loss_count,
-                         data_para.delta_count], dtype=np.int64),
+    y_ini=np.asarray(rs.metadata.y_ini, dtype=np.float64),
+    pco=np.asarray(rs.atm.pco, dtype=np.float64),
+    Tco=np.asarray(rs.atm.Tco, dtype=np.float64),
+    y=np.asarray(rs_out.step.y, dtype=np.float64),
+    ymix=np.asarray(rs_out.step.ymix, dtype=np.float64),
+    t=np.float64(rs_out.step.t), dt=np.float64(rs_out.step.dt),
+    count=np.int64(p.count),
+    rejections=np.array([p.nega_count, p.loss_count, p.delta_count],
+                        dtype=np.int64),
 )
 print("JAX_OK")
 '''

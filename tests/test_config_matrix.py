@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import contextlib
 import os
-import time
 import warnings
 from pathlib import Path
 
@@ -69,9 +68,9 @@ def _hd189_atm_minimal():
     return data_var, data_atm, make_atm
 
 
-def _setup_full_state(count_max: int = 5):
-    """Mirror the conftest `_hd189_pristine` build with `count_max`
-    overridden for short smoke runs.
+def _run_full_state(count_max: int = 5):
+    """Build the HD189 pre-loop RunState with `count_max` overridden for a
+    short smoke run, and integrate it. Returns `(rs, rs_out)`.
 
     Caller must snapshot/restore `count_max` / `count_min` /
     `use_print_prog` via `cfg_overrides`; this helper sets them
@@ -87,19 +86,12 @@ def _setup_full_state(count_max: int = 5):
 
     import vulcan_jax.legacy_io as op
     import vulcan_jax.op_jax as op_jax
-    import vulcan_jax.outer_loop as outer_loop  # noqa: F401
-    from vulcan_jax.atm_setup import Atm
-    from vulcan_jax.state import RunState, legacy_view
+    import vulcan_jax.outer_loop as outer_loop
+    from vulcan_jax.state import RunState
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
-    data_var, data_atm, data_para = legacy_view(rs)
-    data_para.start_time = time.time()
-    make_atm = Atm()
-    output = op.Output()
-    solver = op_jax.Ros2JAX()
-    if vulcan_cfg.use_photo and rs.photo_static is not None:
-        solver._photo_static = rs.photo_static
-    return solver, output, data_var, data_atm, data_para, make_atm
+    rs_out = outer_loop.OuterLoop(op_jax.Ros2JAX(), op.Output())(rs)
+    return rs, rs_out
 
 
 # Case 1: use_lowT_limit_rates=True with HD189 atmosphere.
@@ -332,7 +324,7 @@ def test_bc_flux_loaded_from_file(flag, file_attr, file_path, target_sp):
 
 def test_fix_species_runtime_smoke():
     """Short HD189 run with ``fix_species`` non-empty and
-    ``use_condense=True`` completes and updates ``para.fix_species_start``.
+    ``use_condense=True`` completes and reports ``fix_species_start``.
     """
     import vulcan_jax.composition as composition
 
@@ -340,10 +332,6 @@ def test_fix_species_runtime_smoke():
     for sp in ("H2O", "H2O_l_s", "S8", "S8_l_s"):
         if sp not in species_list:
             pytest.skip(f"{sp} not in network; cannot run fix_species smoke.")
-
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
 
     cfg_kwargs = dict(
         use_condense=True,
@@ -366,19 +354,11 @@ def test_fix_species_runtime_smoke():
         use_print_prog=False,
     )
     with cfg_overrides(**cfg_kwargs):
-        solver, output, var, atm, para, make_atm = _setup_full_state(count_max=5)
+        _rs, rs_out = _run_full_state(count_max=5)
 
-        import vulcan_jax.outer_loop as outer_loop
-
-        integ = outer_loop.OuterLoop(solver, output)
-        integ(var, atm, para, None)
-        del make_atm  # unused after setup; outer_loop captured it.
-
-    assert hasattr(para, "fix_species_start")
-    assert isinstance(para.fix_species_start, (bool, np.bool_))
+    assert isinstance(rs_out.params.fix_species_start, (bool, np.bool_))
     # stop_conden_time was pushed past runtime so the pin should NOT have fired.
-    assert bool(para.fix_species_start) is False
-    del vulcan_cfg  # silence unused-import lint
+    assert bool(rs_out.params.fix_species_start) is False
 
 
 # Case 8: use_fix_all_bot integration check.
@@ -394,22 +374,18 @@ def test_use_fix_all_bot_keeps_bottom_at_eq_mix():
         count_min=1,
         use_print_prog=False,
     ):
-        solver, output, var, atm, para, _make_atm = _setup_full_state(count_max=10)
-        bottom_ymix_pre = np.asarray(var.ymix[0], dtype=np.float64).copy()
-        n0_bot = float(atm.n_0[0])
+        rs, rs_out = _run_full_state(count_max=10)
+        bottom_ymix_pre = np.asarray(rs.step.ymix[0], dtype=np.float64)
+        n0_bot = float(rs.atm.n_0[0])
 
-        import vulcan_jax.outer_loop as outer_loop
-
-        integ = outer_loop.OuterLoop(solver, output)
-        integ(var, atm, para, None)
-
-        y_bot_post = np.asarray(var.y[0], dtype=np.float64)
+        y_bot_post = np.asarray(rs_out.step.y[0], dtype=np.float64)
         ymix_post = y_bot_post / max(n0_bot, 1.0)
         target = bottom_ymix_pre * n0_bot
         max_relerr = float(
             np.max(np.abs(y_bot_post - target) / np.maximum(np.abs(target), 1e-300))
         )
-        assert max_relerr < 1e-10, (
+        # The pin is a copy, so the bar is machine precision.
+        assert max_relerr < 1e-12, (
             f"bottom-row drift exceeds tolerance: max relerr = {max_relerr:.3e}"
         )
         assert abs(ymix_post.sum() - bottom_ymix_pre.sum()) < 1e-10

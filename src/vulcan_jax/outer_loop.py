@@ -13,7 +13,6 @@ exactly (including the forced-accept fallback when `dt < dt_min`).
 from __future__ import annotations
 
 import functools
-import time
 from typing import NamedTuple, Optional
 
 import numpy as np
@@ -32,11 +31,6 @@ from . import state as _state_mod
 from .ini_abun import column_atom_loss, column_atoms
 from .jax_step import AtmStatic, jax_ros2_step, make_atm_static
 from .runtime_validation import validate_runtime_config
-
-
-def _now() -> float:
-    """Wall-clock seconds since the epoch (used for runtime print stamping)."""
-    return time.time()
 
 
 # The network chem_funs parsed at import: one parse per process. After editing
@@ -650,8 +644,8 @@ class _Statics(NamedTuple):
 
     # save_evolution capture. When on, the body writes (y, t) to the
     # ring every `save_evo_frq` accepted steps up to `save_evo_n_max`;
-    # the populated prefix is published to var.y_time / var.t_time at
-    # unpack time. When off, the buffers are length-1 placeholders.
+    # the populated prefix is returned as rs.step.y_evo / t_evo. When off,
+    # the buffers are length-1 placeholders.
     save_evolution: bool
     save_evo_frq: int
     save_evo_n_max: int
@@ -2419,7 +2413,7 @@ class OuterLoop:
     conden updates, ring-buffered convergence, and adaptive rtol."""
 
     def __init__(self, odesolver, output, cfg=None):
-        # cfg defaults to the process default (CLI / legacy callers);
+        # cfg defaults to the process default (the CLI);
         # load_config() users pass their own namespace so every runtime knob
         # reads from the cfg the RunState was built with (setup counterpart:
         # state._cfg_overlay). The import-locked network is the one knob cfg
@@ -3173,20 +3167,20 @@ class OuterLoop:
             c_nh3_Dg = zz
             c_nh3_sat = zz
             c_nh3_top = jnp.int32(0)
-        if self._cfg.use_photo and rs.photo_static is not None:
+        if self._cfg.use_photo:
+            if rs.photo_static is None:
+                raise ValueError(
+                    "use_photo is on but this RunState carries no photo_static "
+                    "(the T-P-dependent cross sections each lane needs). Build "
+                    "it with RunState.with_pre_loop_setup(cfg), or attach one "
+                    "with rs._replace(photo_static=...)."
+                )
             # The two T-P-dependent photo statics, exactly what
             # _build_photo_static would bake for this profile.
             p_absp_T_cross = jnp.asarray(
                 rs.photo_static.absp_T_cross, dtype=jnp.float64
             )
             p_cross_J_T = jnp.asarray(rs.photo_static.cross_J_T, dtype=jnp.float64)
-        elif self._cfg.use_photo and self._photo_static is not None:
-            # Legacy entry (no photo_static slot) is single-profile only, so
-            # the closure-baked arrays ARE this profile's; seed pv with them.
-            p_absp_T_cross = jnp.asarray(
-                self._photo_static.photo_data.absp_T_cross, dtype=jnp.float64
-            )
-            p_cross_J_T = jnp.asarray(self._photo_static.cross_J_T, dtype=jnp.float64)
         else:
             p_absp_T_cross = jnp.zeros((0, 1, 1), dtype=jnp.float64)
             p_cross_J_T = jnp.zeros((0, 1, 1), dtype=jnp.float64)
@@ -3219,9 +3213,8 @@ class OuterLoop:
     def _pack_state_from_runstate(self, rs) -> JaxIntegState:
         """Build the initial JaxIntegState from a fully-populated RunState.
 
-        The runner reads its entry state from a typed `RunState` rather
-        than the legacy `(var, para, atm)` triple. Static metadata (atom
-        ordering, fix-species mapping) lives on the `OuterLoop` instance.
+        Static metadata (atom ordering, fix-species mapping) lives on the
+        `OuterLoop` instance.
         """
         photo_fields = self._initial_photo_carry_from_runstate(rs)
         atm_fields = self._initial_atm_carry_from_runstate(rs)
@@ -3305,20 +3298,9 @@ class OuterLoop:
             pv=self._profile_vars_from_runstate(rs),
         )
 
-    def _pack_state(self, var, para, atm) -> JaxIntegState:
-        """Legacy entry point: build JaxIntegState from `(var, para, atm)`.
-
-        Thin wrapper around `runstate_from_store` +
-        `_pack_state_from_runstate`. Every read flows through the typed
-        `RunState` slice.
-        """
-        rs = _state_mod.runstate_from_store(var, atm, para)
-        return self._pack_state_from_runstate(rs)
-
     def _unpack_state_to_runstate(self, state: JaxIntegState, rs_entry):
         """Build a fresh `RunState` from the runner's final JaxIntegState.
 
-        `_unpack_state` flows through this constructor + `runstate_to_store`.
         The static atm fields (pco, Tco, Kzz, n_0, ms, alpha, ...) are
         preserved verbatim from `rs_entry.atm`; only the dynamic refresh
         slots (g, mu, Hp, dz, dzi, zco, zmco, Hpi, top_flux, vs, and vm
@@ -3466,129 +3448,6 @@ class OuterLoop:
             photo_static=rs_entry.photo_static,
         )
 
-    def _unpack_state(self, state: JaxIntegState, var, para, atm) -> None:
-        """Write the post-runner JAX state back into the var/para/atm store
-        objects. Routes through a synthesized `RunState` and
-        `runstate_to_store`; the var/cfg side effects that don't fit the
-        typed pytree (var.J_sp dict, var.y_time/t_time list, conden
-        k_arr, cfg.use_fix_sp_bot/rtol mutation) follow.
-        """
-        rs_entry = _state_mod.runstate_from_store(var, atm, para)
-        rs_out = self._unpack_state_to_runstate(state, rs_entry)
-        _state_mod.runstate_to_store(rs_out, var, atm, para)
-
-        # Hycean pin diagnostic (op.py:2935-2941): mirror master's cfg
-        # mutation so post-run readers of use_fix_sp_bot see the pinned values.
-        if self._statics.use_fix_H2He and bool(state.h2he_pinned):
-            h2he_mix_arr = np.asarray(state.h2he_mix, dtype=np.float64)
-            existing = dict(getattr(self._cfg, "use_fix_sp_bot", {}) or {})
-            existing.setdefault("H2", float(h2he_mix_arr[0]))
-            existing.setdefault("He", float(h2he_mix_arr[1]))
-            self._cfg.use_fix_sp_bot = existing
-
-        # rtol may have moved adaptively inside the runner; reflect it in
-        # the global cfg for parity with op.Integration.__call__.
-        if self._statics.use_adapt_rtol:
-            self._cfg.rtol = float(state.rtol)
-
-        # Rebuild var.y_time / var.t_time chronologically from the ring
-        # buffer (most recent min(accept_count, conv_step) entries).
-        self._unpack_ring(state, var)
-
-        # save_evolution overrides the ring with the captured buffer prefix.
-        if self._statics.save_evolution:
-            n_evo = int(state.evo_idx)
-            y_evo_arr = np.asarray(state.y_evo, dtype=np.float64)[:n_evo]
-            t_evo_arr = np.asarray(state.t_evo, dtype=np.float64)[:n_evo]
-            var.y_time = y_evo_arr
-            var.t_time = t_evo_arr
-
-        # Photo dict-view synthesis: J_sp is rebuilt here because it lives
-        # outside the typed slice; the array fields were already written by
-        # runstate_to_store.
-        if self._photo_static is not None:
-            self._unpack_J_sp(state, var)
-            self._unpack_k(state, var)
-
-        # Conden k unpack: same full-array overwrite as photo.
-        if self._conden_static is not None:
-            self._unpack_k(state, var)
-
-    def _unpack_J_sp(self, state: JaxIntegState, var) -> None:
-        """Rebuild `var.J_sp` dict from carry's J_br / J_br_T arrays.
-
-        Mirrors the dict population in `op.compute_J` (op.py:2764, 2783):
-        per (sp, nbr) entries for nbr>=1, plus a per-species (sp, 0) total.
-        Needed by `var.var_save` for the .vul output and by any downstream
-        plot scripts.
-        """
-        nz = state.aflux.shape[0]
-        n_branch = var.n_branch
-        var.J_sp = {
-            (sp, bn): np.zeros(nz)
-            for sp in var.photo_sp
-            for bn in range(n_branch[sp] + 1)
-        }
-        J_br_np = np.asarray(state.J_br, dtype=np.float64)
-        J_br_T_np = np.asarray(state.J_br_T, dtype=np.float64)
-        Jion_br_np = np.asarray(state.Jion_br, dtype=np.float64)
-        for i, key in enumerate(self._photo_static.photo_J_data.branch_keys):
-            sp, _ = key
-            var.J_sp[key] = J_br_np[i]
-            var.J_sp[(sp, 0)] = var.J_sp[(sp, 0)] + J_br_np[i]
-        for i, key in enumerate(self._photo_static.photo_J_data.branch_T_keys):
-            sp, _ = key
-            var.J_sp[key] = J_br_T_np[i]
-            var.J_sp[(sp, 0)] = var.J_sp[(sp, 0)] + J_br_T_np[i]
-        if self._photo_static.cross_Jion.shape[0] > 0:
-            var.Jion_sp = {
-                (sp, bn): np.zeros(nz)
-                for sp in var.ion_sp
-                for bn in range(var.ion_branch[sp] + 1)
-            }
-            for i, key in enumerate(self._photo_static.photo_ion_data.branch_keys):
-                sp, _ = key
-                var.Jion_sp[key] = Jion_br_np[i]
-                var.Jion_sp[(sp, 0)] = var.Jion_sp[(sp, 0)] + Jion_br_np[i]
-
-    def _unpack_k(self, state: JaxIntegState, var) -> None:
-        """Snapshot the full photo-updated `state.k_arr` into `var.k_arr`
-        (idempotent for rows the runner didn't touch). The legacy
-        `{i: array(nz)}` dict view is synthesized at `.vul` write time by
-        `legacy_io.Output.save_out`.
-        """
-        var.k_arr = np.asarray(state.k_arr, dtype=np.float64)
-
-    def _unpack_ring(self, state: JaxIntegState, var) -> None:
-        """Rebuild `var.y_time` / `var.t_time` chronologically from the ring.
-
-        The ring slot for the n-th accepted step (0-indexed) is
-        `n % conv_step`. After the runner returns, the chronological
-        ordering of the most recent `min(accept_count, conv_step)` entries
-        is `slots[(accept_count - L + i) % conv_step for i in 0..L-1]`,
-        where L = min(accept_count, conv_step).
-
-        Trade-off: var.y_time holds only the LAST conv_step entries (full
-        history would need an io_callback per step); increase conv_step or
-        use save_evolution for more.
-        """
-        accept_count = int(state.accept_count)
-        conv_step = int(self._statics.conv_step)
-        L = min(accept_count, conv_step)
-        if L <= 0:
-            var.y_time = []
-            var.t_time = []
-            return
-
-        ring_y = np.asarray(state.y_time_ring, dtype=np.float64)
-        ring_t = np.asarray(state.t_time_ring, dtype=np.float64)
-        # Most recent slot is (accept_count - 1) % conv_step; oldest in
-        # the kept window is (accept_count - L) % conv_step.
-        start = (accept_count - L) % conv_step
-        order = [(start + i) % conv_step for i in range(L)]
-        var.y_time = [ring_y[i] for i in order]
-        var.t_time = [ring_t[i] for i in order]
-
     def _classify_end_case(self, state: JaxIntegState):
         """Classify end-of-run (op.py:1069-1085) from the in-loop reason.
 
@@ -3611,10 +3470,10 @@ class OuterLoop:
 
     def _report_end(self, end_case, reason, count, longdy, longdydt,
                     aflux_change, var, para, y, y_ini, dz) -> None:
-        """End-of-run printing for both entry points (op.py:1069-1085 and
-        op.stop): the end-case message, print_prog, the summary and the column
-        atom loss. Master only calls print_end_msg (end_case 1); this also
-        calls print_unconverged_msg for 2 / 3 / 5."""
+        """End-of-run printing (op.py:1069-1085 and op.stop): the end-case
+        message, print_prog, the summary and the column atom loss. Master
+        only calls print_end_msg (end_case 1); this also calls
+        print_unconverged_msg for 2 / 3 / 5."""
         if end_case == 3:
             print(
                 "Integration not completed...\nMaximal allowed steps "
@@ -3656,69 +3515,15 @@ class OuterLoop:
             self.output.print_unconverged_msg(var, para, end_case)
         _print_column_atom_loss(self._cfg, y, y_ini, dz)
 
-    def __call__(self, *args):
-        """Run the integration to convergence / runtime / count cap.
+    def __call__(self, rs):
+        """Integrate a fresh `RunState` to convergence / runtime / count cap
+        and return a new `RunState`.
 
-        Polymorphic: accepts a typed `state.RunState` (canonical; returns a
-        fresh RunState) or the legacy `(var, atm, para, make_atm)` tuple
-        (kept for hybrid oracle tests). Identical numerics either way.
-        """
-        if args and isinstance(args[0], _state_mod.RunState):
-            rs = args[0]
-            var = args[1] if len(args) > 1 else None
-            atm = args[2] if len(args) > 2 else None
-            para = args[3] if len(args) > 3 else None
-            return self._call_runstate(rs, var, atm, para)
-        var, atm, para, make_atm = args[:4]
-        return self._call_legacy(var, atm, para, make_atm)
-
-    def _call_legacy(self, var, atm, para, make_atm):
-        """Legacy entry point: integrate while mutating `(var, atm, para)`.
-
-        Everything happens inside the JIT'd runner; this method handles
-        setup, the device call, and post-run unpacking + diagnostics.
-        """
-        del make_atm  # captured into _refresh_static at OuterLoop init
-        validate_runtime_config(self._cfg)
-        self.loss_criteria = float(getattr(self._cfg, "loss_criteria", 0.0005))
-
-        # Build the JAX runner on first entry — cached for the run.
-        self._ensure_runner(var, atm)
-        ni = _NETWORK.ni
-        nz = atm.Tco.shape[0]
-
-        atm_static = make_atm_static(atm, ni, nz, cfg=self._cfg)
-        init_state = self._pack_state(var, para, atm)
-
-        final_state = self._runner(init_state, atm_static)
-        self._unpack_state(final_state, var, para, atm)
-
-        # (op.Integration.f_dy is deliberately not ported: nothing reads its
-        # var.dy / var.dydt -- the final print uses the DIFFERENT carry values
-        # var.longdy / var.longdydt, dy/dydt are absent from upstream's
-        # var_save so they never reach the .vul file, and upstream's own
-        # consumer, `var.dydt_time.append(var.dydt)`, is commented out at
-        # op.py:1102. The container attributes stay at their initialized 1.0
-        # for master-shape compatibility.)
-
-        # Determine end_case (op.py:1069-1085) for the final print.
-        para.end_case = self._classify_end_case(final_state)
-        para.termination_reason = int(final_state.termination_reason)
-        self._report_end(para.end_case, para.termination_reason, para.count,
-                         var.longdy, var.longdydt, var.aflux_change, var, para,
-                         var.y, var.y_ini, atm.dz)
-
-    def _call_runstate(self, rs: "_state_mod.RunState", var=None, atm=None, para=None):
-        """RunState entry point: integrate from a typed `RunState` and
-        return a fresh `RunState`.
-
-        `var` / `atm` / `para` are optional. When omitted, the static
-        metadata reads (`Ti`, `gas_indx`, `pref_indx`, `gs`,
+        Host-side metadata (`Ti`, `gas_indx`, `pref_indx`, `gs`,
         `charge_list`, `conden_re_list`, `Rf`, `n_branch`, `ion_branch`,
-        `photo_sp`, `ion_sp`, `start_time`) come from `rs.metadata`; a
+        `photo_sp`, `ion_sp`, `start_time`) comes from `rs.metadata`; a
         `legacy_view(rs)` shim drives the `_build_*_static` helpers and
-        `make_atm_static`. The legacy positional args are accepted for
-        back-compat with the `integ(rs, var, atm, para)` signature.
+        `make_atm_static`.
         """
         count = int(rs.params.count)
         if count > 0:
@@ -3733,12 +3538,7 @@ class OuterLoop:
         validate_runtime_config(self._cfg)
         self.loss_criteria = float(getattr(self._cfg, "loss_criteria", 0.0005))
 
-        # Derive a legacy-shaped shim from the RunState for the
-        # _build_*_static helpers and make_atm_static.
-        if var is None or atm is None:
-            var, atm, _shim_para = _state_mod.legacy_view(rs, cfg=self._cfg)
-            if para is None:
-                para = _shim_para
+        var, atm, _ = _state_mod.legacy_view(rs, cfg=self._cfg)
 
         # Wire a pre-built PhotoStaticInputs onto the solver so
         # _build_photo_static doesn't rebuild from the legacy_view shim
@@ -3763,19 +3563,14 @@ class OuterLoop:
         count = int(rs_out.params.count)
         end_case = self._classify_end_case(final_state)
         reason = int(final_state.termination_reason)
-        if rs_out.params is not None:
-            rs_out = rs_out._replace(
-                params=rs_out.params._replace(
-                    end_case=end_case, termination_reason=reason
-                )
+        rs_out = rs_out._replace(
+            params=rs_out.params._replace(
+                end_case=end_case, termination_reason=reason
             )
-        # The summary printers expect a legacy (var, para) pair; build a thin
-        # shim. start_time flows from the caller's para (not in the RunState
-        # schema).
-        var_shim, para_shim = self._summary_shim(rs_out)
-        para_shim.start_time = (
-            float(getattr(para, "start_time", _now())) if para is not None else _now()
         )
+        # The summary printers expect a legacy (var, para) pair.
+        var_shim, para_shim = self._summary_shim(rs_out)
+        para_shim.start_time = float(rs.metadata.start_time)
         para_shim.end_case = end_case
         aflux = (rs_out.photo_runtime.aflux_change
                  if rs_out.photo_runtime is not None else 0.0)
@@ -3792,8 +3587,8 @@ class OuterLoop:
         results (`stack_integ_states` / `stack_atm_statics`) into one batch
         for `run_batch`. All profiles in a single `run_batch` call must share
         the same nz / toggle-combo / `pref_indx` so the closure and array
-        shapes match — the emulator buckets accordingly. This mirrors the setup `_call_runstate`
-        does up to (but not including) the runner call.
+        shapes match — the emulator buckets accordingly. This mirrors the
+        setup `__call__` does up to (but not including) the runner call.
         """
         validate_runtime_config(self._cfg)
         self.loss_criteria = float(getattr(self._cfg, "loss_criteria", 0.0005))

@@ -7,13 +7,13 @@ trajectory directly at the configured cadence into a fixed-size buffer.
 
 This test runs HD189 with `save_evolution=True, save_evo_frq=10` for
 `count_max=50` accepted steps and asserts:
-  1. `var.t_time` has the expected length:
+  1. `rs.step.t_evo` has the expected length:
      `ceil((count_max + 1) / save_evo_frq)` (6).
-  2. `var.t_time` is monotonic.
-  3. `var.y_time[i]` snapshot for each i ≥ 1 is a valid (nz, ni) array
+  2. `t_evo` is monotonic.
+  3. `y_evo[i]` snapshot for each i >= 1 is a valid (nz, ni) array
      with no NaN / inf.
   4. The pickle save round-trips the time-series under the same key names
-     as master (loadable by `plot_py/plot_evolution.py`).
+     as master (`y_time` / `t_time`, loadable by `plot_py/plot_evolution.py`).
 
 Standalone — no `../VULCAN-master/` oracle needed.
 """
@@ -23,7 +23,6 @@ from __future__ import annotations
 import os
 import pickle
 import sys
-import time
 import warnings
 from pathlib import Path
 
@@ -35,44 +34,14 @@ os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
 
-def _setup_state():
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-
-    vulcan_cfg.count_max = 50
-    vulcan_cfg.count_min = 1
-    vulcan_cfg.use_print_prog = False
-    vulcan_cfg.use_live_plot = False
-    vulcan_cfg.use_live_flux = False
-
-    import vulcan_jax.legacy_io as op
-    import vulcan_jax.op_jax as op_jax
-    import vulcan_jax.outer_loop as outer_loop
-    from vulcan_jax.state import RunState, legacy_view
-
-    rs = RunState.with_pre_loop_setup(vulcan_cfg)
-    data_var, data_atm, data_para = legacy_view(rs)
-    data_para.start_time = time.time()
-    output = op.Output()
-
-    solver = op_jax.Ros2JAX()
-    if vulcan_cfg.use_photo and rs.photo_static is not None:
-        solver._photo_static = rs.photo_static
-    return solver, output, data_var, data_atm, data_para, outer_loop
-
-
 def main() -> int:
     # Re-anchor cwd at every test entry — earlier tests in the suite may
     # have chdir'd elsewhere, breaking the save_out's relative output_dir.
     os.chdir(ROOT)
-    # Earlier tests (e.g. test_chem.py) `sys.modules.pop("vulcan_cfg")`
-    # which forks fresh module instances on subsequent imports. legacy_io
-    # and outer_loop may now hold *different* vulcan_cfg objects from the
-    # test's `import vulcan_cfg`. Use legacy_io's reference so save_out
-    # reads the values we set; sync outer_loop's by direct assignment.
-    import vulcan_jax.outer_loop as outer_loop
     import vulcan_jax.legacy_io as legacy_io
+    import vulcan_jax.op_jax as op_jax
+    import vulcan_jax.outer_loop as outer_loop
+    from vulcan_jax.state import RunState
 
     vulcan_cfg = legacy_io.default_config()
     save_evo_frq = 10
@@ -84,25 +53,22 @@ def main() -> int:
     # 40,50 of y_time[0..50]).
     expected_n = (count_max + save_evo_frq) // save_evo_frq  # 6
 
-    original_save_evo = getattr(vulcan_cfg, "save_evolution", False)
-    original_frq = getattr(vulcan_cfg, "save_evo_frq", 1)
-    original_plot_end = getattr(vulcan_cfg, "use_plot_end", False)
-    original_plot_evo = getattr(vulcan_cfg, "use_plot_evo", False)
+    original_save_evo = vulcan_cfg.save_evolution
+    original_frq = vulcan_cfg.save_evo_frq
     vulcan_cfg.save_evolution = True
     vulcan_cfg.save_evo_frq = save_evo_frq
-    # Some upstream tests in the suite flip these on and don't restore.
-    # Force them off so legacy_io.save_out doesn't raise.
-    vulcan_cfg.use_plot_end = False
-    vulcan_cfg.use_plot_evo = False
+    vulcan_cfg.count_max = count_max
+    vulcan_cfg.count_min = 1
+    vulcan_cfg.use_print_prog = False
     try:
-        solver, output, var, atm, para, outer_loop = _setup_state()
-        integ = outer_loop.OuterLoop(solver, output)
-        integ(var, atm, para, None)
+        rs = RunState.with_pre_loop_setup(vulcan_cfg)
+        output = legacy_io.Output()
+        rs_out = outer_loop.OuterLoop(op_jax.Ros2JAX(), output)(rs)
 
-        y_time = np.asarray(var.y_time)
-        t_time = np.asarray(var.t_time)
-        print(f"y_time.shape = {y_time.shape}; expected ({expected_n}, nz, ni)")
-        print(f"t_time.shape = {t_time.shape}; expected ({expected_n},)")
+        y_time = np.asarray(rs_out.step.y_evo)
+        t_time = np.asarray(rs_out.step.t_evo)
+        print(f"y_evo.shape = {y_time.shape}; expected ({expected_n}, nz, ni)")
+        print(f"t_evo.shape = {t_time.shape}; expected ({expected_n},)")
         ok_shape = (
             y_time.ndim == 3
             and t_time.ndim == 1
@@ -118,7 +84,7 @@ def main() -> int:
         original_out_name = vulcan_cfg.out_name
         vulcan_cfg.out_name = "test_save_evolution.vul"
         try:
-            output.save_out(var, atm, para, dname)
+            output.save_out(rs_out, dname)
             output_file = str(ROOT) + "/" + vulcan_cfg.output_dir + vulcan_cfg.out_name
             with open(output_file, "rb") as f:
                 payload = pickle.load(f)
@@ -141,8 +107,6 @@ def main() -> int:
     finally:
         vulcan_cfg.save_evolution = original_save_evo
         vulcan_cfg.save_evo_frq = original_frq
-        vulcan_cfg.use_plot_end = original_plot_end
-        vulcan_cfg.use_plot_evo = original_plot_evo
     print()
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1

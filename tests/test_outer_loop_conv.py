@@ -3,34 +3,33 @@ convergence check terminates the integration without Python-side polling.
 
 Three assertions:
 
-  1. **Ring buffer + chronology**: a count_max=50 HD189 run produces
-     `var.y_time` and `var.t_time` of length min(count, conv_step) = 51
-     (the runner exits when `accept_count > count_max`, so the final
-     accept_count is 51), in strictly increasing time order. The first
-     entry is the post-step-1 state (not the pre-loop initial state —
-     matches `op.save_step` semantics, which appends AFTER the accepted
-     step). The last entry equals `var.y` / `var.t`.
+  1. **Ring buffer + chronology**: a count_max=50 HD189 run leaves the
+     convergence ring holding min(count, conv_step) = 51 entries (the
+     runner exits when `accept_count > count_max`, so the final
+     accept_count is 51), in strictly increasing time order when read
+     from slot `(accept_count - L) % conv_step` on. The first entry is the
+     post-step-1 state (not the pre-loop initial state — matches
+     `op.save_step` semantics, which appends AFTER the accepted step). The
+     last entry equals the final `t`.
 
   2. **longdy / longdydt populated**: after the runner returns,
-     `var.longdy` and `var.longdydt` are finite and positive (the
+     `rs.step.longdy` and `rs.step.longdydt` are finite and positive (the
      in-runner conv check ran and updated them at every accepted step).
 
   3. **Single-shot termination via count_max**: with count_max=50, the
-     runner exits exactly when `accept_count > count_max`. para.count
+     runner exits exactly when `accept_count > count_max`. The count
      becomes 51 (50 accepted body iterations + the off-by-one
-     terminating attempt that triggers `>`). para.end_case = 3
+     terminating attempt that triggers `>`) and end_case = 3
      ("Maximal allowed steps exceeded").
 
-The ring buffer is sized at `vulcan_cfg.conv_step` (500 by default), so
-50 < 500 and we get the full trajectory. For longer runs the ring
-overwrites; that trade-off is documented in `_unpack_ring`.
+The ring buffer is sized at `conv_step` (500 by default), so 50 < 500 and
+it holds the full trajectory; longer runs overwrite the oldest slots.
 """
 
 from __future__ import annotations
 
 import os
 import sys
-import time
 import warnings
 from pathlib import Path
 
@@ -43,9 +42,6 @@ warnings.filterwarnings("ignore")
 
 
 def main() -> int:
-    # Pin cfg to legacy_io's reference: tests that pop `vulcan_cfg` from
-    # sys.modules fork fresh module objects, and a detached copy would not be
-    # the one the runner reads count_max from.
     import vulcan_jax.outer_loop as outer_loop
     import vulcan_jax.legacy_io as op
 
@@ -59,49 +55,40 @@ def main() -> int:
     vulcan_cfg.use_vm_mol = False
     vulcan_cfg.use_hybrid_vm_mol = False
     vulcan_cfg.use_print_prog = False
-    vulcan_cfg.use_live_plot = False
-    vulcan_cfg.use_live_flux = False
 
     import vulcan_jax.op_jax as op_jax
-    from vulcan_jax.atm_setup import Atm
-    from vulcan_jax.state import RunState, legacy_view
+    from vulcan_jax.state import RunState
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
-    data_var, data_atm, data_para = legacy_view(rs)
-    data_para.start_time = time.time()
-    make_atm = Atm()
-    output = op.Output()
-
-    solver = op_jax.Ros2JAX()
-    if vulcan_cfg.use_photo and rs.photo_static is not None:
-        solver._photo_static = rs.photo_static
-
-    integ = outer_loop.OuterLoop(solver, output)
-    integ(data_var, data_atm, data_para, make_atm)
+    integ = outer_loop.OuterLoop(op_jax.Ros2JAX(), op.Output())
+    rs_out = integ(rs)
+    # The same run on the raw runner, for the ring the RunState does not carry.
+    final = integ._runner(*integ.prepare_runstate(rs))
 
     ok = True
+    if float(final.t) != float(rs_out.step.t):
+        print(f"FAIL: runner t {float(final.t):.6e} != integ(rs) t {rs_out.step.t:.6e}")
+        ok = False
 
     # ---- 1. Ring buffer + chronological reconstruction ----
-    n_kept = min(int(data_para.count), int(vulcan_cfg.conv_step))
-    if len(data_var.y_time) != n_kept:
-        print(f"FAIL: var.y_time has {len(data_var.y_time)} entries, expected {n_kept}")
-        ok = False
-    if len(data_var.t_time) != n_kept:
-        print(f"FAIL: var.t_time has {len(data_var.t_time)} entries, expected {n_kept}")
-        ok = False
+    count = int(final.accept_count)
+    conv_step = int(vulcan_cfg.conv_step)
+    n_kept = min(count, conv_step)
+    start = (count - n_kept) % conv_step
+    order = [(start + i) % conv_step for i in range(n_kept)]
+    t_arr = np.asarray(final.t_time_ring)[order]
 
-    # Chronology: t_time should be strictly increasing.
-    t_arr = np.asarray(data_var.t_time)
+    # Chronology: t should be strictly increasing.
     if not np.all(np.diff(t_arr) > 0):
         print(
-            "FAIL: var.t_time not strictly increasing — ring "
+            "FAIL: ring times not strictly increasing — ring "
             "reconstruction is in the wrong order"
         )
         ok = False
 
-    # Last entry == final var.t (most recent ring slot).
-    if t_arr[-1] != data_var.t:
-        print(f"FAIL: last var.t_time ({t_arr[-1]:.3e}) != var.t ({data_var.t:.3e})")
+    # Last entry == final t (most recent ring slot).
+    if t_arr[-1] != float(final.t):
+        print(f"FAIL: last ring t ({t_arr[-1]:.3e}) != t ({float(final.t):.3e})")
         ok = False
 
     print(
@@ -110,31 +97,25 @@ def main() -> int:
     )
 
     # ---- 2. longdy / longdydt populated ----
-    if not (np.isfinite(data_var.longdy) and data_var.longdy > 0):
-        print(f"FAIL: var.longdy = {data_var.longdy} is not finite/positive")
+    longdy, longdydt = rs_out.step.longdy, rs_out.step.longdydt
+    if not (np.isfinite(longdy) and longdy > 0):
+        print(f"FAIL: longdy = {longdy} is not finite/positive")
         ok = False
-    if not (np.isfinite(data_var.longdydt) and data_var.longdydt > 0):
-        print(f"FAIL: var.longdydt = {data_var.longdydt} is not finite/positive")
+    if not (np.isfinite(longdydt) and longdydt > 0):
+        print(f"FAIL: longdydt = {longdydt} is not finite/positive")
         ok = False
-    print(
-        f"longdy/longdydt  OK (longdy={data_var.longdy:.3e}, "
-        f"longdydt={data_var.longdydt:.3e})"
-    )
+    print(f"longdy/longdydt  OK (longdy={longdy:.3e}, longdydt={longdydt:.3e})")
 
     # ---- 3. Single-shot termination via count_max ----
-    if data_para.count != vulcan_cfg.count_max + 1:
-        print(
-            f"FAIL: para.count={data_para.count}, expected {vulcan_cfg.count_max + 1}"
-        )
+    count_out = int(rs_out.params.count)
+    end_case = int(rs_out.params.end_case)
+    if count_out != vulcan_cfg.count_max + 1:
+        print(f"FAIL: count={count_out}, expected {vulcan_cfg.count_max + 1}")
         ok = False
-    if data_para.end_case != 3:
-        print(
-            f"FAIL: para.end_case={data_para.end_case}, expected 3 (count_max exceeded)"
-        )
+    if end_case != 3:
+        print(f"FAIL: end_case={end_case}, expected 3 (count_max exceeded)")
         ok = False
-    print(
-        f"count_max exit   OK (count={data_para.count}, end_case={data_para.end_case})"
-    )
+    print(f"count_max exit   OK (count={count_out}, end_case={end_case})")
 
     print()
     print("PASS" if ok else "FAIL")
