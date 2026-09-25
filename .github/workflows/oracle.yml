@@ -94,6 +94,15 @@ jobs:
           VULCAN_JAX_REQUIRE_ORACLE: "1"
         run: python -m pytest ${{ matrix.select }} -q --tb=short -ra
 
+      # The CLI step-count gates (HD189 1495, HD209 1211, W39b 1202), slow-gated
+      # elsewhere. A step of its own so VULCAN_JAX_RUN_SLOW reaches no other
+      # test. HD189_vulcan3's count is arm64-only and is not run here.
+      - name: CLI step-count gates
+        if: matrix.family == 'vulcan2_ncho'
+        env:
+          VULCAN_JAX_RUN_SLOW: "1"
+        run: python -m pytest tests/test_step_count_gates.py -q --tb=short -ra
+
       # The oracle must come back byte-clean: upstream setup rewrites files in
       # place (make_chem_funs renumbers a network file, its FastChem build
       # writes into fastchem_vulcan/), which is why every test works on a COPY.
