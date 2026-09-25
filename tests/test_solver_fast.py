@@ -141,7 +141,14 @@ def compare(diag, sup, sub, rhs, tans, seed=1):
 def test_fast_matches_reference_on_random_system(fast):
     diag, sup, sub, rhs = _system(120, 93, 42, boost=1e10, scale=1e-3)
     tans = _system(120, 93, 43, boost=0.0, scale=1e-3)
-    r = compare(diag, sup, sub, rhs, tans)
+    try:
+        r = compare(diag, sup, sub, rhs, tans)
+    except Exception as e:
+        # ni = 93 needs ~136 KB of shared memory per block: a GH200 has it, a
+        # sm_89 card (~99 KB) does not, and the kernel refuses rather than fall back.
+        if fast.BACKEND == "ffi" and "shared memory per block" in str(e):
+            pytest.skip(f"this GPU cannot hold the ni=93 block: {e}".splitlines()[0])
+        raise
     if fast.BACKEND == "fast":
         assert r["primal_equal"], r
     else:
