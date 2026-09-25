@@ -3719,6 +3719,16 @@ class OuterLoop:
         `make_atm_static`. The legacy positional args are accepted for
         back-compat with the `integ(rs, var, atm, para)` signature.
         """
+        count = int(rs.params.count)
+        if count > 0:
+            raise ValueError(
+                f"OuterLoop needs a fresh RunState (params.count == 0); this one "
+                f"has already run {count} steps. Start again from "
+                "RunState.with_pre_loop_setup(cfg): a RunState does not carry "
+                "the certificate ring, the cumulative element budget "
+                "(budget_err / budget_drift) or the hybrid vm_mol phase, so a "
+                "resumed run would restart all three from zero."
+            )
         validate_runtime_config(self._cfg)
         self.loss_criteria = float(getattr(self._cfg, "loss_criteria", 0.0005))
 
