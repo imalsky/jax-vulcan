@@ -3404,13 +3404,14 @@ class OuterLoop:
             termination_reason=int(state.termination_reason),
         )
 
+        # This run's atom_ini rides the carry; `self._statics` holds the
+        # profile the runner was first built for.
+        atom_ini_arr = np.asarray(state.pv.atom_ini, dtype=np.float64)
         atom_loss_arr = np.asarray(state.atom_loss, dtype=np.float64)
-        atom_sum_arr = (atom_loss_arr + 1.0) * np.asarray(
-            self._statics.atom_ini_arr, dtype=np.float64
-        )
+        atom_sum_arr = (atom_loss_arr + 1.0) * atom_ini_arr
         atoms_out = _state_mod.AtomInputs(
             atom_order=tuple(self._atom_order),
-            atom_ini=jnp.asarray(self._statics.atom_ini_arr, dtype=jnp.float64),
+            atom_ini=jnp.asarray(atom_ini_arr),
             atom_loss=jnp.asarray(atom_loss_arr),
             atom_loss_prev=jnp.asarray(state.atom_loss_prev, dtype=jnp.float64),
             atom_sum=jnp.asarray(atom_sum_arr),

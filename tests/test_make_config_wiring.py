@@ -6,7 +6,8 @@ With a make_config() namespace distinct from the global, this file pins:
     3. nothing leaks onto the global vulcan_cfg module afterward,
     4. an import-locked-network override fails fast with a clear message,
     5. the clip normalization stays finite on a degenerate all-zero layer.
-    6. an OuterLoop refuses a RunState that has already run.
+    6. an OuterLoop refuses a RunState that has already run, and a second
+       fresh RunState's result reports its own atoms.
 """
 
 from __future__ import annotations
@@ -80,10 +81,14 @@ def test_grid_and_runner_overrides_reach_setup_and_runner_without_leakage():
     assert int(default_integ._cfg.count_max) != 37
 
 
-def test_outer_loop_refuses_a_runstate_that_already_ran():
+def test_one_outer_loop_runs_fresh_runstates_each_on_its_own_atoms():
     """`integ(rs)` rebuilds the certificate ring, the element budget and the
     hybrid phase from zero, none of which a RunState carries, so handing it
-    an integrated RunState must fail instead of resuming on a blank history."""
+    an integrated RunState must fail instead of resuming on a blank history.
+    A second fresh RunState is fine, and its result reports its own atoms,
+    not those of the profile the runner was first built for."""
+    import numpy as np
+
     import vulcan_jax
     import vulcan_jax.legacy_io as op
     import vulcan_jax.op_jax as op_jax
@@ -92,13 +97,25 @@ def test_outer_loop_refuses_a_runstate_that_already_ran():
 
     cfg = vulcan_jax.make_config(
         nz=12, P_b=1e5, P_t=1e-2, count_max=5, use_photo=False,
-        use_print_prog=False,
+        use_print_prog=False, ini_mix="const_mix",
+        const_mix={"H2": 0.9, "He": 0.09, "H2O": 5e-3, "CO": 5e-3},
     )
     integ = outer_loop.OuterLoop(op_jax.Ros2JAX(), op.Output(cfg=cfg), cfg=cfg)
-    rs_out = integ(RunState.with_pre_loop_setup(cfg))
+    rs1 = RunState.with_pre_loop_setup(cfg)
+    rs_out = integ(rs1)
     assert int(rs_out.params.count) == 6
     with pytest.raises(ValueError, match="already run 6 steps"):
         integ(rs_out)
+
+    cfg.const_mix = {"H2": 0.9, "He": 0.09, "H2O": 1e-3, "CO": 9e-3}
+    rs2 = RunState.with_pre_loop_setup(cfg)
+    assert not np.array_equal(rs2.atoms.atom_ini, rs1.atoms.atom_ini)
+    out2 = integ(rs2)
+    np.testing.assert_array_equal(out2.atoms.atom_ini, rs2.atoms.atom_ini)
+    np.testing.assert_array_equal(
+        out2.atoms.atom_sum,
+        (np.asarray(out2.atoms.atom_loss) + 1.0) * np.asarray(rs2.atoms.atom_ini),
+    )
 
 
 def test_output_reads_cfg_not_global():
