@@ -17,7 +17,13 @@ import pytest
 import yaml
 
 from vulcan_jax.atm_setup import surface_gravity
-from vulcan_jax.config import DT_MAX_S, Config, default_config, load_config
+from vulcan_jax.config import (
+    DT_MAX_S,
+    Config,
+    default_config,
+    load_config,
+    validate_overrides,
+)
 
 # Adopted surface gravity (cm/s^2) each shipped config must reproduce via
 # g = G*Mp/Rp^2. default reproduces the historical HD189 Mp=1.118 m_jup value.
@@ -138,6 +144,25 @@ def test_loader_refuses_bad_input(tmp_path, monkeypatch):
     cfg = load_config("sci")
     assert isinstance(cfg.runtime, float) and cfg.runtime == 1e22
     assert isinstance(cfg.dt_min, float) and cfg.dt_min == 1e-14
+
+
+@pytest.mark.parametrize(
+    "overrides, match",
+    [
+        ({"count_max": 5, "yconv_cri": 0.05}, None),
+        ({"count_max_typo": 5}, r"unknown config key.*count_max_typo"),
+        ({"gs": 2140.0}, r"removed config key.*`gs`.*set `Mp`"),
+    ],
+)
+def test_validate_overrides_refuses_what_load_config_refuses(overrides, match):
+    """A caller that `setattr`s an override dict onto a loaded Config gets
+    `load_config`'s refusal: the offending key, and for a removed knob its
+    remedy."""
+    if match is None:
+        validate_overrides(overrides)
+    else:
+        with pytest.raises(ValueError, match=match):
+            validate_overrides(overrides)
 
 
 def test_frozen_env_overrides_yaml():

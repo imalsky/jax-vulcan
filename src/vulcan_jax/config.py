@@ -195,6 +195,13 @@ def _validate_keys(d: dict[str, Any], source: str) -> None:
         )
 
 
+def validate_overrides(overrides: dict[str, Any]) -> None:
+    """Refuse removed or unknown keys in an override dict, as
+    ``load_config(**overrides)`` does, for a caller that applies the dict to a
+    loaded Config with ``setattr`` (which checks nothing)."""
+    _validate_keys(overrides, "config overrides")
+
+
 class Config(types.SimpleNamespace):
     """Free-attribute config namespace (attribute access like master's ``vulcan_cfg``).
 

@@ -16,7 +16,7 @@ from jax import config as _config
 
 _config.update("jax_enable_x64", True)
 
-from .config import Config, default_config, load_config
+from .config import Config, default_config, load_config, validate_overrides
 from .state import RunState
 
 __all__ = [
@@ -26,6 +26,7 @@ __all__ = [
     "load_config",
     "default_config",
     "make_config",
+    "validate_overrides",
     "conv_normal",
 ]
 
