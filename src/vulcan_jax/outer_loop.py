@@ -668,8 +668,8 @@ _EVO_RING_FIELDS = ("y_evo", "t_evo")
 # them on its own; the queue's refill `cond` rewrites lane state and keeps them
 # (D tangent copies of the conv_step-slot ring per lane), so `runner_queue`
 # zeroes them at its lane step. Every primal and every live tangent stays
-# bitwise. `_make_jvp_step` (run_jvp, run_batch_jvp) is untouched: its
-# certificate reads the ring tangent (C22).
+# bitwise. `_make_jvp_step` (run_jvp) is untouched: its certificate reads
+# the ring tangent (C22).
 _QUEUE_STOP_FIELDS = _CONV_RING_FIELDS + (
     "longdy", "longdydt", "where_varies_most", "prev_aflux",
 )
@@ -681,28 +681,15 @@ def _freeze_leaf(old, new, keep_old):
     return old if old is new else jnp.where(keep_old, old, new)
 
 
-def _freeze_slot(old, new, keep_old, idx, axis=0):
+def _freeze_slot(old, new, keep_old, idx):
     """`_freeze_leaf` for a ring buffer the step writes ONE slot of.
 
-    `new` differs from `old` only at `idx` along `axis`, so restoring that
-    slot restores `old` exactly -- at one (nz, ni) write instead of a copy of
-    the whole (conv_step, nz, ni) leaf. `axis` is 1 for a tangent leaf, whose
-    leading axis is the direction."""
+    `new` differs from `old` only at `idx`, so restoring that slot restores
+    `old` exactly -- at one (nz, ni) write instead of a copy of the whole
+    (conv_step, nz, ni) leaf."""
     if old is new:
         return old
-    at = (slice(None),) * axis + (idx,)
-    return new.at[at].set(jnp.where(keep_old, old[at], new[at]))
-
-
-def _state_leaf_names():
-    """Field name of every `JaxIntegState` leaf in `tree_leaves` order, with
-    `pv` expanded into its own fields. Lets the forward-mode runner tell which
-    flat tangent leaf is a ring buffer."""
-    named = JaxIntegState(**{
-        f: (ProfileVars(**{p: p for p in ProfileVars._fields}) if f == "pv" else f)
-        for f in JaxIntegState._fields
-    })
-    return jax.tree_util.tree_leaves(named)
+    return new.at[idx].set(jnp.where(keep_old, old[idx], new[idx]))
 
 
 def _make_runner(
@@ -1788,18 +1775,14 @@ def _make_runner(
 
         return jax.vmap(one_dir)(ds_next.y, ds_next.y_time_ring)
 
-    def _make_jvp_step(active_state, active_atm, lane_axis=None):
-        """One `jax.jvp` of `body_fn`, shared by the solo and the batched
-        forward-mode runner.
+    def _make_jvp_step(active_state, active_atm):
+        """One `jax.jvp` of `body_fn`, the step of the forward-mode runner.
 
         `active_*` are tuples of bools over the flattened leaves of the state
         and AtmStatic: True where the caller supplies a float tangent. Those
         leaves go through the jvp; every other leaf (ints, bools, flags)
         rides as `has_aux` output, so no float0 tangents exist inside the
-        loop. `lane_axis` and the tick `it` reach `body_fn` untouched: the
-        jvp of a `lax.cond` is a `lax.cond`, and its psum'd predicate is
-        built from int/bool leaves, which carry no tangent -- so the batched
-        photo / refresh branches stay real branches under the lane vmap.
+        loop.
 
         Tangent leaves carry a leading DIRECTION axis and the jvp is vmapped
         over it INSIDE the body, with the primal and the `has_aux` leaves
@@ -1814,16 +1797,14 @@ def _make_runner(
             nxt = iter(flat)
             return [next(nxt) if a else x for x, a in zip(leaves, active)]
 
-        def _step(s, atm_static, ds_active, datm_active, it=None):
+        def _step(s, atm_static, ds_active, datm_active):
             s_def = jax.tree_util.tree_structure(s)
             a_leaves, a_def = jax.tree_util.tree_flatten(atm_static)
 
             def f(s_act, a_act):
                 s_in = s_def.unflatten(_merge(s_act, jax.tree_util.tree_leaves(s), active_state))
                 a_in = a_def.unflatten(_merge(a_act, a_leaves, active_atm))
-                o_leaves = jax.tree_util.tree_leaves(
-                    body_fn(s_in, a_in, lane_axis=lane_axis, it=it)
-                )
+                o_leaves = jax.tree_util.tree_leaves(body_fn(s_in, a_in))
                 act = [x for x, a in zip(o_leaves, active_state) if a]
                 rest = [x for x, a in zip(o_leaves, active_state) if not a]
                 return act, rest
@@ -2169,98 +2150,7 @@ def _make_runner(
         out = write_out(out, lanes, j0, lane_job, lane_job >= 0)
         return out, it
 
-    def _make_runner_batch_jvp(active_state, active_atm):
-        """The batched twin of `runner_jvp`, built from it the way
-        `runner_batch` is built from `runner`: one while loop ABOVE a lane
-        vmap of the jvp'd body, with the tick carried outside the vmap, so
-        the photo / refresh cadences stay real branches taken by all lanes at
-        once. Each lane stops exactly where its solo `runner_jvp` would --
-        the primal certificate AND the tangent's -- then freezes: state,
-        active tangent leaves and (tl, tldt) all hold at the pre-step carry,
-        so a lane's result does not depend on its neighbours."""
-        _step = _make_jvp_step(active_state, active_atm, lane_axis=_LANE_AXIS)
-        # Field name of each active tangent leaf: the tangent of a ring
-        # buffer is a ring buffer (the jvp of a one-slot write is a one-slot
-        # write), so it freezes on the slot too -- and the tangent ring is D
-        # times the primal's.
-        active_names = [
-            nm for nm, a in zip(_state_leaf_names(), active_state) if a
-        ]
-
-        def lane_step(it, s, ds_active, tl, tldt, atm_static_, datm_active):
-            real_term, reason = _real_terminate(
-                s, jnp.all(_two_branch(tl, tldt, _slope_min(s)))
-            )
-            s_adv, dact_out, ds_adv = _step(s, atm_static_, ds_active, datm_active, it)
-            nan_now = jnp.logical_not(jnp.all(jnp.isfinite(s_adv.y)))
-            already_done = s.is_done
-            became_nan = nan_now & ~already_done & ~real_term
-            keep_old = already_done | real_term | became_nan
-            frozen = _freeze_state(s, s_adv, keep_old)
-            # The tangent freezes on the SAME mask as the primal.
-            ring_idx = _ring_slot(s_adv)
-            dfrozen = [
-                _freeze_slot(o, n, keep_old, ring_idx, axis=1)
-                if nm in _CONV_RING_FIELDS
-                else (
-                    _freeze_slot(o, n, keep_old, s.evo_idx, axis=1)
-                    if nm in _EVO_RING_FIELDS
-                    else _freeze_leaf(o, n, keep_old)
-                )
-                for nm, o, n in zip(active_names, ds_active, dact_out)
-            ]
-            tl_new, tldt_new = _tangent_conv(s_adv, ds_adv)
-            accepted = (s_adv.retry_count == jnp.int32(0)) & ~keep_old
-            reason_next = jnp.where(
-                already_done,
-                s.termination_reason,
-                jnp.where(
-                    real_term,
-                    reason,
-                    jnp.where(became_nan, jnp.int32(5), jnp.int32(0)),
-                ),
-            )
-            return (
-                frozen._replace(
-                    is_done=already_done | real_term | became_nan,
-                    termination_reason=reason_next,
-                ),
-                dfrozen,
-                jnp.where(accepted, tl_new, tl),
-                jnp.where(accepted, tldt_new, tldt),
-            )
-
-        @jax.jit
-        def runner_batch_jvp(state_b, atm_b, dstate_active_b, datm_active_b):
-            # Every active tangent leaf mirrors a batched array leaf (the
-            # AtmStatic toggles are Python bools and never carry one), so the
-            # two tangent lists batch on axis 0 like the states do.
-            step = jax.vmap(
-                lane_step,
-                in_axes=(None, 0, 0, 0, 0, _ATM_STATIC_BATCH_AXES, 0),
-                axis_name=_LANE_AXIS,
-            )
-            # (lanes, D): the tangent certificate is per lane per direction.
-            inf = jnp.full(dstate_active_b[0].shape[:2], jnp.float64(jnp.inf))
-            _, final_b, dfinal_b, tl, tldt = jax.lax.while_loop(
-                lambda c: jnp.any(cond_fn_batch(c[1])),
-                lambda c: (
-                    c[0] + jnp.int32(1),
-                    *step(c[0], c[1], c[2], c[3], c[4], atm_b, datm_active_b),
-                ),
-                (jnp.int32(0), state_b, list(dstate_active_b), inf, inf),
-            )
-            # `_slope_min` reduces over the column, so the certificate is read
-            # per lane, not across the batch.
-            tangent_ok = jax.vmap(
-                lambda s, a, b: jnp.all(_two_branch(a, b, _slope_min(s)))
-            )(final_b, tl, tldt)
-            return final_b, dfinal_b, tl, tangent_ok
-
-        return runner_batch_jvp
-
-    return (runner, runner_batch, runner_queue, _make_runner_jvp,
-            _make_runner_batch_jvp)
+    return runner, runner_batch, runner_queue, _make_runner_jvp
 
 
 # vmap axis name of the batched runner. `body_fn` psums over it to build the
@@ -2463,8 +2353,6 @@ class OuterLoop:
         self._runner = None
         self._make_runner_jvp = None
         self._runner_jvp_cache = {}
-        self._make_runner_batch_jvp = None
-        self._runner_batch_jvp_cache = {}
         # Un-jitted freeze-on-done while_loop over a vmapped step (the
         # batched path), and its jax.jit wrapper (`run_batch`). Both ride the
         # same (nz, toggle-combo) closure as `_runner`.
@@ -2725,7 +2613,6 @@ class OuterLoop:
             self._runner_batch,
             self._runner_queue,
             self._make_runner_jvp,
-            self._make_runner_batch_jvp,
         ) = _make_runner(
             _NET_JAX,
             self._statics,
@@ -2766,40 +2653,6 @@ class OuterLoop:
         batches the whole while-loop carry -- the certificate is in the
         predicate -- and integrates the primal D times.
         """
-        return self._run_jvp(
-            self._runner_jvp_cache, self._make_runner_jvp,
-            state, atm_static, dstate, datm, 0,
-        )
-
-    def run_batch_jvp(self, states_batched, atm_static_batched,
-                      dstates_batched, datm_batched):
-        """`run_jvp` for a whole batch of profiles in one device call.
-
-        Inputs are stacked exactly as `run_batch` takes them (leading lane
-        axis on every array leaf; the AtmStatic toggles broadcast), and the
-        two tangent trees mirror their primals leaf for leaf as `run_jvp`
-        requires. Returns `(final, dfinal, tangent_longdy, tangent_ok)`, each
-        with a leading lane axis.
-
-        Per-lane results match the solo `run_jvp` at the convergence scale,
-        not bitwise, for the same reason `run_batch` does: photolysis and the
-        geometry refresh follow the loop's iteration tick here, not the
-        lane's accept count.
-
-        Tangent layout is (lanes, D, ...) against a (lanes, ...) primal; see
-        `run_jvp` for the direction axis.
-        """
-        return self._run_jvp(
-            self._runner_batch_jvp_cache, self._make_runner_batch_jvp,
-            states_batched, atm_static_batched, dstates_batched, datm_batched, 1,
-        )
-
-    def _run_jvp(self, cache, factory, state, atm_static, dstate, datm, dir_axis):
-        """Shared plumbing of `run_jvp` / `run_batch_jvp`: split the tangent
-        trees into their active leaves, build (once per activity key) and
-        call the runner, and hand the tangent back as a tree mirroring the
-        primal. `dir_axis` is where the tangents' direction axis sits (0 solo,
-        1 after the lane axis)."""
         def _mask(dtree, tree):
             leaves = jax.tree_util.tree_leaves(tree)
             dleaves = jax.tree_util.tree_leaves(dtree)
@@ -2827,25 +2680,25 @@ class OuterLoop:
 
         act_s, act_a = _mask(dstate, state), _mask(datm, atm_static)
         key = (act_s, act_a)
-        if key not in cache:
-            cache[key] = factory(act_s, act_a)
+        if key not in self._runner_jvp_cache:
+            self._runner_jvp_cache[key] = self._make_runner_jvp(act_s, act_a)
         pick = lambda dtree, act: [
             d for d, a in zip(jax.tree_util.tree_leaves(dtree), act) if a
         ]
         ds_act, da_act = pick(dstate, act_s), pick(datm, act_a)
         # One direction at the primal's rank (what `jax.jvp` hands out) rides
-        # in as D=1 and is squeezed back out, so single-tangent callers see
-        # the shapes they always did.
+        # in as D=1 and is squeezed back out, so a single-tangent caller gets
+        # tangents at the primal's rank.
         one_dir = jnp.ndim(ds_act[0]) == jnp.ndim(pick(state, act_s)[0])
         if one_dir:
-            ds_act = [jnp.expand_dims(d, dir_axis) for d in ds_act]
-            da_act = [jnp.expand_dims(d, dir_axis) for d in da_act]
-        final, dfinal_active, tl, ok = cache[key](
+            ds_act = [jnp.expand_dims(d, 0) for d in ds_act]
+            da_act = [jnp.expand_dims(d, 0) for d in da_act]
+        final, dfinal_active, tl, ok = self._runner_jvp_cache[key](
             state, atm_static, ds_act, da_act
         )
         if one_dir:
-            dfinal_active = [jnp.squeeze(d, dir_axis) for d in dfinal_active]
-            tl = jnp.squeeze(tl, dir_axis)
+            dfinal_active = [jnp.squeeze(d, 0) for d in dfinal_active]
+            tl = jnp.squeeze(tl, 0)
         leaves, tdef = jax.tree_util.tree_flatten(final)
         it = iter(dfinal_active)
         # float0 placeholders keep the primal's shape; nothing reads them.
