@@ -12,8 +12,7 @@ namespace whose attribute surface is exactly what the runtime reads
 (``cfg.nz``, ``cfg.network``, ...). ``default_config()`` is the process-wide
 default, loaded once from ``configs/default.yaml`` at first ``import
 vulcan_jax`` — it resolves the import-frozen knobs (``network`` / ``atom_list``
-/ ``com_file``), honoring the ``$VULCAN_JAX_*`` overrides, exactly as the old
-``vulcan_cfg`` module did at import time.
+/ ``com_file``), honoring the ``$VULCAN_JAX_*`` overrides, once per process.
 """
 
 from __future__ import annotations
@@ -176,7 +175,7 @@ def _validate_keys(d: dict[str, Any], source: str) -> None:
 
 
 class Config(types.SimpleNamespace):
-    """Free-attribute config namespace (drop-in for the old ``vulcan_cfg`` module).
+    """Free-attribute config namespace (attribute access like master's ``vulcan_cfg``).
 
     A ``SimpleNamespace`` subclass so ``vars(cfg)``, ``getattr(cfg, name,
     default)``, ``setattr``, dynamic keys (``getattr(cfg, sp + "_H")``), and
@@ -282,7 +281,7 @@ def default_config() -> Config:
     """The process-wide default Config (loaded once from ``configs/default.yaml``).
 
     Resolves the import-frozen knobs, folding any ``$VULCAN_JAX_*`` overrides,
-    exactly as the old ``vulcan_cfg`` module did at import time. Cached: the
+    at the first ``import vulcan_jax``. Cached: the
     same object is returned every call, so ``state._cfg_overlay`` can identity-
     compare against it for its no-op fast path.
     """

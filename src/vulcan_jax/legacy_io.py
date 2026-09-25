@@ -1,7 +1,7 @@
 """Legacy I/O surface matching VULCAN-master/op.py's entry points.
 
 `ReadRate` keeps upstream's call signature (`ReadRate().read_rate(var,
-atm)`) but is no longer a parser: `network.parse_network` is the one
+atm)`) but is not a parser: `network.parse_network` is the one
 network parser, and this copies the host-side metadata the runtime reads
 off `var` (`var.Rf`, `var.pho_rate_index`, ...) from it. Rate *values*
 come from `rates_jax.build_rate_array`.

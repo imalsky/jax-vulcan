@@ -271,7 +271,7 @@ def check_real_blocks(fixture: str, cfg_name: str, backend: str):
     # rule) sits 2.7x the reference and 1.5x gbsv while the tangents themselves
     # agree to 8.7e-7, so the 2x arm-to-arm bar failed for the same reason.
     # The kernel's tangent against AD-through-LU: 8.5e-4 (CPU kernel) and
-    # 1.3e-3 (GH200, job 79354) at dt 1e6, where the reference itself is
+    # 1.3e-3 (GH200) at dt 1e6, where the reference itself is
     # 1.7e-4 from the gbsv tangent and the kernel 6.8e-4, with the three
     # residuals at 1.9e-3 / 2.0e-3 / 3.4e-3: on these blocks the residual is
     # the accuracy statement and this is the loose sanity bar.
@@ -299,7 +299,7 @@ def check_real_blocks(fixture: str, cfg_name: str, backend: str):
         # (one thread block per lane, the same code batched or not). The
         # `fast` scans on the GH200 lower to a different cuSOLVER LU when
         # batched, and the solutions differ by roundoff amplified by the block
-        # conditioning (1.6e-9 at dt 1e2 up to 1.3e-3 at dt 1e11, job 79350).
+        # conditioning (1.6e-9 at dt 1e2 up to 1.3e-3 at dt 1e11).
         assert r["resid_vmap"] <= 2.0 * r["resid_cand"] + 1e-12, r
         if backend == "ffi" or jax.default_backend() == "cpu":
             assert r["vmap_rel"] < 1e-12, r
@@ -323,12 +323,10 @@ def check_matrix_free(fixture: str, cfg_name: str, backend: str):
     dense operator's. The tangent passes through blocks of cond up to ~6e19
     (notes §1.4), so (2) is a wiring check at 1e-3 (worst, both at dt 1e6:
     HD189 8.5e-5 `fast` / 8.1e-6 `ffi`, W39b 1.4e-7 / 3.2e-13); a lost or
-    wrong dA x reads O(1) and above. The primal is bitwise on the CPU and,
-    since the gather-table Jacobian (0.16.5), on the GH200 too (0.0 in all
-    12 cases of job 79750, both backends, every dt and pinning); job 79533's
-    5e-8 `fast` / 5e-10 `ffi` came from the scatter Jacobian's atomics. Off
-    the CPU the primal bar is 1e-9, roundoff amplified by the block
-    conditioning with room to spare. dt 1e11 is not compared
+    wrong dA x reads O(1) and above. The primal is bitwise on the CPU and
+    measured bitwise on the GH200 too (0.0 in all 12 cases, both backends,
+    every dt and pinning); off the CPU the primal bar is 1e-9, roundoff
+    amplified by the block conditioning with room to spare. dt 1e11 is not compared
     (the tangent is O(1)-conditioned there). Also run by the SNCHO child for
     W39b."""
     import vulcan_jax.chem as chem_mod

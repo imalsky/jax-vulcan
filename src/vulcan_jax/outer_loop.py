@@ -889,8 +889,9 @@ def _make_runner(
         change it mid-run.
 
         The two branches are not equivalent, and every shipped config exits on
-        the LOOSE one: measured 2026-08-27, HD189 longdy 0.09172, HD209 0.03013,
-        W39b 0.09900 against `yconv_cri` 0.01 and `yconv_min` 0.1. Quote the
+        the LOOSE one: HD189 longdy ~0.09, HD209 ~0.03, W39b ~0.10 at the
+        step-count gates (notes §0), against `yconv_cri` 0.01 and `yconv_min`
+        0.1. Quote the
         realised `longdy` next to any "converged" claim rather than naming the
         criterion -- 0.099 against a 0.1 threshold is a weaker statement than
         0.01. The identical two-branch predicate is upstream's

@@ -136,8 +136,8 @@ def test_sub_atol_cell_gives_a_finite_batch_independent_tangent():
 
 
 def test_end_case_is_not_success_for_a_frozen_or_yielded_lane():
-    """`termination_reason` 0 (chunk yield) and 5 (non-finite freeze) both
-    stop below both caps, so neither cap fires and the fall-through used to
+    """`termination_reason` 0 (still running) and 5 (non-finite freeze) both
+    stop below both caps, so neither cap fires and a fall-through would
     report end_case=1 "Integration successful". Conversely a step that
     converges on the same step it hits count_max is a success (master's
     stop() tests convergence first), never end_case=3."""

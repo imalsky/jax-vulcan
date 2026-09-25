@@ -183,16 +183,10 @@ element_budget_tol: 1.0e-2
 # (exoclime/VULCAN@80f75b9 cfg_examples/vulcan_cfg_HD189.py:148) ships the
 # empty list. That revision's ROOT vulcan_cfg.py:153 -- and current exoclime
 # and shami-EEG master, and vm_branch:157 -- ship ['HC3N'], the VULCAN 3 value
-# that lives in HD189_vulcan3.yaml. Measured identical on HD189 (below).
-#
-# A 13-heavy-hydrocarbon list used to sit here, credited to "VULCAN-master
-# cfg:149". That attribution was false: the list exists in NO upstream
-# repository. It is VULCAN-JAX's own early test list (Shami, 2026-07-14:
-# "Usually, I only have HC3N"), and it had been written into the local
-# ../VULCAN-master copy, which was then cited as proof it was upstream.
-# Measured 2026-07-30, HD189, stall fallback off: [] and ['HC3N'] are
-# IDENTICAL (1495 steps, longdy 0.09172, same controlling cell); the
-# 13-species list is what produced 1296. Do not restore it to buy a step count.
+# that lives in HD189_vulcan3.yaml. [] and ['HC3N'] are IDENTICAL on HD189
+# (1495 steps, same controlling cell). Never pick a list because it reproduces
+# a step count: the 13-species list behind the retracted 1296 exists in no
+# upstream repository (notes §5, registers 16-17).
 conver_ignore: []
 rtol: 0.2
 post_conden_rtol: 0.1

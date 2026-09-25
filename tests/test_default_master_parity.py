@@ -6,7 +6,7 @@ inside subprocesses and restores any changed config/FastChem files before
 returning.
 
 The matched-step cases run the JAX side FROM MASTER'S OWN initial column
-(`_JAX_SCRIPT` swaps the `EQ` loader): since 0.15.0 the two codes seed from
+(`_JAX_SCRIPT` swaps the `EQ` loader): the two codes seed from
 different equilibrium solvers, and comparing trajectories started from
 different columns would measure the seeds rather than the solvers. The seeds
 have their own gate in tests/test_eq_seed.py.
@@ -38,12 +38,12 @@ from vulcan_jax._paths import PACKAGE_ROOT
 # every cell. The second fires the hydrostatic refresh 40 times and refreshes
 # the diffusion-limited escape flux with it over 200 steps: an escape Jacobian
 # term applied outside upstream's upwind variants diverges to 3.7e-3 at the TOA
-# by step 200 while the no-escape control sits at 9e-8 (measured 2026-08-26),
+# by step 200 while the no-escape control sits at 9e-8 (measured),
 # so the bar is 1e-6 over cells with master ymix > 1e-10 (trace cells clip to
 # zero on different steps once dt has grown, so the all-cell metric is noise).
 #
-# The 19-step bar is 5.0e-9, measured: 3.084e-9 with the unified JAX rate
-# build (0.15.1) and 2.486e-9 with the NumPy build it replaced. The two rate
+# The 19-step bar is 5.0e-9, measured: 3.084e-9 with the JAX rate build and
+# 2.486e-9 with a NumPy rate build. The two rate
 # tables differ by 5.7e-14 relative and 19 stiff steps amplify that; the JAX
 # build is the one the master rate oracles grade (4.5e-16 on the forward
 # rates, test_rates.py; 5.7e-14 on the reverse, test_gibbs.py). Both numbers
@@ -294,7 +294,7 @@ from vulcan_jax.runtime_validation import validate_runtime_config
 
 validate_runtime_config(vulcan_cfg, root=jax_root)
 
-# Start from MASTER's initial column. Since 0.15.0 the two codes seed from
+# Start from MASTER's initial column. The two codes seed from
 # different equilibrium solvers (this port minimizes Gibbs energy on its own
 # NASA-9 data, master shells out to FastChem; they agree to 7.9e-3 dex, see
 # tests/test_eq_seed.py), and a matched-step comparison of two trajectories
@@ -378,7 +378,7 @@ def _run_script(
     runs were bit-identical. This side is deterministic either way (the JAX half
     against one fixed master npz gave the same `y` under eight fixed seeds and
     under three random ones), so the pin is what makes a matched-step number
-    mean anything. Same remedy as the 2026-07-30 `photo_sp` set-order finding
+    mean anything. Same remedy as the `photo_sp` set-order finding
     (notes.md 1.3).
     """
     return subprocess.run(

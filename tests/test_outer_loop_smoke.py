@@ -28,11 +28,9 @@ warnings.filterwarnings("ignore")
 # conservation projection. A BOUND, not a target: the drift is roundoff the
 # projection leaves behind, so its exact value depends on XLA compilation
 # choices and on how far the initial state sits from chemical equilibrium.
-# The FastChem seed left 4.4e-05 here; the 0.15.0 Gibbs seed, built on the
-# same NASA-9 data as the reverse rates, starts close enough that the same
-# 50 steps leave -3.53e-10 (measured, reproducible to every printed digit).
-# 1e-8 is ~28x that and four orders under the old seed's number, so it still
-# catches the 10x regression this test exists for.
+# The Gibbs seed, built on the same NASA-9 data as the reverse rates, starts
+# close enough that 50 steps leave -3.53e-10 (measured, reproducible to every
+# printed digit); 1e-8 is ~28x that, so a 10x regression still trips it.
 MAX_ATOM_LOSS = 1.0e-8
 
 

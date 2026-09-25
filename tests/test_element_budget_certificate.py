@@ -65,7 +65,7 @@ def test_certificate_requires_the_column_element_budget(drain, scale, reason, wh
     that column to the present one: the run behaves as if it had lost that
     much carbon since t=0 (-0.73 of the C column at 4x, against
     `element_budget_tol` 1e-2). `scale` multiplies the whole starting column:
-    the term is measured relative to H (0.10.1), so a common factor (the
+    the term is measured relative to H, so a common factor (the
     hydrostatic renormalisation) must still certify.
     """
     import vulcan_jax.legacy_io as op

@@ -363,8 +363,8 @@ def test_codegen_matches_numpy_oracle():
     cancellation noise on trace species; the 1e-5 threshold absorbs XLA FMA
     fusion vs NumPy `*` chains. The master oracle test verifies term order.
 
-    Evaluated on a PERTURBED column, not on the pre-loop one. Since 0.15.0
-    the seed is a Gibbs minimizer on the same NASA-9 data the reverse rates
+    Evaluated on a PERTURBED column, not on the pre-loop one. The seed is a
+    Gibbs minimizer on the same NASA-9 data the reverse rates
     use, so the pre-loop column sits AT chemical equilibrium: gross forward
     and reverse fluxes cancel and the net RHS is a small difference of large
     terms, which makes a per-cell RELATIVE comparison of two float64
@@ -527,11 +527,10 @@ for i, vec in k_dict.items():
 out_codegen = np.asarray(fn(jnp.asarray(y), jnp.asarray(M), jnp.asarray(k_full)))
 
 # Bulk-species check: the W39b benchmark cares about H2O, CO2, SO, SO2
-# (the species that disagreed by 0.25-0.49 dex with the old chem_rhs)
 # and the cleanly-summed H2/CO/S/H2S baseline. Threshold 1e-5 is well
 # below the 0.05 dex (12% relative) target on the converged state and
-# 4 orders of magnitude tighter than the old chem_rhs floor (~1e-4
-# absolute, which produced the original 0.25-0.49 dex drift).
+# 4 orders of magnitude under the ~1e-4 absolute floor of a vectorised
+# summation, which drifted H2O/CO2/SO/SO2 by 0.25-0.49 dex.
 #
 # Heavy-hydrocarbon trace radicals (C2H6, C4H3, ...) are not validated
 # here — they cancel from large rates down to small absolute residues,

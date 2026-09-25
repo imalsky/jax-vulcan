@@ -323,7 +323,7 @@ def oracle_worktree(
         oracle_fastchem = dst / "fastchem_vulcan"
         # Upstream ships FastChem SOURCE, never a binary, so any oracle test
         # reaching ini_mix='EQ' dies with exit 127. Build UPSTREAM'S OWN
-        # source: this port no longer carries FastChem, and the oracle must be
+        # source: this port carries no FastChem, and the oracle must be
         # upstream's initializer with upstream's data, unmodified.
         if oracle_fastchem.is_dir() and not (oracle_fastchem / "fastchem").exists():
             shutil.copy2(_oracle_fastchem_binary(family, src),

@@ -187,7 +187,7 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch):
     change; the identity residual after the repair is set by the correction
     tridiagonal's conditioning (~T/c0, growing with dt) and measured
     1e-13 at dt <= 1e11, 2e-13 to 1e-11 at the 1e15 cap depending on the
-    rate table (2026-09-08, C20), so its bar sits 1e6 below the leak it
+    rate table (C20), so its bar sits 1e6 below the leak it
     guards, not at roundoff."""
     import jax
     import jax.numpy as jnp
@@ -219,7 +219,7 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch):
         # Residual defect over the bound the repair leaves it under (the
         # roundoff of the terms or REPAIR_ABS_FLOOR of the layer density);
         # 1e3 x roundoff covers the correction tridiagonal's conditioning
-        # at the 1e15 cap (1e-11 of the terms measured, 2026-09-08).
+        # at the 1e15 cap (1e-11 of the terms measured).
         identity[dt] = max(float(jnp.max(jnp.abs(d1) / bound)), float(jnp.max(jnp.abs(d2) / bound)))
         sol, _ = step(y, k_arr, jnp.float64(dt), zero, net)
         closed[dt] = float(
@@ -229,15 +229,15 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch):
     print("closed-layer element change / |content|:",
           {f"{d:g}": f"{v:.1e}" for d, v in closed.items()})
     assert all(v < 1e3 for v in identity.values()), identity
-    # The repair runs at every dt (no gate since 0.6.0) and leaves alone a
+    # The repair runs at every dt (no dt gate) and leaves alone a
     # defect under config.REPAIR_ABS_FLOOR of the layer's density (roundoff
     # by measurement; correcting it stalled a small-dt column by moving
     # 1e-21 of a layer onto a 1e-21 H2S cell every stage, notes.md §1.13).
     # Contract: per layer and atom the uncorrected element change is
     # bounded by that floor times the layer density (measured <= 4x the
-    # floor over two stages; 10x here), at every dt including the small
-    # ones the 0.5.1 gate used to skip (LU error 1e-9 at 1e4 s, 3e-7 at
-    # 1e6 s relative to content, both corrected now).
+    # floor over two stages; 10x here), at every dt, the small ones
+    # included (LU error 1e-9 at 1e4 s and 3e-7 at 1e6 s relative to
+    # content, both corrected).
     from vulcan_jax.config import REPAIR_ABS_FLOOR
     for dt in (1e4, 1e6, 1e8, 1e11, 1e13, 1e15):
         sol, _ = step(y, k_arr, jnp.float64(dt), zero, net)
