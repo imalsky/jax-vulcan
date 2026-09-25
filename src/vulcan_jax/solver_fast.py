@@ -174,6 +174,15 @@ def _register():
     global _REGISTERED
     if _REGISTERED:
         return
+    # The CUDA twin is built separately by `--cuda` and never here, so a stale
+    # one is refused, not loaded (the CPU kernel is rebuilt by `build`).
+    cu_src = _CSRC / "block_thomas_cuda.cu"
+    if _CUDA_LIB.exists() and _CUDA_LIB.stat().st_mtime < cu_src.stat().st_mtime:
+        raise RuntimeError(
+            f"{_CUDA_LIB} is older than {cu_src.name}; rebuild it on the GPU "
+            "host with `python -m vulcan_jax.solver_fast --cuda`, or delete it "
+            "to run the CPU kernel only."
+        )
     lib = ctypes.CDLL(str(build()))
     jax.ffi.register_ffi_target(
         "vulcan_bt_factor", jax.ffi.pycapsule(lib.VulcanBtFactor), platform="cpu"
@@ -181,7 +190,7 @@ def _register():
     jax.ffi.register_ffi_target(
         "vulcan_bt_solve", jax.ffi.pycapsule(lib.VulcanBtSolve), platform="cpu"
     )
-    if _CUDA_LIB.exists():  # built separately by `--cuda`; never built here
+    if _CUDA_LIB.exists():
         gpu = ctypes.CDLL(str(_CUDA_LIB))
         jax.ffi.register_ffi_target(
             "vulcan_bt_factor", jax.ffi.pycapsule(gpu.VulcanBtFactorCuda), platform="CUDA"
