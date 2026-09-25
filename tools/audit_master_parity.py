@@ -107,29 +107,16 @@ KNOWN_THERMO_RENUMBERED: frozenset[str] = frozenset(
 )
 
 # Vendored stellar-flux files where JAX intentionally diverges from master by a
-# uniform flux rescale. Master's builder (atm/make_spectra_in_nm.py) multiplied
-# by R_star where the surface-flux conversion divides, so the shipped eps Eri
-# spectrum is low by exactly R_star^4 = 0.735^4; JAX ships the corrected file
+# uniform flux rescale. Master's builder (atm/make_spectra_in_nm.py; copy in
+# tools/data_prep/) multiplied by R_star where the surface-flux conversion
+# divides, so the shipped eps Eri spectrum is low by exactly
+# R_star^4 = 0.735^4; JAX ships the corrected file
 # (notes.md, Parity & bug guide). Wavelength columns must stay identical and
 # every flux ratio must sit at the documented factor (2-sig-fig tolerance); any
 # other difference is real drift and fails.
 KNOWN_SFLUX_RESCALES: dict[str, float] = {
     "sflux-epseri.txt": 0.735**-4,
 }
-
-# Runtime inputs VULCAN-JAX ships that master has no counterpart for -- planet
-# cases added here with their own configs. Each extra must be named here so a
-# stray or accidentally-copied file still fails. Asymmetric on purpose: a file
-# present only in MASTER is always an error (a vendored input we dropped), and
-# an unlisted jax-only file is too.
-JAX_ONLY_RUNTIME_FILES: frozenset[str] = frozenset(
-    {
-        # Input for the withdrawn configs/K2-18b.yaml (removed: it converged in
-        # neither code). The T-P file stays vendored so the case can be re-run;
-        # it has no master counterpart either way.
-        "atm_K2-18b-Nep100X-apo-H2Oclouds.txt",
-    }
-)
 
 UI_OUTPUT_KEYS = {"output_dir", "out_name", "save_evolution", "save_evo_frq"}
 
@@ -418,11 +405,7 @@ def _compare_runtime_data(
         else:
             # No manifest: fall back to the old whole-tree symmetric check.
             only_master = master_keys - jax_keys
-            only_jax = {
-                rel
-                for rel in jax_keys - master_keys
-                if rel.name not in JAX_ONLY_RUNTIME_FILES
-            }
+            only_jax = jax_keys - master_keys
             if only_master or only_jax:
                 errors.append(
                     f"{rel_dir}: file set mismatch, only master={sorted(only_master)}, "

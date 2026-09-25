@@ -34,7 +34,7 @@ def _warn_stale_reaction_ids(
 
     Upstream's ``make_chem_funs.py`` renumbers a network file in place, so
     ``file_id == parser_position`` only holds for files that have been run
-    through upstream; 6 of the 18 vendored networks are not in that state.
+    through upstream; 5 of the 11 vendored networks are not in that state.
     The rate array is indexed by POSITION everywhere, so the parse is correct
     regardless, but a ``cfg.remove_list`` written from a stale file's id
     column selects the wrong reactions. Say so rather than pass silently.

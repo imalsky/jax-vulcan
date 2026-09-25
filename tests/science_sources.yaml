@@ -246,9 +246,9 @@ intentional_divergences:
     files: [atm/stellar_flux/sflux-epseri.txt]
     factor: 0.735**-4
     reason: >-
-      Master's builder (atm/make_spectra_in_nm.py) multiplied by R_star where
-      the surface-flux conversion divides, so the shipped eps Eri spectrum is
-      low by exactly R_star^4.
+      Master's builder (atm/make_spectra_in_nm.py; copy in tools/data_prep/)
+      multiplied by R_star where the surface-flux conversion divides, so the
+      shipped eps Eri spectrum is low by exactly R_star^4.
     recorded_in: notes.md (Parity & bug guide, C4)
 
   P18_gj1214_upstream_regenerated:
@@ -261,8 +261,9 @@ intentional_divergences:
       the 1.385-1.399 spread is the old file's three-significant-digit
       rounding) and prints seven digits. The wavelength grid is otherwise
       identical to 2e-11 nm. The (distance/R_star) upstream used is not in
-      either tree: the shipped builder read_muscles_spectra_in_nm.py still
-      encodes 47.5 ly / 0.2064 r_sun and reproduces the OLD normalisation.
+      either tree: the builder (atm/stellar_flux/read_muscles_spectra_in_nm.py;
+      copy in tools/data_prep/) still encodes 47.5 ly / 0.2064 r_sun and
+      reproduces the OLD normalisation.
     recorded_in: notes.md (Parity & bug guide, P18)
 
   C12_fastchem_ps_order:

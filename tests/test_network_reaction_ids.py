@@ -3,14 +3,13 @@
 VULCAN's `make_chem_funs.py` renumbers a network file in place the first time it
 runs, so a file that upstream has run through has `file_id == parser_position` on
 every row. A file that has been fetched from a remote, hand-edited, or simply
-never run does not. Six of the eighteen networks vendored here are in that state.
+never run does not. Five of the eleven networks vendored here are in that state.
 
 `legacy_io.ReadRate.read_rate` used to build `pho_rate_index` / `ion_rate_index`
 from the id column, while `network.parse_network` builds them from the position
 and `rates.build_rate_array` / `rates.apply_remove_list` index `k_arr`
 positionally. On any file where the two disagree this wrote a photolysis rate
-into the wrong reaction slot -- silently for three of the vendored networks, and
-with an out-of-range IndexError for three more.
+into the wrong reaction slot, silently or with an out-of-range IndexError.
 
 Run from VULCAN-JAX/:
     pytest tests/test_network_reaction_ids.py
