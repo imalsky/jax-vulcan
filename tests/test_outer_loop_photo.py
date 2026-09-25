@@ -2,8 +2,9 @@
 compute_tau / compute_flux / compute_J round-trip on HD189.
 
 Both paths share the same JAX kernels, so tau / fluxes / aflux_change /
-photo k_arr rows / J_sp entries must agree to <= 1e-13; anything beyond that
-is a wiring bug in the carry plumbing.
+photo k_arr rows must agree to <= 1e-13; anything beyond that is a wiring bug
+in the carry plumbing. J_sp is read through the production .vul writer, which
+recomputes cross x aflux on the host, so it is held to WRITER_RTOL.
 """
 
 from __future__ import annotations
@@ -23,6 +24,10 @@ warnings.filterwarnings("ignore")
 
 
 PHOTO_RTOL = 1e-13
+# The writer's host-side cross x aflux sum against compute_J: measured 2.0e-8
+# relative at worst on HD189 (C2H6 branch 1); the chemistry's k_arr rows hold
+# PHOTO_RTOL.
+WRITER_RTOL = 1e-7
 
 
 def main() -> int:
@@ -100,11 +105,10 @@ def main() -> int:
     # --- Path B: photo branch inside the JAX runner ---
     integ = outer_loop.OuterLoop(solver, output)
     integ._ensure_runner(data_var, data_atm)
-    init_state = integ._pack_state_from_runstate(
-        runstate_from_store(data_var, data_atm, data_para)._replace(
-            photo_static=rs.photo_static
-        )
+    rs_entry = runstate_from_store(data_var, data_atm, data_para)._replace(
+        photo_static=rs.photo_static
     )
+    init_state = integ._pack_state_from_runstate(rs_entry)
     photo_branch = outer_loop._make_photo_branch(integ._photo_static)
     final_state = photo_branch(init_state)
 
@@ -116,20 +120,14 @@ def main() -> int:
     prev_aflux_B = np.asarray(final_state.prev_aflux)
     aflux_change_B = float(final_state.aflux_change)
     k_arr_B = np.asarray(final_state.k_arr)
-    # The per-branch J rows keyed as op.compute_J keys its dict (op.py:2764,
-    # 2783): one entry per (sp, branch) plus the per-species (sp, 0) total.
-    nz = aflux_B.shape[0]
-    J_sp_B = {
-        (sp, bn): np.zeros(nz)
-        for sp in data_var.photo_sp
-        for bn in range(data_var.n_branch[sp] + 1)
-    }
-    photo_J_data = integ._photo_static.photo_J_data
-    for keys, rows in ((photo_J_data.branch_keys, final_state.J_br),
-                       (photo_J_data.branch_T_keys, final_state.J_br_T)):
-        for i, key in enumerate(keys):
-            J_sp_B[key] = np.asarray(rows[i])
-            J_sp_B[(key[0], 0)] = J_sp_B[(key[0], 0)] + J_sp_B[key]
+    # J_sp through the production .vul writer (cross x aflux per branch plus
+    # the (sp, 0) totals, op.py:2764, 2783), not a copy of it here.
+    import vulcan_jax.legacy_io as _legacy_io
+
+    rs_B = integ._unpack_state_to_runstate(final_state, rs_entry)
+    J_sp_B = _legacy_io._synthesize_save_dicts(
+        rs_B, vulcan_cfg, photo_static=rs.photo_static
+    )[0]["J_sp"]
 
     ok = True
 
@@ -217,7 +215,7 @@ def main() -> int:
         denom = np.maximum(np.abs(ref), 1e-300)
         re = float(np.max(diff / denom))
         max_J_relerr = max(max_J_relerr, re)
-        if re > PHOTO_RTOL:
+        if re > WRITER_RTOL:
             print(f"FAIL: J_sp[{key}] relerr {re:.3e}")
             ok = False
     print(f"var.J_sp entries: {len(J_sp_A)} keys, max relerr {max_J_relerr:.3e}")
