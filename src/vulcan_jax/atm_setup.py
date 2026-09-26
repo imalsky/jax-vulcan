@@ -263,10 +263,9 @@ def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray
         p_file = table["Pressure"]
         T_file = table["Temp"]
         if max(p_file) < pco[0] or min(p_file) > pco[-1]:
-            warnings.warn(
+            logger.warning(
                 "P_b and P_t assigned in the config are out of range "
-                "of the input.\nConstant extension is used.",
-                stacklevel=2,
+                "of the input. Constant extension is used."
             )
         Tco = _interp_descending_or_ascending(
             pco,

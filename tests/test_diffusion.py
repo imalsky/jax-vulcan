@@ -24,9 +24,10 @@ VULCAN_MASTER = oracle_dir_or_skip("this diffusion comparison")
 warnings.filterwarnings("ignore")
 
 # Bars: operator 1e-3 (He's net flux is a ~12-digit cancellation; worst
-# cell ~3e-4 at the roundoff floor). diag 2.0 (the ~1e-4 diffusion residue
-# is extracted from ~1e10 LHS terms, and lhs_jac_tot disagrees with
-# op.diffdf at heavy condensables). sup/sub 1e-10 (no cancellation).
+# cell ~3e-4 at the roundoff floor). diag 2.0 is a sign check only (a flipped
+# sign gives exactly 2): the ~1e-4 diffusion residue is extracted from ~1e10
+# LHS terms, and lhs_jac_tot disagrees with op.diffdf at heavy condensables.
+# sup/sub 1e-10 (no cancellation).
 OP_RTOL = 1e-3
 DIAG_RTOL = 2.0
 OFFDIAG_RTOL = 1e-10

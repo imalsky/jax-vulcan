@@ -11,9 +11,10 @@ set -euo pipefail
 
 PROJECT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 JAX_REPO="$PROJECT/VULCAN-JAX"
-MASTER="$PROJECT/VULCAN-master"
+: "${VULCAN_MASTER_DIR:?set VULCAN_MASTER_DIR to a clean pinned VULCAN 2 clone (revisions in tests/science_sources.yaml)}"
+MASTER="$VULCAN_MASTER_DIR"
 PY="${BENCH_PYTHON:-python}"
-OUT="${BENCH_OUT:-/tmp/bench_table1_$(date +%Y%m%d_%H%M%S)}"
+OUT="${BENCH_OUT:-${TMPDIR:-/tmp}/bench_table1_$(date +%Y%m%d_%H%M%S)}"
 CPU_WALL_MIN="${CPU_WALL_MIN:-0.85}"   # VULCAN 2.0 is single-threaded: cpu/wall must be ~1
 # Load ceiling: half the cores.
 _NCPU="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null \
