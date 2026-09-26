@@ -525,29 +525,25 @@ def _topk_ensemble_spread(g_stack: np.ndarray) -> float:
     return float(np.max(width / np.abs(g_mean[top])))
 
 
-def _matching_host_network(net, network=None):
-    """Return host network metadata matching `net.nr`, when available."""
-    if net is None:
-        return network
-    if network is not None:
-        return network
-    try:
-        from . import chem_funs
+def _host_network(net):
+    """The import-locked parsed network, after checking that `net` is its
+    arrays: the body map's Ros2 step runs the import-time codegen RHS."""
+    from . import chem_funs
 
-        cand = getattr(chem_funs, "_NETWORK", None)
-        if cand is not None and cand.nr == getattr(net, "nr", None):
-            return cand
-    except Exception:
-        pass
-    return None
+    host = chem_funs._NETWORK
+    if net.nr != host.nr:
+        raise ValueError(
+            f"net has {net.nr} reactions but the import-locked network "
+            f"{host.network_path} has {host.nr}. The adjoint linearizes the "
+            "import-time codegen RHS: pass chem_funs._NET_JAX, and select "
+            "another network with $VULCAN_JAX_NETWORK before the first import."
+        )
+    return host
 
 
-def _active_photolysis_rows(k_arr, net, network=None) -> bool:
+def _active_photolysis_rows(k_arr, net) -> bool:
     """Whether `k_arr` contains nonzero photodissociation rows."""
-    network = _matching_host_network(net, network=network)
-    if network is None:
-        return False
-    photo_rows = np.asarray(network.is_photo, dtype=bool)
+    photo_rows = np.asarray(_host_network(net).is_photo, dtype=bool)
     if not photo_rows.any():
         return False
     return bool(np.any(np.asarray(k_arr)[photo_rows] != 0.0))
@@ -561,7 +557,6 @@ def _resolve_photo_recompute_k(
     runner_photo_static=None,
     converged_state=None,
     integ=None,
-    network=None,
 ) -> Callable[[jnp.ndarray], jnp.ndarray] | None:
     """Resolve the public photo-feedback argument for sensitivity calls.
 
@@ -591,7 +586,7 @@ def _resolve_photo_recompute_k(
     if runner_photo_static is not None and converged_state is not None:
         return make_photo_recompute_k(runner_photo_static, converged_state)
 
-    if not _active_photolysis_rows(k_arr, net, network=network):
+    if not _active_photolysis_rows(k_arr, net):
         return None
     raise ValueError(
         "photo_recompute_k='auto' is the default on active photochemistry "
@@ -602,105 +597,45 @@ def _resolve_photo_recompute_k(
     )
 
 
-def _guard_unmodeled_processes(y_star, k_arr, net, body_terms, network=None, species=None):
-    """Fingerprint processes the body map would silently mistreat; raise/warn.
-
-    `NetworkArrays` carries no photo/ion/conden row masks, so the checks use
-    the import-locked parsed network / species list when their sizes match. A
-    non-matching custom network skips the fingerprints with a RuntimeWarning
-    (skipped != passed). `network`/`species` exist for tests.
+def _guard_unmodeled_processes(y_star, k_arr, net, body_terms):
+    """Refuse processes the body map would silently mistreat.
 
     Raises on nonzero ion rows (charge balance is in no body map) and on
     condensation fingerprints (nonzero conden rate rows, or a populated
-    condensate) without conden/fix-species body terms.
+    condensate) without conden/fix-species body terms. Row masks and species
+    names come from the import-locked network (`_host_network`).
     """
-    if network is None or species is None:
-        try:
-            from . import chem_funs
+    from . import chem_funs
 
-            cand = _matching_host_network(net)
-            if network is None and cand is not None:
-                network = cand
-            if species is None and cand is not None:
-                if len(chem_funs.spec_list) == y_star.shape[1]:
-                    species = list(chem_funs.spec_list)
-        except Exception:
-            pass
-
-    if network is None or species is None:
-        skipped = [
-            name
-            for name, missing in (
-                ("photo/ion/conden rate-row fingerprints", network is None),
-                ("condensate-species fingerprint", species is None),
-            )
-            if missing
-        ]
-        # Cannot fingerprint without the network, but network-independent
-        # evidence (no conden body terms + an all-zero species column) is
-        # enough to refuse a state that is not provably benign;
-        # `network=`/`species=` gets the real check.
-        needs_conden_terms = body_terms is None or body_terms.conden_static is None
-        y_np_probe = np.asarray(y_star)
-        # An all-zero species column is the condensate/pinned signature; a
-        # fully-positive column set is the benign gas-only signature.
-        has_zeroed_columns = bool(np.any(np.all(y_np_probe <= 0.0, axis=0)))
-        if needs_conden_terms and has_zeroed_columns:
-            raise ValueError(
-                "adjoint fingerprint guard cannot resolve the host network for "
-                f"this k_arr ({' and '.join(skipped)}), AND this state is not "
-                "provably benign: y_star has at least one all-zero species "
-                "column (the signature of a condensate or pinned species) while "
-                "no condensation body terms were supplied. The ion/condensation "
-                "refusals therefore could not run, and a condensation-coupled "
-                "sensitivity would be silently wrong.\n"
-                "Pass `network=<parsed network>` and `species=<species list>` "
-                "for this run so the fingerprints can be evaluated, or run "
-                "`audit_adjoint_scope(...)` with the run's cfg to check "
-                "explicitly. To proceed on a state you know is gas-only, supply "
-                "the matching `network=`/`species=` rather than relying on the "
-                "import-locked default."
-            )
-        warnings.warn(
-            "adjoint fingerprint guard could not resolve the import-locked "
-            f"host network/species for this k_arr (custom network?): {' and '.join(skipped)} "
-            "SKIPPED, not passed. Run audit_adjoint_scope(...) with the run's "
-            "cfg to check for dropped processes explicitly.",
-            RuntimeWarning,
-            stacklevel=3,
-        )
-
+    network = _host_network(net)
     k_np = np.asarray(k_arr)
     terms_conden = body_terms is not None and body_terms.conden_static is not None
     terms_pins = body_terms is not None and body_terms.fix_mask is not None
 
-    conden_rate_active = False
-    if network is not None:
-        ion_rows = np.asarray(network.is_ion, dtype=bool)
-        if ion_rows.any() and bool(np.any(k_np[ion_rows] != 0.0)):
-            raise NotImplementedError(
-                "ion rows are active in k_arr: the runner pins the electron "
-                "rows inside both Ros2 stages and applies a post-step charge "
-                "balance, neither of which is in the adjoint body map, so "
-                "ion-coupled sensitivities would be silently wrong. Ion "
-                "columns are not supported by the steady-state adjoint — use "
-                "forward-mode."
-            )
-        conden_rows = np.asarray(network.is_conden, dtype=bool)
-        conden_rate_active = conden_rows.any() and bool(
-            np.any(k_np[conden_rows] != 0.0)
+    ion_rows = np.asarray(network.is_ion, dtype=bool)
+    if ion_rows.any() and bool(np.any(k_np[ion_rows] != 0.0)):
+        raise NotImplementedError(
+            "ion rows are active in k_arr: the runner pins the electron "
+            "rows inside both Ros2 stages and applies a post-step charge "
+            "balance, neither of which is in the adjoint body map, so "
+            "ion-coupled sensitivities would be silently wrong. Ion "
+            "columns are not supported by the steady-state adjoint — use "
+            "forward-mode."
         )
+    conden_rows = np.asarray(network.is_conden, dtype=bool)
+    conden_rate_active = conden_rows.any() and bool(
+        np.any(k_np[conden_rows] != 0.0)
+    )
 
     condensate_active = False
-    if species is not None:
-        y_np = np.asarray(y_star)
-        for i, sp in enumerate(species):
-            # Condensed-phase suffixes across shipped networks: `_l_s`
-            # (H2O/NH3/S2/S8), `_l` (H2SO4), `_s` (C_s); testing only
-            # `_l_s` would silently miss H2SO4_l and C_s.
-            if sp.endswith(("_l_s", "_l", "_s")) and float(y_np[:, i].max()) > 0.0:
-                condensate_active = True
-                break
+    y_np = np.asarray(y_star)
+    for i, sp in enumerate(chem_funs.spec_list):
+        # Condensed-phase suffixes across shipped networks: `_l_s`
+        # (H2O/NH3/S2/S8), `_l` (H2SO4), `_s` (C_s); testing only
+        # `_l_s` would silently miss H2SO4_l and C_s.
+        if sp.endswith(("_l_s", "_l", "_s")) and float(y_np[:, i].max()) > 0.0:
+            condensate_active = True
+            break
 
     if (conden_rate_active or condensate_active) and not (terms_conden or terms_pins):
         raise ValueError(
