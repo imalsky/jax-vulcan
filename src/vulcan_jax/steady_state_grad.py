@@ -184,8 +184,8 @@ def _warn_poor_convergence(
             f"steady_state_reaction_sensitivity: median LGMRES relative residual {resid:.2e} "
             f"exceeds {_ADJOINT_RESID_WARN:.0e}: the solve is in the stagnation "
             "regime observed on closed columns (dominant-reaction magnitudes "
-            "bounce ~+/-25% around FD there; sign and ranking remain robust; see "
-            "README.md, Limits). Treat magnitudes as "
+            "bounce ~+/-25% around FD there; sign and ranking remain robust). "
+            "Treat magnitudes as "
             "ranking weights only. More cycles do not reliably reduce the "
             "residual; scan body_dt for a lower-residual regime (see "
             "BODY_MAP_DT) and check null_quality.",

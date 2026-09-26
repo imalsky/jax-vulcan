@@ -1065,11 +1065,11 @@ class Atm:
 
         old_P_b = self.P_b
         self.P_b = float(new_pco[0])
-        logger.info(
+        logger.warning(
             "high_temp_cut: capping deep T at {:.0f} K (P >= {:.2e} bar) for "
             "numerical stability.".format(T_max, P_min / BAR_CGS)
         )
-        logger.info(
+        logger.warning(
             "  effective P_b {:.2e} -> {:.2e} bar (nz = {})".format(
                 old_P_b / BAR_CGS, self.P_b / BAR_CGS, nz
             )

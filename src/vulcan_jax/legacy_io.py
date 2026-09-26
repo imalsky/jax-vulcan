@@ -455,12 +455,12 @@ class Output(object):
             )
 
     def print_prog(self, var, para):
-        """Log one progress block: elapsed model time, step count vs
+        """Print one progress block (the config asked for it: `use_print_prog`): elapsed model time, step count vs
         `count_max`, longdy / longdy_dt / dt, and the most-varying
         (level, species).
         """
         indx_max = np.nanargmax(para.where_varies_most)
-        logger.info(
+        print(
             "Elapsed time: "
             + "{:.2e}".format(var.t)
             + " || Step number: "
@@ -468,7 +468,7 @@ class Output(object):
             + "/"
             + str(self._cfg.count_max)
         )
-        logger.info(
+        print(
             "longdy = "
             + "{:.2e}".format(var.longdy)
             + "      || longdy/dt = "
@@ -476,8 +476,8 @@ class Output(object):
             + "  || dt = "
             + "{:.2e}".format(var.dt)
         )
-        logger.info("from nz = " + str(int(indx_max / ni)) + " and " + species[indx_max % ni])
-        logger.info(
+        print("from nz = " + str(int(indx_max / ni)) + " and " + species[indx_max % ni])
+        print(
             "------------------------------------------------------------------------"
         )
 

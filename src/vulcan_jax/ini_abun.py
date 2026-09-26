@@ -637,7 +637,7 @@ def _apply_condense(y: np.ndarray, data_atm) -> np.ndarray:
             if _CFG.use_sat_surfaceH2O is True:
                 _CFG.use_fix_sp_bot[sp] = data_atm.sat_mix[sp][0]
                 logger.info(
-                    "\nThe fixed surface water is now reset by condensation and humidity to "
+                    "The fixed surface water is now reset by condensation and humidity to "
                     + str(_CFG.use_fix_sp_bot[sp])
                 )
                 # The ymix write is overwritten by the final renormalisation;
