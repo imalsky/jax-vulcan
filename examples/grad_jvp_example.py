@@ -1,17 +1,9 @@
-"""Forward-mode AD through one Ros2 step.
+"""Forward- and reverse-mode AD through one Ros2 step (`jax_ros2_step`).
 
-`jax.lax.while_loop` (used by `outer_loop.runner`) supports `jax.jvp` /
-`jax.jacfwd` but raises on reverse-mode `jax.vjp` / `jax.grad`. So
-reverse-mode at the converged state uses the steady-state solver-map adjoint
-in `steady_state_grad.py` (see `grad_reverse_example.py`). Forward-mode
-tangents through the existing runner work today with no code change.
-
-This script shows forward-mode through the per-step kernel `jax_ros2_step`,
-which is also `jit`/`vmap`/`jacfwd`/`jvp`/`vjp` compatible. Same pattern
-extends to the full runner (whose vjp is blocked but whose jvp works).
-
-Output: a finite tangent of the per-step solution w.r.t. a perturbation
-in initial y, demonstrating the AD path is well-formed end-to-end.
+The runner's `lax.while_loop` supports forward mode only. A certified
+end-to-end tangent comes from `OuterLoop.run_jvp`; reverse-mode
+sensitivities at the converged state come from `steady_state_grad`
+(see grad_reverse_example.py).
 """
 
 from __future__ import annotations
@@ -79,7 +71,7 @@ def main() -> int:
     print(f"finite primal:  {bool(jnp.all(jnp.isfinite(sol_primal)))}")
     print(f"finite tangent: {bool(jnp.all(jnp.isfinite(sol_tangent)))}")
 
-    # ---- Reverse-mode also works on the per-step kernel (proven below). ----
+    # ---- Reverse mode through the per-step kernel ----
     def loss(y_in):
         sol, _ = jax_ros2_step(y_in, k_arr, jnp.float64(1e-3), atm, net)
         return jnp.sum(sol**2)
@@ -90,9 +82,8 @@ def main() -> int:
     # ---- Note about the full integration loop ----
     print()
     print(
-        "Note: jax.jvp also works through the full `outer_loop.runner` "
-        "(jax.lax.while_loop forward-mode is supported). For reverse-mode "
-        "reaction-importance sensitivities at the converged state, see "
+        "Note: for a certified end-to-end tangent use OuterLoop.run_jvp; for "
+        "reverse-mode reaction sensitivities at the converged state see "
         "steady_state_grad.steady_state_reaction_sensitivity and "
         "examples/grad_reverse_example.py."
     )

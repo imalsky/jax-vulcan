@@ -8,7 +8,7 @@ emulator data-generation regime; `run_batch` also supports photo-on batches).
 That workload converges in ~600 accepted Ros2 steps (~50 s single-profile on
 a laptop CPU), so the default job is a few minutes.
 
-Design rules (do not revert):
+Design:
 
 1.  Profiles must actually converge: the step cap defaults to 2500, a 4x
     margin over the ~600 steps this regime needs. A cap below the real step
@@ -19,12 +19,10 @@ Design rules (do not revert):
 3.  The GPU never waits for the CPU: builds for ALL batch sizes are
     submitted up front; integration starts on the smallest batch while the
     pool keeps building the rest.
-4.  Device-batch tiling: the on-device batch is capped (default 128 via
-    `--device-batch`); larger sweep batches run as sequential sub-tiles
-    sharing one XLA compile. The vmapped Jacobian-assembly transient grows
-    linearly in the on-device batch and OOMs an untiled batch 512 on a
-    96 GB GH200; per-planet throughput is already near-saturated by 128.
-    Per-lane results are unchanged (lanes never interact).
+4.  The on-device batch is capped (`--device-batch`, default 128); larger
+    sweeps run as sequential sub-tiles sharing one XLA compile, bounding the
+    vmapped Jacobian transient, which grows linearly with batch. Lanes never
+    interact, so results are unchanged.
 
 Standalone: imports only `vulcan_jax`, the stdlib, NumPy, and JAX -- no
 sibling repos; the atmosphere file and the thermochemistry ship inside the
@@ -66,12 +64,10 @@ _REASON_NAMES = {
     1: "converged",
     2: "runtime",
     3: "step-cap",
-    4: "stalled",
     5: "non-finite",
 }
-# Reasons that count as a profile genuinely reaching steady state: 1 is the
-# normal yconv/slope criterion, 4 is the JAX-only stall fallback (end_case=1 too; no upstream counterpart).
-_OK_REASONS = (1, 4)
+# Reason 1: the certificate converged.
+_OK_REASONS = (1,)
 
 
 def log(msg: str) -> None:
@@ -88,7 +84,7 @@ def build_cfg(nz: int, count_max: int):
     (cfg defaults), equilibrium-seed init, photo off (the emulator regime).
 
     `count_max` must comfortably exceed the ~600 accepted steps this regime
-    needs to converge (measured single-profile).
+    needs to converge.
     """
     import vulcan_jax
 
@@ -442,8 +438,8 @@ def main() -> int:
         default=128,
         help="Max planets per device call. Larger sweep batches are tiled "
         "host-side into sub-batches of this size (one shared XLA compile); "
-        "per-lane results are unchanged. Bounds the vmapped Jacobian "
-        "transient that OOM'd an untiled batch 512 on a 96 GB GH200. "
+        "per-lane results are unchanged. Bounds the vmapped Jacobian transient, "
+        "which grows linearly with batch. "
         "Set >= the largest batch to measure a single untiled device call.",
     )
     parser.add_argument(
@@ -581,8 +577,7 @@ def main() -> int:
         "one-time XLA compile for that (nz, batch) shape; 'steady prof/s' "
         "excludes it. 'peak GiB' is the process-cumulative device-allocator "
         "peak (per-batch in an ascending sweep; '--' on backends without "
-        "allocator stats). 'ok' counts converged + stalled-converged lanes "
-        "(both are steady-state ends); 'step-cap' lanes need a higher "
+        "allocator stats). 'ok' counts converged lanes; 'step-cap' lanes need a higher "
         "--count-max.",
         flush=True,
     )

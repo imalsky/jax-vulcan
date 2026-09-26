@@ -4,10 +4,9 @@
 *on the JAX graph* from a `PhysicalInputs` pytree, so forward-mode tangents flow
 from physical knobs -- temperature, surface gravity, the pressure grid, eddy
 diffusion -- into every derived quantity (number density M, scale height,
-layer thickness dz, molecular diffusion Dzz, ...). Because `jax.lax.while_loop`
-supports `jvp`, the same `AtmStatic` composes with the full `outer_loop.runner`
-(see the note at the end); here we differentiate the atmosphere build directly,
-which is fast and FD-stable.
+layer thickness dz, molecular diffusion Dzz, ...). The same `AtmStatic` feeds
+`OuterLoop.run_jvp` for a certified end-to-end tangent; here we
+differentiate the atmosphere build directly, which is fast and FD-stable.
 
 What is differentiable: pco (-> P_b/P_t via `pco_from_endpoints`), Tco, ymix
 (mean molecular weight -> scale height), Kzz (-> profile params via
@@ -123,12 +122,12 @@ def main() -> int:
     print(f"d(sum M)/dP_b            jvp={float(jvp_M):+.6e}  fd={float(fd_M):+.6e}")
 
     finite = all(np.isfinite([float(jvp_h), float(jvp_D), float(jvp_M)]))
-    print(f"\nall tangents finite and FD-consistent: {finite}")
+    print(f"\nall tangents finite: {finite}")
     print(
-        "Note: build_atm_static returns a standard AtmStatic, so jax.jvp also "
-        "flows through jax_ros2_step and the full outer_loop.runner "
-        "(lax.while_loop forward-mode). For reaction-importance reverse-mode at "
-        "the converged state, see examples/grad_reverse_example.py."
+        "Note: build_atm_static returns a standard AtmStatic, so the same "
+        "inputs feed OuterLoop.run_jvp for a certified end-to-end tangent. "
+        "For reverse-mode reaction sensitivities at the converged state, see "
+        "examples/grad_reverse_example.py."
     )
     return 0
 

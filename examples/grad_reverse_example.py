@@ -1,34 +1,18 @@
-"""Reverse-mode reaction ranking on a real HD189 column.
+"""Reverse-mode reaction ranking on a converged HD189 column.
 
-`steady_state_grad.steady_state_reaction_sensitivity` returns row-wise
-`dL/d(ln k_r)` for every directional rate-table entry in one adjoint solve:
-"which rows set the converged abundance of species X". By finite differences
-this ranking would cost one re-converged model per row; reverse-mode returns
-all of them at once.
+`steady_state_reaction_sensitivity` returns dL/d(ln k_r) for every
+directional rate-table row in one adjoint solve; finite differences would
+need one re-converged run per row. It linearizes the hydrostatic-
+renormalized map the runner iterates and averages an ensemble of twin
+solves (default n_solves=3, body_dt=1e7); the printed twin spread is a
+stability diagnostic. Rows are k-only: for a detailed-balance perturbation
+of a reversible reaction, sum its forward and reverse rows. Forward mode
+(grad_jvp_example.py) stays the route for a single row.
 
-The result is the mean over an ensemble of twin solves (default n_solves=3,
-body_dt=1e7; the twin spread printed below is a magnitude-stability diagnostic).
-The adjoint linearizes the hydrostatic-renormalized map the runner actually
-iterates, so `y_star` is a tight fixed point of it and the CH4 rows are
-sub-percent vs the finite-difference anchors. On photochemistry-on columns the
-default `photo_recompute_k="auto"` (given the runner context) includes the
-dJ/dy feedback and reaches percent level on photo-coupled rows (e.g. WASP-39b
-OH+H2, ~11% -> ~0.2%). The function returns `k`-only directional-row sensitivities;
-for a physical detailed-balance perturbation of a reversible thermal reaction,
-sum the forward and reverse rows. Forward-mode (`grad_jvp_example.py`) is exact
-and stays the route for any single hard row.
-
-This script loads a saved converged HD189 (photo-off) state
-(`tests/data/adj_state_hd189.npz`, a local artifact; `*.npz` is gitignored) so
-it does not re-converge the forward model. To produce that dump, converge
-the runner and polish `y_star` to a tight fixed point of the renormalized body
-map (see `jax_paper/scripts/adj_save_state.py`); to run it on WASP-39b SO2, set
-`$VULCAN_JAX_NETWORK`/`$VULCAN_JAX_ATOM_LIST` before the first import and pick a
-log10(SO2 VMR) loss at the peak-SO2 layer (see `adj_w39b_so2.py`).
-
-Wall time is dominated by the one-time step-VJP XLA compile (~10-20 min cold;
-wrap in `caffeinate -dimsu` on macOS so App Nap does not throttle it). Run from
-VULCAN-JAX/ as `python examples/grad_reverse_example.py`.
+Needs tests/data/adj_state_hd189.npz (gitignored): build it with
+`python tests/_gen_adj_state.py hd189`. The first call pays a one-time
+step-VJP compile (~10-20 min). Run from VULCAN-JAX/ as
+`python examples/grad_reverse_example.py`.
 """
 
 from __future__ import annotations
@@ -57,9 +41,8 @@ FD_ANCHORS = {13: -5.651e-01, 14: +5.651e-01, 115: -1.919e-05, 116: +2.712e-05}
 def main() -> int:
     if not FIXTURE.exists():
         print(
-            f"Missing fixture {FIXTURE}: a converged HD189 state capture "
-            "(run the CLI to convergence and np.savez the runner state; the "
-            "maintainer's capture script lives in an internal repo)."
+            f"Missing fixture {FIXTURE}; build it with "
+            "`python tests/_gen_adj_state.py hd189`."
         )
         return 1
 
@@ -75,7 +58,7 @@ def main() -> int:
     dz = jnp.asarray(d["dz"])
     compo = jnp.asarray(d["compo"])
     fields = {k[5:]: jnp.asarray(d[k]) for k in d.files if k.startswith("atm__")}
-    # The fixture predates `diff_esc_mask`; HD189 ships `diff_esc: []`.
+    # Splice a default diff_esc_mask into fixtures that lack it (HD189 ships diff_esc: []).
     fields.setdefault("diff_esc_mask", jnp.zeros(ni, dtype=jnp.bool_))
     atm = AtmStatic(
         **fields,
