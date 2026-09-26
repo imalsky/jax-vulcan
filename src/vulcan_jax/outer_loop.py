@@ -1492,24 +1492,15 @@ def _make_runner(
             top_flux_next = s.top_flux
             geom_ok_next = candidate
 
-        # Cumulative element budget (notes §3.1 C23, no VULCAN 2 counterpart):
-        # `loss_eps` rejects a per-step jump in the unweighted atom sum, so a
-        # slow drain passes it (§1.12: a column certified having lost 21% of
-        # its sulfur). This accumulates what the solver failed to conserve in
-        # the state each step RETURNS (`y_next`: after the hydrostatic
-        # renormalisation and the bottom pins) and reads it RELATIVE TO H: the
-        # renormalisation pins each layer's total density, so dissociation
-        # shifts every atom column by the same factor (WASP-107 b: -1.04% on
-        # H, He, O, N, C and S alike, 2e-6 as X/H) and only the ratio to H is
-        # the conserved quantity. The tolerance and its calibration sit in
-        # default.yaml.
-        # Per-step change of the operator-weighted column, measured on the grid
-        # in force during the step (s.dz): chemistry conserves atoms per layer
-        # and flux-form transport conserves Σ w(s.dz) y, so this is the solver
-        # defect of the step and nothing else. A refresh (y kept, dz changed)
-        # never enters; on a rejected step y_next is s.y_prev, so the change is
-        # zero. Normalised by the fixed t=0 column so a later grid change
-        # cannot dilute an accumulated deficit.
+        # Cumulative element budget (C23, no VULCAN 2 counterpart; notes §3.1,
+        # §1.13): `loss_eps` misses a slow drain, so accumulate what the solver
+        # failed to conserve in the state each step RETURNS (`y_next`, after
+        # the renormalisation and the bottom pins): the per-step change of the
+        # operator-weighted column on the grid in force during the step (s.dz),
+        # over the fixed t=0 column so a later grid change cannot dilute it. A
+        # refresh never enters; a rejected step adds zero. The gate reads the
+        # drift RELATIVE TO H, since the renormalisation shifts every atom
+        # column by one common factor. Tolerance: default.yaml.
         _safe = jnp.where(s.budget_ref == 0.0, 1.0, s.budget_ref)
         _dcol = column_atoms(y_next, s.dz, compo_arr) - column_atoms(
             s.y_prev, s.dz, compo_arr

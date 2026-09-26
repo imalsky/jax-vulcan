@@ -1,89 +1,42 @@
 """Reverse-mode reaction sensitivities at the converged photochemical state.
 
-`outer_loop.OuterLoop`'s `lax.while_loop` supports `jvp`/`jacfwd` but not
-`vjp`/`grad`, so reverse mode cannot go through the integration. This module
-answers the many-inputs/one-output question instead: which rate-table rows set
-the converged abundance of a species -- `dL/d(ln k_r)` for all `nr` rows from
-ONE adjoint solve, where FD would cost one re-converged model per row.
+`OuterLoop`'s `lax.while_loop` supports `jvp`/`jacfwd` but not `vjp`/`grad`,
+so reverse mode cannot go through the integration. This module solves the
+fixed-point adjoint of the solver map at convergence, `(I - dG/dy)^T z = v`
+with `v = dL/dy*`, and returns `dL/d(ln k_r) = (k .* vjp_Gk(lambda))_r` for
+all `nr` rate-table rows from ONE solve. `G` is the hydrostatic-renormalized
+Ros2 step the runner iterates (`SOLVER_MAP`), taken in log-abundance
+coordinates (zero-clipped species become identity rows); the conserved-element
+left-null space is deflated by a QR projector (`info["null_quality"]` near
+O(1) means a deflated direction is not null, e.g. open boundary fluxes), and
+LGMRES solves the indefinite deflated system.
 
-Route: the solver-map steady-state adjoint. At convergence `G(y*) = y*`, so
-solve the fixed-point adjoint
+Entry points: `steady_state_reaction_sensitivity` (all rate rows) and
+`steady_state_input_sensitivity` (a physical input pytree: the same solve
+plus one VJP of a caller-supplied rebuild). Forward mode stays the more
+accurate route for a handful of input directions.
 
-    (I - dG/dy)^T z = v ,        v = dL/dy* ,
+Rules:
 
-then `dL/d(ln k_r) = (k .* vjp_Gk(lambda))_r`, with `lambda` the unscaled
-cotangent. `(I - dG/dy)^T` is the integrator's own regularized implicit step
-(the block-Thomas solve at the body-map dt) transposed, so it embeds the
-preconditioning that tames the chemical stiffness.
+* The body map is `ros2_step (+ renorm) (+ photo recompute)` plus optional
+  `body_terms`; every other runner process is outside the linearization.
+  Run `audit_adjoint_scope(...)` on the converged run first.
+* `photo_recompute_k="auto"` carries dJ/dy (one RT solve per Krylov matvec)
+  and is required on photo-on columns, where it raises without the finished
+  runner's context; on a photo-off column it adds nothing.
+* `body_dt` is an adjoint-only probe knob: scan `BODY_MAP_DT_CANDIDATES` on a
+  new column and keep the lowest-residual, low-spread solution.
+* The gradient is the mean over an `n_solves` twin ensemble;
+  `info["ensemble_spread"]` is the magnitude error bar. With a large residual
+  or spread (slow-radical columns, near-equilibrium reverse rows) read the
+  output as a reaction ranking.
+* A detailed-balance perturbation of a reversible row uses the pair sum
+  `g[fwd] + g[rev]`; `info["pair_antisym"]` ~1 is not an error signal.
+* Adjoints of the residual `df/dy` and a raw Neumann iteration on the body
+  map diverge on closed columns; do not re-walk them.
 
-Four coupled ingredients make the solve work on a real closed column:
-
-1. The SOLVER MAP, not the residual Jacobian: only the integrator's step
-   reproduces its own conditioning. The map is the hydrostatic-renormalized
-   step the runner actually iterates, so `y*` is a tight fixed point (fp_err
-   ~1e-9; see `SOLVER_MAP`).
-2. Log-abundance coordinates `eta = ln y`: the similarity transform
-   `A_eta z = z - y* .* vjp_Gy(z ./ y*)` rescales the operator norm from ~1e6
-   to ~1e2 and the cotangent from ~1e-12 to O(1). Zero-clipped species are
-   masked before the 1/y* scaling (they become identity rows).
-3. Conserved-mass null-space deflation: a closed column conserves each
-   element, so the operator is singular. Deflate the analytic log-space
-   left-null vectors `c_e[z,i] = compo[i,e] * dz[z] * y*[z,i]` with a QR
-   projector; only the LEFT null space is needed (the right null cancels for
-   atom-conserving rate knobs). `info["null_quality"]` measures the actual
-   defect -- O(1) means a deflated direction is not null for this setup
-   (e.g. open boundary fluxes).
-4. LGMRES: the deflated operator is indefinite; augmented Krylov (vectors
-   carried across restarts) converges where restarted GMRES oscillates and a
-   raw Neumann iteration diverges.
-
-Limitations (read before using):
-
-* The body map contains ONLY `ros2_step (+ renorm) (+ photo recompute)`.
-  Every other per-step runner process (clip, condensation, charge balance,
-  fix-species and boundary pins, atm-refresh feedback) is outside the
-  linearization -- run `audit_adjoint_scope(...)` on the converged run first.
-* Photolysis feedback: `J(y)` depends on y through optical depth. The default
-  `photo_recompute_k="auto"` rebuilds J from the finished runner context so
-  `dG/dy` carries dJ/dy -- REQUIRED on photo-on columns (W39b OH+H2 ~11% ->
-  ~0.2% vs re-converged FD); on a photo-off column it resolves to no
-  photolysis feedback. Costs an RT solve per Krylov matvec.
-* `body_dt` is an adjoint-only probe knob with a column-dependent usable
-  window: scan `BODY_MAP_DT_CANDIDATES` on a new column and keep the
-  lowest-residual, low-spread solution. (No built-in scan wrapper: every
-  consumer, including vulcan-jwst-tool's `adjoint_diag`, drives its own loop
-  over the candidates because it wants its own accept/refuse policy on each
-  row.)
-* The gradient is the MEAN over an `n_solves` twin ensemble and
-  `info["ensemble_spread"]` is the honest magnitude error bar: trust
-  magnitudes when residual and spread are small, else treat the output as a
-  reaction ranking.
-* Structural error floors that survive the defaults: severe operator
-  ill-conditioning on slow-radical columns (near-equilibrium reverse rows
-  unreliable, flagged by the residual/spread diagnostics) and the
-  finite-tolerance mismatch between the exact fixed point and the state the
-  forward run actually stopped at.
-* Two entry points by input shape: `steady_state_reaction_sensitivity` for
-  all rate-table rows, `steady_state_input_sensitivity` for an arbitrary
-  physical input pytree (same solve plus one VJP of a caller-supplied
-  rebuild). Forward mode stays the higher-accuracy route for a handful of
-  input directions (Kzz, metallicity, temperature).
-
-Pair sums: a physical detailed-balance perturbation of a reversible thermal
-reaction uses the pair sum `g[fwd] + g[rev]` (photolysis and other one-way
-rows stay single entries). The renorm + photo default is FD-validated for the
-pair sums too, not only the forward rows. Do NOT read `info["pair_antisym"]`
-as an error signal: it reads ~1 on a genuinely non-zero pair sum.
-
-Do not re-walk the failed routes: direct adjoints of the residual
-`f = chem_rhs + diffusion` (frozen-coefficient block-Thomas with defect
-correction, matrix-free LSQR) and a raw Neumann iteration on the body map all
-diverged or stagnated -- `df/dy` is both singular and severely
-ill-conditioned on closed columns (notes.md §1.5).
-
-Scope, accuracy, and the `body_dt` regime map: notes.md (Differentiability)
-("Reverse mode: the steady-state adjoint"). Worked recipe:
-`examples/grad_reverse_example.py`.
+Accuracy record, the `body_dt` map and the failed routes: notes.md §1.5,
+§2.5. Worked recipe: `examples/grad_reverse_example.py`.
 """
 
 from __future__ import annotations
@@ -139,7 +92,7 @@ N_SOLVES_DEFAULT = 3
 # Ensemble size: the returned gradient is the MEAN over this many solves with
 # ulp-perturbed RHS twins (deterministic, seeded); twin disagreement is
 # reported as info["ensemble_spread"], the honest magnitude error bar.
-# n_solves=1 reproduces the old single-solve behavior.
+# n_solves=1 is one unperturbed solve with no spread estimate.
 
 _TWIN_PERTURB = 1e-13
 # Relative RHS perturbation for ensemble twins: large enough to decorrelate
@@ -950,8 +903,8 @@ def steady_state_reaction_sensitivity(
     lgmres_inner_m, lgmres_outer_k, lgmres_maxiter, lgmres_cycles, rtol
         LGMRES knobs (see the module constants).
     n_solves
-        Twin-ensemble size (`_TWIN_PERTURB`, seeded); `n_solves=1` reproduces
-        the old single-solve behavior. Each extra solve costs one LGMRES
+        Twin-ensemble size (`_TWIN_PERTURB`, seeded); `n_solves=1` is one
+        solve with no spread estimate. Each extra solve costs one LGMRES
         budget; the operator compile is shared.
     return_info
         If True, also return a diagnostics dict.

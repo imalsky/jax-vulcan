@@ -215,7 +215,7 @@ def _seed_jit():
     -- not on our key -- so `jax.jit(eq_seed)` under a new key would reuse the
     trace that baked in the old controls. A fresh closure per key is a fresh
     cache entry. Without the jit at all the host path re-traces the 150-layer
-    scan on every call: 223 ms against 3.2 ms jitted, on the HD189 column.
+    scan on every call, about 70x slower than jitted on the HD189 column.
     """
     key = _seed_key()
     if key not in _SEED_JIT:

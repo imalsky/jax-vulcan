@@ -207,14 +207,12 @@ def _tridiagonal_solve(dl, d, du, g):
     of `c0 - T_rho` take the wrong sign, and such a matrix can put an exact
     zero on an unpivoted pivot (notes §1.13). `lax.linalg.tridiagonal_solve`
     itself is a per-system cuSPARSE call on the GPU as soon as a system has
-    more than one right-hand side, which the JVP's direction stack is: at
-    144 lanes that was ~1,440 calls and ~16,000 launches per gradient step,
-    136 ms of its 402 ms, and the one custom call that kept the `ffi` loop
-    out of a command buffer (notes §2.9). The scans stay rolled: fully
-    unrolled, a 3-direction jvp step took XLA:CPU over 574 s and 7.9 GB to
-    compile against 37 s with the primitive (register 74); at
-    `_REPAIR_SWEEP_UNROLL` layers per iteration it compiles in 20 s with
-    the fewest fusions per sweep of the rolled settings (notes §1.13)."""
+    more than one right-hand side, which the JVP's direction stack is: about
+    a third of a gradient step, and the one custom call that kept the `ffi`
+    loop out of a command buffer (notes §2.9). The scans stay rolled: a full
+    unroll made the jvp compile over 15x slower than the primitive (register
+    74); `_REPAIR_SWEEP_UNROLL` layers per iteration gives the fewest fusions
+    per sweep of the rolled settings (notes §1.13)."""
     du = du.at[-1].set(0.0)  # the last swap reads it as the fill-in
 
     def fwd(row, below):
@@ -724,24 +722,13 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask,
     )
     diag_d = diag_d.at[0].add(bot_vdep_term)
     # Diffusion-limited escape at TOA (`top_flux / y[-1]` on the top-layer
-    # diagonal). Upstream carries this term ONLY in the upwind variants
-    # `lhs_jac_tot_vm` and `lhs_jac_settling_vm` (exoclime@80f75b9 op.py:2044-
-    # 2121, 2366+; vm_branch@84d010d op.py:2123-2200, 2445+); `lhs_jac_tot`,
-    # `lhs_jac_settling` and `lhs_jac_no_mol` have no escape term, and the
-    # `lhs_jac_fix_all_bot` copy is dead (its solver is never selected,
-    # op.py:3080-3083). So the gate is `use_vm_mol`, not "diff_esc non-empty";
-    # the RHS flux itself is gated on `use_topflux` above, as upstream.
-    # The inner `where` mirrors upstream's `y > 0` guard and keeps the division
-    # and its derivative finite at y = 0.
-    #
-    # DELIBERATE DIVERGENCE from the analytic derivative, inherited from both
-    # pinned upstreams (vulcan2_ncho op.py:2106-2107, vm_branch op.py:2185-2186):
-    # the RHS adds top_flux/dzi[-1] (a flux DIVERGENCE) while this entry is
-    # d(top_flux)/dy, so it is larger than the true derivative by dzi[-1].
-    # top_flux is exactly linear in y[-1] (atm_refresh.py:175), so the correct
-    # entry would be top_flux/(y*dzi[-1]). Not corrected: it is on the LHS only
-    # -- a W-method tolerates an approximate Jacobian without moving the fixed
-    # point -- and correcting it would break bit-parity with both oracles.
+    # diagonal). Upstream carries it only in the upwind Jacobians
+    # (exoclime@80f75b9 op.py:2044-2121, 2366+; vm_branch@84d010d
+    # op.py:2123-2200, 2445+), so the gate is `use_vm_mol`, not "diff_esc
+    # non-empty". The inner `where` mirrors upstream's `y > 0` guard and keeps
+    # the division and its derivative finite at y = 0. The entry exceeds the
+    # true derivative by dzi[-1] (op.py:2106-2107, vm_branch op.py:2185-2186);
+    # kept for bit-parity, LHS only (notes §2.2 F-022 / P10, register 27).
     y_top_pos = y[-1] > 0.0
     diff_lim = jnp.where(
         atm.diff_esc_mask & y_top_pos,
