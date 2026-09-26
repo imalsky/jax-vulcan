@@ -67,11 +67,8 @@ def main() -> int:
     k_dict = {i: np.asarray(v, dtype=np.float64).copy() for i, v in data_var.k.items()}
 
     # Reference one Ros2 step (mutates var.y)
-    var_after, para_after = solver_v.solver(data_var, data_atm, data_para)
+    var_after, _ = solver_v.solver(data_var, data_atm, data_para)
     sol_ref = np.asarray(var_after.y, dtype=np.float64).copy()
-    print(
-        f"VULCAN ros2 step: sol shape {sol_ref.shape}, delta = {para_after.delta:.3e}"
-    )
 
     # === Switch to VULCAN-JAX ===
     for mod in ("vulcan_cfg", "store", "build_atm", "op", "chem_funs"):
@@ -117,7 +114,7 @@ def main() -> int:
     # outer loop calls, so this test cannot accidentally validate only the
     # preserved segment_sum reference RHS.
     atm_static = make_atm_static(data_atm, ni, nz)
-    sol_jax, delta_jax = jax_ros2_step(
+    sol_jax, _ = jax_ros2_step(
         jnp.asarray(y0),
         jnp.asarray(k_arr),
         jnp.float64(data_var.dt),
@@ -125,22 +122,12 @@ def main() -> int:
         chem_funs._NET_JAX,
     )
     sol_jax = np.asarray(sol_jax, dtype=np.float64)
-    print(
-        f"VULCAN-JAX production step delta max = {float(np.max(np.asarray(delta_jax))):.3e}"
-    )
 
     # Compare
     relerr = np.abs(sol_jax - sol_ref) / np.maximum(np.abs(sol_ref), 1e-12)
     max_relerr = relerr.max()
     print(f"sol_jax vs sol_ref: max relerr = {max_relerr:.3e}")
-    # Per-species report for top 5 worst
-    per_sp = relerr.max(axis=0)
-    worst = np.argsort(per_sp)[::-1][:5]
-    for j in worst:
-        if per_sp[j] > 1e-6:
-            print(f"  {chem_funs.spec_list[j]}: max relerr {per_sp[j]:.3e}")
 
-    print()
     ok = max_relerr < 1e-3  # generous; the integrator self-corrects
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1

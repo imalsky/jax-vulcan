@@ -121,8 +121,3 @@ def test_relaunch_sets_env_and_refuses_to_loop(monkeypatch):
     monkeypatch.setenv(cli._RELAUNCH_GUARD, "1")
     with pytest.raises(RuntimeError, match="after a relaunch"):
         cli._relaunch_for_frozen_knobs(load_config("W39b"), "W39b")
-
-
-if __name__ == "__main__":
-    test_cli_main_produces_vul()
-    print("PASS")

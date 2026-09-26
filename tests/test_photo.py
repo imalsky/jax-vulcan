@@ -70,8 +70,6 @@ def main() -> int:
     solver_v = op.Ros2()
     solver_v.compute_tau(data_var, data_atm)
     tau_ref = data_var.tau.copy()
-    print(f"VULCAN tau shape: {tau_ref.shape}")
-    print(f"  range: [{tau_ref.min():.3e}, {tau_ref.max():.3e}]")
 
     # === Pack photo data and run JAX version ===
     os.chdir(ROOT)
@@ -87,10 +85,6 @@ def main() -> int:
     static = photo_setup._build_photo_static_dense(data_var, data_atm)
     static = static.with_din12_indx(int(data_var.sflux_din12_indx))
     photo_data = photo_mod.photo_data_from_static(static, species_list)
-    print("\nPacked photo data:")
-    print(f"  absp species (non-T):  {photo_data.absp_idx.shape[0]}")
-    print(f"  absp species (T-dep):  {photo_data.absp_T_idx.shape[0]}")
-    print(f"  scat species:          {photo_data.scat_idx.shape[0]}")
 
     tau_jax = np.asarray(
         photo_mod.compute_tau_jax(
@@ -122,10 +116,6 @@ def main() -> int:
     data_var.ymix = data_var.y / np.vstack(np.sum(data_var.y, axis=1))
     solver_v.compute_flux(data_var, data_atm)
     aflux_ref = data_var.aflux.copy()
-    print(
-        f"\nVULCAN aflux shape: {aflux_ref.shape}, range [{aflux_ref.min():.3e}, {aflux_ref.max():.3e}]"
-    )
-
     from vulcan_jax.phy_const import hc
 
     # Master's op.compute_flux reads sl_angle/edd from its OWN vulcan_cfg
@@ -161,11 +151,9 @@ def main() -> int:
     # === compute_J validation ===
     solver_v.compute_J(data_var, data_atm)
     J_ref = dict(data_var.J_sp)
-    print(f"\nVULCAN J_sp: {len(J_ref)} (species, branch) entries")
 
     photo_J = photo_mod.photo_J_data_from_static(static)
     J_jax = photo_mod.compute_J_jax(jnp.asarray(aflux_jax), photo_J)
-    print(f"JAX J_jax:   {len(J_jax)} (species, branch) entries")
 
     max_relerr3 = 0.0
     n_compared = 0

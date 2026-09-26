@@ -57,7 +57,6 @@ def main() -> int:
 
     y = np.asarray(data_var.y, dtype=np.float64).copy()
     nz, ni = y.shape
-    print(f"State: nz={nz}, ni={ni}")
 
     # Reference diffusion contribution and full LHS Jacobian
     odes = op_v.ODESolver()
@@ -98,9 +97,7 @@ def main() -> int:
     abs_tol = max(1e-12, 1e-12 * np.abs(diff_ref).max())
     relerr = np.abs(diff_jax - diff_ref) / np.maximum(np.abs(diff_ref), abs_tol)
     print(f"diffdf max relerr: {relerr.max():.3e}")
-    if relerr.max() < 1e-3:
-        print("OK   diff operator")
-    else:
+    if not relerr.max() < 1e-3:
         max_idx = np.unravel_index(relerr.argmax(), relerr.shape)
         print(f"FAIL diff operator at layer {max_idx[0]}, species {max_idx[1]}")
         print(f"  jax={diff_jax[max_idx]:.4e} ref={diff_ref[max_idx]:.4e}")
@@ -165,31 +162,6 @@ def main() -> int:
     print(f"jac super block max relerr: {max_sup_err:.3e}")
     print(f"jac sub block max relerr:   {max_sub_err:.3e}")
 
-    # Locate worst diagonal disagreement for diagnostics
-    worst_j = -1
-    worst_i = -1
-    worst_err = 0.0
-    for j in range(nz):
-        for i in range(ni):
-            ref_val = diff_jac_only[j * ni + i, j * ni + i]
-            jax_val = -diag_d[j, i]
-            abs_diff = abs(ref_val - jax_val)
-            if abs_diff < jac_abs_tol:
-                continue
-            err = abs_diff / max(abs(ref_val), jac_abs_tol)
-            if err > worst_err:
-                worst_err = err
-                worst_j = j
-                worst_i = i
-    if worst_j >= 0:
-        ref_val = diff_jac_only[worst_j * ni + worst_i, worst_j * ni + worst_i]
-        jax_val = -diag_d[worst_j, worst_i]
-        print(
-            f"  Worst diag: layer {worst_j}, species {worst_i}: "
-            f"ref={ref_val:.4e} jax={jax_val:.4e} relerr={worst_err:.3e}"
-        )
-
-    print()
     # Tolerances (do not tighten without re-deriving):
     # - operator 1e-3: He sits near diffusive equilibrium, so its net flux is
     #   a ~12-digit cancellation of ~1e10 terms and the worst cell rides the

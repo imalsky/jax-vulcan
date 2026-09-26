@@ -142,15 +142,12 @@ def test_update_conden_rates():
         k_ref[re_idx + 1] = np.maximum(-rate, 0.0)
 
     err = _relerr(k_ref, k_jax)
-    print(f"update_conden_rates relerr: {err:.3e}")
 
     # Sanity: reaction 2 (coeff=0) should produce zeros at rows 4 and 5.
     zero_check = np.max(np.abs(k_jax[4])) + np.max(np.abs(k_jax[5]))
-    print(f"use_relax short-circuit zero check: {zero_check:.3e}")
 
     # Sanity: untouched rows (0, 3, 6, 7) should equal the input.
     untouched_err = max(_relerr(k_arr[r], k_jax[r]) for r in (0, 3, 6, 7))
-    print(f"untouched rows relerr: {untouched_err:.3e}")
 
     assert err <= KERNEL_RTOL
     assert zero_check < 1e-30
@@ -224,8 +221,6 @@ def test_apply_h2o_relax_jax():
 
     ymix_err = _relerr(ymix_ref, ymix_jax)
     y_err = _relerr(y_ref, y_jax)
-    print(f"apply_h2o_relax_jax  ymix relerr: {ymix_err:.3e}")
-    print(f"apply_h2o_relax_jax  y    relerr: {y_err:.3e}")
 
     assert ymix_err <= KERNEL_RTOL
     assert y_err <= KERNEL_RTOL
@@ -304,8 +299,6 @@ def test_apply_nh3_relax_jax():
 
     ymix_err = _relerr(ymix_ref, ymix_jax)
     y_err = _relerr(y_ref, y_jax)
-    print(f"apply_nh3_relax_jax  ymix relerr: {ymix_err:.3e}")
-    print(f"apply_nh3_relax_jax  y    relerr: {y_err:.3e}")
 
     assert ymix_err <= KERNEL_RTOL
     assert y_err <= KERNEL_RTOL
@@ -375,7 +368,6 @@ def test_nh3_conden_top_traced_scalar_bitwise():
 
     assert np.array_equal(np.asarray(y_i), np.asarray(y_a)), "y drifted"
     assert np.array_equal(np.asarray(ymix_i), np.asarray(ymix_a)), "ymix drifted"
-    print("traced-scalar conden_top bitwise check: OK")
 
 
 def test_nh3_conden_top_vmap_per_lane():
@@ -432,7 +424,6 @@ def test_nh3_conden_top_vmap_per_lane():
             lanes_differ += 1
     # Vacuity guard: different tops must actually change the result.
     assert lanes_differ > 0, "all lanes identical — conden_top had no effect"
-    print("vmap per-lane conden_top check: OK")
 
 
 def test_no_op_when_inactive():
@@ -466,11 +457,6 @@ def test_no_op_when_inactive():
     err_h2o_ymix = _relerr(ymix, np.asarray(ymix_h2o))
     err_nh3_y = _relerr(y, np.asarray(y_nh3))
     err_nh3_ymix = _relerr(ymix, np.asarray(ymix_nh3))
-    print(f"inactive H2O relax y     relerr: {err_h2o_y:.3e}")
-    print(f"inactive H2O relax ymix  relerr: {err_h2o_ymix:.3e}")
-    print(f"inactive NH3 relax y     relerr: {err_nh3_y:.3e}")
-    print(f"inactive NH3 relax ymix  relerr: {err_nh3_ymix:.3e}")
 
-    assert all(
-        e <= KERNEL_RTOL for e in (err_h2o_y, err_h2o_ymix, err_nh3_y, err_nh3_ymix)
-    )
+    errs = (err_h2o_y, err_h2o_ymix, err_nh3_y, err_nh3_ymix)
+    assert all(e <= KERNEL_RTOL for e in errs), errs

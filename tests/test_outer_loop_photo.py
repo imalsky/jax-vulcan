@@ -220,7 +220,6 @@ def main() -> int:
             ok = False
     print(f"var.J_sp entries: {len(J_sp_A)} keys, max relerr {max_J_relerr:.3e}")
 
-    print()
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 

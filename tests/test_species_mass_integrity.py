@@ -95,10 +95,6 @@ def main() -> int:
             print(
                 f"  {sp:12s} listed={ml:9.3f}  expected={me:9.3f}  diff={ml - me:+.3f}"
             )
-    else:
-        print(
-            f"OK: all {len(species)} species masses consistent with atom counts (tol {_TOL})"
-        )
 
     # Duplicate rows: mirror production (`list.index` -> FIRST row wins).
     mass_by_sp: dict[str, float] = {}

@@ -128,7 +128,6 @@ def test_queue_without_refill_is_the_batch(prepared):
     (y, t, acc, reason, done), n_iter = integ.run_queue(
         _ident, (init_b, atm_b), n_lanes=len(TISO), out_fn=_out_fn
     )
-    print(f"[no refill] n_iter={int(n_iter)}", flush=True)
     for name, a, b in (
         ("y", y, ref.y),
         ("t", t, ref.t),
@@ -200,13 +199,7 @@ def test_queue_refills_and_matches_the_batch_at_the_convergence_scale(
         rel = _max_rel_diff(
             yk / yk.sum(axis=1, keepdims=True), yr / yr.sum(axis=1, keepdims=True)
         )
-        print(
-            f"[lanes={n_lanes} chunk={chunk} n_iter={int(n_iter)} "
-            f"(lockstep {int(n_iter_lockstep)}) job {k}] "
-            f"max rel {rel:.3e}",
-            flush=True,
-        )
-        assert rel < REL_MAX
+        assert rel < REL_MAX, (k, rel)
     # A second call must land on the same numbers.
     (y2, *_), _ = integ.run_queue(
         _ident, (init_b, atm_b), n_lanes=n_lanes, out_fn=_out_fn, chunk=chunk
@@ -232,11 +225,6 @@ def test_poisoned_job_does_not_touch_its_neighbours(prepared):
     (y4, _, acc4, r4, _), _ = integ.run_queue(
         _ident, abcp, n_lanes=2, out_fn=_out_fn, chunk=1
     )
-    print(
-        f"[poison] reasons without P {np.asarray(r3).tolist()}, with P "
-        f"{np.asarray(r4).tolist()}, P accept_count {int(acc4[3])}",
-        flush=True,
-    )
     assert np.array_equal(np.asarray(y3), np.asarray(y4[:3]))
     assert int(r4[3]) == 5 and int(acc4[3]) == 0
 
@@ -261,11 +249,7 @@ def test_lane_reuse_after_a_poisoned_job(prepared):
         rel = _max_rel_diff(
             yk / yk.sum(axis=1, keepdims=True), yr / yr.sum(axis=1, keepdims=True)
         )
-        print(
-            f"[lane reuse] job {k + 1} max rel {rel:.3e} (n_iter {int(n_iter)})",
-            flush=True,
-        )
-        assert rel < REL_MAX
+        assert rel < REL_MAX, (k, rel)
 
 
 def test_empty_queue_and_lane_count_below_one_raise(prepared):

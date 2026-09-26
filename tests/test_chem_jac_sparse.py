@@ -39,13 +39,10 @@ def _check_jacobians(state) -> int:
     data_var, data_atm = state.var, state.atm
     y = jnp.asarray(data_var.y, dtype=jnp.float64)  # [nz, ni]
     M = jnp.asarray(data_atm.M, dtype=jnp.float64)  # [nz]
-    nz, ni = y.shape
 
     net = net_mod.parse_network(vulcan_cfg.network)
     net_jax = chem_mod.to_jax(net)
     k_arr = jnp.asarray(np.asarray(data_var.k_arr, dtype=np.float64))
-
-    print(f"State: nz={nz}, ni={ni}, nr={net.nr}")
 
     J_dense = np.asarray(chem_jac(y, M, k_arr, net_jax))  # [nz, ni, ni]
     J_anal = np.asarray(
@@ -58,11 +55,7 @@ def _check_jacobians(state) -> int:
     # Use a sane absolute floor for cells near zero (cancellation noise).
     rel_significant = np.where(np.abs(J_dense) > 1e-12 * abs_max_dense, relerr, 0.0)
     max_rel = float(rel_significant.max())
-    max_abs = float(diff.max())
 
-    print(f"chem_jac shape:        {J_dense.shape}")
-    print(f"max |J_dense|:         {abs_max_dense:.3e}")
-    print(f"max |J_anal - J_dense|:{max_abs:.3e}")
     print(f"max rel err (significant cells): {max_rel:.3e}")
 
     # Tolerance: analytical and AD-built Jacobians should agree to machine

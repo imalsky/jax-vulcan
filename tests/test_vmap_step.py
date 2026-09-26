@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import os
 import sys
-import time
 import warnings
 from pathlib import Path
 
@@ -51,24 +50,8 @@ def main() -> int:
 
     k_arr = np.asarray(data_var.k_arr, dtype=np.float64)
 
-    # Single step (compile + warmup)
-    print("Compiling JAX kernel ...")
-    t0 = time.time()
     sol_single, delta_single = js_mod.jax_ros2_step(
         jnp.asarray(y0), jnp.asarray(k_arr), data_var.dt, atm_static, net_jax
-    )
-    sol_single.block_until_ready()
-    print(f"  first call (compile + execute): {time.time() - t0:.2f}s")
-
-    # Time second call (warm)
-    t0 = time.time()
-    for _ in range(10):
-        sol_warm, _ = js_mod.jax_ros2_step(
-            jnp.asarray(y0), jnp.asarray(k_arr), data_var.dt, atm_static, net_jax
-        )
-        sol_warm.block_until_ready()
-    print(
-        f"  10 warm calls: {time.time() - t0:.2f}s ({(time.time() - t0) / 10 * 1000:.1f}ms/step)"
     )
 
     # Vmap over batch of 4 (replicas of the same y for sanity)
@@ -84,21 +67,7 @@ def main() -> int:
         )
     )
 
-    print(f"\nCompiling vmap'd step (batch={BATCH}) ...")
-    t0 = time.time()
-    sol_batch, _ = vstep(y_batch, k_batch, data_var.dt, atm_static, net_jax)
-    sol_batch.block_until_ready()
-    print(f"  first vmap call: {time.time() - t0:.2f}s")
-
-    t0 = time.time()
-    for _ in range(10):
-        sol_batch, delta_batch = vstep(
-            y_batch, k_batch, data_var.dt, atm_static, net_jax
-        )
-        sol_batch.block_until_ready()
-    print(
-        f"  10 warm vmap calls: {time.time() - t0:.2f}s ({(time.time() - t0) / 10 * 1000:.1f}ms/step)"
-    )
+    sol_batch, delta_batch = vstep(y_batch, k_batch, data_var.dt, atm_static, net_jax)
 
     # Verify all batch elements equal the single-step result: the solution
     # and the truncation-error array the step controller reads.
@@ -114,7 +83,6 @@ def main() -> int:
     print(f"\nVmap consistency (batch element vs single, sol and delta): "
           f"max relerr = {relerr:.3e}")
 
-    print()
     ok = relerr < 1e-12
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1

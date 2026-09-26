@@ -116,7 +116,6 @@ def main() -> int:
         zco_const[i] = z
 
     toa_rel = abs(zco_const[-1] - zco[-1]) / abs(zco[-1])
-    print(f"TOA height: self-consistent={zco[-1]:.4e}  constant-g={zco_const[-1]:.4e}")
     print(f"TOA relative difference (self-consistent vs constant-g): {toa_rel:.3e}")
     if toa_rel < 5e-3:
         print("FAIL: self-consistent gravity is indistinguishable from constant g")

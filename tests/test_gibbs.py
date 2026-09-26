@@ -77,7 +77,6 @@ def main() -> int:
             use_lowT_caps=bool(getattr(vulcan_cfg, "use_lowT_limit_rates", False)),
         )
     )
-    print(f"NASA-9 coverage: {int(present.sum())}/{net.ni} species have files")
     missing = [sp for sp, p in zip(net.species, present) if not p]
     if missing:
         print(f"  Missing: {missing}")

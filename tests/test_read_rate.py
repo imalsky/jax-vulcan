@@ -236,12 +236,6 @@ def test_build_rate_array_matches_legacy_hd189(hd189_state):
     max_relerr = float(relerr.max())
     worst_local = int(np.unravel_index(np.argmax(relerr), relerr.shape)[0])
     worst = int(rows[worst_local])
-    print(
-        f"build_rate_array vs legacy: max relerr = {max_relerr:.3e} "
-        f"(at parser-i = {worst}, Rf = {net.Rf.get(worst, '?')!r}); "
-        f"compared {rows.size} reactions; skipped "
-        f"{int(skip_mask.sum())} photo/ion/conden/radiative rows"
-    )
     assert max_relerr <= 1e-13, (
         f"build_rate_array deviates from legacy at i={worst} "
         f"(Rf={net.Rf.get(worst, '?')!r}): relerr={max_relerr:.3e}"

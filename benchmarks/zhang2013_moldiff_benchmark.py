@@ -403,12 +403,6 @@ def main(argv=None) -> int:
     for p, c, u in zip(peclet, cmin, umin):
         flag = "  <-- central UNSTABLE (negative)" if c < 0 else ""
         print(f"  Pe={p:5.2f}:  central {c:+.2e}   upwind {u:+.2e}{flag}")
-    print()
-    print("central alone: accurate, but goes negative (spurious oscillation) once the")
-    print("cell Peclet number approaches 2. upwind alone: unconditionally stable but")
-    print("dissipative. The production HYBRID converges under upwind (stable), then")
-    print("finishes in central (accurate) -> it reproduces the analytic curve without")
-    print("the instability.")
 
     # ---- Figure -------------------------------------------------------------
     # Match the jax_paper figure style (see jax_paper/scripts/_common.py):

@@ -171,14 +171,11 @@ def main() -> int:
                 f"FAIL[solo-vs-batch] {name}: laneA rel={relA:.2e} laneB rel={relB:.2e}"
             )
             ok = False
-        else:
-            print(f"[solo-vs-batch] {name}: laneA rel={relA:.2e} laneB rel={relB:.2e}")
 
     profiles_differ = _max_rel_diff(soloB.ymix, soloA.ymix)
     if profiles_differ < 1e-6:
         print(f"FAIL[vacuity] profiles identical ({profiles_differ:.2e})")
         ok = False
-    print(f"[vacuity] profiles differ by {profiles_differ:.2e}")
 
     # --- same-star guard ----------------------------------------------------
     rsC = rsB._replace(photo=rsB.photo._replace(sflux_top=rsB.photo.sflux_top * 2.0))
@@ -186,10 +183,9 @@ def main() -> int:
         integA.prepare_runstate(rsC)
         print("FAIL[guard] mismatched-star profile was accepted")
         ok = False
-    except ValueError as e:
-        print(f"[guard] mismatched star rejected: {str(e)[:60]}...")
+    except ValueError:
+        pass
 
-    print()
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 
@@ -231,11 +227,7 @@ def test_queue_refill_starts_on_its_own_photolysis():
         rel = _max_rel_diff(
             yk / yk.sum(axis=1, keepdims=True), yr / yr.sum(axis=1, keepdims=True)
         )
-        print(
-            f"[queue-refill] job {k}: ymix max rel vs run_batch {rel:.3e} "
-            f"(n_iter {int(n_iter)}, reason {int(reason[k])})"
-        )
-        assert rel < RTOL
+        assert rel < RTOL, (k, rel)
 
 
 @pytest.mark.strict_isolation
@@ -264,7 +256,6 @@ def test_queue_without_refill_is_the_photo_batch():
         n_lanes=2,
         out_fn=lambda f: (f.y, f.t, f.accept_count, f.termination_reason),
     )
-    print(f"[photo no refill] n_iter={int(n_iter)}", flush=True)
     for name, a, b in (
         ("y", y, ref.y),
         ("t", t, ref.t),

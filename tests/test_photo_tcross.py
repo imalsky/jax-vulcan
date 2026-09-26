@@ -50,7 +50,6 @@ def main() -> int:
     count = int(rs_out.params.count)
     assert np.all(np.isfinite(np.asarray(rs_out.step.y))), "non-finite y after T_cross_sp run"
     assert count >= 12, f"run did not progress (count={count})"
-    print(f"T_cross_sp run OK (count={count})")
     return 0
 
 

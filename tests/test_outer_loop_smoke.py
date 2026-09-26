@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import os
 import sys
-import time
 import warnings
 from pathlib import Path
 
@@ -60,17 +59,11 @@ def main() -> int:
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
     integ = outer_loop.OuterLoop(op_jax.Ros2JAX(), op.Output())
 
-    t0 = time.time()
     rs_out = integ(rs)
-    elapsed = time.time() - t0
 
     para = rs_out.params
     t, dt = rs_out.step.t, rs_out.step.dt
     atom_loss = dict(zip(rs_out.atoms.atom_order, np.asarray(rs_out.atoms.atom_loss)))
-    print(
-        f"50-step HD189 via OuterLoop: {elapsed:.1f}s "
-        f"({elapsed / para.count * 1000:.1f} ms/step)"
-    )
     print(f"  count={para.count}, t={t:.3e}, dt={dt:.3e}")
     print(
         f"  retry counters: nega={para.nega_count}, "

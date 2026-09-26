@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import os
 import pickle
-import platform
 import sys
 import warnings
 from pathlib import Path
@@ -293,22 +292,15 @@ def test_hd209_jit_rhs_projection_removes_atom_residual() -> None:
     np.testing.assert_array_equal(out_nojit, out_numpy)
 
     c_idx = atoms.index("C")
-    raw_residual = out_jit @ atom_counts  # shape: (nz, n_atoms)
     nojit_residual = out_nojit @ atom_counts
     projected = np.asarray(jax_step._project_chem_rhs(jnp.asarray(out_jit)))
     projected_residual = projected @ atom_counts
     # Floor from the state itself: the magnitude the residual cancels.
     floor = _ATOM_RESIDUAL_EPS * (np.abs(out_jit) @ np.abs(atom_counts))
-    print(
-        f"HD209 C residual: raw jit {raw_residual[0, c_idx]:.3e}, "
-        f"unjitted {nojit_residual[0, c_idx]:.3e}, "
-        f"projected {projected_residual[0, c_idx]:.3e}, "
-        f"floor {floor[0, c_idx]:.3e} ({platform.machine()})"
-    )
-
     # The projection zeroes the residual to roundoff whatever the raw one was,
     # so this also says it is no worse than the raw residual beyond roundoff.
-    assert np.all(np.abs(projected_residual) <= floor)
+    assert np.all(np.abs(projected_residual) <= floor), (
+        projected_residual[0, c_idx], floor[0, c_idx])
     assert np.all(np.abs(nojit_residual) <= floor)
 
     reservoir_idx = [net.species_idx[sp] for sp in ("H2", "H2O", "CO", "N2")]
@@ -329,7 +321,7 @@ def test_hd209_jacobian_projection_uses_same_reservoir_rows() -> None:
     import vulcan_jax.chem as chem_mod
     import vulcan_jax.jax_step as jax_step
 
-    y, M, k_arr, net, atoms, atom_counts = _hd209_repeated_final_layer_fixture()
+    y, M, k_arr, net, _, atom_counts = _hd209_repeated_final_layer_fixture()
     net_jax = chem_mod.to_jax(net)
     chem_jac = np.asarray(
         jax.jit(chem_mod.chem_jac_analytical)(
@@ -338,18 +330,11 @@ def test_hd209_jacobian_projection_uses_same_reservoir_rows() -> None:
     )
     projected = np.asarray(jax_step._project_chem_jac(jnp.asarray(chem_jac)))
 
-    before = np.einsum("ia,zij->zaj", atom_counts, chem_jac)
     after = np.einsum("ia,zij->zaj", atom_counts, projected)
     floor = _ATOM_RESIDUAL_EPS * np.einsum(
         "ia,zij->zaj", np.abs(atom_counts), np.abs(chem_jac)
     )
-    c_idx = atoms.index("C")
-    print(
-        f"HD209 Jacobian C residual: raw {np.abs(before[:, c_idx, :]).max():.3e}, "
-        f"projected {np.abs(after[:, c_idx, :]).max():.3e}, "
-        f"floor {floor[:, c_idx, :].max():.3e} ({platform.machine()})"
-    )
-    assert np.all(np.abs(after) <= floor)
+    assert np.all(np.abs(after) <= floor), float(np.max(np.abs(after) - floor))
 
     reservoir_idx = [net.species_idx[sp] for sp in ("H2", "H2O", "CO", "N2")]
     non_reservoir_delta = np.delete(projected - chem_jac, reservoir_idx, axis=1)
@@ -390,10 +375,6 @@ def test_codegen_matches_numpy_oracle():
     relerr = np.abs(out_codegen - out_numpy) / denom
     max_rel = float(relerr.max())
     idx = np.unravel_index(int(relerr.argmax()), relerr.shape)
-    print(
-        f"codegen vs numpy: max relerr={max_rel:.3e} at "
-        f"layer {idx[0]}, species {net.species[idx[1]]}"
-    )
 
     # Bulk-species check restricts to cells where |dydt| > 1e-6 of the
     # species's peak, so cancellation residue at near-zero cells is not
@@ -407,9 +388,6 @@ def test_codegen_matches_numpy_oracle():
             denom = np.maximum(np.abs(out_numpy[:, j]), cell_floor)
             r = np.abs(out_codegen[:, j] - out_numpy[:, j]) / denom
             bulk_relerr[sp] = (float(r.max()), peak)
-    print("bulk-species relerr (cells > 1e-6 of peak):")
-    for sp, (r, peak) in bulk_relerr.items():
-        print(f"  {sp:>5}: {r:.3e}  peak={peak:.3e}")
 
     # 1e-5 absorbs XLA FMA-vs-NumPy `*` chain drift on cancellation-prone
     # cells (same emission ORDER on both sides, but XLA may fuse multiplies
@@ -442,13 +420,9 @@ def test_codegen_matches_master_chemdf():
             cwd=str(ROOT),
             env=env,
         )
-    print("--- subprocess stdout ---")
-    print(result.stdout)
-    if result.returncode != 0:
-        print("--- subprocess stderr ---")
-        print(result.stderr)
     assert result.returncode == 0, (
-        f"subprocess exited {result.returncode}; see stderr above"
+        f"subprocess exited {result.returncode}\n--- stdout ---\n{result.stdout}"
+        f"\n--- stderr ---\n{result.stderr}"
     )
 
 
@@ -499,7 +473,6 @@ k_dict = {i: np.asarray(v, dtype=np.float64).copy() for i, v in data_var.k.items
 
 dydt_master = np.asarray(cf_v.chemdf(y, M, k_dict)).copy()
 nz, ni = y.shape
-print(f"master state: nz={nz}, ni={ni}")
 
 # === 2. Switch to JAX modules; chdir back to VULCAN-JAX root. ===
 for mod_name in ("vulcan_cfg", "store", "build_atm", "op", "chem_funs",

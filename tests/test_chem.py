@@ -51,12 +51,10 @@ def main() -> int:
     ini = ba_v.InitialAbun()
     data_var = ini.ini_y(data_var, data_atm)
 
-    T = np.asarray(data_atm.Tco, dtype=np.float64).copy()
     M = np.asarray(data_atm.M, dtype=np.float64).copy()
     y = np.asarray(data_var.y, dtype=np.float64).copy()
     k_dict = {i: np.asarray(v, dtype=np.float64).copy() for i, v in data_var.k.items()}
     nz, ni = y.shape
-    print(f"State: nz={nz}, ni={ni}, T range [{T.min():.1f}, {T.max():.1f}]")
 
     # Get reference chemdf and symjac on this state
     dydt_ref = np.asarray(cf_v.chemdf(y, M, k_dict)).copy()
@@ -107,8 +105,6 @@ def main() -> int:
     chem_rhs_codegen = mcf.build_chem_rhs(net)
     dydt_jax = np.asarray(chem_rhs_codegen(y_j, M_j, k_j))
 
-    print(f"dydt_ref shape: {dydt_ref.shape}, dydt_jax shape: {dydt_jax.shape}")
-
     # Skip cells below 1e-6 of the species's peak |dydt|: cancellation
     # residues near zero, where XLA's FMA fusion differs from NumPy but both
     # are within ULP of zero at the species's natural scale.
@@ -124,28 +120,11 @@ def main() -> int:
         f"chem_rhs max relerr (cells > 1e-6 of species peak): {max_relerr:.3e} at "
         f"layer {max_idx[0]}, species {net.species[max_idx[1]]}"
     )
-    print(f"  values: jax={dydt_jax[max_idx]:.3e} ref={dydt_ref[max_idx]:.3e}")
-    print(f"  species peak |dydt|: {per_species_peak[max_idx[1]]:.3e}")
-
-    # Per-species worst-error ranking
-    per_species_max = relerr.max(axis=0)
-    bad_species = np.argsort(per_species_max)[::-1][:15]
-    print("Top 15 worst species by max relerr:")
-    for j in bad_species:
-        if per_species_max[j] < 1e-12:
-            break
-        # Find layer with max error
-        layer_idx = relerr[:, j].argmax()
-        print(
-            f"  {net.species[j]:>8}  relerr={per_species_max[j]:.3e}  "
-            f"layer {layer_idx}: jax={dydt_jax[layer_idx, j]:.3e} ref={dydt_ref[layer_idx, j]:.3e}"
-        )
 
     # === 4. Compute JAX chem_jac ===
     from _oracles import chem_jac
 
     Jblk_jax = np.asarray(chem_jac(y_j, M_j, k_j, net_jax))
-    print(f"chem_jac shape: {Jblk_jax.shape}, J_ref shape: {J_ref.shape}")
 
     # symjac layout: per-layer (ni, ni) blocks live at J_ref[j*ni:(j+1)*ni, j*ni:(j+1)*ni]
     max_jac_relerr = 0.0

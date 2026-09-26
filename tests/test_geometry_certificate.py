@@ -45,7 +45,6 @@ def _run(update_frq):
         if name not in ("dz", "zco"):
             rel = float(jnp.max(jnp.abs(new - getattr(final, name)) / jnp.abs(new)))
             assert rel < float(integ._statics.geom_conv_tol), (name, rel)
-    print(f"update_frq={update_frq}: {int(final.accept_count)} steps", flush=True)
     return np.asarray(final.ymix)
 
 

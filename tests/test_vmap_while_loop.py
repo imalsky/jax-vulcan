@@ -125,12 +125,6 @@ def main() -> int:
                 f"reason={reason} (want rel<{RTOL:.0e}, done, reason=3)"
             )
             ok = False
-    print(
-        f"[homogeneous] K={K} max rel diff vs single = "
-        f"{max(_max_rel_diff(out[i].ymix, ref.ymix, floor=BATCH_FLOOR) for i in range(K)):.2e}; "
-        f"accept_count {[int(out[i].accept_count) for i in range(K)]} vs solo "
-        f"{int(ref.accept_count)}"
-    )
 
     # --- 2. Heterogeneous freeze-on-done --------------------------------
     # Per-lane starting accept_count offsets: lanes hit count_max at different
@@ -142,11 +136,9 @@ def main() -> int:
         outer_loop.stack_atm_statics([atm_static] * len(offsets)),
     )
     het_out = outer_loop.unstack_integ_states(het_batched, len(offsets))
-    het_rel = []
     for i, o in enumerate(offsets):
         solo = integ._runner(het_states[i], atm_static)
         rel = _max_rel_diff(het_out[i].ymix, solo.ymix, floor=BATCH_FLOOR)
-        het_rel.append(rel)
         # A frozen-too-early lane would diverge from its solo run; a
         # never-frozen lane would over-integrate. Both show up here.
         if rel > RTOL or int(het_out[i].termination_reason) != 3:
@@ -156,7 +148,6 @@ def main() -> int:
                 f"(want rel<{RTOL:.0e}, reason=3)"
             )
             ok = False
-    print(f"[heterogeneous] offsets={offsets} max rel diff vs solo = {max(het_rel):.2e}")
 
     # --- 3. Non-finite isolation ----------------------------------------
     import jax.numpy as jnp
@@ -186,11 +177,6 @@ def main() -> int:
         if rel > RTOL:
             print(f"FAIL[nan] neighbour lane {i} corrupted: rel={rel:.2e}")
             ok = False
-    print(
-        f"[nan] poisoned lane reason={int(nan_out[bad].termination_reason)}, "
-        f"neighbours max rel diff = "
-        f"{max(_max_rel_diff(nan_out[i].ymix, ref.ymix, floor=BATCH_FLOOR) for i in range(K3) if i != bad):.2e}"
-    )
 
     # --- 4. Genuinely different profiles --------------------------------
     # Profile B differs in gravity + radius, so n_0 / Tco / geometry / Kzz all
@@ -218,12 +204,7 @@ def main() -> int:
             "profiles_differ > 1e-6)"
         )
         ok = False
-    print(
-        f"[diff-profiles] A vs B differ by {profiles_differ:.2e}; "
-        f"batched laneA rel={relA:.2e}, laneB rel={relB:.2e}"
-    )
 
-    print()
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 

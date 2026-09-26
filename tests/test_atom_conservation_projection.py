@@ -212,7 +212,7 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch):
     monkeypatch.setattr(jax_step, "_REPAIR_MAX_CELL_FRAC", float("inf"))
     defects = jax.jit(lambda *a: stage_defects(*a))
     step = jax.jit(lambda *a: jax_step.jax_ros2_step.__wrapped__(*a))
-    identity, closed = {}, {}
+    identity = {}
     for dt in (1e8, 1e11, 1e13, 1e15):
         k1, k2, d1, d2, bound = defects(y, k_arr, jnp.float64(dt), atm, net)
         assert bool(jnp.all(jnp.isfinite(k1)) & jnp.all(jnp.isfinite(k2))), dt
@@ -221,13 +221,6 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch):
         # 1e3 x roundoff covers the correction tridiagonal's conditioning
         # at the 1e15 cap (1e-11 of the terms measured).
         identity[dt] = max(float(jnp.max(jnp.abs(d1) / bound)), float(jnp.max(jnp.abs(d2) / bound)))
-        sol, _ = step(y, k_arr, jnp.float64(dt), zero, net)
-        closed[dt] = float(
-            jnp.max(jnp.abs(sol @ ac - y @ ac) / (jnp.abs(sol) @ ac + jnp.abs(y) @ ac))
-        )
-    print("identity residual / bound:", {f"{d:g}": f"{v:.1e}" for d, v in identity.items()})
-    print("closed-layer element change / |content|:",
-          {f"{d:g}": f"{v:.1e}" for d, v in closed.items()})
     assert all(v < 1e3 for v in identity.values()), identity
     # The repair runs at every dt (no dt gate) and leaves alone a
     # defect under config.REPAIR_ABS_FLOOR of the layer's density (roundoff

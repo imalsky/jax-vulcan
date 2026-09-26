@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 CONDEN_NETWORK = "thermo/NCHO_photo_network_lowT_Jupiter.txt"
 
 _CHILD = r"""
-import os, sys, time, warnings
+import os, sys, warnings
 warnings.filterwarnings("ignore")
 os.environ["JAX_PLATFORM_NAME"] = "cpu"
 os.environ["VULCAN_JAX_NETWORK"] = "thermo/NCHO_photo_network_lowT_Jupiter.txt"
@@ -95,7 +95,6 @@ import vulcan_jax.outer_loop as outer_loop
 PARA_A = [120.0, 130.0, 0.05, 0.02, 1.0, 1.0]
 PARA_B = [100.0, 170.0, 0.2, 0.01, 1.0, 1.0]
 
-t0 = time.time()
 cfg.para_anaTP = PARA_A
 rsA = RunState.with_pre_loop_setup(cfg, skip_chem_warmup=True)
 integA = outer_loop.OuterLoop(op_jax.Ros2JAX(), op.Output(cfg=cfg), cfg=cfg)
@@ -109,7 +108,7 @@ sB, atmB = integB.prepare_runstate(rsB)
 topA = int(np.asarray(sA.pv.c_nh3_conden_top))
 topB = int(np.asarray(sB.pv.c_nh3_conden_top))
 assert topA != topB, f"vacuous test: cold-trap indices equal ({topA})"
-print(f"TOPS A={topA} B={topB} ({time.time()-t0:.0f}s setup)")
+print(f"TOPS A={topA} B={topB}")
 
 # Solo B runs on its OWN runner (closure baked from B); the batch runs on A's.
 # If the cold-trap index (or any conden array) were still closure-baked, lane B
@@ -153,7 +152,6 @@ j = sl.index("NH3_l_s")
 ice = max(float(np.asarray(soloA.ymix)[:, j].sum()),
           float(np.asarray(soloB.ymix)[:, j].sum()))
 print(f"relA={relA:.3e} relB={relB:.3e} differ={differ:.3e} NH3_l_s={ice:.3e}")
-print(f"total {time.time()-t0:.0f}s")
 assert relA < 1e-2, f"lane A diverged from solo: {relA:.3e}"
 assert relB < 1e-2, f"lane B diverged from solo: {relB:.3e}"
 assert differ > 1e-6, f"profiles identical ({differ:.3e}) - vacuous"

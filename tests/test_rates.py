@@ -60,21 +60,13 @@ def main() -> int:
 
     T = np.asarray(data_atm.Tco, dtype=np.float64)
     M = np.asarray(data_atm.M, dtype=np.float64)
-    nz = T.shape[0]
-    print(
-        f"Atmosphere: nz={nz}, T range [{T.min():.1f}, {T.max():.1f}] K, "
-        f"M range [{M.min():.2e}, {M.max():.2e}] cm^-3"
-    )
 
     # === 2. Run VULCAN-JAX rate computation on the same atmosphere ===
     net = net_mod.parse_network(vulcan_cfg.network)
-    print(f"Network: ni={net.ni}, nr={net.nr}")
 
     k_jax = np.asarray(rates_mod.compute_forward_k(net, T, M))
 
     # === 3. Compare ===
-    n_compared = 0
-    n_pass = 0
     n_fail = 0
     max_relerr = 0.0
     worst_i = -1
@@ -102,9 +94,7 @@ def main() -> int:
 
         # Strict tolerance for non-zero rates
         if v_vul.max() > 0:
-            if max_e <= 1e-10:
-                n_pass += 1
-            else:
+            if not max_e <= 1e-10:
                 n_fail += 1
                 if n_fail <= 5:
                     print(
@@ -114,21 +104,14 @@ def main() -> int:
                     )
         else:
             # both should be zero; check absolute
-            if np.abs(v_jax).max() < 1e-300:
-                n_pass += 1
-            else:
+            if not np.abs(v_jax).max() < 1e-300:
                 n_fail += 1
                 if n_fail <= 5:
                     print(
                         f"  FAIL i={i} (zero rate expected): "
                         f"vulcan max=0 jax max={v_jax.max():.3e}"
                     )
-        n_compared += 1
 
-    print()
-    print(f"Compared {n_compared} forward reactions")
-    print(f"  Pass: {n_pass}")
-    print(f"  Fail: {n_fail}")
     print(
         f"  Max relative error: {max_relerr:.3e} (at i={worst_i}, "
         f"{net.Rf.get(worst_i, '?')!r})"

@@ -91,11 +91,6 @@ def main() -> int:
         print(f"FAIL: last ring t ({t_arr[-1]:.3e}) != t ({float(final.t):.3e})")
         ok = False
 
-    print(
-        f"ring chronology  OK ({n_kept} entries, t spans "
-        f"{t_arr[0]:.3e}..{t_arr[-1]:.3e})"
-    )
-
     # ---- 2. longdy / longdydt populated ----
     longdy, longdydt = rs_out.step.longdy, rs_out.step.longdydt
     if not (np.isfinite(longdy) and longdy > 0):
@@ -104,7 +99,6 @@ def main() -> int:
     if not (np.isfinite(longdydt) and longdydt > 0):
         print(f"FAIL: longdydt = {longdydt} is not finite/positive")
         ok = False
-    print(f"longdy/longdydt  OK (longdy={longdy:.3e}, longdydt={longdydt:.3e})")
 
     # ---- 3. Single-shot termination via count_max ----
     count_out = int(rs_out.params.count)
@@ -115,9 +109,7 @@ def main() -> int:
     if end_case != 3:
         print(f"FAIL: end_case={end_case}, expected 3 (count_max exceeded)")
         ok = False
-    print(f"count_max exit   OK (count={count_out}, end_case={end_case})")
 
-    print()
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1
 
