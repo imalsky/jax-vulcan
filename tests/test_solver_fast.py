@@ -147,8 +147,9 @@ def compare(diag, sup, sub, rhs, tans, seed=1):
 
 
 def test_fast_matches_reference_on_random_system(fast):
-    diag, sup, sub, rhs = _system(120, 93, 42, boost=1e10, scale=1e-3)
-    tans = _system(120, 93, 43, boost=0.0, scale=1e-3)
+    # ni 97, the DMS network and the widest shipped: the CUDA solve's 4 register rows per lane
+    diag, sup, sub, rhs = _system(120, 97, 42, boost=1e10, scale=1e-3)
+    tans = _system(120, 97, 43, boost=0.0, scale=1e-3)
     r = compare(diag, sup, sub, rhs, tans)
     if fast.BACKEND == "fast":
         assert r["primal_equal"], r
@@ -265,9 +266,9 @@ import jax, jax.numpy as jnp, numpy as np
 jax.config.update("jax_enable_x64", True)
 import vulcan_jax.solver_fast as fast_mod
 dev = jax.devices("cuda")[0]
-# ni 89 (the SNCHO network) in the one-buffer run only: two buffers exceed a sm_89 card
+# ni 89 and 97 (SNCHO, DMS) in the one-buffer run only: two buffers exceed a sm_89 card
 one_buf = os.environ["VULCAN_JAX_BT_BUFFERS"] == "1"
-for nz, ni in [(1, 5), (3, 16), (4, 33), (6, 64)] + [(3, 89)] * one_buf:
+for nz, ni in [(1, 5), (3, 16), (4, 33), (6, 64)] + [(3, 89), (2, 97)] * one_buf:
     rng = np.random.default_rng(ni)
     d, s, c, r = (jax.device_put(jnp.asarray(a), dev) for a in (
         rng.standard_normal((nz, ni, ni)), rng.standard_normal((nz - 1, ni)),

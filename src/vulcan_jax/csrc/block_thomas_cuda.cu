@@ -7,8 +7,10 @@
 // or one (about 63 KB), which fits more blocks on an SM. A call takes two
 // buffers when they fit the device and need no more waves than one
 // (bt_choose); VULCAN_JAX_BT_BUFFERS=1 or 2 forces a variant. Shared memory is
-// opted in to the device maximum. A zero pivot gives inf/nan like
-// lax.linalg.lu, not an error. Build: python -m vulcan_jax.solver_fast --cuda.
+// opted in to the device maximum. The solve keeps
+// each lane's substitution rows in registers, so it takes ni <= 128 and refuses
+// more. A zero pivot gives inf/nan like lax.linalg.lu, not an error. Build:
+// python -m vulcan_jax.solver_fast --cuda.
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -36,6 +38,17 @@ constexpr unsigned kFullMask = 0xffffffffu;  // every lane of a warp
 constexpr int kMaxThreads = 1024;            // CUDA limit per thread block
 constexpr int kMaxWarps = kMaxThreads / kWarpSize;
 constexpr int64_t kMaxGridX = std::numeric_limits<int32_t>::max();  // CUDA gridDim.x limit
+// Rows per lane the solve's substitution holds in registers: ni <= kMaxNb
+// kWarpSize (ni 97, the DMS network, takes 4). The solve kernel is compiled
+// for every NB up to kMaxNb and launched with NB = ceil(ni / kWarpSize).
+constexpr int kMaxNb = 4;
+// Minimum resident blocks per SM in the NB solve kernel's __launch_bounds__
+// (its maximum is 2 NB warps, the most threads bt_threads gives that NB). They
+// hold the kernels near the shared-memory solve's 72-76 registers: 68-80 on
+// sm_89 and sm_90 for NB 1-3, without spills, so the NB 3 class (ni 65-96)
+// keeps the 3 blocks per SM shared memory allows at ni 89 on sm_90. NB 4 takes
+// 116-125, which still allows the 2 blocks shared memory allows at ni 97.
+constexpr int kSolveMinBlocks[kMaxNb + 1] = {0, 12, 6, 4, 2};
 
 // Sum over q0 <= q < q1 of arow[q] * mcol[q * ms], in four independent
 // accumulators so the dependent shared-memory loads overlap. It differs from
@@ -56,31 +69,54 @@ __device__ inline double bt_dot4(const double* arow, const double* mcol, int ms,
 }
 
 // x <- A^{-1} b from one block's LU, run by all lanes of warp 0 and no other
-// warp. On entry the shared vector tmp holds b[perm], visible to warp 0; x
-// (shared or global) must not overlap tmp. Lane l owns the rows r with
-// r % kWarpSize == l, so tmp is thread-local and the only cross-lane traffic is
-// the __shfl_sync broadcast of each finished x_i (uniform outer loops, no early
+// warp. On entry the shared vector tmp holds b[perm], visible to warp 0; tmp is
+// not written, and x (shared or global) must not overlap it. Lane l owns the
+// rows r with r % kWarpSize == l and keeps them in registers, t[q] for row
+// l + q kWarpSize (NB >= ceil(ni / kWarpSize) slots, indexed only by unrolled
+// constants so they stay in registers); the only cross-lane traffic is the
+// __shfl_sync broadcast of each finished x_i (uniform outer loops, no early
 // return). No block barrier: the other warps prefetch meanwhile. The forward
 // substitution applies the CPU lu_solve's subtractions in its order, the back
-// substitution in reverse order.
-__device__ void bt_lu_solve_warp0(const double* lu, int ni, double* tmp, double* x,
+// substitution in reverse order, each row's in the same order and with the
+// same operations as a shared-memory tmp would take them.
+template <int NB>
+__device__ void bt_lu_solve_warp0(const double* lu, int ni, const double* tmp, double* x,
                                   int lane) {
-  for (int i = 0; i < ni; ++i) {  // unit-lower L: tmp[i] is final
-    double xi = 0.0;
-    if (lane == (i & kLaneMask)) xi = tmp[i];  // the lane's own writes
-    xi = __shfl_sync(kFullMask, xi, i & kLaneMask);
-    for (int r = i + 1 + ((lane - i - 1) & kLaneMask); r < ni; r += kWarpSize)
-      tmp[r] -= lu[r * ni + i] * xi;
+  double t[NB];
+#pragma unroll
+  for (int q = 0; q < NB; ++q) {
+    const int r = lane + kWarpSize * q;
+    t[q] = (r < ni) ? tmp[r] : 0.0;
   }
-  for (int i = ni - 1; i >= 0; --i) {  // upper U
-    double xi = 0.0;
-    if (lane == (i & kLaneMask)) {
-      xi = tmp[i] / lu[i * ni + i];
-      x[i] = xi;
+  // Row i sits in slot i / kWarpSize of lane i % kWarpSize. The loops over that
+  // slot are unrolled, so every index into t is a constant; a row below i is
+  // in a slot >= i's, a row above in a slot <= i's.
+#pragma unroll
+  for (int qi = 0; qi < NB; ++qi) {  // unit-lower L: row i is final
+    for (int i = kWarpSize * qi; i < min(ni, kWarpSize * (qi + 1)); ++i) {
+      const double xi = __shfl_sync(kFullMask, t[qi], i & kLaneMask);
+#pragma unroll
+      for (int q = qi; q < NB; ++q) {
+        const int r = lane + kWarpSize * q;
+        if (r > i && r < ni) t[q] -= lu[r * ni + i] * xi;
+      }
     }
-    xi = __shfl_sync(kFullMask, xi, i & kLaneMask);
-    for (int r = i - 1 - ((i - 1 - lane) & kLaneMask); r >= 0; r -= kWarpSize)
-      tmp[r] -= lu[r * ni + i] * xi;
+  }
+#pragma unroll
+  for (int qi = NB - 1; qi >= 0; --qi) {  // upper U
+    for (int i = min(ni, kWarpSize * (qi + 1)) - 1; i >= kWarpSize * qi; --i) {
+      double xi = 0.0;
+      if (lane == (i & kLaneMask)) {
+        xi = t[qi] / lu[i * ni + i];
+        x[i] = xi;
+      }
+      xi = __shfl_sync(kFullMask, xi, i & kLaneMask);
+#pragma unroll
+      for (int q = 0; q <= qi; ++q) {
+        const int r = lane + kWarpSize * q;
+        if (r < i) t[q] -= lu[r * ni + i] * xi;
+      }
+    }
   }
 }
 
@@ -188,12 +224,10 @@ __device__ void bt_lu_block(double* A, int32_t* sperm, double* cand_abs, double*
 // doubles, kMaxWarps ints) and sperm (ni ints). With one buffer (kOneBuf) the
 // inverse reads the factors of A'_{j-1} back from lu, stored before the layer
 // barrier, builds inv in A itself and the Schur update runs in place: the same
-// operations in the same order. (Starting each forward substitution at the
-// row of e_s[perm]'s 1 is also bitwise for finite factors, but it takes the
-// sm_90 build from 74 to 105 registers, one block per SM fewer at ni 89.) Per
-// layer j >= 1 the barriers are: before the inverse (A'_{j-1}, sperm and,
-// with one buffer, its LU in lu visible), after it (inv complete), after the
-// Schur assembly (A'_j complete), then bt_lu_block's.
+// operations in the same order. Per layer j >= 1 the barriers are: before the
+// inverse (A'_{j-1}, sperm and, with one buffer, its LU in lu visible), after
+// it (inv complete), after the Schur assembly (A'_j complete), then
+// bt_lu_block's.
 template <bool kOneBuf>
 __global__ void bt_factor_kernel(const double* __restrict__ diag,
                                  const double* __restrict__ sup,
@@ -308,8 +342,9 @@ __device__ inline void bt_swap(double*& a, double*& b) {
 // and the spare buffer free (one buffer: the layer loaded); the substitution
 // done and the prefetch staged; in the forward sweep also r'_j complete (and
 // the next layer loaded) before its permuted read.
-template <bool kOneBuf>
-__global__ void bt_solve_kernel(const double* __restrict__ lu,
+template <bool kOneBuf, int NB>
+__global__ void __launch_bounds__(2 * kWarpSize * NB, kSolveMinBlocks[NB])
+bt_solve_kernel(const double* __restrict__ lu,
                                 const int32_t* __restrict__ perm,
                                 const double* __restrict__ sup,
                                 const double* __restrict__ sub,
@@ -344,7 +379,7 @@ __global__ void bt_solve_kernel(const double* __restrict__ lu,
     __syncthreads();  // u filled, An free
     if (!kOneBuf && prefetches)
       bt_load_block(An, L + static_cast<int64_t>(j) * blk, blk, prefetch_tid, prefetch_nt);
-    if (warp == 0) bt_lu_solve_warp0(Ac, ni, u, t, lane);
+    if (warp == 0) bt_lu_solve_warp0<NB>(Ac, ni, u, t, lane);
     __syncthreads();  // t = A'_{j-1}^{-1} r'_{j-1}, An staged
     if (kOneBuf) bt_load_block(Ac, L + static_cast<int64_t>(j) * blk, blk, tid, nt);
     for (int i = tid; i < ni; i += nt) {
@@ -360,7 +395,7 @@ __global__ void bt_solve_kernel(const double* __restrict__ lu,
   if (!kOneBuf && prefetches && nz > 1)
     bt_load_block(An, L + static_cast<int64_t>(nz - 2) * blk, blk, prefetch_tid, prefetch_nt);
   if (warp == 0)  // u already holds r'_last, so x may overwrite it
-    bt_lu_solve_warp0(Ac, ni, u, X + static_cast<int64_t>(nz - 1) * ni, lane);
+    bt_lu_solve_warp0<NB>(Ac, ni, u, X + static_cast<int64_t>(nz - 1) * ni, lane);
   __syncthreads();
   if (!kOneBuf) bt_swap(Ac, An);
   for (int j = nz - 2; j >= 0; --j) {
@@ -374,7 +409,7 @@ __global__ void bt_solve_kernel(const double* __restrict__ lu,
     __syncthreads();  // u filled, An free
     if (!kOneBuf && prefetches && j > 0)
       bt_load_block(An, L + static_cast<int64_t>(j - 1) * blk, blk, prefetch_tid, prefetch_nt);
-    if (warp == 0) bt_lu_solve_warp0(Ac, ni, u, X + static_cast<int64_t>(j) * ni, lane);
+    if (warp == 0) bt_lu_solve_warp0<NB>(Ac, ni, u, X + static_cast<int64_t>(j) * ni, lane);
     __syncthreads();  // k_j written, An staged
     if (!kOneBuf) bt_swap(Ac, An);
   }
@@ -396,6 +431,19 @@ size_t bt_factor_shmem(int ni, bool one_buf) {
 size_t bt_solve_shmem(int ni, bool one_buf) {
   return ((one_buf ? 1 : 2) * static_cast<size_t>(ni) * ni + 2 * static_cast<size_t>(ni)) *
          sizeof(double);
+}
+
+using BtSolveKernel = void (*)(const double*, const int32_t*, const double*, const double*,
+                               const double*, double*, int, int, BtBcast);
+
+// The solve kernel with one or two buffers and NB register rows per lane.
+BtSolveKernel bt_solve_kernel_for(bool one_buf, int nb) {
+  static const BtSolveKernel k[2][kMaxNb] = {
+      {bt_solve_kernel<false, 1>, bt_solve_kernel<false, 2>, bt_solve_kernel<false, 3>,
+       bt_solve_kernel<false, 4>},
+      {bt_solve_kernel<true, 1>, bt_solve_kernel<true, 2>, bt_solve_kernel<true, 3>,
+       bt_solve_kernel<true, 4>}};
+  return k[one_buf][nb - 1];
 }
 
 // Per device: the most dynamic shared memory every kernel may use and the SM
@@ -422,10 +470,12 @@ BtOptIn bt_opt_in(int device) {
   cudaError_t r = cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, device);
   if (r == cudaSuccess) r = cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device);
   int limit = optin;
-  for (const void* k : {reinterpret_cast<const void*>(bt_factor_kernel<false>),
-                        reinterpret_cast<const void*>(bt_factor_kernel<true>),
-                        reinterpret_cast<const void*>(bt_solve_kernel<false>),
-                        reinterpret_cast<const void*>(bt_solve_kernel<true>)}) {
+  const void* kernels[2 + 2 * kMaxNb] = {reinterpret_cast<const void*>(bt_factor_kernel<false>),
+                                         reinterpret_cast<const void*>(bt_factor_kernel<true>)};
+  for (int b = 0; b < 2; ++b)
+    for (int nb = 1; nb <= kMaxNb; ++nb)
+      kernels[2 + b * kMaxNb + nb - 1] = reinterpret_cast<const void*>(bt_solve_kernel_for(b, nb));
+  for (const void* k : kernels) {
     cudaFuncAttributes a = {};
     if (r == cudaSuccess) r = cudaFuncGetAttributes(&a, k);
     // the opt-in maximum bounds static plus dynamic shared memory
@@ -534,17 +584,24 @@ ffi::Error SolveImplCuda(cudaStream_t stream, int32_t device, ffi::Buffer<ffi::F
   if (err.failure()) return err;
   if (shape.batch == 0 || shape.ni == 0) return ffi::Error::Success();
   if (shape.batch > kMaxGridX) return ffi::Error::InvalidArgument("batch exceeds the CUDA grid limit");
+  const int nb = (shape.ni + kWarpSize - 1) / kWarpSize;
+  if (nb > kMaxNb) {
+    return ffi::Error::InvalidArgument("block-Thomas solve holds at most " +
+                                       std::to_string(kMaxNb * kWarpSize) +
+                                       " rows per block in registers; ni = " +
+                                       std::to_string(shape.ni));
+  }
   const int threads = bt_threads(shape.ni);
   bool one_buf = false;
-  err = bt_choose(device, shape.batch, reinterpret_cast<const void*>(bt_solve_kernel<false>),
+  err = bt_choose(device, shape.batch, reinterpret_cast<const void*>(bt_solve_kernel_for(false, nb)),
                   bt_solve_shmem(shape.ni, false),
-                  reinterpret_cast<const void*>(bt_solve_kernel<true>),
+                  reinterpret_cast<const void*>(bt_solve_kernel_for(true, nb)),
                   bt_solve_shmem(shape.ni, true), threads, &one_buf);
   if (err.failure()) return err;
-  const auto kernel = one_buf ? bt_solve_kernel<true> : bt_solve_kernel<false>;
-  kernel<<<static_cast<unsigned int>(shape.batch), threads, bt_solve_shmem(shape.ni, one_buf),
-           stream>>>(lu.typed_data(), perm.typed_data(), sup.typed_data(), sub.typed_data(),
-                     rhs.typed_data(), x->typed_data(), shape.nz, shape.ni, s);
+  bt_solve_kernel_for(one_buf, nb)<<<static_cast<unsigned int>(shape.batch), threads,
+                                     bt_solve_shmem(shape.ni, one_buf), stream>>>(
+      lu.typed_data(), perm.typed_data(), sup.typed_data(), sub.typed_data(), rhs.typed_data(),
+      x->typed_data(), shape.nz, shape.ni, s);
   return bt_launch_status();
 }
 
