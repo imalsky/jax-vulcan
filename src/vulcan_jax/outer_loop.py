@@ -481,9 +481,15 @@ def _make_photo_branch(photo_static: _PhotoStatic):
         )
 
         if cross_Jion.shape[0] > 0:
-            Jion_br_new = _photo_mod.compute_Jion_jax_flat(
-                aflux_new, cross_Jion, din12_indx, dbin1, dbin2
-            )
+            Jion_br_new = _photo_mod.compute_J_jax_flat(
+                aflux_new,
+                cross_Jion,
+                jnp.zeros((0, aflux_new.shape[0], cross_Jion.shape[1]),
+                          dtype=aflux_new.dtype),
+                din12_indx,
+                dbin1,
+                dbin2,
+            )[0]
             k_arr_new = _photo_mod.update_k_with_J(
                 k_arr_new,
                 Jion_br_new,

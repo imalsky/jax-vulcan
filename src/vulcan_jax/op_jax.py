@@ -109,7 +109,7 @@ class Ros2JAX:
             static = self._ensure_photo_static(var, atm)
             self._photo_ion_data = _photo_mod.photo_ion_data_from_static(static)
 
-        Jion_sp_jax = _photo_mod.compute_Jion_jax(
+        Jion_sp_jax = _photo_mod.compute_J_jax(
             jnp.asarray(var.aflux), self._photo_ion_data
         )
         nz_ = var.aflux.shape[0]

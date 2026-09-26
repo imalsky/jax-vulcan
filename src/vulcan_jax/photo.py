@@ -333,8 +333,20 @@ def photo_ion_data_from_static(static) -> PhotoJData:
 
 
 @_partial(jax.jit, static_argnames=("din12_indx",))
-def _compute_J_inner(aflux, cross_J, cross_J_T, din12_indx, dbin1, dbin2):
-    """JIT'd inner loop of compute_J. Returns (J_per_branch, J_per_T_branch)."""
+def compute_J_jax_flat(aflux, cross_J, cross_J_T, din12_indx, dbin1, dbin2):
+    """Per-branch J-rates by wavelength integration (trapezoid on each bin grid).
+
+    Args:
+        aflux:         (nz, nbin)         actinic flux
+        cross_J:       (n_br, nbin)       static photolysis cross sections
+        cross_J_T:     (n_br_T, nz, nbin) T-dependent ones
+        din12_indx:    static int          wavelength index where dbin transitions
+        dbin1, dbin2:  scalars            bin spacings
+
+    Returns:
+        J_br:   (n_br,   nz)   per-branch J-rate (non-T)
+        J_br_T: (n_br_T, nz)   per-branch J-rate (T-dependent)
+    """
     nz = aflux.shape[0]
     flux1 = aflux[:, :din12_indx]
     flux2 = aflux[:, din12_indx:]
@@ -396,7 +408,7 @@ def compute_J_jax(aflux: jnp.ndarray, photo_J: PhotoJData):
 
     Returns a dict keyed by (species, branch) -> jnp.ndarray of shape (nz,).
     """
-    J_br, J_br_T = _compute_J_inner(
+    J_br, J_br_T = compute_J_jax_flat(
         aflux,
         photo_J.cross_J,
         photo_J.cross_J_T,
@@ -411,41 +423,6 @@ def compute_J_jax(aflux: jnp.ndarray, photo_J: PhotoJData):
     for k, J_row in zip(photo_J.branch_T_keys, J_br_T):
         J_sp[k] = J_row
     return J_sp
-
-
-def compute_Jion_jax(aflux: jnp.ndarray, photo_ion: PhotoJData):
-    """Compute photoionization J-rates per (species, branch)."""
-    return compute_J_jax(aflux, photo_ion)
-
-
-@_partial(jax.jit, static_argnames=("din12_indx",))
-def compute_J_jax_flat(aflux, cross_J, cross_J_T, din12_indx, dbin1, dbin2):
-    """Flat-output compute_J_jax: returns (J_br, J_br_T) arrays.
-
-    Args:
-        aflux:         (nz, nbin)         actinic flux
-        cross_J:       (n_br, nbin)       static photolysis cross sections
-        cross_J_T:     (n_br_T, nz, nbin) T-dependent ones
-        din12_indx:    static int          wavelength index where dbin transitions
-        dbin1, dbin2:  scalars            bin spacings
-
-    Returns:
-        J_br:   (n_br,   nz)   per-branch J-rate (non-T)
-        J_br_T: (n_br_T, nz)   per-branch J-rate (T-dependent)
-    """
-    return _compute_J_inner(aflux, cross_J, cross_J_T, din12_indx, dbin1, dbin2)
-
-
-def compute_Jion_jax_flat(aflux, cross_J, din12_indx, dbin1, dbin2):
-    """Flat-output photoionization integration helper."""
-    return _compute_J_inner(
-        aflux,
-        cross_J,
-        jnp.zeros((0, aflux.shape[0], cross_J.shape[1]), dtype=aflux.dtype),
-        din12_indx,
-        dbin1,
-        dbin2,
-    )[0]
 
 
 def _pack_branch_to_k_index_map(branch_keys, rate_index, remove_list):
