@@ -12,17 +12,21 @@
 // Build: python -m vulcan_jax.solver_fast
 #include <cmath>
 #include <cstdint>
-#include <string>
 #include <utility>
 #include <vector>
 
+#include "block_thomas_common.h"
 #include "xla/ffi/api/ffi.h"
 
 namespace ffi = xla::ffi;
 
+namespace {
+
+using namespace vulcan_bt;
+
 // In-place partial-pivot LU of an n x n row-major block. perm[i] = source row
 // of permuted row i (lax.linalg.lu's convention: x = b[perm]).
-static void lu_inplace(double* a, int32_t* perm, int n) {
+void lu_inplace(double* a, int32_t* perm, int n) {
   for (int i = 0; i < n; ++i) perm[i] = i;
   for (int k = 0; k < n; ++k) {
     int p = k;
@@ -45,8 +49,8 @@ static void lu_inplace(double* a, int32_t* perm, int n) {
 
 // x <- A^{-1} b from the block's LU and perm. b may alias x: b is consumed
 // into tmp before x is written.
-static void lu_solve(const double* lu, const int32_t* perm, int n,
-                     const double* b, double* x, double* tmp) {
+void lu_solve(const double* lu, const int32_t* perm, int n, const double* b, double* x,
+              double* tmp) {
   for (int i = 0; i < n; ++i) tmp[i] = b[perm[i]];
   for (int i = 0; i < n; ++i) {
     double s = tmp[i];
@@ -60,22 +64,16 @@ static void lu_solve(const double* lu, const int32_t* perm, int n,
   }
 }
 
-static ffi::Error FactorImpl(ffi::Buffer<ffi::F64> diag, ffi::Buffer<ffi::F64> sup,
-                             ffi::Buffer<ffi::F64> sub, ffi::ResultBuffer<ffi::F64> lu,
-                             ffi::ResultBuffer<ffi::S32> perm) {
-  auto dims = diag.dimensions();
-  const int nd = static_cast<int>(dims.size());
-  if (nd < 3 || dims[nd - 1] != dims[nd - 2]) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "diag must be [..., nz, ni, ni]");
-  }
-  const int nz = static_cast<int>(dims[nd - 3]);
-  const int ni = static_cast<int>(dims[nd - 1]);
+ffi::Error FactorImpl(ffi::Buffer<ffi::F64> diag, ffi::Buffer<ffi::F64> sup,
+                      ffi::Buffer<ffi::F64> sub, ffi::ResultBuffer<ffi::F64> lu,
+                      ffi::ResultBuffer<ffi::S32> perm) {
+  BtShape shape;
+  ffi::Error err = bt_check_factor(diag, sup, sub, *lu, *perm, &shape);
+  if (err.failure()) return err;
+  const int nz = shape.nz, ni = shape.ni;
+  const int64_t batch = shape.batch;
+  if (batch == 0 || ni == 0) return ffi::Error::Success();
   const int64_t blk = static_cast<int64_t>(ni) * ni;
-  int64_t batch = 1;
-  for (int i = 0; i < nd - 3; ++i) batch *= dims[i];
-  if (sup.element_count() != batch * (nz - 1) * ni || sub.element_count() != sup.element_count()) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "sup/sub must be [..., nz-1, ni]");
-  }
   std::vector<double> inv(blk), e(ni), col(ni), tmp(ni);
   for (int64_t b = 0; b < batch; ++b) {
     const double* D = diag.typed_data() + b * nz * blk;
@@ -106,97 +104,24 @@ static ffi::Error FactorImpl(ffi::Buffer<ffi::F64> diag, ffi::Buffer<ffi::F64> s
   return ffi::Error::Success();
 }
 
-// The solve's batch is the product of the rhs leading dimensions; each factor
-// operand's leading dimensions broadcast against them numpy-style (equal, or 1
-// -> stride 0), which is what vmap_method="expand_dims" hands the handler when
-// only the rhs is batched at a vmap level.
-static constexpr int kBtMaxBatch = 4;
-
-struct BtBcast {
-  int nd;                             // number of leading dimensions
-  int64_t dim[kBtMaxBatch];           // the rhs leading dimensions
-  int64_t stride[4][kBtMaxBatch];     // per factor operand: lu, perm, sup, sub
-};
-
-// Strides of one factor operand into `s`; `trail` is its per-element count.
-static ffi::Error bt_leading(BtBcast* s, int op, ffi::AnyBuffer::Dimensions dims,
-                             int ntrail, int64_t trail, int64_t count, const char* name) {
-  const int nb = static_cast<int>(dims.size()) - ntrail;
-  if (nb != s->nd) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument,
-                      std::string(name) + " must have the rhs's number of leading dimensions");
-  }
-  int64_t stride = 1;
-  for (int k = nb - 1; k >= 0; --k) {
-    if (dims[k] != s->dim[k] && dims[k] != 1) {
-      return ffi::Error(ffi::ErrorCode::kInvalidArgument,
-                        std::string(name) + " leading dimensions must equal the rhs's or be 1");
-    }
-    s->stride[op][k] = (dims[k] == 1) ? 0 : stride;
-    stride *= dims[k];
-  }
-  if (count != stride * trail) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument,
-                      std::string(name) + " has the wrong trailing shape");
-  }
-  return ffi::Error::Success();
-}
-
-// Element of factor operand `op` that rhs batch element `b` reads.
-static inline int64_t bt_index(int64_t b, const BtBcast& s, int op) {
-  int64_t idx = 0;
-  for (int k = s.nd - 1; k >= 0; --k) {
-    idx += (b % s.dim[k]) * s.stride[op][k];
-    b /= s.dim[k];
-  }
-  return idx;
-}
-
-static ffi::Error SolveImpl(ffi::Buffer<ffi::F64> lu, ffi::Buffer<ffi::S32> perm,
-                            ffi::Buffer<ffi::F64> sup, ffi::Buffer<ffi::F64> sub,
-                            ffi::Buffer<ffi::F64> rhs, ffi::ResultBuffer<ffi::F64> x) {
-  auto dims = lu.dimensions();
-  const int nd = static_cast<int>(dims.size());
-  if (nd < 3 || dims[nd - 1] != dims[nd - 2]) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "lu must be [..., nz, ni, ni]");
-  }
-  const int nz = static_cast<int>(dims[nd - 3]);
-  const int ni = static_cast<int>(dims[nd - 1]);
+ffi::Error SolveImpl(ffi::Buffer<ffi::F64> lu, ffi::Buffer<ffi::S32> perm,
+                     ffi::Buffer<ffi::F64> sup, ffi::Buffer<ffi::F64> sub,
+                     ffi::Buffer<ffi::F64> rhs, ffi::ResultBuffer<ffi::F64> x) {
+  BtShape shape;
+  BtBcast s;
+  ffi::Error err = bt_check_solve(lu, perm, sup, sub, rhs, *x, &shape, &s);
+  if (err.failure()) return err;
+  const int nz = shape.nz, ni = shape.ni;
+  const int64_t batch = shape.batch;
+  if (batch == 0 || ni == 0) return ffi::Error::Success();
   const int64_t blk = static_cast<int64_t>(ni) * ni;
-  auto rd = rhs.dimensions();
-  const int rnd = static_cast<int>(rd.size());
-  if (rnd < 2 || rd[rnd - 1] != ni || rd[rnd - 2] != nz) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "rhs must be [..., nz, ni]");
-  }
-  BtBcast s = {};
-  s.nd = rnd - 2;
-  if (s.nd > kBtMaxBatch) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "rhs has more than 4 leading dimensions");
-  }
-  int64_t batch = 1;
-  for (int k = 0; k < s.nd; ++k) {
-    s.dim[k] = rd[k];
-    batch *= rd[k];
-  }
-  if (x->element_count() != batch * nz * ni) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "the result must have the rhs's shape");
-  }
-  const int64_t bnd = static_cast<int64_t>(nz - 1) * ni;
-  ffi::Error err = bt_leading(&s, 0, dims, 3, nz * blk, lu.element_count(), "lu");
-  if (err.failure()) return err;
-  err = bt_leading(&s, 1, perm.dimensions(), 2, static_cast<int64_t>(nz) * ni,
-                   perm.element_count(), "perm");
-  if (err.failure()) return err;
-  err = bt_leading(&s, 2, sup.dimensions(), 2, bnd, sup.element_count(), "sup");
-  if (err.failure()) return err;
-  err = bt_leading(&s, 3, sub.dimensions(), 2, bnd, sub.element_count(), "sub");
-  if (err.failure()) return err;
+  const int64_t band = static_cast<int64_t>(nz - 1) * ni;
   std::vector<double> t(ni), tmp(ni);
   for (int64_t b = 0; b < batch; ++b) {
-    const double* L = lu.typed_data() + bt_index(b, s, 0) * nz * blk;
-    const int32_t* P = perm.typed_data() + bt_index(b, s, 1) * nz * ni;
-    const double* S = sup.typed_data() + bt_index(b, s, 2) * bnd;
-    const double* C = sub.typed_data() + bt_index(b, s, 3) * bnd;
+    const double* L = lu.typed_data() + bt_index(b, s, kBtLu) * nz * blk;
+    const int32_t* P = perm.typed_data() + bt_index(b, s, kBtPerm) * nz * ni;
+    const double* S = sup.typed_data() + bt_index(b, s, kBtSup) * band;
+    const double* C = sub.typed_data() + bt_index(b, s, kBtSub) * band;
     const double* R = rhs.typed_data() + b * nz * ni;
     double* X = x->typed_data() + b * nz * ni;
     for (int i = 0; i < ni; ++i) X[i] = R[i];  // X holds r' during the forward sweep
@@ -212,6 +137,8 @@ static ffi::Error SolveImpl(ffi::Buffer<ffi::F64> lu, ffi::Buffer<ffi::S32> perm
   }
   return ffi::Error::Success();
 }
+
+}  // namespace
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
     VulcanBtFactor, FactorImpl,
