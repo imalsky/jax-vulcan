@@ -30,6 +30,8 @@ from _helpers import atom_count_matrix  # noqa: E402
 
 _ATOMS = ("H", "O", "C", "N")
 _RESERVOIRS = ("H2", "H2O", "CO", "N2")
+PROJECTION_TOL = 1e-12  # atom residual left by the projection, relative to its scale
+LAPACK_RTOL = 1e-12  # the repair sweep vs lax.linalg.tridiagonal_solve
 
 
 def _capture_hd189_state():
@@ -100,7 +102,7 @@ def main() -> int:
     if not inj_max > 0.0:
         print("FAIL: injected residual is zero (vacuous test)")
         ok = False
-    if not reduction < 1e-12:
+    if not reduction < PROJECTION_TOL:
         print("FAIL: projection did not drive the injected residual to the FP floor")
         ok = False
 
@@ -120,7 +122,7 @@ def main() -> int:
     raw_proj_rel = float(np.max(np.abs(raw_proj_resid))) / max(prod_peak, 1e-300)
     real_non_reservoir = np.delete(raw_proj - raw, reservoir_idx, axis=1)
     print(f"real-RHS residual / production peak: {raw_proj_rel:.3e}")
-    if raw_proj_rel > 1e-12:
+    if raw_proj_rel > PROJECTION_TOL:
         print("FAIL: real RHS not conserving to the FP floor after projection")
         ok = False
     if float(np.max(np.abs(real_non_reservoir))) != 0.0:
@@ -242,7 +244,7 @@ def test_repair_tridiagonal_solve_is_lapack_gtsv_with_its_tangent(hd189_state):
     d = d.at[jnp.array([5, 20, 21, 40, 60])].multiply(0.05)
     g = jax.random.normal(k[2], (nz, m))
     assert bool(jnp.any(jnp.abs(d[:-1]) < jnp.abs(dl[1:])))
-    assert close(js._tridiagonal_solve(dl, d, du, g), lapack(dl, d, du, g), 1e-12)
+    assert close(js._tridiagonal_solve(dl, d, du, g), lapack(dl, d, du, g), LAPACK_RTOL)
     # independent directions (a common scaling of A and g has a zero tangent)
     tans = tuple(jax.random.normal(jax.random.PRNGKey(10 + i), a.shape) * 1e-2
                  for i, a in enumerate((dl, d, du, g)))
@@ -250,7 +252,7 @@ def test_repair_tridiagonal_solve_is_lapack_gtsv_with_its_tangent(hd189_state):
     t_new = jax.jvp(js._tridiagonal_solve, (dl, d, du, g), tans)[1]
     t_ref = jax.jvp(lapack, (dl, d, du, g), tans)[1]
     scale = float(jnp.max(jnp.abs(t_ref)))
-    assert float(jnp.max(jnp.abs(t_new - t_ref))) < 1e-12 * scale
+    assert float(jnp.max(jnp.abs(t_new - t_ref))) < LAPACK_RTOL * scale
     dirs = jnp.stack([g * s for s in (1.0, -0.5, 0.25)])
     def solve_g(gg):
         return js._tridiagonal_solve(dl, d, du, gg)

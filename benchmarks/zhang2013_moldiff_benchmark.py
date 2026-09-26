@@ -97,6 +97,11 @@ N_SCALE_HEIGHTS = 6.0  # column depth in mean scale heights (sets P_TOP)
 D_CONST = 1.0e6  # molecular diffusion coefficient, cm^2 s^-1
 R_KD = 4.0  # eddy/molecular ratio (D/(D+K) = 0.2)
 
+# Pass criteria.
+CENTRAL_MAX_FE = 0.05  # central/hybrid vs Eq. (1), max fractional error
+UPWIND_EXCESS = 3  # upwind's error must exceed central's by this factor
+PORT_MAX_FE = 1e-6  # production kernels vs the upstream operator
+
 
 def _fmt_err(fe: float) -> str:
     """Format a fractional error: a percentage below 100%, a factor above it
@@ -527,9 +532,9 @@ def main(argv=None) -> int:
         print(f"wrote {out_csv}")
 
     ok = (
-        res["central_max_fe"] < 0.05
-        and res["upwind_max_fe"] > 3 * res["central_max_fe"]
-        and res["central_port_fe"] < 1e-6
+        res["central_max_fe"] < CENTRAL_MAX_FE
+        and res["upwind_max_fe"] > UPWIND_EXCESS * res["central_max_fe"]
+        and res["central_port_fe"] < PORT_MAX_FE
         and bool(np.any(cmin < 0))  # central unstable at high cell Peclet
         and bool(np.all(umin >= 0))  # upwind stable everywhere
     )

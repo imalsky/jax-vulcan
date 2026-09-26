@@ -23,6 +23,14 @@ VULCAN_MASTER = oracle_dir_or_skip("this diffusion comparison")
 
 warnings.filterwarnings("ignore")
 
+# Bars: operator 1e-3 (He's net flux is a ~12-digit cancellation; worst
+# cell ~3e-4 at the roundoff floor). diag 2.0 (the ~1e-4 diffusion residue
+# is extracted from ~1e10 LHS terms, and lhs_jac_tot disagrees with
+# op.diffdf at heavy condensables). sup/sub 1e-10 (no cancellation).
+OP_RTOL = 1e-3
+DIAG_RTOL = 2.0
+OFFDIAG_RTOL = 1e-10
+
 
 def main() -> int:
     # === Set up VULCAN-master state for reference ===
@@ -94,7 +102,7 @@ def main() -> int:
     abs_tol = max(1e-12, 1e-12 * np.abs(diff_ref).max())
     relerr = np.abs(diff_jax - diff_ref) / np.maximum(np.abs(diff_ref), abs_tol)
     print(f"diffdf max relerr: {relerr.max():.3e}")
-    if not relerr.max() < 1e-3:
+    if not relerr.max() < OP_RTOL:
         max_idx = np.unravel_index(relerr.argmax(), relerr.shape)
         print(f"FAIL diff operator at layer {max_idx[0]}, species {max_idx[1]}")
         print(f"  jax={diff_jax[max_idx]:.4e} ref={diff_ref[max_idx]:.4e}")
@@ -159,15 +167,11 @@ def main() -> int:
     print(f"jac super block max relerr: {max_sup_err:.3e}")
     print(f"jac sub block max relerr:   {max_sub_err:.3e}")
 
-    # Bars: operator 1e-3 (He's net flux is a ~12-digit cancellation; worst
-    # cell ~3e-4 at the roundoff floor). diag 2.0 (the ~1e-4 diffusion residue
-    # is extracted from ~1e10 LHS terms, and lhs_jac_tot disagrees with
-    # op.diffdf at heavy condensables). sup/sub 1e-10 (no cancellation).
     ok = (
-        relerr.max() < 1e-3
-        and max_diag_err < 2.0
-        and max_sup_err < 1e-10
-        and max_sub_err < 1e-10
+        relerr.max() < OP_RTOL
+        and max_diag_err < DIAG_RTOL
+        and max_sup_err < OFFDIAG_RTOL
+        and max_sub_err < OFFDIAG_RTOL
     )
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1

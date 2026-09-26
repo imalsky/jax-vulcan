@@ -11,8 +11,7 @@ from __future__ import annotations
 
 import numpy as np
 
-ATM_CGS = 1.01325e6  # 1 atm in dyne/cm^2
-BAR_CGS = 1.0e6  # 1 bar in dyne/cm^2
+from vulcan_jax.phy_const import ATM_CGS, BAR_CGS
 
 
 def main() -> int:

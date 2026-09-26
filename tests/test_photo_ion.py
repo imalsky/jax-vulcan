@@ -16,6 +16,8 @@ from vulcan_jax.config import default_config
 
 vulcan_cfg = default_config()
 
+RTOL = 1e-14  # the wrapper and the direct integral use the same arithmetic
+
 
 def _manual_jion(aflux, cross, split, dbin1, dbin2):
     left = np.sum(aflux[:, :split] * cross[:split], axis=1) * dbin1
@@ -108,16 +110,16 @@ def main() -> int:
         got = np.asarray(var.Jion_sp[key], dtype=np.float64)
         relerr = np.max(np.abs(got - want) / np.maximum(np.abs(want), 1e-300))
         print(f"{key}: max relerr = {relerr:.3e}")
-        if relerr > 1e-14:
+        if relerr > RTOL:
             ok = False
         ridx = var.ion_rate_index[key]
-        if not np.allclose(var.k_arr[ridx, :], want * f_diurnal, rtol=1e-14, atol=0.0):
+        if not np.allclose(var.k_arr[ridx, :], want * f_diurnal, rtol=RTOL, atol=0.0):
             print(f"FAIL: k_arr[{ridx}] mismatch for {key}")
             ok = False
 
     for sp, want in expected_total.items():
         got = np.asarray(var.Jion_sp[(sp, 0)], dtype=np.float64)
-        if not np.allclose(got, want, rtol=1e-14, atol=0.0):
+        if not np.allclose(got, want, rtol=RTOL, atol=0.0):
             print(f"FAIL: total branch sum mismatch for {sp}")
             ok = False
 

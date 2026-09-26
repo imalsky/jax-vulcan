@@ -32,6 +32,7 @@ warnings.filterwarnings("ignore")
 
 
 REFRESH_RTOL = 1e-12
+EXACT_RTOL = 1e-13  # the same formula on both sides, roundoff only
 
 
 def main() -> int:
@@ -124,7 +125,7 @@ def main() -> int:
     from vulcan_jax.phy_const import UNDERFLOW_DENOM
 
     for label, A, B, rtol in (
-        ("mu", mu_A, mu_B, 1e-13),
+        ("mu", mu_A, mu_B, EXACT_RTOL),
         ("g", g_A, g_B, REFRESH_RTOL),
         ("Hp", Hp_A, Hp_B, REFRESH_RTOL),
         ("dz", dz_A, dz_B, REFRESH_RTOL),
@@ -132,7 +133,7 @@ def main() -> int:
         ("Hpi", Hpi_A, Hpi_B, REFRESH_RTOL),
         ("zco", zco_A, zco_B, REFRESH_RTOL),
         ("top_flux", top_flux_A, top_flux_B, REFRESH_RTOL),
-        ("y_post_hydro", y_A, y_B, 1e-13),
+        ("y_post_hydro", y_A, y_B, EXACT_RTOL),
     ):
         err = relerr(B, A, floor=UNDERFLOW_DENOM)
         print(f"{label:14s} relerr: {err:.3e}")

@@ -33,6 +33,8 @@ from vulcan_jax.steady_state_grad import (
 DATA = Path(__file__).resolve().parent / "data"
 HD189_FIXTURE = DATA / "adj_state_hd189.npz"
 _RUN_SLOW = os.environ.get("VULCAN_JAX_RUN_SLOW") == "1"
+PROJ_TOL = 1e-12  # the projector removes spanned directions to roundoff
+BASIS_TOL = 1e-10  # orthonormality and span of the QR null basis
 
 # Centered-FD truth for the HD189 photo-off CH4 loss, from the validated
 # jax_paper/scripts/adj_solvermap_gmres.py run. 13/14 and 115/116 are each a
@@ -68,7 +70,7 @@ def test_conserved_null_basis_annihilates_atom_vectors():
     # Q is orthonormal and spans exactly the populated atom columns.
     n_pop = int((np.asarray(compo).sum(axis=0) > 0).sum())
     assert Q.shape == (nz * ni, n_pop)
-    assert float(jnp.linalg.norm(Q.T @ Q - jnp.eye(Q.shape[1]))) < 1e-10
+    assert float(jnp.linalg.norm(Q.T @ Q - jnp.eye(Q.shape[1]))) < BASIS_TOL
 
     # proj annihilates every log-space atom-count vector c_e.
     Q_np = np.asarray(Q)
@@ -78,7 +80,7 @@ def test_conserved_null_basis_annihilates_atom_vectors():
             np.asarray(y_star) * (compo_np[:, e][None, :] * np.asarray(dz)[:, None])
         ).ravel()
         proj_c = c_e - Q_np @ (Q_np.T @ c_e)
-        assert np.linalg.norm(proj_c) / np.linalg.norm(c_e) < 1e-12
+        assert np.linalg.norm(proj_c) / np.linalg.norm(c_e) < PROJ_TOL
 
 
 def _no_atoms():
@@ -134,10 +136,10 @@ def test_deflation_projector_idempotent():
 
     z = jnp.asarray(rng.normal(size=(nz, ni)))
     pz = proj(z)
-    assert float(jnp.max(jnp.abs(proj(pz) - pz))) < 1e-12
+    assert float(jnp.max(jnp.abs(proj(pz) - pz))) < PROJ_TOL
     # a vector already in the null space projects to ~0
     null_vec = jnp.asarray(np.asarray(Q)[:, 0].reshape(nz, ni))
-    assert float(jnp.linalg.norm(proj(null_vec))) < 1e-10
+    assert float(jnp.linalg.norm(proj(null_vec))) < BASIS_TOL
 
 
 def test_reaction_cotangent_chain_rule_identity():

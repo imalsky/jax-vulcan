@@ -22,6 +22,11 @@ os.chdir(ROOT)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 warnings.filterwarnings("ignore")
 
+COEF_RTOL = 1e-11  # C_mol FP-ordering noise reaches ~2e-12; eddy terms ~5e-16
+OP_RTOL = 1e-4  # the operator is a small residue of large cancellations (floor ~1e-5)
+BLOCK_RTOL = 1e-12  # block-Jacobian diagonals, no cancellation
+OP_FLOOR = 1e-12  # absolute and peak-relative floor for significant operator cells
+
 
 def main() -> int:
     import jax.numpy as jnp
@@ -72,7 +77,7 @@ def main() -> int:
         denom = np.maximum(np.abs(ref), 1e-30 * max(np.abs(ref).max(), 1e-300))
         return float(np.max(np.abs(prod - ref) / denom))
 
-    # 1. Coefficients: 1e-11 (C_mol FP-ordering noise reaches ~2e-12; eddy terms ~5e-16).
+    # 1. Coefficients.
     for label, p, r in (
         ("A_eddy", A_eddy, coeffs.A_eddy),
         ("B_eddy", B_eddy, coeffs.B_eddy),
@@ -83,17 +88,15 @@ def main() -> int:
     ):
         err = _coef_relerr(p, r)
         print(f"coeff {label:7s} relerr: {err:.3e}")
-        if err > 1e-11:
+        if err > COEF_RTOL:
             print(f"FAIL: production {label} disagrees with NumPy reference")
             ok = False
 
-    # 2. Operator output on significant cells. The operator extracts a small
-    # residue from large cancellations, so it rides at the diffusion FP-noise
-    # floor (~1e-5); 1e-4 matches the operator tolerance in test_diffusion.py.
-    abs_tol = max(1e-12, 1e-12 * np.abs(diff_numpy).max())
+    # 2. Operator output on significant cells.
+    abs_tol = max(OP_FLOOR, OP_FLOOR * np.abs(diff_numpy).max())
     op_relerr = np.abs(diff_prod - diff_numpy) / np.maximum(np.abs(diff_numpy), abs_tol)
     print(f"operator max relerr (sig cells): {op_relerr.max():.3e}")
-    if op_relerr.max() > 1e-4:
+    if op_relerr.max() > OP_RTOL:
         print("FAIL: production diffusion operator disagrees with reference")
         ok = False
 
@@ -113,7 +116,7 @@ def main() -> int:
     ):
         err = _coef_relerr(p, r)
         print(f"block {label:4s} relerr: {err:.3e}")
-        if err > 1e-12:
+        if err > BLOCK_RTOL:
             print(f"FAIL: production {label} block disagrees with reference")
             ok = False
 
@@ -197,13 +200,12 @@ def test_vm_mode_kernel_matches_reference():
         ("B_mol", B_mol, coeffs.B_mol),
         ("C_mol", C_mol, coeffs.C_mol),
     ):
-        assert _relerr(p, r) < 1e-11, f"vm-mode {label} disagrees with reference"
+        assert _relerr(p, r) < COEF_RTOL, f"vm-mode {label} disagrees with reference"
 
-    # Operator output extracts a small residue from large cancellations; same
-    # ~1e-4 FP floor as the gravity-mode operator check.
-    abs_tol = max(1e-12, 1e-12 * np.abs(diff_numpy).max())
+    # Operator output on significant cells, as in the gravity-mode check.
+    abs_tol = max(OP_FLOOR, OP_FLOOR * np.abs(diff_numpy).max())
     op_relerr = np.abs(diff_prod - diff_numpy) / np.maximum(np.abs(diff_numpy), abs_tol)
-    assert op_relerr.max() < 1e-4, "vm-mode diffusion operator disagrees"
+    assert op_relerr.max() < OP_RTOL, "vm-mode diffusion operator disagrees"
 
     # Block-Jacobian diagonals assembled exactly as jax_ros2_step does.
     diag_prod = np.asarray(A_eddy[:, None] + A_mol)
@@ -219,7 +221,7 @@ def test_vm_mode_kernel_matches_reference():
         ("sup", sup_prod, sup_ref),
         ("sub", sub_prod, sub_ref),
     ):
-        assert _relerr(p, r) < 1e-12, f"vm-mode {label} block disagrees"
+        assert _relerr(p, r) < BLOCK_RTOL, f"vm-mode {label} block disagrees"
 
 
 if __name__ == "__main__":

@@ -24,6 +24,11 @@ import numpy as np
 
 jax.config.update("jax_enable_x64", True)
 
+from vulcan_jax.phy_const import UNDERFLOW_DENOM  # noqa: E402
+
+RTOL = 1e-12  # two builds of the same quantity agree to roundoff
+FD_RTOL = 1e-5  # forward-mode tangent vs a central difference
+
 from vulcan_jax import atm_setup
 from vulcan_jax.atm_jax import (
     AtmSpec,
@@ -44,7 +49,7 @@ def _rel(a, b):
     b = np.asarray(b, dtype=np.float64)
     if a.size == 0:
         return 0.0
-    floor = 1e-300 + 1e-30 * float(np.abs(b).max())
+    floor = UNDERFLOW_DENOM + 1e-30 * float(np.abs(b).max())
     denom = np.maximum(np.abs(b), floor)
     return float(np.max(np.abs(a - b) / denom))
 
@@ -86,7 +91,7 @@ def test_build_atm_static_matches_make_atm_static(hd189_state):
     for f in float_fields:
         # Machine precision; the height-integration averages (dzi/Hpi) carry a
         # few ULP of FP-ordering noise, everything else is bit-identical.
-        assert _rel(getattr(got, f), getattr(ref, f)) < 1e-12, f
+        assert _rel(getattr(got, f), getattr(ref, f)) < RTOL, f
 
     assert np.array_equal(np.asarray(got.gas_indx_mask), np.asarray(ref.gas_indx_mask))
     for flag in ("use_vm_mol", "use_settling", "use_topflux", "use_botflux"):
@@ -175,7 +180,7 @@ def test_compute_mol_diff_vm_matches_vm_branch_reference():
         Tco, n_0, g, Hp, dz, ms_arr, alpha, species_list, ["H2O_l_s"], "H2"
     )
     assert out["vm"].shape == (nz - 1, ni), out["vm"].shape
-    assert _rel(out["vm"], vm_ref) < 1e-12
+    assert _rel(out["vm"], vm_ref) < RTOL
     # Non-gaseous species carry zero advective velocity (Dzz==0 there).
     j_nongas = species_list.index("H2O_l_s")
     assert np.allclose(np.asarray(out["vm"])[:, j_nongas], 0.0)
@@ -236,7 +241,7 @@ def test_vm_branch_differentiates_wrt_Tco():
     eps = 1e-6
     fd = (vm_sum(jnp.float64(1.0 + eps)) - vm_sum(jnp.float64(1.0 - eps))) / (2 * eps)
     assert np.isfinite(float(tangent)) and float(tangent) != 0.0
-    assert abs(float(tangent) - float(fd)) / (abs(float(fd)) + 1e-300) < 1e-5
+    assert abs(float(tangent) - float(fd)) / (abs(float(fd)) + UNDERFLOW_DENOM) < FD_RTOL
 
 
 def test_settling_velocity_jax_matches_host():
@@ -257,7 +262,7 @@ def test_settling_velocity_jax_matches_host():
     got = atm_setup.settling_velocity_jax(
         na, a, b, jnp.asarray(Tco), jnp.asarray(g), jnp.asarray(coeff)
     )
-    assert _rel(got, ref) < 1e-12
+    assert _rel(got, ref) < RTOL
     # Only the condensible column is populated.
     assert np.allclose(np.asarray(got)[:, :3], 0.0)
     assert np.any(np.asarray(got)[:, 3] != 0.0)
@@ -284,7 +289,7 @@ def test_jvp_dz_wrt_gs_matches_fd(hd189_state):
     eps = gs0 * 1e-6
     fd = (loss(jnp.float64(gs0 + eps)) - loss(jnp.float64(gs0 - eps))) / (2 * eps)
     assert np.isfinite(float(tangent)) and float(tangent) != 0.0
-    assert abs(float(tangent) - float(fd)) / (abs(float(fd)) + 1e-300) < 1e-5
+    assert abs(float(tangent) - float(fd)) / (abs(float(fd)) + UNDERFLOW_DENOM) < FD_RTOL
 
 
 def test_jvp_M_Dzz_wrt_Tco_matches_fd(hd189_state):
@@ -306,7 +311,7 @@ def test_jvp_M_Dzz_wrt_Tco_matches_fd(hd189_state):
     eps = 1e-6
     fd = (loss(jnp.float64(1.0 + eps)) - loss(jnp.float64(1.0 - eps))) / (2 * eps)
     assert np.isfinite(float(tangent)) and float(tangent) != 0.0
-    assert abs(float(tangent) - float(fd)) / (abs(float(fd)) + 1e-300) < 1e-5
+    assert abs(float(tangent) - float(fd)) / (abs(float(fd)) + UNDERFLOW_DENOM) < FD_RTOL
 
 
 def test_analytical_TP_front_end_differentiates():
@@ -331,7 +336,7 @@ def test_pco_from_endpoints_matches_logspace_and_differentiates():
     P_b, P_t = 1e9, 1e-2
     got = np.asarray(pco_from_endpoints(jnp.float64(P_b), jnp.float64(P_t), nz))
     ref = np.logspace(np.log10(P_b), np.log10(P_t), nz)
-    assert _rel(got, ref) < 1e-12
+    assert _rel(got, ref) < RTOL
     # dpco/dP_b is finite.
     tangent = jax.jvp(
         lambda Pb: jnp.sum(pco_from_endpoints(Pb, jnp.float64(P_t), nz)),

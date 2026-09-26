@@ -20,6 +20,11 @@ os.chdir(ROOT)
 
 warnings.filterwarnings("ignore")
 
+RTOL = 1e-13  # machine agreement with the reference arithmetic
+COLUMN_TOL = 1e-12  # column change the flux-form update may leave (roundoff)
+# ini_abun._jax_newton's iteration cap and tolerance for the const_lowT solve.
+NEWTON_MAX_ITER, NEWTON_TOL = 50, 1e-12
+
 
 # const_mix mode: algebraic, no EQ seed, no scipy.
 
@@ -46,13 +51,13 @@ def test_const_mix_matches_reference():
     for sp, mix in cmix.items():
         idx = species_list.index(sp)
         ref = M * mix
-        np.testing.assert_allclose(y[:, idx], ref, rtol=1e-13, atol=0.0)
+        np.testing.assert_allclose(y[:, idx], ref, rtol=RTOL, atol=0.0)
 
     expected_zero_cols = [i for i, sp in enumerate(species_list) if sp not in cmix]
     assert np.all(y[:, expected_zero_cols] == 0.0)
 
     ymix = np.asarray(data_var.ymix)
-    np.testing.assert_allclose(ymix.sum(axis=1), 1.0, rtol=1e-13, atol=0.0)
+    np.testing.assert_allclose(ymix.sum(axis=1), 1.0, rtol=RTOL, atol=0.0)
 
 
 # vulcan_ini mode: pickle round-trip against an existing `.vul` file.
@@ -84,7 +89,7 @@ def test_vulcan_ini_roundtrip(tmp_path):
         np.testing.assert_allclose(
             y[:, species_list.index(sp)],
             ref,
-            rtol=1e-13,
+            rtol=RTOL,
             atol=0.0,
             err_msg=f"vulcan_ini round-trip mismatch for {sp}",
         )
@@ -130,7 +135,7 @@ def test_table_roundtrip(tmp_path):
         np.testing.assert_allclose(
             y[:, idx],
             n_0 * mix,
-            rtol=1e-13,
+            rtol=RTOL,
             atol=0.0,
             err_msg=f"table mode mismatch for {sp}",
         )
@@ -169,9 +174,11 @@ def test_const_lowT_matches_scipy(O_H, C_H, He_H, N_H):
             _abun_lowT_residual,
             jnp.array(x0),
             (O_H, C_H, He_H, N_H),
+            max_iter=NEWTON_MAX_ITER,
+            tol=NEWTON_TOL,
         )
     )
-    np.testing.assert_allclose(scipy_root, jax_root, rtol=1e-13, atol=1e-15)
+    np.testing.assert_allclose(scipy_root, jax_root, rtol=RTOL, atol=1e-15)
 
 
 # charge_list invariants.
@@ -220,7 +227,7 @@ def test_column_atoms_uses_the_operator_invariant():
     y1 = y0 + (
         np.vstack([np.zeros((1, ni)), flux]) - np.vstack([flux, np.zeros((1, ni))])
     ) / w[:, None]
-    np.testing.assert_allclose(column_change(y1, y0, dz), 0.0, atol=1e-12)
+    np.testing.assert_allclose(column_change(y1, y0, dz), 0.0, atol=COLUMN_TOL)
     dz_drift = np.einsum("z,zi,ia->a", dz, y1 - y0, compo)
     dz_ref = np.einsum("z,zi,ia->a", dz, y0, compo)
     assert np.max(np.abs(dz_drift / dz_ref)) > 1e-6, (
@@ -234,6 +241,6 @@ def test_column_atoms_uses_the_operator_invariant():
     unweighted = (
         np.einsum("zi,ia->a", y2, compo) - np.einsum("zi,ia->a", y0, compo)
     ) / np.einsum("zi,ia->a", y0, compo)
-    np.testing.assert_allclose(column_change(y2, y0, dz_u), unweighted, rtol=1e-12)
+    np.testing.assert_allclose(column_change(y2, y0, dz_u), unweighted, rtol=COLUMN_TOL)
 
 

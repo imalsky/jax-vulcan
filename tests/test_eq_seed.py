@@ -43,6 +43,7 @@ from vulcan_jax._paths import PACKAGE_ROOT
 # an NCHO network lacks (notes §2.9).
 MAX_DEX = 2.4e-2
 YMIX_FLOOR = 1.0e-15
+ATM_RTOL = 1e-14  # both codes build Tco and M from the same inputs
 ELEMENT_RTOL = 3.2e-8  # 3x worst recovery (1.04e-8, isothermal 300 K) at fastchem_newton_tol 1e-12
 
 # (case id, VULCAN-JAX config, abundance preset)
@@ -235,6 +236,7 @@ def _master_cfg(master_root: Path, config_name: str, scratch: Path) -> Path:
     checksummed W39b inputs are staged into the disposable copy.
     """
     from vulcan_jax.config import load_config
+    from vulcan_jax.phy_const import G_grav
 
     if config_name != "W39b":
         return master_root / "cfg_examples" / "vulcan_cfg_HD189.py"
@@ -246,7 +248,7 @@ def _master_cfg(master_root: Path, config_name: str, scratch: Path) -> Path:
         for key in sorted(vars(cfg))
         if not key.startswith("_")
     ]
-    lines.append(f"gs = {6.67430e-8 * float(cfg.Mp) / float(cfg.Rp) ** 2!r}")
+    lines.append(f"gs = {G_grav * float(cfg.Mp) / float(cfg.Rp) ** 2!r}")
     cfg_path = scratch / "vulcan_cfg_W39b_resolved.py"
     cfg_path.write_text(
         legacy + "\n# resolved W39b overrides\n" + "\n".join(lines) + "\n"
@@ -289,8 +291,8 @@ def test_seed_matches_upstream_fastchem(config_name: str, abundance: str) -> Non
 
     assert list(jax["species"]) == list(master["species"])
     np.testing.assert_array_equal(jax["pco"], master["pco"])
-    np.testing.assert_allclose(jax["Tco"], master["Tco"], rtol=1e-14, atol=0.0)
-    np.testing.assert_allclose(jax["M"], master["M"], rtol=1e-14, atol=0.0)
+    np.testing.assert_allclose(jax["Tco"], master["Tco"], rtol=ATM_RTOL, atol=0.0)
+    np.testing.assert_allclose(jax["M"], master["M"], rtol=ATM_RTOL, atol=0.0)
 
     m = np.asarray(master["y_ini"]) / np.asarray(master["M"])[:, None]
     j = np.asarray(jax["y_ini"]) / np.asarray(jax["M"])[:, None]

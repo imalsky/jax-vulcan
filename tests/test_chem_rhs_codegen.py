@@ -35,6 +35,8 @@ PROJECT_ROOT = ROOT.parent
 # magnitude of the terms it cancels: a few thousand ulps over hundreds of
 # terms (notes §1.8).
 _ATOM_RESIDUAL_EPS = 1.0e-12
+CODEGEN_RTOL = 1e-5  # codegen vs NumPy RHS: absorbs XLA FMA fusion
+PEAK_FLOOR_FRAC = 1e-12  # per-species denominator floor, a fraction of the species' peak
 
 
 def _toy_network_for_codegen(tmp_path: Path):
@@ -312,7 +314,7 @@ def test_codegen_matches_numpy_oracle(hd189_state):
     out_numpy = chem_rhs_numpy(y, M, k_arr, net)
 
     per_species_max = np.maximum(np.abs(out_numpy).max(axis=0), 1e-30)
-    denom = np.maximum(np.abs(out_numpy), 1e-12 * per_species_max[None, :])
+    denom = np.maximum(np.abs(out_numpy), PEAK_FLOOR_FRAC * per_species_max[None, :])
     relerr = np.abs(out_codegen - out_numpy) / denom
     max_rel = float(relerr.max())
     idx = np.unravel_index(int(relerr.argmax()), relerr.shape)
@@ -330,12 +332,12 @@ def test_codegen_matches_numpy_oracle(hd189_state):
             r = np.abs(out_codegen[:, j] - out_numpy[:, j]) / denom
             bulk_relerr[sp] = (float(r.max()), peak)
 
-    assert max_rel < 1e-5, (
+    assert max_rel < CODEGEN_RTOL, (
         f"codegen vs numpy oracle disagreement: max relerr={max_rel:.3e} "
-        f"at layer {idx[0]} species {net.species[idx[1]]} (threshold 1e-5)"
+        f"at layer {idx[0]} species {net.species[idx[1]]} (threshold {CODEGEN_RTOL:g})"
     )
     for sp, (r, _peak) in bulk_relerr.items():
-        assert r < 1e-5, f"bulk species {sp} relerr={r:.3e} > 1e-5"
+        assert r < CODEGEN_RTOL, f"bulk species {sp} relerr={r:.3e} > {CODEGEN_RTOL:g}"
 
 
 @pytest.mark.master_serial

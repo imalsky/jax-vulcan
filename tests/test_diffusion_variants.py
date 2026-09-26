@@ -23,6 +23,8 @@ from oracle import oracle_dir_or_skip  # noqa: E402
 VULCAN_MASTER = oracle_dir_or_skip("this diffusion-variant comparison")
 warnings.filterwarnings("ignore")
 
+FLOOR_FRAC = 1e-12  # cancellation-residue floor, a fraction of the reference peak
+
 
 def main() -> int:
     os.chdir(VULCAN_MASTER)
@@ -72,7 +74,7 @@ def main() -> int:
     diff_vm_jax = diff_mod.apply_diffusion(data_var.y, coeffs_vm)
 
     # Use absolute floor for cancellation residues
-    abs_floor = 1e-12 * np.abs(diff_vm_ref).max()
+    abs_floor = FLOOR_FRAC * np.abs(diff_vm_ref).max()
     abs_diff = np.abs(diff_vm_jax - diff_vm_ref)
     pseudo_relerr = abs_diff / np.maximum(np.abs(diff_vm_ref), abs_floor)
     print(f"diffdf_vm:        max relerr (with floor) = {pseudo_relerr.max():.3e}")
@@ -85,7 +87,7 @@ def main() -> int:
     coeffs_set = diff_mod.build_diffusion_coeffs(data_var.y, data_atm, cfg_set)
     diff_set_jax = diff_mod.apply_diffusion(data_var.y, coeffs_set)
 
-    abs_floor2 = 1e-12 * np.abs(diff_set_ref).max()
+    abs_floor2 = FLOOR_FRAC * np.abs(diff_set_ref).max()
     pseudo_relerr_set = np.abs(diff_set_jax - diff_set_ref) / np.maximum(
         np.abs(diff_set_ref), abs_floor2
     )
@@ -106,7 +108,7 @@ def main() -> int:
     # combo the two agree everywhere except the j=0 row, which differs by
     # the omitted vm bottom-flux term. Verify rows 1.. at the FP
     # floor and pin the j=0 gap to that exact term.
-    abs_floor3 = 1e-12 * np.abs(diff_setvm_ref).max()
+    abs_floor3 = FLOOR_FRAC * np.abs(diff_setvm_ref).max()
     pseudo_relerr_setvm = np.abs(diff_setvm_jax[1:] - diff_setvm_ref[1:]) / np.maximum(
         np.abs(diff_setvm_ref[1:]), abs_floor3
     )
@@ -135,7 +137,7 @@ def main() -> int:
     cfg_gravity = _CfgShim(vulcan_cfg, use_vm_mol=False, use_settling=False)
     coeffs_gravity = diff_mod.build_diffusion_coeffs(data_var.y, data_atm, cfg_gravity)
     diff_gravity_jax = diff_mod.apply_diffusion(data_var.y, coeffs_gravity)
-    abs_floor4 = 1e-12 * np.abs(diff_gravity_ref).max()
+    abs_floor4 = FLOOR_FRAC * np.abs(diff_gravity_ref).max()
     pseudo_relerr_gravity = np.abs(diff_gravity_jax - diff_gravity_ref) / np.maximum(
         np.abs(diff_gravity_ref), abs_floor4
     )

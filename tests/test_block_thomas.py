@@ -18,6 +18,8 @@ import pytest
 
 jax.config.update("jax_enable_x64", True)
 
+X_FLOOR = 1e-12  # denominator floor for near-zero solution entries
+
 from _oracles import block_thomas, block_thomas_diag_offdiag
 
 
@@ -70,9 +72,9 @@ def test_block_thomas_solvers_agree_with_dense_solve(case):
         diag, jnp.asarray(sup_d), jnp.asarray(sub_d), rhs))
 
     err_dense = np.max(np.abs(x_dense - x_ref)
-                       / np.maximum(np.abs(x_ref), 1e-12))
+                       / np.maximum(np.abs(x_ref), X_FLOOR))
     err_diag = np.max(np.abs(x_diag - x_dense)
-                      / np.maximum(np.abs(x_dense), 1e-12))
+                      / np.maximum(np.abs(x_dense), X_FLOOR))
     assert err_dense < tol_dense, f"dense vs numpy: {err_dense:.3e}"
     assert err_diag < tol_diag, f"diag vs dense: {err_diag:.3e}"
 

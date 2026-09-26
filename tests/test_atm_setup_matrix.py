@@ -26,6 +26,7 @@ os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
 R_EARTH_CM = 6.378e8  # Earth radius (cm)
+RTOL = 1e-13  # machine agreement with the verbatim NumPy port
 
 
 # Atm type matrix: Tco, Kzz, vz, M, n_0
@@ -96,13 +97,13 @@ def test_load_TPK_atm_types(atm_type, P_b, P_t, nz, gs):
         )
         Tco_ref = f_pT(pco)
 
-    assert np.allclose(out["Tco"], Tco_ref, atol=0.0, rtol=1e-13), (
+    assert np.allclose(out["Tco"], Tco_ref, atol=0.0, rtol=RTOL), (
         f"{atm_type}: Tco diverges max={np.max(np.abs(out['Tco'] - Tco_ref)):.2e}"
     )
     # M / n_0 follow from Tco directly.
     M_ref = pco / (kb * Tco_ref)
-    assert np.allclose(out["M"], M_ref, rtol=1e-13)
-    assert np.allclose(out["n_0"], M_ref, rtol=1e-13)
+    assert np.allclose(out["M"], M_ref, rtol=RTOL)
+    assert np.allclose(out["n_0"], M_ref, rtol=RTOL)
 
 
 @pytest.mark.parametrize("Kzz_prof", ["const", "JM16", "Pfunc", "file"])
@@ -147,7 +148,7 @@ def test_load_TPK_kzz_modes(Kzz_prof):
         )
         Kzz_ref = f_pK(pico[1:-1])
 
-    assert np.allclose(out["Kzz"], Kzz_ref, rtol=1e-13, atol=0.0)
+    assert np.allclose(out["Kzz"], Kzz_ref, rtol=RTOL, atol=0.0)
 
 
 def test_load_TPK_use_kzz_off_zeroes_kzz():
@@ -224,8 +225,8 @@ def test_compute_mol_diff_atm_base(atm_base):
     for i, mi in enumerate(ms_arr):
         Dzz_ref[:, i] = _ref_Dzz(atm_base, T_i, n_i, mi)
         Dzz_cen_ref[:, i] = _ref_Dzz(atm_base, Tco, n_0, mi)
-    assert np.allclose(Dzz, Dzz_ref, rtol=1e-13, atol=0.0)
-    assert np.allclose(Dzz_cen, Dzz_cen_ref, rtol=1e-13, atol=0.0)
+    assert np.allclose(Dzz, Dzz_ref, rtol=RTOL, atol=0.0)
+    assert np.allclose(Dzz_cen, Dzz_cen_ref, rtol=RTOL, atol=0.0)
 
 
 def test_compute_mol_diff_use_moldiff_off_zeros():
@@ -480,4 +481,4 @@ def test_TP_H14_matches_scipy_reference():
     # Re-build params each call: _ref_TP_H14 mutates T_irr in place.
     T_ref = _ref_TP_H14(pco, list(params), gs=gs, Pb=Pb)
     assert T_jax.shape == T_ref.shape
-    assert np.allclose(T_jax, T_ref, rtol=1e-13, atol=0.0)
+    assert np.allclose(T_jax, T_ref, rtol=RTOL, atol=0.0)

@@ -16,6 +16,8 @@ import jax.numpy as jnp
 
 jax.config.update("jax_enable_x64", True)
 
+RTOL = 1e-12  # the same rate expression evaluated two ways
+
 
 def main() -> int:
     from vulcan_jax.config import default_config
@@ -88,7 +90,7 @@ def main() -> int:
         rates_jax.compute_forward_k(network, jnp.asarray(T), jnp.asarray(M))
     )
     onz = np.abs(k_def) > 0
-    assert np.abs(k_ovr[onz] - k_def[onz]).max() / np.abs(k_def[onz]).max() < 1e-12
+    assert np.abs(k_ovr[onz] - k_def[onz]).max() / np.abs(k_def[onz]).max() < RTOL
 
     def k_of_a(av):
         return rates_jax.build_rate_array(
@@ -130,7 +132,7 @@ def test_troe_oh_ch3_is_visscher_moses_eq14(T, Pr):
     want = k0 / (1.0 + Pr) * 10.0 ** (beta * np.log10(Fc))
     Tz, M = np.array([T]), np.array([Pr * kinf / k0])
     got = float(rates_jax._troe_OH_CH3(jnp.asarray(Tz), jnp.asarray(M))[0])
-    assert abs(got - want) <= 1e-12 * want
+    assert abs(got - want) <= RTOL * want
 
 
 def test_lindemann_with_zero_k_inf_is_the_zero_rate_limit():

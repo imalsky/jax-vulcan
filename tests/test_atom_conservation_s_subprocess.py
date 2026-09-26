@@ -51,6 +51,7 @@ from vulcan_jax.chem_funs import spec_list as SL
 
 ATOMS = ("H", "O", "C", "N", "S")
 RES = ("H2", "H2O", "CO", "N2", "H2S")
+TOL = 1e-12  # atom residual left by the projection, relative to its scale
 
 # ---- Check 1: projection enabled, covers S, reservoir set + conditioning ----
 assert js._CHEM_PROJECTION_ENABLED, "projection disabled for SNCHO + S atom_list"
@@ -81,7 +82,7 @@ print(f"inject={inj} S={int(row[inj]['S'])} O={int(row[inj]['O'])} "
       f"resid_before={np.max(np.abs(resid0)):.3e} resid_after={np.max(np.abs(resid1)):.3e} "
       f"S_after={np.max(np.abs(resid1[:,4])):.3e} outside_res={np.max(np.abs(non_res)):.3e}")
 assert np.max(np.abs(resid0)) > 0.0, "injected residual is zero (vacuous)"
-assert np.max(np.abs(resid1)) < 1e-12, "projection did not zero the injected S residual"
+assert np.max(np.abs(resid1)) < TOL, "projection did not zero the injected S residual"
 assert np.max(np.abs(non_res)) == 0.0, "projection mutated a non-reservoir species"
 
 # ---- Check 3: real codegen RHS conserves all five atoms after projection ----
@@ -111,7 +112,7 @@ prod_peak = float(np.max(np.abs(raw) @ A))
 rel = float(np.max(np.abs(raw_proj @ A))) / max(prod_peak, 1e-300)
 real_non_res = np.delete(raw_proj - raw, res_idx, axis=1)
 print(f"real-RHS resid/prod_peak={rel:.3e} outside_res={np.max(np.abs(real_non_res)):.3e}")
-assert rel < 1e-12, "real RHS not conserving across all 5 atoms after projection"
+assert rel < TOL, "real RHS not conserving across all 5 atoms after projection"
 assert np.max(np.abs(real_non_res)) == 0.0, "real-RHS projection mutated a non-reservoir species"
 
 print("PASS")

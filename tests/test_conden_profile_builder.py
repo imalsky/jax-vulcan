@@ -29,6 +29,7 @@ SPECIES_IDX = {"H2O": 0, "NH3": 1, "S8": 2, "H2O_l_s": 3, "NH3_l_s": 4, "S8_l_s"
 HUMIDITY = 0.7
 R_P = {"H2O_l_s": 5e-3, "NH3_l_s": 5e-5, "S8_l_s": 1e-4}
 RHO_P = {"H2O_l_s": 0.9, "NH3_l_s": 0.7, "S8_l_s": 2.07}
+RTOL = 1e-14  # same arithmetic on both sides
 
 
 def _fake_setup(
@@ -161,7 +162,7 @@ def test_builder_matches_upstream_formulas(spec):
         ref = _oracle(spec, T, pco, n_0, Dzz)
         for field, want in ref.items():
             got = np.asarray(getattr(prof, field))
-            np.testing.assert_allclose(got, want, rtol=1e-14, atol=0.0, err_msg=field)
+            np.testing.assert_allclose(got, want, rtol=RTOL, atol=0.0, err_msg=field)
 
 
 def test_temperature_moves_saturation_and_boundaries(spec):
@@ -209,7 +210,7 @@ def test_jit_and_vmap_consistency(spec):
                 np.testing.assert_array_equal(a, b, err_msg=f"{f} {label}")
             else:
                 np.testing.assert_allclose(
-                    a, b, rtol=1e-14, atol=0.0, err_msg=f"{f} {label}"
+                    a, b, rtol=RTOL, atol=0.0, err_msg=f"{f} {label}"
                 )
 
     eager = build(jnp.asarray(T_slope))

@@ -41,6 +41,7 @@ for need in ("NH3", "NH3_l_s", "H2O", "H2O_l_s"):
     assert need in sl, f"lowT Jupiter network missing {need!r}"
 
 from vulcan_jax.config import default_config
+from vulcan_jax.phy_const import G_grav
 cfg = default_config()
 
 # Cold Jupiter-like gas giant (master cfg_examples/vulcan_cfg_Jupiter.py values
@@ -54,7 +55,7 @@ cfg.nz = 60
 cfg.P_b = 5e9
 cfg.P_t = 1e-2
 cfg.Rp = 7.1492e9
-cfg.Mp = 2479.0 * 7.1492e9**2 / 6.67430e-8  # -> g=G*Mp/Rp^2 = 2479
+cfg.Mp = 2479.0 * cfg.Rp**2 / G_grav  # g = G*Mp/Rp^2 = 2479 cm/s^2
 cfg.use_Kzz = True
 cfg.Kzz_prof = "const"
 cfg.const_Kzz = 1e8

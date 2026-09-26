@@ -16,6 +16,7 @@ import yaml
 
 from vulcan_jax.atm_setup import surface_gravity
 from vulcan_jax.config import (
+    _DT_MAX_RUNTIME_FRAC,
     DT_MAX_S,
     Config,
     default_config,
@@ -60,7 +61,7 @@ def test_shipped_config_loads_and_resolves(name):
     assert surface_gravity(cfg) == pytest.approx(_EXPECTED_GS[name], rel=1e-9)
 
     # Derived values are filled by the loader.
-    assert cfg.dt_max == min(cfg.runtime * 1e-5, DT_MAX_S)
+    assert cfg.dt_max == min(cfg.runtime * _DT_MAX_RUNTIME_FRAC, DT_MAX_S)
     assert cfg.photo_switch_longdy_thresh == cfg.yconv_min * 10.0
     assert cfg.para_anaTP == cfg.para_warm
 
@@ -75,7 +76,7 @@ def test_overrides_win_over_yaml_and_derived():
     cfg = load_config("default", nz=99, runtime=1.0e19)
     assert cfg.nz == 99
     # dt_max derives from the overridden runtime (derived fills after overrides).
-    assert cfg.dt_max == 1.0e19 * 1e-5
+    assert cfg.dt_max == 1.0e19 * _DT_MAX_RUNTIME_FRAC
     # An explicit derived key in the overrides is not clobbered.
     cfg2 = load_config("default", dt_max=123.0)
     assert cfg2.dt_max == 123.0
@@ -103,7 +104,7 @@ def test_cwd_configs_override(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     cfg = load_config("mine")
     assert cfg.runtime == 5.0e19
-    assert cfg.dt_max == 5.0e19 * 1e-5  # derived from the CWD file
+    assert cfg.dt_max == 5.0e19 * _DT_MAX_RUNTIME_FRAC  # derived from the CWD file
     assert cfg.count_max == 10000 and isinstance(cfg.count_max, int)
     assert cfg.para_anaTP == [1, 2, 3]
 

@@ -20,6 +20,8 @@ ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
+GRAVITY_RTOL = 1e-13  # g recomputed from zco agrees to roundoff
+
 
 def main() -> int:
     import vulcan_jax.legacy_io as op
@@ -72,7 +74,7 @@ def main() -> int:
     g_expected_up = gs * (Rp / (Rp + zco[pref_indx:nz])) ** 2
     rel_up = np.max(np.abs(g[pref_indx:] - g_expected_up) / np.abs(g_expected_up))
     print(f"self-consistency relerr (i >= pref_indx={pref_indx}): {rel_up:.3e}")
-    if rel_up > 1e-13:
+    if rel_up > GRAVITY_RTOL:
         print("FAIL: gravity is not self-consistent with the refreshed zco")
         ok = False
 
@@ -81,7 +83,7 @@ def main() -> int:
         g_expected_dn = gs * (Rp / (Rp + zco[1 : pref_indx + 1])) ** 2
         rel_dn = np.max(np.abs(g[:pref_indx] - g_expected_dn) / np.abs(g_expected_dn))
         print(f"self-consistency relerr (i <  pref_indx): {rel_dn:.3e}")
-        if rel_dn > 1e-13:
+        if rel_dn > GRAVITY_RTOL:
             print("FAIL: below-reference gravity is not self-consistent")
             ok = False
 
