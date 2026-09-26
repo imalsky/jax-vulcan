@@ -17,12 +17,15 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from _helpers import HD189_RP_CM, make_pco, mass_for_gravity, tpk_cfg
 from scipy import interpolate as scipy_interpolate
 from scipy.special import expn as scipy_expn
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 warnings.filterwarnings("ignore")
+
+R_EARTH_CM = 6.378e8  # Earth radius (cm)
 
 
 # Atm type matrix: Tco, Kzz, vz, M, n_0
@@ -56,16 +59,6 @@ def _ref_TP_H14(pco, params, gs, Pb):
     return (term1 + T_irr**4 / 8 * (term2 + term3)) ** 0.25
 
 
-def _make_pco(P_b, P_t, nz):
-    return np.logspace(np.log10(P_b), np.log10(P_t), nz)
-
-
-def _hd189_atm_file_path() -> str:
-    from vulcan_jax._paths import PACKAGE_ROOT
-
-    return str(PACKAGE_ROOT / "atm" / "atm_HD189_Kzz.txt")
-
-
 @pytest.mark.parametrize(
     "atm_type,P_b,P_t,nz,gs",
     [
@@ -79,27 +72,10 @@ def test_load_TPK_atm_types(atm_type, P_b, P_t, nz, gs):
     from vulcan_jax.phy_const import kb
     from vulcan_jax.atm_setup import compute_pico, load_TPK
 
-    pco = _make_pco(P_b, P_t, nz)
+    pco = make_pco(P_b, P_t, nz)
     pico = np.asarray(compute_pico(pco))
 
-    cfg = SimpleNamespace(
-        atm_type=atm_type,
-        Kzz_prof="const",
-        vz_prof="const",
-        use_Kzz=True,
-        use_vz=False,
-        const_Kzz=1e10,
-        const_vz=0.0,
-        K_max=1e5,
-        K_p_lev=0.1,
-        Tiso=1234.0,
-        P_b=P_b,
-        Rp=1.138 * 7.1492e9,
-        Mp=gs * (1.138 * 7.1492e9) ** 2 / 6.67430e-8,  # -> g=G*Mp/Rp^2 = gs
-        para_anaTP=[120.0, 1500.0, 0.1, 0.02, 1.0, 1.0],
-        atm_file=_hd189_atm_file_path(),
-        vul_ini="output/",
-    )
+    cfg = tpk_cfg(atm_type=atm_type, P_b=P_b, Mp=mass_for_gravity(gs, HD189_RP_CM))
     out = load_TPK(cfg, pco, pico=pico)
 
     # --- Tco reference ---
@@ -135,26 +111,18 @@ def test_load_TPK_kzz_modes(Kzz_prof):
     from vulcan_jax.atm_setup import compute_pico, load_TPK
 
     nz, P_b, P_t = 100, 1e9, 1e-2
-    pco = _make_pco(P_b, P_t, nz)
+    pco = make_pco(P_b, P_t, nz)
     pico = np.asarray(compute_pico(pco))
 
-    cfg = SimpleNamespace(
+    cfg = tpk_cfg(
         atm_type="file" if Kzz_prof == "file" else "isothermal",
         Kzz_prof=Kzz_prof,
-        vz_prof="const",
-        use_Kzz=True,
-        use_vz=False,
         const_Kzz=3.14e10,
-        const_vz=0.0,
         K_max=2e5,
         K_p_lev=0.05,
         K_deep=1e6,
         Tiso=1500.0,
         P_b=P_b,
-        gs=2140.0,
-        para_anaTP=[120.0, 1500.0, 0.1, 0.02, 1.0, 1.0],
-        atm_file=_hd189_atm_file_path(),
-        vul_ini="output/",
     )
     out = load_TPK(cfg, pco, pico=pico)
 
@@ -187,22 +155,9 @@ def test_load_TPK_use_kzz_off_zeroes_kzz():
     from vulcan_jax.atm_setup import compute_pico, load_TPK
 
     nz, P_b, P_t = 50, 1e6, 1e-2
-    pco = _make_pco(P_b, P_t, nz)
+    pco = make_pco(P_b, P_t, nz)
     pico = np.asarray(compute_pico(pco))
-    cfg = SimpleNamespace(
-        atm_type="isothermal",
-        Kzz_prof="const",
-        vz_prof="const",
-        use_Kzz=False,
-        use_vz=False,
-        const_Kzz=1e10,
-        const_vz=0.0,
-        K_max=1e5,
-        K_p_lev=0.1,
-        Tiso=300.0,
-        P_b=P_b,
-        gs=980.0,
-    )
+    cfg = tpk_cfg(use_Kzz=False, Tiso=300.0, P_b=P_b)
     out = load_TPK(cfg, pco, pico=pico)
     assert np.all(out["Kzz"] == 0.0)
 
@@ -417,7 +372,7 @@ def test_compute_mu_dz_g_rocky_anchor_at_surface():
     from vulcan_jax.atm_setup import compute_pico, compute_mu_dz_g, surface_gravity
 
     nz = 40
-    pco = _make_pco(1e6, 5e-2, nz)
+    pco = make_pco(1e6, 5e-2, nz)
     pico = np.asarray(compute_pico(pco))
     Tco = np.full(nz, 273.0)
     ymix = np.zeros((nz, 3))
@@ -426,8 +381,8 @@ def test_compute_mu_dz_g_rocky_anchor_at_surface():
     ymix[:, 2] = 0.01  # Ar
     ms_arr = np.array([28.014, 32.0, 39.948])
     cfg = SimpleNamespace(
-        Rp=6.378e8,
-        Mp=980.0 * 6.378e8**2 / 6.67430e-8,  # -> g=G*Mp/Rp^2 = 980
+        Rp=R_EARTH_CM,
+        Mp=mass_for_gravity(980.0, R_EARTH_CM),
         rocky=True,
         P_b=1e6,
         use_moldiff=False,
@@ -447,7 +402,7 @@ def test_compute_mu_dz_g_gas_giant_anchor_at_1bar():
     from vulcan_jax.atm_setup import compute_pico, compute_mu_dz_g, surface_gravity
 
     nz = 60
-    pco = _make_pco(1e9, 1e-2, nz)
+    pco = make_pco(1e9, 1e-2, nz)
     pico = np.asarray(compute_pico(pco))
     Tco = np.linspace(2500.0, 800.0, nz)
     # Pure-H2 mixture so mean_mass = 2.016
@@ -455,8 +410,8 @@ def test_compute_mu_dz_g_gas_giant_anchor_at_1bar():
     ymix[:, 0] = 1.0
     ms_arr = np.array([2.016])
     cfg = SimpleNamespace(
-        Rp=1.138 * 7.1492e9,
-        Mp=2140.0 * (1.138 * 7.1492e9) ** 2 / 6.67430e-8,  # -> g=G*Mp/Rp^2 = 2140
+        Rp=HD189_RP_CM,
+        Mp=mass_for_gravity(2140.0, HD189_RP_CM),
         rocky=False,
         P_b=1e9,
         use_moldiff=False,

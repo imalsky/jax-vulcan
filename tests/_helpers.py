@@ -1,4 +1,4 @@
-"""Shared test helpers: config pinning and child-process launching.
+"""Shared test helpers: config pinning, partial configs and child processes.
 
 Neither belongs in `oracle.py`: nothing here touches the upstream checkout.
 """
@@ -9,8 +9,14 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
+
+R_JUP_CM = 7.1492e9  # Jupiter radius (cm), upstream phy_const.py r_jup
+HD189_RP_CM = 1.138 * R_JUP_CM  # HD 189733 b radius (cm)
 
 
 def fast_cfg(**overrides):
@@ -35,6 +41,45 @@ def fast_cfg(**overrides):
     for key, value in overrides.items():
         setattr(cfg, key, value)
     return cfg
+
+
+def mass_for_gravity(g, rp):
+    """Planet mass (g) that gives surface gravity `g` (cm/s^2) at radius `rp` (cm)."""
+    from vulcan_jax.phy_const import G_grav
+
+    return g * rp**2 / G_grav
+
+
+def make_pco(P_b, P_t, nz):
+    """`nz` log-spaced pressures from P_b (bottom) to P_t (top), dyne/cm^2."""
+    return np.logspace(np.log10(P_b), np.log10(P_t), nz)
+
+
+def tpk_cfg(**overrides):
+    """Partial config for `atm_setup.load_TPK`: isothermal, constant Kzz, the
+    HD189 radius and g = 2140 cm/s^2. `overrides` replace or add fields."""
+    from vulcan_jax._paths import PACKAGE_ROOT
+
+    fields = dict(
+        atm_type="isothermal",
+        Kzz_prof="const",
+        vz_prof="const",
+        use_Kzz=True,
+        use_vz=False,
+        const_Kzz=1e10,
+        const_vz=0.0,
+        K_max=1e5,
+        K_p_lev=0.1,
+        Tiso=1234.0,
+        P_b=1e9,
+        Rp=HD189_RP_CM,
+        Mp=mass_for_gravity(2140.0, HD189_RP_CM),
+        para_anaTP=[120.0, 1500.0, 0.1, 0.02, 1.0, 1.0],
+        atm_file=str(PACKAGE_ROOT / "atm" / "atm_HD189_Kzz.txt"),
+        vul_ini="output/",
+    )
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
 
 
 def run_child(child_src: str, *, network: str, label: str, timeout: int = 600):

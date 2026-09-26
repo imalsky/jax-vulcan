@@ -12,18 +12,14 @@ from __future__ import annotations
 import os
 import warnings
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pytest
+from _helpers import make_pco, tpk_cfg
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 warnings.filterwarnings("ignore")
-
-
-def _make_pco(P_b, P_t, nz):
-    return np.logspace(np.log10(P_b), np.log10(P_t), nz)
 
 
 # Pure selection/re-grid logic
@@ -33,7 +29,7 @@ def test_regrid_raises_Pb_to_first_cool_deep_level():
     from vulcan_jax.atm_setup import high_temp_cut_regrid
 
     nz = 150
-    pco = _make_pco(1e9, 1e-2, nz)  # pco[0] deepest
+    pco = make_pco(1e9, 1e-2, nz)  # pco[0] deepest
     # Monotonic: hot at depth, cooler with altitude.
     Tco = np.clip(4200.0 - 350.0 * np.log10(1e9 / pco), 300.0, 4200.0)
 
@@ -52,7 +48,7 @@ def test_regrid_floors_at_Pmin_when_all_deep_too_hot():
     from vulcan_jax.atm_setup import high_temp_cut_regrid
 
     nz = 100
-    pco = _make_pco(1e9, 1e-2, nz)
+    pco = make_pco(1e9, 1e-2, nz)
     Tco = np.where(pco >= 1e6, 4000.0, 3000.0)  # every deep layer too hot
     new_pco = high_temp_cut_regrid(pco, Tco, T_max=3500.0, P_min=1e6, P_t=1e-2, nz=nz)
     assert new_pco is not None
@@ -63,7 +59,7 @@ def test_regrid_noop_on_cool_column():
     from vulcan_jax.atm_setup import high_temp_cut_regrid
 
     nz = 80
-    pco = _make_pco(1e9, 1e-2, nz)
+    pco = make_pco(1e9, 1e-2, nz)
     Tco = np.full(nz, 1500.0)  # nothing above T_max
     assert (
         high_temp_cut_regrid(pco, Tco, T_max=3500.0, P_min=1e6, P_t=1e-2, nz=nz) is None
@@ -74,7 +70,7 @@ def test_regrid_noop_when_no_deep_layers():
     from vulcan_jax.atm_setup import high_temp_cut_regrid
 
     nz = 80
-    pco = _make_pco(1e5, 1e-2, nz)  # P_b below P_min: no eligible deep layers
+    pco = make_pco(1e5, 1e-2, nz)  # P_b below P_min: no eligible deep layers
     Tco = np.full(nz, 4000.0)
     assert (
         high_temp_cut_regrid(pco, Tco, T_max=3500.0, P_min=1e6, P_t=1e-2, nz=nz) is None
@@ -105,26 +101,9 @@ def test_end_to_end_file_mode_cut(tmp_path):
     P_b, P_t, nz = 1e9, 1e-2, 120
     T_max, P_min = 3500.0, 1e6
 
-    cfg = SimpleNamespace(
-        atm_type="file",
-        Kzz_prof="file",
-        vz_prof="const",
-        use_Kzz=True,
-        use_vz=False,
-        const_Kzz=1e10,
-        const_vz=0.0,
-        K_max=1e5,
-        K_p_lev=0.1,
-        Tiso=1234.0,
-        P_b=P_b,
-        Rp=1.138 * 7.1492e9,
-        Mp=2140.0 * (1.138 * 7.1492e9) ** 2 / 6.67430e-8,  # -> g=G*Mp/Rp^2 = 2140
-        para_anaTP=[120.0, 1500.0, 0.1, 0.02, 1.0, 1.0],
-        atm_file=str(atm_file),
-        vul_ini="output/",
-    )
+    cfg = tpk_cfg(atm_type="file", Kzz_prof="file", P_b=P_b, atm_file=str(atm_file))
 
-    pco = _make_pco(P_b, P_t, nz)
+    pco = make_pco(P_b, P_t, nz)
     pico = np.asarray(compute_pico(pco))
     out = load_TPK(cfg, pco, pico=pico)
     Tco0 = np.asarray(out["Tco"])

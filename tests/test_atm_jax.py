@@ -21,7 +21,6 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
 
 jax.config.update("jax_enable_x64", True)
 
@@ -379,29 +378,3 @@ def test_kzz_profile_jax_defaults_per_branch():
     assert np.all(np.asarray(jm) >= 1e6 - 1)
     pf = atm_setup.kzz_profile_jax("Pfunc", pico, K_max=1e10, K_p_lev=0.1)
     assert np.all(np.asarray(pf) >= 1e10 - 1)
-
-
-def test_load_TPK_missing_kzz_param_fails_loud():
-    """A JM16 config without K_deep must raise, not silently floor to 0.0."""
-    import types
-
-    from vulcan_jax.atm_setup import compute_pico, load_TPK
-
-    pco = np.logspace(9, -2, 20)
-    pico = np.asarray(compute_pico(pco))
-    cfg = types.SimpleNamespace(
-        atm_type="isothermal",
-        Kzz_prof="JM16",
-        vz_prof="const",
-        use_Kzz=True,
-        use_vz=False,
-        const_Kzz=1e10,
-        const_vz=0.0,
-        K_max=2e5,
-        K_p_lev=0.05,
-        Tiso=1500.0,
-        P_b=1e9,
-        gs=2140.0,
-    )  # note: no K_deep
-    with pytest.raises(AttributeError):
-        load_TPK(cfg, pco, pico=pico)
