@@ -155,7 +155,7 @@ def kzz_profile_jax(
         # Tsai+2020 fit, build_atm.py:417.
         return jnp.maximum(K_max, K_max * (K_p_lev * BAR_CGS / pico_int) ** 0.4)
     raise IOError(
-        f'\n"Kzz_prof"={kzz_prof!r} cannot be recongized.\n'
+        f'\n"Kzz_prof"={kzz_prof!r} cannot be recognized.\n'
         f'Assign it as "file", "const", "JM16" or "Pfunc" in the config.'
     )
 
@@ -283,12 +283,12 @@ def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray
     elif atm_type == "vulcan_ini":
         import pickle
 
-        print(f"Initializing PT from the prvious run {cfg.vul_ini}")
+        print(f"Initializing PT from the previous run {cfg.vul_ini}")
         with open(resolve_data_path(cfg.vul_ini), "rb") as handle:
             vul_data = pickle.load(handle)
         Tco = np.asarray(vul_data["atm"]["Tco"], dtype=np.float64)
     elif atm_type == "table":
-        print(f"Initializing PT from the prvious run {cfg.vul_ini}")
+        print(f"Initializing PT from the previous run {cfg.vul_ini}")
         table = np.genfromtxt(
             resolve_data_path(cfg.vul_ini), names=True, dtype=None, skip_header=1
         )
@@ -300,13 +300,12 @@ def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray
         Tco = np.asarray(table["Temp"], dtype=np.float64)
     else:
         raise IOError(
-            f'\n"atm_type"={atm_type!r} cannot be recongized.\n'
+            f'\n"atm_type"={atm_type!r} cannot be recognized.\n'
             f"Please reassign it in the config."
         )
     out["Tco"] = Tco
 
-    # Read each profile's own parameter DIRECTLY (not getattr-with-default):
-    # a branch selected without its knob must fail loud, as in master.
+    # Read each profile's knob directly so a missing one raises, as in master.
     if Kzz_prof == "const":
         out["Kzz"] = np.asarray(
             kzz_profile_jax("const", pico[1:-1], const_Kzz=cfg.const_Kzz),
@@ -327,7 +326,7 @@ def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray
             raise IOError('Kzz_prof="file" requires atm_type="file" with a Kzz column.')
     else:
         raise IOError(
-            f'\n"Kzz_prof"={Kzz_prof!r} cannot be recongized.\n'
+            f'\n"Kzz_prof"={Kzz_prof!r} cannot be recognized.\n'
             f'Assign it as "file", "const", "JM16" or "Pfunc" in the config.'
         )
 
@@ -347,7 +346,7 @@ def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray
         )
     else:
         raise IOError(
-            f'\n"vz_prof"={vz_prof!r} cannot be recongized.\n'
+            f'\n"vz_prof"={vz_prof!r} cannot be recognized.\n'
             f'Assign it as "file" or "const" in the config.'
         )
 
@@ -443,9 +442,9 @@ def _scan_down_mu_dz_g(
 def mu_dz_g_jax(pref_indx: int, gs, Rp, Tco, mu, pico, nz: int):
     """Hydrostatic height integration on the JAX graph, anchored at `pref_indx`.
 
-    ONE implementation: the host setup path (:func:`compute_mu_dz_g`) and the
-    differentiable builder (`atm_jax._mu_dz_g`) both call this, so no
-    reassociation can move float64 bits between them. `pref_indx` is a discrete
+    Shared by the host setup path (:func:`compute_mu_dz_g`) and the
+    differentiable builder (`atm_jax._mu_dz_g`), so no reassociation can move
+    float64 bits between them. `pref_indx` is a discrete
     host-side choice and is passed in.
 
     Returns (g, Hp, dz, zco, zmco, dzi, Ti, Hpi) as jnp arrays.
@@ -638,7 +637,7 @@ def _Dzz_gen_for_base(atm_base: str):
         return lambda T, n_tot, mi: (
             2.15e17 * T**0.750 / n_tot * (2.016 / mi * (mi + 44.001) / 46.017) ** 0.5
         )
-    raise IOError(f"\n Unknow atm_base={atm_base!r}!")
+    raise IOError(f"\n Unknown atm_base={atm_base!r}!")
 
 
 def _alpha_array_for_base(
@@ -646,11 +645,9 @@ def _alpha_array_for_base(
 ) -> np.ndarray:
     """Thermal-diffusion factor per species, atm_base-dependent. Returns (ni,).
 
-    Defaults to zero. H2 base: H = -0.1; every species over 4 amu gets 0.25,
-    which then OVERWRITES the He = 0.145 line (He is 4.0026 amu). That is
-    master-faithful (build_atm.py:690-693): the effective He factor is 0.25,
-    not 0.145; do not "fix" it. N2/O2/CO2 base: H/H2/He = -0.25, Ar = 0.17.
-    Other atm_base raises.
+    Defaults to zero. H2 base: H = -0.1, He = 0.145, then every species over
+    4 amu (He included) gets 0.25, as master (build_atm.py:690-693). N2/O2/CO2
+    base: H/H2/He = -0.25, Ar = 0.17. Other atm_base raises.
     """
     ni = len(species_list)
     alpha = np.zeros(ni, dtype=np.float64)
@@ -669,7 +666,7 @@ def _alpha_array_for_base(
         if "Ar" in species_list:
             alpha[species_list.index("Ar")] = 0.17
     else:
-        raise IOError(f"\n Unknow atm_base={atm_base!r}!")
+        raise IOError(f"\n Unknown atm_base={atm_base!r}!")
     return alpha
 
 
@@ -677,8 +674,8 @@ def mol_diff_jax(atm_base: str, Tco, n_0, g, Hp, dz, ms, alpha, nongas_mask,
                  *, use_vm_mol: bool):
     """Molecular diffusion on the JAX graph: (Dzz, Dzz_cen, vm).
 
-    ONE implementation: the host setup path (:func:`compute_mol_diff`) and the
-    differentiable builder (`atm_jax._mol_diff`) both call this. Callers gate
+    Shared by the host setup path (:func:`compute_mol_diff`) and the
+    differentiable builder (`atm_jax._mol_diff`). Callers gate
     `use_moldiff` themselves. `Dzz` is on the cell interfaces (nz-1, ni),
     `Dzz_cen` the cell-centered companion kept for the `.vul` diagnostic
     surface, `vm` the interface-centered advective (drift) component.
@@ -701,10 +698,8 @@ def mol_diff_jax(atm_base: str, Tco, n_0, g, Hp, dz, ms, alpha, nongas_mask,
 
     # Interface-centered upwind drift velocity (vm_branch op.update_mu_dz):
     # vm = -Dzz * (1/H_i - 1/Hp + thermal) on cell interfaces, using the same
-    # arithmetic means mu_dz_g_jax forms for Ti/Hpi/dzi. ONE implementation, in
-    # atm_refresh: the runner refreshes vm in-loop with the identical formula,
-    # and separately-maintained copies would let a reassociation move float64
-    # bits and churn step counts.
+    # arithmetic means mu_dz_g_jax forms for Ti/Hpi/dzi. Shared with the
+    # in-loop refresh (atm_refresh.recompute_vm_jax) so both stay bit-identical.
     Hpi = 0.5 * (Hp[:-1] + Hp[1:])  # (nz-1,)
     dzi = 0.5 * (dz[1:] + dz[:-1])  # (nz-1,)
     vm = recompute_vm_jax(g, Hpi, dzi, Dzz, ms, alpha, Tco, kb, Navo)
@@ -781,10 +776,8 @@ def read_sflux_binned(
     # Scale the surface flux to the planet's orbit by (R_star / r_orbit)^2.
     geom = (float(cfg.r_star) * r_sun / (au * float(cfg.orbit_radius))) ** 2
     raw_flux = np.asarray(sflux_raw["flux"], dtype=np.float64) * geom
-    # `np.interp` (like upstream's interp1d) needs a NON-decreasing wavelength
-    # column; duplicates are legitimate (sflux-epseri.txt keeps 20, pinned
-    # byte-identical by C4). A decreasing file is refused: bin_min is read
-    # off wavelength[0] here and upstream (op.py:575).
+    # np.interp needs non-decreasing wavelengths; duplicates are allowed (C4).
+    # bin_min comes from wavelength[0], as upstream (op.py:575).
     if (raw_lambda.ndim != 1 or raw_lambda.shape != raw_flux.shape
             or raw_lambda.size < 2
             or not (np.all(np.isfinite(raw_lambda)) and np.all(np.isfinite(raw_flux)))):
@@ -799,10 +792,8 @@ def read_sflux_binned(
             f"min diff {np.diff(raw_lambda).min():g}, min flux {raw_flux.min():g})"
         )
 
-    # The bin grid comes from the network's cross-section span
-    # (photo_setup.build_bins), the star file from the config -- they are
-    # independent, and `left/right=0.0` below zero-fills any bin outside the
-    # file rather than failing. Say so instead of hiding it.
+    # Bins and the star file are independent; warn when bins outside the file
+    # are zero-filled.
     if bins_np[0] < raw_lambda[0] or bins_np[-1] > raw_lambda[-1]:
         warnings.warn(
             f"stellar flux {cfg.sflux_file} spans "
@@ -826,7 +817,7 @@ def read_sflux_binned(
 
     # Upstream (build_atm.py:635) leaves sflux_din12_indx = -1 when the node is
     # absent and compute_J then integrates bins[:-1] at dbin1 (dropping the
-    # last bin); refused here instead (Parity & bug guide C15).
+    # last bin); refused here instead (C15).
     transition = np.flatnonzero(bins_np == dbin_12)
     if transition.size != 1 or transition[0] == 0 or transition[0] == bins_np.size - 1:
         raise ValueError(
@@ -957,9 +948,8 @@ def sat_p_jax(sp: str, T: jnp.ndarray) -> jnp.ndarray:
         c0, c1, c2, c3 = 6111.5, 23.036, -333.7, 279.82  # ice constants
         w0, w1, w2, w3 = 6112.1, 18.729, -227.3, 257.87  # liquid constants
         # Ackerman & Marley (2001): ice for T < 0 C, liquid water for T >= 0 C.
-        # CORRECTION vs upstream: op.sp_sat's `(T<0)*ice + (T>0)*water` is
-        # exactly 0 at T = 273.0 K (artificial cold trap); the single `where`
-        # is continuous through 0 C. See notes.md, Parity & bug guide C3.
+        # Upstream's (T<0)*ice + (T>0)*water is 0 at 273 K; one `where` is
+        # continuous (C3).
         ice = c0 * jnp.exp((c1 * T_C + T_C**2 / c2) / (T_C + c3))
         liquid = w0 * jnp.exp((w1 * T_C + T_C**2 / w2) / (T_C + w3))
         return jnp.where(T_C < 0, ice, liquid)

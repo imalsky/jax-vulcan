@@ -560,14 +560,10 @@ def _assert_network_matches_import(cfg) -> None:
     """Fail fast if cfg requests a different network than the import-locked one.
 
     The network (``ni``/``nr``/``spec_list`` + codegen RHS) is parsed once at
-    the first ``import vulcan_jax``; without this guard a mismatch surfaces
-    ~30 s into setup as a cryptic ``var.k_arr shape`` ValueError. Use
-    ``$VULCAN_JAX_NETWORK`` before the first import (or the subprocess driver).
-
-    Compatibility is decided by reaction TOPOLOGY, not file path and not just
-    species + nr: a byte-identical copy at another path is fine, but a network
-    with the same species/reaction count yet reordered/edited reactions would
-    silently pair the import-time codegen RHS with mis-indexed rates.
+    the first ``import vulcan_jax``; select another with
+    ``$VULCAN_JAX_NETWORK`` before the first import (or the subprocess
+    driver). Compatibility means the same species names and reaction
+    topology; a byte-identical copy at another path passes.
     """
     want_path = _network_path_for(cfg)
     import_net = chem_funs._NETWORK
@@ -575,11 +571,10 @@ def _assert_network_matches_import(cfg) -> None:
     if want_path == have_path:
         return  # identical file: fast path, no reparse on the common case
 
-    # Different path: reparse and compare reaction TOPOLOGY (fixes the codegen
-    # RHS + k_arr indexing; same species + nr is NOT sufficient) AND species
-    # names (the numeric hash is index-based, so a renamed species leaves it
-    # identical). If it can't be parsed here, defer to the pipeline and the
-    # k_arr backstop.
+    # Different path: reparse and compare topology (fixes the codegen RHS and
+    # k_arr indexing) and species names (the hash is index-based, so a
+    # renamed species leaves it identical). If it cannot be parsed, warn and
+    # defer to the k_arr check.
     from . import network as _net_mod
 
     try:
@@ -708,7 +703,7 @@ def _cfg_overlay(cfg):
             added.append(name)
         # Copy mutable containers rather than aliasing: setup writes some
         # knobs in place through `base`, and a bare setattr would land those
-        # writes in the CALLER's cfg, mutating it for a second run.
+        # writes in the caller's cfg, mutating it for a second run.
         if isinstance(val, (list, dict, set, bytearray)):
             val = copy.deepcopy(val)
         setattr(base, name, val)
@@ -798,7 +793,7 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
         _rates_mod.apply_photo_remove(cfg, var, network, atm)
 
     # Warm up the codegen chem_rhs JIT so the first runner step doesn't stall
-    # on compile (~3-8 s cold disk cache, <100 ms cached). Result discarded;
+    # on compile. Result discarded;
     # `skip_chem_warmup` callers integrating in another process can skip it
     # without changing the returned RunState.
     if not skip_chem_warmup:
@@ -816,8 +811,6 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
     var.dy_prev = np.copy(var.dy)
     var.atom_loss_prev = var.atom_loss.copy()
 
-    # runstate_from_store already builds metadata from this same (var, atm, para);
-    # only the photo_static pytree needs attaching here.
     rs = runstate_from_store(var, atm, para)
     return rs._replace(photo_static=photo_static_pytree)
 
@@ -825,14 +818,10 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
 def _var_save_list(*, use_photo, t_cross_sp, use_ion) -> list[str]:
     """The legacy `var_save` key list, mirroring `VULCAN-master/store.py:83-90`.
 
-    Returns a FRESH list per call: `VULCAN-master/op.py:3286` iterates this
+    Returns a fresh list per call: `VULCAN-master/op.py:3286` iterates this
     attribute and both producers extend it in place, so they must not share
-    one object.
-
-    Takes resolved values rather than a cfg because the two callers read their
-    config differently on purpose -- `legacy_view` defensively (the run's cfg
-    may be absent), `Variables.__init__` strictly (the process default always
-    has the keys). Keeping the reads at the call sites preserves both.
+    one object. Takes resolved values because the two callers hold different
+    configs (`legacy_view` the run's, `_Variables` the process default).
     """
     keys = [
         "k", "y", "ymix", "y_ini", "t", "dt", "longdy", "longdydt",
@@ -857,10 +846,10 @@ def _var_save_list(*, use_photo, t_cross_sp, use_ion) -> list[str]:
 def legacy_view(rs: RunState, cfg=None):
     """Return a `(var, atm, para)` SimpleNamespace shim built from `rs`.
 
-    Mutations to the shim do NOT round-trip back to `rs`.
+    Mutations to the shim do not round-trip back to `rs`.
 
     `cfg` must be the run's config whenever one is available: this runs at
-    INTEGRATION time, after `_cfg_overlay` has restored the process default,
+    integration time, after `_cfg_overlay` has restored the process default,
     so falling back to `default_config()` silently reads default
     `use_photo`/`use_ion`/`T_cross_sp` and builds the wrong `var_save` list.
     Callers that hold a cfg (`OuterLoop`, the CLI) pass `self._cfg`.

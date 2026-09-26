@@ -522,7 +522,7 @@ def _load_eq_y(data_atm) -> tuple[np.ndarray, list[str]]:
 
 def _load_vulcan_ini_y(data_atm) -> tuple[np.ndarray, list[str]]:
     """Load `y` from a previous `.vul` file via pickle."""
-    print("Initializing with compositions from the prvious run " + _CFG.vul_ini)
+    print("Initializing with compositions from the previous run " + _CFG.vul_ini)
     with open(resolve_data_path(_CFG.vul_ini), "rb") as handle:
         vul_data = pickle.load(handle)
     nz_ = len(data_atm.pco)
@@ -533,7 +533,7 @@ def _load_vulcan_ini_y(data_atm) -> tuple[np.ndarray, list[str]]:
         if sp in prev_species:
             y[:, species.index(sp)] = prev_y[:, prev_species.index(sp)]
         else:
-            print(sp + " not included in the prvious run.")
+            print(sp + " not included in the previous run.")
     charge_list: list[str] = []
     if _CFG.use_ion is True:
         _build_charge_list_if_ion(charge_list)
