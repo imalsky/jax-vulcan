@@ -102,10 +102,9 @@ def _jac_gather_tables(net: Network) -> tuple[tuple, jnp.ndarray]:
     Every nonzero J[i, j] is a sum over the (reaction r, reactant slot s)
     pairs with species j in slot s and species i among r's reactants or
     products, of `signed stoich_i * drate_dy[r, s]`. The pairs are listed
-    per entry in (r, s) order and bucketed by power-of-two padded length
-    (about 1.3x the real terms on the shipped networks), so the assembly is
-    a gather, one fixed-order sum per entry (`_left_to_right_sum`) and a
-    final gather into the dense block: no scatter-add, hence one summation
+    per entry in (r, s) order and bucketed by power-of-two padded length, so
+    the assembly is a gather, one fixed-order sum per entry
+    (`_left_to_right_sum`) and a final gather into the dense block: no scatter-add, hence one summation
     order on every backend and in every program (a GPU scatter-add is atomic
     and reorders run to run) and no chunked transient.
     Returns `(terms, place)`: `terms` is a tuple of `(r, s, coef)` int32 /
@@ -193,10 +192,8 @@ def chem_jac_analytical_per_layer(
         leave_out_cols.append(jnp.prod(f_excl, axis=1))
     leave_out = jnp.stack(leave_out_cols, axis=1)
 
-    # AD-safe power rule: NEVER raise to the 0 power. `y_r ** 0` has primal 1.0
-    # but a NaN jvp at y_r == 0 (0 * y^-1), and clipped cells make y_r == 0
-    # routine mid-run -- end-to-end forward-mode AD depends on this. stoich==1
-    # contributes a constant 1; stoich>=2 a real power with exponent >= 1.
+    # AD-safe power rule: `y_r ** 0` has a NaN jvp at y_r == 0 (clipped
+    # cells), so stoich==1 gives a constant 1 and stoich>=2 an exponent >= 1.
     # Primal is bit-identical to y_r**(stoich-1); masks fold at trace time.
     safe_exp = jnp.where(net.reactant_stoich > 1, net.reactant_stoich - 1, 1)
     pow_minus_one = jnp.where(
@@ -217,11 +214,8 @@ def chem_jac_analytical_per_layer(
 
 def _left_to_right_sum(x: jnp.ndarray) -> jnp.ndarray:
     """Sum over the last axis in one fixed order. XLA may reorder a `reduce`
-    per program, and the batch and queue runners then disagreed at the last
-    bit, which the dt controller turned into a different accept count
-    (vulcan-forward's `test_queue_with_enough_lanes_runs_the_batch_ticks`).
-    The terms are exact (a stoichiometric coefficient times a gathered
-    value), so an explicit chain of adds has one result on every program."""
+    per program; a fixed chain of adds keeps the batch and queue runners
+    bit-identical (notes §1.3, register 71)."""
     acc = x[..., 0]
     for j in range(1, x.shape[-1]):
         acc = acc + x[..., j]

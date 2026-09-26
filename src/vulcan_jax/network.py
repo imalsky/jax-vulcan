@@ -11,7 +11,7 @@ photo, ionisation.
 
 Species ordering follows first appearance in the network file. Species
 that appear only in the config (e.g. an inert `const_mix` gas like Ar)
-are NOT appended — `runtime_validation` rejects such configs upfront.
+are not appended; `runtime_validation` rejects such configs upfront.
 """
 
 from __future__ import annotations
@@ -109,7 +109,7 @@ class Network:
     # (position, written id, reaction text) for every photo/ion row whose id
     # column disagrees with its parser position. Rates are indexed by
     # position, so the parse is correct either way, but a `cfg.remove_list`
-    # written from a stale id column selects the WRONG reaction; the setup
+    # written from a stale id column selects the wrong reaction; the setup
     # path announces it via `legacy_io._warn_stale_reaction_ids`.
     stale_ids: tuple[tuple[int, int, str], ...] = ()
 
@@ -128,10 +128,10 @@ _RE_TEMP_SINGLE = re.compile(rf"^{_NUM}$")
 def _parse_temp_ranges(tokens: list[str]) -> tuple[tuple[float, float], ...]:
     """Parse the documented temperature range(s) off a row's annotation tokens.
 
-    Scans from the END of the annotation (the Temp column is last) and stops
-    at the first token that is not a range or a bare temperature. Strict on
-    purpose: a reference fused to a range (e.g. '1986TSA/HAM1087300-2500')
-    or an inverted 'lo-hi' yields NO ranges rather than a garbage window.
+    Scans from the end of the annotation (the Temp column is last) and stops
+    at the first token that is not a range or a bare temperature. A reference
+    fused to a range (e.g. '1986TSA/HAM1087300-2500') or an inverted 'lo-hi'
+    yields no ranges rather than a garbage window.
     A bare temperature T becomes the degenerate range (T, T).
     """
     out: list[tuple[float, float]] = []
@@ -495,8 +495,7 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
             product_idx[ir, k_slot] = sp_idx
             product_stoich[ir, k_slot] = stoich
 
-        # Per side: a row with M on the LHS only (the inherited HNCO + M
-        # -> H + NCO typo, notes.md §3.2) gets a reverse without M.
+        # M per side: a row with M on the LHS only gets a reverse without M.
         is_three_body[i] = rec["has_M_reac"]
         is_three_body[ir] = rec["has_M_prod"]
 

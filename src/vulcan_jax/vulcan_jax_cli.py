@@ -3,10 +3,8 @@
 
 import os
 
-# Pin OpenMP to one thread BEFORE anything imports NumPy/JAX (the runtimes read
-# this at load and ignore later changes). The hot path is one XLA program, so
-# BLAS threads only add oversubscription, and a single-threaded baseline is what
-# the master-comparison timings assume.
+# One OpenMP thread, set before NumPy/JAX load: the hot path is one XLA
+# program and BLAS threads only oversubscribe.
 os.environ["OMP_NUM_THREADS"] = "1"
 
 import time
@@ -56,8 +54,8 @@ _FROZEN_KNOB_ENV = {
 def _frozen_knob_mismatch(cfg):
     """Import-frozen knobs `cfg` disagrees with, as ``{env var: value}``.
 
-    Compares against `default_config()` because that is exactly what the
-    import-time freeze read. `load_config` folds ``$VULCAN_JAX_*`` over the YAML
+    Compares against `default_config()` because that is what the import-time
+    freeze read. `load_config` folds ``$VULCAN_JAX_*`` over the YAML
     before returning, so a knob the caller overrode explicitly matches the
     frozen value and never appears here.
     """

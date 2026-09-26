@@ -10,7 +10,7 @@ from typing import Any
 
 from ._version import __version__
 
-# Unguarded on purpose (loud-errors rule): a jax that cannot enable x64 must
+# Unguarded: a jax that cannot enable x64 must
 # fail the import, not run float32 chemistry (rate constants span ~50 dex).
 from jax import config as _config
 

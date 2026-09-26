@@ -21,10 +21,9 @@ def hydrostatic_step(T, mu, g, p_lo, p_hi, kb, Navo):
 
     The single definition of the formula: `atm_setup._scan_up_mu_dz_g` and
     `_scan_down_mu_dz_g` call it too. It lives here because `atm_setup`
-    imports `atm_refresh`, not the other way round. The two integrations had
-    drifted -- only this one clamped the denominator -- and `UNDERFLOW_DENOM`
-    binds only when `mu*g` underflows to zero (a layer with no gas), so it is
-    a no-op on any physical column.
+    imports `atm_refresh`, not the other way round. `UNDERFLOW_DENOM` binds
+    only when `mu*g` underflows to zero (a layer with no gas), so it is a
+    no-op on any physical column.
     """
     denom = jnp.maximum(mu / Navo * g, UNDERFLOW_DENOM)
     Hp = kb * T / denom
@@ -137,15 +136,11 @@ def recompute_vm_jax(
 ) -> jnp.ndarray:
     """Recompute the interface molecular-diffusion drift velocity `vm` (nz-1, ni).
 
-    `vm` is composition-dependent — it varies with the mean molecular weight
-    through the pressure scale height (`1/Hpi = mu*g/(kT)`) and with `g` through
-    the per-species scale height. VULCAN's vm_branch recomputes it every
-    `update_frq` steps inside `op.update_mu_dz` ("# Also update vm"), so the
-    runner must refresh it alongside `g`/`Hpi`/`dzi` rather than freeze it at
-    setup; otherwise a molecular-diffusion-dominated upper atmosphere (low Kzz)
-    converges to a different steady state than upstream. The frozen `Dzz`, `ms`,
-    `alpha`, and `Tco` come from `AtmStatic`; `g`/`Hpi`/`dzi` are the refreshed
-    geometry from the carry. Formula is identical to `atm_setup.compute_mol_diff`.
+    `vm` depends on composition (through `Hpi`) and on `g`, so it is refreshed
+    with the geometry every `update_frq` steps, as `op.update_mu_dz` does
+    (vm_branch). The frozen `Dzz`, `ms`, `alpha` and `Tco` come from
+    `AtmStatic`; `g`/`Hpi`/`dzi` are the refreshed geometry from the carry.
+    Formula as `atm_setup.compute_mol_diff`.
     """
     Ti = 0.5 * (Tco[:-1] + Tco[1:])  # (nz-1,)
     delta_Ti = Tco[1:] - Tco[:-1]  # (nz-1,)

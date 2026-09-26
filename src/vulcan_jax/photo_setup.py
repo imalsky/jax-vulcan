@@ -5,8 +5,7 @@ dissociation / ionization / Rayleigh cross sections + branch ratios onto
 that grid. Pure NumPy: setup runs once at startup.
 
 `np.interp` matches `scipy.interpolate.interp1d(kind='linear',
-bounds_error=False, fill_value=...)` bit-exactly, so we use np.interp
-throughout.
+bounds_error=False, fill_value=...)` bit for bit.
 """
 
 from __future__ import annotations
@@ -500,11 +499,8 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
             bins,
         )
 
-    # Canonical iteration order for the photo kernels + .vul writer. MUST stay
-    # sorted: `photo_sp`/`ion_sp` are sets, and set-of-string order varies per
-    # process (hash randomization). These rows bake into the runner's closure,
-    # so an unsorted order changes the compiled program every run and defeats
-    # the persistent compile cache (notes.md §1.3).
+    # Sorted: set order varies per process, and these rows are baked into the
+    # compiled runner, so any other order defeats the persistent compile cache.
     absp_sp_ordered = tuple(absp_sp_list)
     absp_T_sp_ordered = tuple(sp for sp in absp_sp_list if sp in T_cross_sp)
     scat_sp_ordered = tuple(scat_sp_list)

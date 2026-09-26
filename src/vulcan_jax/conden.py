@@ -9,10 +9,9 @@ each conden reaction:
 cold-trap relaxation toward saturation. NH3 additionally clamps the
 condensation region to layers at or below the `conden_top` index.
 
-Static/dynamic split contract (do not merge): `make_conden_spec` (host,
-once per config) extracts the T-INdependent metadata (`CondenSpec`);
-`build_conden_profile` (pure JAX, jit/vmap/jvp) rebuilds every
-T/structure-DEPENDENT array (`CondenProfile`) per T-P realization, so an
+Static/dynamic split: `make_conden_spec` (host, once per config) extracts
+the T-independent metadata (`CondenSpec`); `build_conden_profile` (pure JAX,
+jit/vmap/jvp) rebuilds every T/structure-dependent array (`CondenProfile`) per T-P realization, so an
 on-graph caller with a live T(P) can regenerate the frozen `ProfileVars
 c_*` quantities and splice them into the runner carry.
 `OuterLoop._build_conden_static` delegates here, so the host and
@@ -27,8 +26,8 @@ import jax.numpy as jnp
 
 from .phy_const import UNDERFLOW_DENOM, Navo, kb
 
-# Gas-phase condensates with a full runtime kinetics path (exactly master's
-# op.conden branch set). H2S has saturation data only (atm_setup), no kinetics;
+# Gas-phase condensates with a full runtime kinetics path (master's op.conden
+# branch set). H2S has saturation data only (atm_setup), no kinetics;
 # an unknown condensate raises here where master silently leaves its rate 0.
 SUPPORTED_CONDEN_KINETICS: tuple[str, ...] = (
     "H2O",
@@ -40,10 +39,9 @@ SUPPORTED_CONDEN_KINETICS: tuple[str, ...] = (
     "C",
 )
 
-# Molar masses (g/mol) from op.conden (op.py:1109-1290; S2 at :1203, S8 at :1249). Deliberate correction:
-# upstream hardcodes S2=45.019 / S8=360.152 (copy-paste error, biasing those
-# rates 0.702x / 1.404x); we use the composition-table 64.12 / 256.48
-# (2x / 8x atomic S = 32.06). Do not revert. See notes.md, Parity & bug guide C2.
+# Molar masses (g/mol) from op.conden (op.py:1109-1290). S2/S8 are 2x/8x
+# atomic S; upstream's 45.019/360.152 (op.py:1203, :1249) is a copy-paste
+# error (C2).
 GAS_MASS_G_PER_MOL: dict[str, float] = {
     "H2O": 18.0,
     "NH3": 17.0,
@@ -65,7 +63,7 @@ GAS_TO_CONDENSATE: dict[str, str] = {
 
 
 class CondenSpec(NamedTuple):
-    """Static condensation metadata — everything temperature-INdependent.
+    """Static condensation metadata — everything temperature-independent.
 
     Species identity, k_arr row indices, and the per-reaction coefficient
     `m / (rho_p * r_p**2)` (relax-shorted H2O/NH3 rows get 0.0, matching
@@ -101,7 +99,7 @@ class CondenProfile(NamedTuple):
     """Dynamic condensation arrays for one T-P/structure realization.
 
     All fields are JAX arrays computed on-graph by `build_conden_profile`;
-    they are exactly the temperature/structure-dependent quantities the
+    they are the temperature/structure-dependent quantities the
     runner reads from the `ProfileVars` carry (`c_*` fields plus
     `fix_species_sat_mix`).
     """
@@ -119,7 +117,7 @@ class CondenProfile(NamedTuple):
 def make_conden_spec(cfg, var, atm, species_idx) -> CondenSpec:
     """Extract the static condensation metadata from a completed setup.
 
-    Walks `var.conden_re_list` exactly like the legacy packer: a reaction
+    Walks `var.conden_re_list`: a reaction
     contributes a row only when its gas species is in `cfg.condense_sp`;
     an active-but-unported formula raises. H2O/NH3 relax blocks are
     populated when the species is in `cfg.use_relax` (their kinetics rows
@@ -211,7 +209,7 @@ def build_conden_profile(
     and the only discrete output is the NH3 cold-trap `argmin` index
     (integer-valued, carries no tangent).
 
-    Formulas match op.conden / `_apply_condense` exactly:
+    Formulas match op.conden / `_apply_condense`:
       sat_n   = sat_p(T)/kB/T          (× humidity for H2O)
       Dg      = Dzz[:, sp] with the bottom interface value repeated
       sat_mix = min(1, sat_p(T)/p)     (× humidity for H2O, after the clip)
@@ -266,7 +264,7 @@ def build_conden_profile(
         rows = []
         for name in spec.fix_names:
             if name in spec.sat_names:
-                # `_apply_condense` order: clip to 1 first, THEN humidity.
+                # `_apply_condense` order: clip to 1 first, then humidity.
                 sm = jnp.minimum(1.0, sat_p_jax(name, Tco) / pco)
                 if name == "H2O":
                     sm = sm * spec.humidity
@@ -351,7 +349,7 @@ def apply_h2o_relax_jax(
 
     Condense where `tau > 0` (y > sat), evaporate where `tau < 0`. Mass
     moves into / out of `H2O_l_s`. The final ymix → y projection uses the
-    *pre-relax* gas-sum, intentionally; no-op when `h2o_active=False`.
+    *pre-relax* gas-sum; no-op when `h2o_active=False`.
     """
     if not st.h2o_active:
         return y, ymix
@@ -421,7 +419,7 @@ def apply_nh3_relax_jax(
     ice_loss = jnp.minimum(y[:, nh3_l_s], ice_loss)
 
     # Condensation clamped to layer index <= conden_top (index 0 is the
-    # deepest layer, so this is everything at or BELOW the cold-trap level);
+    # deepest layer, so this is everything at or below the cold-trap level);
     # evaporation is unclamped.
     layer_idx = jnp.arange(nz, dtype=jnp.int32)
     at_or_below_top = layer_idx <= jnp.int32(st.nh3_conden_top)

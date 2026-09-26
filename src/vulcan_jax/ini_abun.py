@@ -15,9 +15,8 @@ The EQ seed (`eq_seed`) is end-to-end JAX: it minimizes the Gibbs energy of
 the loaded network's own gas species using the same NASA-9 polynomials the
 reverse rates use, so the seed and the kinetics cannot disagree about
 thermochemistry. It jits and vmaps over columns, and a lane's seed is bitwise
-the solo seed at any batch width. It is NOT a differentiable
-map: `custom_jvp` returns a zero tangent, because the seed is where the
-integration starts, not part of the steady state it converges to.
+the solo seed at any batch width. `custom_jvp` gives it a zero tangent: the
+seed is an initial condition.
 """
 
 from __future__ import annotations
@@ -53,7 +52,7 @@ _CFG = default_config()
 
 # --- the equilibrium seed ---------------------------------------------------
 # Network-frozen inputs (species, elements, NASA-9 coefficients) are resolved
-# once at import; everything the config owns is read at CALL time, because
+# once at import; everything the config owns is read at call time, because
 # `state._cfg_overlay` rewrites `_CFG` per run.
 
 DEFAULT_ABUNDANCE_FILE = "thermo/solar_element_abundances.dat"
@@ -147,7 +146,7 @@ _SEED: tuple[ChemicalSetup, np.ndarray, tuple[str, ...]] | None = None
 def _seed() -> tuple[ChemicalSetup, np.ndarray, tuple[str, ...]]:
     """`(setup, seed species indices, element names)`, built once on first use.
 
-    Lazy on purpose: it reads one `thermo/NASA9/<sp>.txt` per species, and a
+    Lazy: it reads one `thermo/NASA9/<sp>.txt` per species, and a
     run with any other `ini_mix` must not pay for that at import.
     """
     global _SEED
@@ -160,15 +159,10 @@ def seed_elements() -> tuple[str, ...]:
     """Elements the seed solves for, in the order `b` is indexed."""
     return _seed()[2]
 
-# Sequential warm start, layer by layer. NOTE the name is ExoGibbs's, not
-# ours: `scan_hot_from_bottom` FLIPS the input arrays, so on VULCAN's grid
-# (index 0 is the BOTTOM, `pco = logspace(P_b, P_t)`) it starts at the COLD
-# TOP and walks down. `scan_hot_from_top` is the true hot start here and needs
-# ~10% fewer minimizer iterations, but it moves the seed and the
-# HD189_vulcan3 gate then does not converge within its step cap; the seed cost
-# is a one-off and that gate is not. Both converge everywhere at 1e-12 and
-# the independent per-layer cold solve ("vmap_cold") does not; measured in
-# notes.md 2.9.
+# Sequential warm start, layer by layer. ExoGibbs's name: it flips the
+# arrays, so on VULCAN's grid (index 0 = bottom) the scan starts at the cold
+# top. `scan_hot_from_top` shifts the seed past the HD189_vulcan3 gate's step
+# cap (notes §2.9, register 70).
 _SEED_METHOD = "scan_hot_from_bottom"
 
 _OPTIONS_CACHE: dict[tuple[float, int], EquilibriumOptions] = {}
@@ -176,7 +170,7 @@ _SEED_JIT: dict[tuple[float, int], object] = {}
 
 
 def _seed_key() -> tuple[float, int]:
-    """The config's solver controls, read at CALL time (`_cfg_overlay`)."""
+    """The config's solver controls, read at call time (`_cfg_overlay`)."""
     return (float(_CFG.fastchem_newton_tol), int(_CFG.fastchem_newton_max_iter))
 
 
@@ -199,12 +193,12 @@ def _seed_options() -> EquilibriumOptions:
 def _seed_jit():
     """`eq_seed` jitted, one wrapper per set of solver controls.
 
-    `eq_seed` reads the tolerance and the iteration cap at TRACE time, and
+    `eq_seed` reads the tolerance and the iteration cap at trace time, and
     JAX keys its trace cache on the traced function plus the argument shapes
     -- not on our key -- so `jax.jit(eq_seed)` under a new key would reuse the
     trace that baked in the old controls. A fresh closure per key is a fresh
-    cache entry. Without the jit at all the host path re-traces the 150-layer
-    scan on every call, about 70x slower than jitted on the HD189 column.
+    cache entry. Without the jit the host path re-traces the scan on every
+    call.
     """
     key = _seed_key()
     if key not in _SEED_JIT:
@@ -251,8 +245,8 @@ def _eq_seed_column(Tco, p_bar, b):
 def _eq_seed_lanes(axis_size, in_batched, Tco, p_bar, b):
     """Batched seed: the unbatched program once per lane, in a `lax.map`.
 
-    A vmapped minimizer computes a lane in another order than the solo one
-    (up to 4.1e-15 in mixing ratio on the HD189 column), so a lane's seed
+    A vmapped minimizer computes a lane in another order than the solo one,
+    so a lane's seed
     would depend on how many lanes are seeded with it, and the solver
     amplifies that to the convergence scale. The map calls the wrapped
     function, so a nested `vmap` also runs lane by lane.
@@ -405,9 +399,8 @@ def _abun_lowT_residual(x, O_H, C_H, He_H, N_H):
 def _jax_newton(residual_fn, m0, args, max_iter=50, tol=1e-12):
     """Small dense Newton via `lax.while_loop` on residual norm.
 
-    Replaces `scipy.optimize.fsolve` for the 5-element `_abun_lowT`
-    system. The Jacobian is built with `jax.jacrev`; the linear solve
-    is `jnp.linalg.solve` (5x5 dense). Production callers pass
+    Solves the 5-element `_abun_lowT` system. The Jacobian is built with
+    `jax.jacrev`; the linear solve is `jnp.linalg.solve` (5x5 dense). Production callers pass
     `max_iter` / `tol` from `_CFG.fastchem_newton_max_iter` and
     `_CFG.fastchem_newton_tol`; the defaults here are kept for
     direct test callers.
@@ -448,7 +441,7 @@ def operator_column_weights(dz):
     `dz_ave = 0.5*(dz[j-1]+dz[j])` (`jax_step`, mirroring master op.py), so
     with zero-flux boundaries the discrete transport invariant is
     `Σ_j n_j * w_j` with `w_0 = dzi[0]`, `w_j = 0.5*(dzi[j-1]+dzi[j])`,
-    `w_{nz-1} = dzi[-1]` — NOT `Σ_j n_j * dz_j`. On a uniform grid w == dz.
+    `w_{nz-1} = dzi[-1]` (not `Σ_j n_j * dz_j`). On a uniform grid w == dz.
     """
     dz = jnp.asarray(dz, dtype=jnp.float64)
     dzi = 0.5 * (dz[1:] + dz[:-1])
@@ -759,8 +752,6 @@ class InitialAbun:
         atoms_jax = compute_atom_ini(jnp.asarray(data_var.y))
         atoms_np = np.asarray(atoms_jax)
         loss_ex = list(_CFG.loss_ex)
-        # cfg.atom_list may reorder/subset composition.atom_list; look up the
-        # column for each cfg atom by name in compo_array.
         for atom in self.atom_list:
             if atom in loss_ex:
                 continue

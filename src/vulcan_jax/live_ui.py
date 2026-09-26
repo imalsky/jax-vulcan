@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-# VULCAN-master's Tableau 20 palette, 0-1 normalized. THE one copy: it is
-# published in the .vul `parameter` dict (`para.tableau20`), which upstream
-# plot_py/ scripts read, so the values are a compatibility contract.
+# VULCAN-master's Tableau 20 palette, 0-1 normalized. Published in the .vul
+# `parameter` dict (`para.tableau20`), which upstream plot_py/ scripts read,
+# so the values are a compatibility contract.
 _TABLEAU20_RGB255 = [
     (31, 119, 180),
     (255, 127, 14),

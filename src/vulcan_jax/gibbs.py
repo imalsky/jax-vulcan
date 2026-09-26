@@ -36,7 +36,7 @@ def load_nasa9(
 
     Cached per (species, directory): the rate build and the equilibrium seed
     ask for the same table, and one call reads one file per species. The
-    arrays are SHARED between callers -- read them, never write into them.
+    arrays are shared between callers -- read them, never write into them.
     """
     from ._paths import resolve_data_path
 

@@ -1,6 +1,6 @@
 """Rate-coefficient build: `T -> k_arr`, on the AD graph.
 
-THE rate build -- setup and gradients run the same code. Covers the forward
+The single rate build: setup and gradients run the same code. Covers the forward
 forms (modified Arrhenius, Lindemann falloff with k_inf, bare 3-body, and the
 one hardcoded Troe expression for `OH + CH3 + M -> CH3OH + M`), the Moses+2005
 low-T caps, and the NASA-9 Gibbs reverse-rate path. Photo / conden / radiative
@@ -30,14 +30,10 @@ from .network import Network, parse_network
 
 _SPECIAL_OH_CH3 = "OH + CH3 + M -> CH3OH + M"
 
-# Upper bound on the Gibbs exponent (reac - prod) before exp() in K_eq_array.
-# Set to the largest argument float64 exp() still returns a finite value for
-# (log(np.finfo(float64).max) = 709.7827), so the clip only replaces an
-# overflow: below it K_eq is the unclipped value, above it the primal would
-# have been +inf and k_rev = k_fwd / inf = 0 either way. Without the clip the
-# forward-mode jvp of k_fwd/K is inf/inf = NaN on a cold column, poisoning
-# d(k)/dT. Underflow needs no clip -- fill_reverse_k's `where(K > 0, ...)` is
-# tangent-safe.
+# Clip on the Gibbs exponent before exp() in K_eq_array, just under the
+# largest finite float64 exp() argument (log(finfo.max) = 709.78). Clipping
+# only replaces an overflow (k_rev = 0 either way) and keeps the jvp of
+# k_fwd/K off inf/inf = NaN on cold columns.
 _EXP_ARG_MAX = 709.0
 
 # Moses+2005 low-T rate caps, master's lim_lowT_rates (exoclime@80f75b9
@@ -337,7 +333,7 @@ def build_rate_array(
     g_sp = gibbs_sp_vector(nasa9_coeffs, T)
     K_eq = K_eq_array(net, g_sp, T)
     # `remove_list` is applied in its own pass, after the reverse fill, to
-    # match legacy semantics (no auto fwd/rev pairing).
+    # match master (no auto fwd/rev pairing).
     k = fill_reverse_k(net, k_fwd, K_eq)
     return apply_remove_list(net, k, remove_list)
 

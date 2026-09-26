@@ -8,10 +8,6 @@ of `is_three_body[i+1]`). Source is written to
 `__pycache__/chem_rhs_codegen_<hash>.py` for inspection; `build_chem_rhs`
 returns a JIT'd `vmap`'d `Callable` with signature
 `(y[nz, ni], M[nz], k[nr+1, nz]) -> dydt[nz, ni]`.
-
-CLI: `python make_chem_funs.py` parses `default_config().network` and
-writes the cache file. Compatibility shim for upstream `vulcan.py -n`
-(no-op for VULCAN-JAX since the codegen runs at `chem_funs` import time).
 """
 
 from __future__ import annotations
@@ -34,8 +30,7 @@ def _emit_rate_term(net: Network, slot_i: int, max_terms: int, PAD: int) -> str:
     insertion order, which preserves first-appearance file-order. Stoich
     is expanded into literal repeated factors (`H + H` -> `y[H]*y[H]`,
     not `y[H]**2`) so XLA cannot lower the multiply chain through
-    `exp(stoich*log(y))` — that lowering is what produced the ~1 ULP
-    per-multiply drift the codegen is replacing.
+    `exp(stoich*log(y))` (that lowering drifts ~1 ULP per multiply).
     """
     parts = [f"k[{slot_i}]"]
     for kslot in range(max_terms):
@@ -115,7 +110,7 @@ def emit_chem_rhs_source(net: Network) -> str:
 
 
 def chem_rhs_cache_key(net: Network) -> str:
-    """SHA-256 of the network AND the generator, truncated to 16 hex chars.
+    """SHA-256 of the network and the generator, truncated to 16 hex chars.
 
     Covers every input the emitted source depends on: the stoichiometry
     tables, reaction-type masks, ni, nr -- and the emitter's own source, so a
@@ -195,12 +190,8 @@ def build_chem_rhs(net: Network) -> Callable:
     def chem_rhs_codegen_barriered(y: Any, M: Any, k: Any) -> Any:
         """Fence the RHS output so XLA cannot reassociate it into its caller.
 
-        The emitted source is master-faithful only as written: the multiply
-        chains and the per-species accumulator order are the whole point. Once
-        this result is consumed by the diffusion add and the Ros2 assembly, XLA
-        is free to fuse across the boundary and re-order those sums, which
-        reintroduces the ~1 ULP drift per term the codegen exists to remove.
-        The barrier is a no-op numerically and costs nothing at runtime.
+        Stops XLA from fusing the diffusion add and Ros2 assembly into the RHS
+        and reordering its master-faithful sums. A no-op numerically.
         """
         return jax.lax.optimization_barrier(raw_fn(y, M, k))
 

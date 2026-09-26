@@ -2,22 +2,26 @@
 
 `atm_setup.py` computes every atmosphere-derived array (Tco, M/n_0, dz, Hp, g,
 Dzz, vm, vs, ...) at pre-loop setup and freezes it to NumPy before the runner.
-Most of that math is *already* pure JAX -- it is only `np.asarray`'d at the
-boundary. This module re-expresses the same cascade as one differentiable
+This module re-expresses the same cascade as one differentiable
 function, :func:`build_atm_static`, so gradients flow from the physical inputs
 (T(P) profile / T_irr, surface gravity, planet radius, the pressure grid, eddy
 and molecular diffusion, composition) all the way to the `AtmStatic` the Ros2
 step consumes.
 
-Usage -- pair it with forward-mode AD (`jax.lax.while_loop` supports `jvp`)::
+Usage -- pair it with forward-mode AD (`jax.lax.while_loop` supports `jvp`;
+`OuterLoop.run_jvp` certifies the tangent, C22). With `integ` an `OuterLoop`,
+`init_state, _ = integ.prepare_runstate(rs)` and a caller's `loss_fn(y)`::
 
     phys, spec = make_physical_inputs(cfg, var, atm, species_list)
+    tp = jnp.asarray(cfg.para_anaTP)                  # Heng+14 (T_int, T_irr, ...)
+
     def loss_of_Tirr(T_irr):
-        tp = phys_tp_params.at[1].set(T_irr)          # Heng+14 (T_int, T_irr, ...)
-        Tco = analytical_TP_H14(phys.pco, tp, gs=gs, Pb=Pb)
+        Tco = analytical_TP_H14(phys.pco, tp.at[1].set(T_irr),
+                                gs=phys.gs, Pb=phys.pco[0])
         atm_static = build_atm_static(phys._replace(Tco=Tco), spec)
-        return loss(runner(state, atm_static))
-    dL_dTirr = jax.jvp(loss_of_Tirr, (T_irr,), (1.0,))[1]
+        return loss_fn(integ._runner(init_state, atm_static).y)
+
+    dL_dTirr = jax.jvp(loss_of_Tirr, (tp[1],), (1.0,))[1]
 
 `spec` is static configuration (species list, atm_base, toggles, the
 discrete reference layer ``pref_indx``); differentiate w.r.t. the
@@ -28,14 +32,14 @@ Differentiable here: pco (-> P_b/P_t via :func:`pco_from_endpoints`), Tco
 height), Kzz (-> profile params via `atm_setup.kzz_profile_jax`), vz, gs, Rp.
 Reachable downstream: M/n_0, mu, g, Hp, dz, dzi, Ti, Hpi, Dzz, Dzz_cen, vm, vs.
 
-NOT differentiable here (by design):
+Not differentiable here:
   * The equilibrium initial abundances (`ini_abun.eq_seed` returns a zero
-    tangent by design). Use the `const_lowT` initialiser for a differentiable
+    tangent). Use the `const_lowT` initialiser for a differentiable
     elemental-abundance path, or pass `ymix` as a leaf.
   * Photolysis T-dependent cross-section re-interpolation
     (`photo_setup._bin_T_dependent`): cross-sections enter `PhotoStaticInputs`
     as injectable JAX arrays (so dL/d(cross-section) works), but their T-rebake
-    is still host-side, so dL/dT *through* the cross-sections does not.
+    is host-side, so dL/dT *through* the cross-sections does not.
   * The thermal-diffusion factor `alpha` and the hydrostatic reference layer
     `pref_indx` are discrete/static lookups, held fixed (correct to first
     order in a small physical perturbation).
@@ -107,9 +111,8 @@ class AtmSpec(NamedTuple):
     use_settling: bool
     use_topflux: bool
     use_botflux: bool
-    # (no use_condense: the on-graph builder never reads it. Condensation is a
-    # per-step runtime process driven from the ProfileVars carry, not a
-    # structural-cascade input. Do not add it "for symmetry".)
+    # No use_condense: condensation is a per-step process driven from the
+    # ProfileVars carry.
 
 
 def pco_from_endpoints(P_b, P_t, nz: int) -> jnp.ndarray:
@@ -171,19 +174,12 @@ def build_atm_static(phys: PhysicalInputs, spec: AtmSpec) -> AtmStatic:
     """Assemble a differentiable `AtmStatic` from physical inputs.
 
     Reproduces the host setup chain (`compute_mu_dz_g` -> `compute_mol_diff` ->
-    `compute_settling_velocity` -> `make_atm_static`) entirely on the JAX graph.
-    The result is field-for-field equal to the frozen `AtmStatic` the runner
-    consumes (see `tests/test_atm_jax.py`), but carries tangents w.r.t. `phys` --
-    for the configuration the runner actually uses (`atm_type`
-    `file`/`analytical`/`isothermal`, `use_moldiff=on`). Two non-default modes
-    differ, in both cases because this builder is the *more* self-consistent one:
-      * `atm_type='table'`: production runs `f_pico` before `load_TPK` rewrites
-        `pco` from the file and never recomputes `pico`, so it integrates the
-        hydrostatic height with a stale `pico`; here `pico = compute_pico(phys.pco)`
-        is consistent (so `g`/`dzi`/`Hpi` diverge ~1-12% in that mode).
-      * `use_moldiff=off`: `Ti`/`Hpi` are computed as interface averages here,
-        whereas production leaves them at legacy defaults (`Ti = Tco` full length,
-        `Hpi = 0`); this is runtime-inert (gated behind `Dzz == 0`).
+    `compute_settling_velocity` -> `make_atm_static`) on the JAX graph: field
+    for field equal to the runner's `AtmStatic` for `atm_type`
+    `file`/`analytical`/`isothermal` with `use_moldiff` on
+    (`tests/test_atm_jax.py`), with tangents w.r.t. `phys`. It differs for
+    `atm_type='table'`, where production keeps a stale `pico` (P4), and with
+    `use_moldiff` off, where `Ti`/`Hpi` differ but are runtime-inert.
     """
     nz, ni = spec.nz, spec.ni
 
@@ -264,10 +260,8 @@ def make_physical_inputs(
     for sp in cfg.non_gas_sp:
         if sp in species_list:
             nongas[species_list.index(sp)] = True
-    # Diffusion-limited-escape species get an extra Jacobian top-diagonal term
-    # (op.py:2102-2107, applied by jax_step only in the upwind
-    # variants upstream carries it in); mirrors make_atm_static so the two builders
-    # stay field-for-field identical.
+    # diff_esc species get the top-diagonal escape term (op.py:2102-2107);
+    # same mask as make_atm_static.
     _diff_esc_mask = np.zeros(ni, dtype=bool)
     for sp in cfg.diff_esc:
         if sp in species_list:

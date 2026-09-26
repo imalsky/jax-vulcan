@@ -29,12 +29,9 @@ atom_list: tuple[str, ...] = tuple(
     name for name in compo.dtype.names if name not in ("species", "mass")
 )
 
-# Upstream ships six species twice; three of those pairs disagree, so the row
-# picked decides the mass. Both codes take the first (`list.index`), which is
-# what these values are — keeping them is a parity choice, not an endorsement
-# (HCS's 45.178 is 0.099 amu above its own elemental sum). Any OTHER
-# disagreeing duplicate is new data corruption and must refuse rather than
-# silently depend on file order.
+# Upstream lists six species twice; these three pairs disagree. Both codes
+# take the first row (`list.index`), kept for parity. Any other disagreeing
+# duplicate raises.
 _PARITY_DUPLICATES = {"C2H4O", "CH3NO2", "HCS"}
 
 
