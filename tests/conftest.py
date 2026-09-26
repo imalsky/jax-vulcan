@@ -128,7 +128,7 @@ def _cfg_guard(request, _cfg_snapshot_session):
 @pytest.fixture(autouse=True, scope="module")
 def _release_jax_caches_per_module():
     """Drop a module's compiled programs when it finishes, so per-xdist-worker
-    caches do not exhaust runner memory (notes §1.8)."""
+    caches do not exhaust runner memory."""
     yield
     _clear_jax_caches()
 

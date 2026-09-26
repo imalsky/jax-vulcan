@@ -1,7 +1,7 @@
 """The CLI step-count gates: HD189 1495, HD209 1211, W39b 1202.
 
-A physics-neutral change keeps these counts (notes §0). HD189_vulcan3 is left
-out because its count is platform-dependent (notes §1.13). Each run is a full
+A physics-neutral change keeps these counts. HD189_vulcan3 is left out
+because its count is platform-dependent. Each run is a full
 integration (~2 min on one core), so the file is slow-gated; oracle.yml runs
 it in the release gate.
 """

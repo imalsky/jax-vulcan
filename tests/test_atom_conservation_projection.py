@@ -3,8 +3,7 @@
 XLA's FMA fusion breaks the exact stoichiometric nullspace of the codegen RHS;
 the projection distributes the residual across the reservoir species
 (H2, H2O, CO, N2) so each layer conserves H/O/C/N. A VULCAN-JAX
-correctness feature with no master analogue (notes.md, atom-conservation
-projection record).
+correctness feature with no master analogue.
 
 Runs on the always-available HD189 pre-loop state (the HD209 fixture-based
 projection test skips on a fresh checkout). Pins:
@@ -154,7 +153,7 @@ def _hd189_step_inputs(state):
 def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch, hd189_state):
     """Both Ros2 stage vectors satisfy `c0 a^T k - a^T T k = a^T b_tr` in every
     layer at every dt, and with transport off a step changes no layer's element
-    content by more than REPAIR_ABS_FLOOR of its density (notes §1.13). The
+    content by more than REPAIR_ABS_FLOOR of its density. The
     identity bar is set by the correction tridiagonal's conditioning (~T/c0),
     not by roundoff."""
     import jax

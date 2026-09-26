@@ -40,7 +40,7 @@ from vulcan_jax._paths import PACKAGE_ROOT
 # 3x the worst max |log10(y_jax/y_master)| over cells with master ymix >
 # YMIX_FLOOR (HD189 7.86e-3, W39b 7.72e-3, both HO2). The full-solar Lodders
 # 2009 preset is not a case: upstream's FastChem locks O into rock species
-# an NCHO network lacks (notes §2.9).
+# an NCHO network lacks.
 MAX_DEX = 2.4e-2
 YMIX_FLOOR = 1.0e-15
 ATM_RTOL = 1e-14  # both codes build Tco and M from the same inputs

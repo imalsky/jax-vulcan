@@ -118,9 +118,9 @@ def test_main():
 )
 def test_troe_oh_ch3_is_visscher_moses_eq14(T, Pr):
     """The OH+CH3+M row follows Visscher & Moses 2011 eqs 13-14 (log10 Troe
-    width, C20) with the eq 24-26 fits. The only guard against a transcription
-    error: the oracle comparison carries the same declared correction on its
-    side."""
+    width; upstream op.py:204-205 uses ln) with the eq 24-26 fits. The only
+    guard against a transcription error: the oracle comparison carries the
+    same declared correction on its side."""
     from vulcan_jax import rates_jax
 
     k0 = 1.932e3 * T**-9.88 * np.exp(-7544.0 / T) + 5.109e-11 * T**-6.25 * np.exp(

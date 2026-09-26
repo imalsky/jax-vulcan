@@ -210,7 +210,7 @@ ORACLE_CODE_DELTAS: dict[str, tuple[tuple[str, str, str], ...]] = {
          "                        ff = np.exp( np.log(Fc)/(1.+ (np.log(k[i]*M/k_inf)/nn)**2 ) )\n"),
         ("                        nn = 0.75 - 1.27*np.log10(Fc)\n"
          "                        ff = Fc**( 1./(1.+ (np.log10(k[i]*M/k_inf)/nn)**2 ) )\n"),
-        "C20 OH+CH3+M Troe width in log10 (Visscher & Moses 2011 eq 14)",
+        "OH+CH3+M Troe width in log10 (Visscher & Moses 2011 eq 14)",
     ),),
 }
 

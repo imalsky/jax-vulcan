@@ -1,7 +1,7 @@
-"""The certificate's cumulative column element budget (C23).
+"""The certificate's cumulative column element budget.
 
 `loss_eps` rejects a step whose unweighted atom sum JUMPS; a slow drain walks
-past it (notes §1.12).
+past it.
 `budget_ok` closes that: the run accumulates the per-step change of every
 element's operator-weighted column, each step measured on the grid in force
 during it, normalised by the fixed t=0 column (`budget_ref`), and may end only

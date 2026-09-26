@@ -2,8 +2,8 @@
 
 The repair puts each atom's stage defect on a fixed reservoir (H2, H2O, CO,
 N2, H2S); where that carrier is a trace the correction exceeds the cell and
-is skipped, leaving the layer's budget to the certificate (C23; notes
-§1.13). Pins: (1) on W39b layers 83-94 no H2S cell goes negative where the
+is skipped, leaving the layer's budget to the certificate's element-budget
+term. Pins: (1) on W39b layers 83-94 no H2S cell goes negative where the
 raw solve is positive, and the unguarded repair does invert one
 (subprocess: SNCHO is import-frozen); (2) on HD189 at dt 1e6 the guard
 clamps only dissociated carriers. `0.0` is the raw solve, `inf` the
@@ -144,8 +144,8 @@ def test_unguarded_repair_inverts_the_w39b_band(w39b_band_counts):
     reason="HD189 fixture missing (npz artifacts are gitignored)",
 )
 def test_guard_clamps_only_trace_carrier_cells_of_the_hd189_column():
-    """At dt 1e6 the p99 per-cell correction ratio stays under 1.1e-2 (notes
-    §1.13), the guard clamps only carriers below VMR 1e-10, and stage 1 is
+    """At dt 1e6 the p99 per-cell correction ratio stays under 1.1e-2, the
+    guard clamps only carriers below VMR 1e-10, and stage 1 is
     unchanged on every other cell."""
     import vulcan_jax.jax_step as jax_step
     args = ("adj_state_hd189.npz", "default", 1e6)

@@ -1,8 +1,8 @@
-"""The certified column does not depend on the geometry refresh cadence (C21).
+"""The certified column does not depend on the geometry refresh cadence.
 
 The certificate refreshes geometry on its candidate step and requires
 mu/g/Hp/dzi/Hpi to move less than `geom_conv_tol`, so HD209 photo-off at
-update_frq 100 and 1 certify the same column (notes §1.10). Subprocess:
+update_frq 100 and 1 certify the same column. Subprocess:
 import-frozen network.
 """
 

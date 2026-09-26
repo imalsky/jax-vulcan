@@ -1,7 +1,7 @@
 """Matched-step, whole-model parity checks against VULCAN-master.
 
 The default HD189 config for 20 and 200 steps, plus the condensing column that
-pins the `fix_species` reservoir (C24). Every test stages VULCAN-master only
+pins the `fix_species` reservoir. Every test stages VULCAN-master only
 inside subprocesses and restores any changed config/FastChem files before
 returning.
 
@@ -324,7 +324,7 @@ def _run_script(
 ) -> subprocess.CompletedProcess[str]:
     """Run a script string in a subprocess with PYTHONHASHSEED=0: master's
     matched-step trajectory depends on set order and is not reproducible
-    without it (notes §2.9)."""
+    without it."""
     return subprocess.run(
         [sys.executable, "-c", script, *map(str, args)],
         capture_output=True,
@@ -466,7 +466,7 @@ def test_default_hd189_preloop_and_matched_steps_match_master(
         )
 
 
-# --- condensation: the `fix_species` pin snapshot (C24) ----------------------
+# --- condensation: the `fix_species` pin snapshot ----------------------------
 # Upstream's Earth methodology (cfg_examples/vulcan_cfg_Earth.py:107-120).
 # No shipped config condenses, so this is the only guard on the order of
 # pin snapshot and relax. It uses the smallest vendored network with a
@@ -688,7 +688,7 @@ print("JAX_OK")
 
 @pytest.mark.master_serial
 def test_conden_fix_species_pin_matches_master() -> None:
-    """The `fix_species` pin freezes the reservoir master freezes (C24).
+    """The `fix_species` pin freezes the reservoir master freezes.
 
     On the trigger step master snapshots `fix_y` from the post-solve y BEFORE
     the H2O relaxation (op.py:871-873, then op.py:898-902 relaxes inside the

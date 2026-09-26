@@ -2,9 +2,9 @@
 
 - `chem_jac`: the `jax.jacrev` of the vectorised `y**stoich` +
   `segment_sum` RHS, the oracle for the analytical
-  Jacobian `chem.chem_jac_analytical` (jacrev is an order of magnitude slower,
-  notes §1.3; the Jacobian has no cancellation amplifier, so the RHS form's
-  term order does not matter here).
+  Jacobian `chem.chem_jac_analytical` (jacrev is an order of magnitude slower;
+  the Jacobian has no cancellation amplifier, so the RHS form's term order
+  does not matter here).
 - `chem_rhs_numpy`: the RHS in master's term order, NumPy float64, the oracle
   for the codegen RHS.
 - `block_thomas`: the dense-off-block Thomas solve on

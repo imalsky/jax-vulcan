@@ -1,5 +1,5 @@
 """Input-grid contracts: every vendored stellar spectrum loads (upstream accepts
-duplicate wavelengths -- sflux-epseri.txt keeps 20, C4), and malformed inputs
+duplicate wavelengths -- sflux-epseri.txt keeps 20), and malformed inputs
 fail loud instead of interpolating garbage."""
 from types import SimpleNamespace
 

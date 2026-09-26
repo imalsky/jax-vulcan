@@ -361,10 +361,10 @@ def check_real_blocks(fixture: str, cfg_name: str, backend: str):
     # for `ffi` the direct tangent comparison is a loose sanity bar and the
     # linearised residual (tres) is the accuracy statement. The normwise
     # residuals of the tangent and cotangent are eps x (|A||x|/|b|) for ANY
-    # backward-stable solve on these blocks (1e14..1e23 for a random rhs, notes
-    # §1.4.1), so they are only compared between arms, never to a fixed bar.
+    # backward-stable solve on these blocks (1e14..1e23 for a random rhs), so
+    # they are only compared between arms, never to a fixed bar.
     #
-    # Both residuals need a THIRD arm. Measured on the HD189 fixture (normwise
+    # Both residuals need a THIRD arm. On the HD189 fixture (normwise
     # `gres`, ref / ffi / gbsv):
     #     dt 1e2    2.546e-02 / 5.223e-02 / 3.467e-02
     #     dt 1e6    3.026e+02 / 1.957e+02 / 8.394e+01
@@ -398,7 +398,7 @@ def check_real_blocks(fixture: str, cfg_name: str, backend: str):
         else:
             assert r["resid_cand"] <= 2.0 * r["resid_cur"] + 1e-12, r
         # at dt=1e11 the reference tangent residual is itself O(1) (the
-        # off-run-path conditioning regime, notes §1.4): nothing to match there
+        # off-run-path conditioning regime): nothing to match there
         if r["dt"] <= 1e6:
             assert r["tangent_rel"] < tangent_bar, r
             assert r["tres_cand"] <= max(
@@ -436,8 +436,8 @@ def check_matrix_free(fixture: str, cfg_name: str, backend: str):
     rows: (1) the operator equals the dense block's `_matvec` to roundoff and a
     pinned row is exactly `c0 x`; (2) the step's primal is unchanged and its
     tangent in y, k, dt and every float atmosphere field agrees with the
-    dense operator's. The tangent passes through blocks of cond up to ~6e19
-    (notes §1.4), so (2) is a wiring check at 1e-3 (worst, both at dt 1e6:
+    dense operator's. The tangent passes through blocks of cond up to ~6e19,
+    so (2) is a wiring check at 1e-3 (worst, both at dt 1e6:
     HD189 8.5e-5 `fast` / 8.1e-6 `ffi`, W39b 1.4e-7 / 3.2e-13); a lost or
     wrong dA x reads O(1) and above. The primal is bitwise on the CPU and
     measured bitwise on the GH200 too (0.0 in all 12 cases, both backends,

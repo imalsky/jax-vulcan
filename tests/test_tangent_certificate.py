@@ -1,4 +1,4 @@
-"""`OuterLoop.run_jvp` certifies the tangent, not only the state (C22).
+"""`OuterLoop.run_jvp` certifies the tangent, not only the state.
 
 A `jax.jvp` through the runner stops when the column certifies, possibly
 with the tangent unrelaxed; `run_jvp` holds the tangent's change over the
@@ -15,7 +15,7 @@ import pytest
 # case -> (config, use_photo, network, atom_list, vmr_floor, fd_signal_min).
 # vmr_floor is where a central difference still resolves the derivative;
 # above 1e-8 on the photo-on column, top-layer radicals respond too
-# nonlinearly to +/-H (notes §1.10).
+# nonlinearly to +/-H.
 CASES = {
     "HD209_photo_off": ("HD209", False, "thermo/NCHO_photo_network.txt",
                         "H,O,C,N", 1e-8, 0.1),

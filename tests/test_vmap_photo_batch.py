@@ -33,7 +33,7 @@ COUNT_MAX = 30
 RTOL = 5e-2
 # ymix is judged by scale, |lane - own solo| / |soloA - soloB|: a
 # closure-baked photo field makes lane 1 equal soloA (ratio ~1). Bit
-# identity depends on the XLA version (notes §1.8).
+# identity depends on the XLA version.
 SCALE_TOL = 1e-4
 
 

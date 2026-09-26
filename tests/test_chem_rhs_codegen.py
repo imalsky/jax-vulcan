@@ -33,7 +33,7 @@ PROJECT_ROOT = ROOT.parent
 
 # Roundoff allowance for an atom residual, as a fraction of the summed
 # magnitude of the terms it cancels: a few thousand ulps over hundreds of
-# terms (notes §1.8).
+# terms.
 _ATOM_RESIDUAL_EPS = 1.0e-12
 CODEGEN_RTOL = 1e-5  # codegen vs NumPy RHS: absorbs XLA FMA fusion
 PEAK_FLOOR_FRAC = 1e-12  # per-species denominator floor, a fraction of the species' peak
@@ -295,7 +295,7 @@ def test_codegen_matches_numpy_oracle(hd189_state):
     floor (1e-12 of each species' peak |dydt|) absorbs cancellation on trace
     species; 1e-5 absorbs XLA FMA fusion. The column is scaled by exp(U(-1,1))
     off equilibrium: at the EQ seed the net RHS is a small difference of large
-    terms, where a per-cell relative comparison is ill-posed (notes §1.8)."""
+    terms, where a per-cell relative comparison is ill-posed."""
     import vulcan_jax.network as net_mod
     from vulcan_jax.config import default_config
 
