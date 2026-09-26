@@ -166,6 +166,16 @@ def pytest_configure(config):
     )
 
 
+def pytest_collection_modifyitems(config, items):
+    """The full-tier switch: `slow` tests skip unless VULCAN_JAX_RUN_SLOW=1."""
+    if os.environ.get("VULCAN_JAX_RUN_SLOW") == "1":
+        return
+    skip = pytest.mark.skip(reason="full tier; set VULCAN_JAX_RUN_SLOW=1")
+    for item in items:
+        if "slow" in item.keywords:
+            item.add_marker(skip)
+
+
 @dataclass
 class HD189State:
     """Canonical HD189 pre-loop reference state for tests."""

@@ -523,6 +523,7 @@ def check_matrix_free(fixture: str, cfg_name: str, backend: str):
         jax_step.solve_block_thomas_diag_offdiag = solve0
 
 
+@pytest.mark.slow
 @pytest.mark.skipif(
     not (ROOT / "tests" / "data" / "adj_state_hd189.npz").exists(),
     reason="HD189 adjoint fixture missing",
@@ -574,7 +575,7 @@ for backend in ("fast", "ffi"):
 """
 
 
-@pytest.mark.skipif(os.environ.get("VULCAN_JAX_RUN_SLOW") != "1", reason="slow W39b child; set VULCAN_JAX_RUN_SLOW=1")
+@pytest.mark.slow
 def test_fast_on_real_w39b_blocks():
     from _helpers import run_child
 

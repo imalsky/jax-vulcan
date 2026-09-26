@@ -11,6 +11,7 @@ from __future__ import annotations
 import numpy as np
 import jax
 import jax.numpy as jnp
+import pytest
 
 jax.config.update("jax_enable_x64", True)
 
@@ -45,6 +46,7 @@ def _synthetic_atm(net, nz):
     )
 
 
+@pytest.mark.slow
 def test_per_step_kzz_forward_mode():
     """Kzz is correctly differentiable through one Ros2 step (jvp==vjp; FD sanity)."""
     from vulcan_jax import network as net_mod, chem as chem_mod

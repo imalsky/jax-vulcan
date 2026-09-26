@@ -146,6 +146,7 @@ print("PASS")
 """
 
 
+@pytest.mark.slow
 def test_nh3_conden_batch_subprocess():
     from vulcan_jax._paths import PACKAGE_ROOT
 

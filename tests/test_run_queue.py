@@ -122,12 +122,23 @@ def prepared():
     )
 
 
-def test_queue_without_refill_is_the_batch(prepared):
+@pytest.fixture(scope="module")
+def ref_batch(prepared):
+    """`run_batch` on the five profiles: the reference every pin compares to."""
     integ, init_b, atm_b = prepared
-    ref = integ.run_batch(init_b, atm_b)
-    (y, t, acc, reason, done), n_iter = integ.run_queue(
-        _ident, (init_b, atm_b), n_lanes=len(TISO), out_fn=_out_fn
-    )
+    return integ.run_batch(init_b, atm_b)
+
+
+@pytest.fixture(scope="module")
+def lockstep(prepared):
+    """`run_queue` with a lane per job (no refill): `(out, n_iter)`."""
+    integ, init_b, atm_b = prepared
+    return integ.run_queue(_ident, (init_b, atm_b), n_lanes=len(TISO), out_fn=_out_fn)
+
+
+def test_queue_without_refill_is_the_batch(ref_batch, lockstep):
+    ref = ref_batch
+    (y, t, acc, reason, done), n_iter = lockstep
     for name, a, b in (
         ("y", y, ref.y),
         ("t", t, ref.t),
@@ -138,6 +149,7 @@ def test_queue_without_refill_is_the_batch(prepared):
     assert bool(np.all(np.asarray(done)))
 
 
+@pytest.mark.slow
 def test_queue_jvp_without_refill_is_the_batch_jvp():
     """The queue stops the gradient of its certificate-only lane fields
     (`outer_loop._QUEUE_STOP_FIELDS`: they steer predicates, never y). With
@@ -176,17 +188,21 @@ def test_queue_jvp_without_refill_is_the_batch_jvp():
     assert np.array_equal(np.asarray(dy_q), np.asarray(dy_b))
 
 
-@pytest.mark.parametrize("n_lanes,chunk", [(2, 1), (2, 2), (3, 8)])
+# (2, 1) refills a lane as soon as it frees; (2, 2) and (3, 8) wait for every
+# lane or the refill cadence (full tier: ~1 min each).
+@pytest.mark.parametrize("n_lanes,chunk", [
+    (2, 1),
+    pytest.param(2, 2, marks=pytest.mark.slow),
+    pytest.param(3, 8, marks=pytest.mark.slow),
+])
 def test_queue_refills_and_matches_the_batch_at_the_convergence_scale(
-    prepared, n_lanes, chunk
+    prepared, ref_batch, lockstep, n_lanes, chunk
 ):
     integ, init_b, atm_b = prepared
-    ref = integ.run_batch(init_b, atm_b)
+    ref = ref_batch
     # The no-refill call is the lockstep baseline: with fewer lanes than jobs
     # the queue must take strictly more iterations, or nothing was refilled.
-    _, n_iter_lockstep = integ.run_queue(
-        _ident, (init_b, atm_b), n_lanes=len(TISO), out_fn=_out_fn
-    )
+    n_iter_lockstep = lockstep[1]
     (y, _t, _acc, reason, done), n_iter = integ.run_queue(
         _ident, (init_b, atm_b), n_lanes=n_lanes, out_fn=_out_fn, chunk=chunk
     )
@@ -207,12 +223,12 @@ def test_queue_refills_and_matches_the_batch_at_the_convergence_scale(
     assert np.array_equal(np.asarray(y), np.asarray(y2))
 
 
-def test_more_lanes_than_jobs(prepared):
+def test_more_lanes_than_jobs(prepared, ref_batch):
     integ, init_b, atm_b = prepared
-    three = _take_jobs((init_b, atm_b), slice(0, 3))
-    ref = integ.run_batch(*three)
-    (y, *_), _ = integ.run_queue(_ident, three, n_lanes=4, out_fn=_out_fn)
-    assert np.array_equal(np.asarray(y), np.asarray(ref.y))
+    (y, *_), _ = integ.run_queue(
+        _ident, (init_b, atm_b), n_lanes=len(TISO) + 1, out_fn=_out_fn
+    )
+    assert np.array_equal(np.asarray(y), np.asarray(ref_batch.y))
 
 
 def test_poisoned_job_does_not_touch_its_neighbours(prepared):
@@ -229,7 +245,7 @@ def test_poisoned_job_does_not_touch_its_neighbours(prepared):
     assert int(r4[3]) == 5 and int(acc4[3]) == 0
 
 
-def test_lane_reuse_after_a_poisoned_job(prepared):
+def test_lane_reuse_after_a_poisoned_job(prepared, ref_batch):
     """One lane, the poisoned job FIRST: A and B are refilled into the lane P
     died in. A lane left holding P's non-finite state would carry the NaNs
     into the jobs that follow it. A and B enter at a later tick than the
@@ -237,12 +253,12 @@ def test_lane_reuse_after_a_poisoned_job(prepared):
     integ, init_b, atm_b = prepared
     ab = _take_jobs((init_b, atm_b), slice(0, 2))
     pab = _cat_jobs(_poisoned((init_b, atm_b), slice(3, 4)), ab)
-    ref = integ.run_batch(*ab)
+    ref = ref_batch  # lanes 0 and 1 are A and B
     (y, _t, acc, reason, _done), n_iter = integ.run_queue(
         _ident, pab, n_lanes=1, out_fn=_out_fn, chunk=1
     )
     assert int(reason[0]) == 5 and int(acc[0]) == 0
-    assert np.array_equal(np.asarray(reason[1:]), np.asarray(ref.termination_reason))
+    assert np.array_equal(np.asarray(reason[1:]), np.asarray(ref.termination_reason[:2]))
     for k in range(2):
         yk, yr = np.asarray(y[k + 1]), np.asarray(ref.y[k])
         assert np.all(np.isfinite(yk)), k

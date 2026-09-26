@@ -9,6 +9,9 @@ covered by test_vmap_step.py). Pins:
      neighbours match their solo runs.
   4. Genuinely different profiles: per-profile fields ride the carry, not the
      runner closure.
+
+Every batch is K = 4 lanes wide: each new width compiles the batched runner
+again (~30 s on one core).
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ warnings.filterwarnings("ignore")
 # Termination via count_max for speed -> reason 3 ("too_many"). Kept small so
 # the whole batch integrates in a few seconds including JIT compile.
 COUNT_MAX = 40
+K = 4  # lanes in every batch below
 # Batched runs use the iteration-tick cadence for photolysis and geometry,
 # solo runs the accepted-step cadence, so the two agree at the convergence
 # scale, not bitwise: mixing ratios that carry signal agree to RTOL.
@@ -98,7 +102,6 @@ def main() -> int:
     ok = True
 
     # --- 1. Homogeneous equivalence -------------------------------------
-    K = 4
     states = [init_state] * K
     atms = [atm_static] * K
     batched = integ.run_batch(
@@ -122,13 +125,13 @@ def main() -> int:
     # --- 2. Heterogeneous freeze-on-done --------------------------------
     # Per-lane starting accept_count offsets: lanes hit count_max at different
     # absolute iterations, so early finishers must freeze while others run.
-    offsets = [0, 10, 20, 30]
+    offsets = [0, 10, 20, 30]  # K lanes
     het_states = [init_state._replace(accept_count=np.int32(o)) for o in offsets]
     het_batched = integ.run_batch(
         outer_loop.stack_integ_states(het_states),
-        outer_loop.stack_atm_statics([atm_static] * len(offsets)),
+        outer_loop.stack_atm_statics([atm_static] * K),
     )
-    het_out = outer_loop.unstack_integ_states(het_batched, len(offsets))
+    het_out = outer_loop.unstack_integ_states(het_batched, K)
     for i, o in enumerate(offsets):
         solo = integ._runner(het_states[i], atm_static)
         rel = _max_rel_diff(het_out[i].ymix, solo.ymix, floor=BATCH_FLOOR)
@@ -146,8 +149,7 @@ def main() -> int:
     import jax.numpy as jnp
 
     bad = 1
-    K3 = 3
-    nan_states = [init_state, init_state, init_state]
+    nan_states = [init_state] * K
     # Poison both y AND y_prev: a rejected Ros2 step reverts y to y_prev, so
     # poisoning y alone would self-heal and the lane would never go non-finite.
     poisoned_y = init_state.y.at[0, 0].set(jnp.nan)
@@ -155,15 +157,15 @@ def main() -> int:
     nan_states[bad] = init_state._replace(y=poisoned_y, y_prev=poisoned_yprev)
     nan_batched = integ.run_batch(
         outer_loop.stack_integ_states(nan_states),
-        outer_loop.stack_atm_statics([atm_static] * K3),
+        outer_loop.stack_atm_statics([atm_static] * K),
     )
-    nan_out = outer_loop.unstack_integ_states(nan_batched, K3)
+    nan_out = outer_loop.unstack_integ_states(nan_batched, K)
     if int(nan_out[bad].termination_reason) != 5:
         print(
             f"FAIL[nan] poisoned lane reason={int(nan_out[bad].termination_reason)} (want 5)"
         )
         ok = False
-    for i in range(K3):
+    for i in range(K):
         if i == bad:
             continue
         rel = _max_rel_diff(nan_out[i].ymix, ref.ymix, floor=BATCH_FLOOR)
@@ -180,14 +182,14 @@ def main() -> int:
     integB = _build_integ()
     initB, atmB = integB.prepare_runstate(rsB)
     soloB = integB._runner(initB, atmB)
-    soloA = integ._runner(init_state, atm_static)
+    soloA = ref
     het2 = integ.run_batch(
-        outer_loop.stack_integ_states([init_state, initB]),
-        outer_loop.stack_atm_statics([atm_static, atmB]),
+        outer_loop.stack_integ_states([init_state, initB] * (K // 2)),
+        outer_loop.stack_atm_statics([atm_static, atmB] * (K // 2)),
     )
-    het2_out = outer_loop.unstack_integ_states(het2, 2)
-    relA = _max_rel_diff(het2_out[0].ymix, soloA.ymix, floor=BATCH_FLOOR)
-    relB = _max_rel_diff(het2_out[1].ymix, soloB.ymix, floor=BATCH_FLOOR)
+    het2_out = outer_loop.unstack_integ_states(het2, K)
+    relA = max(_max_rel_diff(o.ymix, soloA.ymix, floor=BATCH_FLOOR) for o in het2_out[0::2])
+    relB = max(_max_rel_diff(o.ymix, soloB.ymix, floor=BATCH_FLOOR) for o in het2_out[1::2])
     # Sanity: the two profiles must actually differ, else the test is vacuous.
     profiles_differ = _max_rel_diff(soloB.ymix, soloA.ymix)
     if relA > RTOL or relB > RTOL or profiles_differ < 1e-6:

@@ -61,10 +61,7 @@ def test_non_hybrid_run_never_flips(use_vm, expected):
     assert np.all(np.isfinite(np.asarray(final.y)))
 
 
-@pytest.mark.skipif(
-    os.environ.get("VULCAN_JAX_RUN_SLOW") != "1",
-    reason="set VULCAN_JAX_RUN_SLOW=1 (a completed hybrid run integrates phase 1)",
-)
+@pytest.mark.slow
 def test_hybrid_flips_and_extends_budget():
     """A completed hybrid run always ends in phase 1: phase 0 ends (here by
     hitting the small count_max), flips hybrid_use_vm 1.0 -> 0.0, and extends

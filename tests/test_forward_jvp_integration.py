@@ -4,6 +4,7 @@ Uses the paper's HD189 photo-off comparison, without saved output or sibling
 dependencies. A subprocess isolates the import-frozen chemistry network.
 """
 
+import pytest
 
 
 def _check_gradient():
@@ -55,6 +56,7 @@ def _check_gradient():
     assert relative.max() < 1e-3
 
 
+@pytest.mark.slow
 def test_kzz_jvp_matches_reconverged_finite_difference(tmp_path):
     from _helpers import run_self
 

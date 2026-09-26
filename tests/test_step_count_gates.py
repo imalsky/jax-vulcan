@@ -24,10 +24,6 @@ _FROZEN_ENV = ("VULCAN_JAX_NETWORK", "VULCAN_JAX_ATOM_LIST", "VULCAN_JAX_CLI_REL
 
 
 @pytest.mark.slow
-@pytest.mark.skipif(
-    os.environ.get("VULCAN_JAX_RUN_SLOW") != "1",
-    reason="three full CLI integrations; set VULCAN_JAX_RUN_SLOW=1",
-)
 @pytest.mark.parametrize("name, count", list(_GATES.items()))
 def test_cli_step_count_gate(name, count, tmp_path):
     env = {k: v for k, v in os.environ.items() if k not in _FROZEN_ENV}

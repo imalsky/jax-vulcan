@@ -156,15 +156,21 @@ def test_main():
 
 
 @pytest.mark.strict_isolation
-def test_queue_refill_starts_on_its_own_photolysis():
-    """`run_queue` on ONE lane: the second profile is refilled into a lane the
-    first profile just left, and must start on its own photolysis fields the
-    way a plain-batch lane does at tick 0. Run one at a time it reaches the
-    same termination reason and the same mixing ratios as the pair run in a
-    single `run_batch`; a refilled lane left on its predecessor's RT state
-    would integrate a different column.
+def test_queue_on_photo_lanes_matches_the_batch():
+    """`run_queue` against `run_batch` on the same two photo-on profiles.
+
+    (1) One lane per job: bitwise `run_batch`. With photo on, the initial fill
+    can hit the photo branch twice before the first chemistry step and move
+    aflux_change, which gates the certificate. Photo-off twin: test_run_queue.
+
+    (2) ONE lane: the second profile is refilled into a lane the first profile
+    just left, and must start on its own photolysis fields the way a
+    plain-batch lane does at tick 0. It reaches the same termination reason
+    and the same mixing ratios as the pair run in a single `run_batch`; a
+    refilled lane left on its predecessor's RT state would integrate a
+    different column.
     """
-    import vulcan_jax.outer_loop as outer_loop
+    from vulcan_jax import outer_loop
 
     vulcan_cfg = _pin_cfg()
     integ = _build_integ()
@@ -172,8 +178,22 @@ def test_queue_refill_starts_on_its_own_photolysis():
     sB, atmB = integ.prepare_runstate(_build_rs(vulcan_cfg, Tiso=1600.0))
     init_b = outer_loop.stack_integ_states([sA, sB])
     atm_b = outer_loop.stack_atm_statics([atmA, atmB])
-
     ref = integ.run_batch(init_b, atm_b)
+
+    (y, t, acc, reason), n_iter = integ.run_queue(
+        lambda job: job,
+        (init_b, atm_b),
+        n_lanes=2,
+        out_fn=lambda f: (f.y, f.t, f.accept_count, f.termination_reason),
+    )
+    for name, a, b in (
+        ("y", y, ref.y),
+        ("t", t, ref.t),
+        ("accept_count", acc, ref.accept_count),
+        ("termination_reason", reason, ref.termination_reason),
+    ):
+        assert np.array_equal(np.asarray(a), np.asarray(b)), name
+
     (y, reason), n_iter = integ.run_queue(
         lambda job: job,
         (init_b, atm_b),
@@ -188,37 +208,6 @@ def test_queue_refill_starts_on_its_own_photolysis():
             yk / yk.sum(axis=1, keepdims=True), yr / yr.sum(axis=1, keepdims=True)
         )
         assert rel < RTOL, (k, rel)
-
-
-@pytest.mark.strict_isolation
-def test_queue_without_refill_is_the_photo_batch():
-    """`run_queue` with one lane per job and photolysis on is bitwise
-    `run_batch`. With photo on, the initial fill can hit the photo branch twice
-    before the first chemistry step and move aflux_change, which gates the
-    certificate. Photo-off twin: test_run_queue."""
-    from vulcan_jax import outer_loop
-
-    vulcan_cfg = _pin_cfg()
-    integ = _build_integ()
-    sA, atmA = integ.prepare_runstate(_build_rs(vulcan_cfg, Tiso=900.0))
-    sB, atmB = integ.prepare_runstate(_build_rs(vulcan_cfg, Tiso=1600.0))
-    init_b = outer_loop.stack_integ_states([sA, sB])
-    atm_b = outer_loop.stack_atm_statics([atmA, atmB])
-
-    ref = integ.run_batch(init_b, atm_b)
-    (y, t, acc, reason), n_iter = integ.run_queue(
-        lambda job: job,
-        (init_b, atm_b),
-        n_lanes=2,
-        out_fn=lambda f: (f.y, f.t, f.accept_count, f.termination_reason),
-    )
-    for name, a, b in (
-        ("y", y, ref.y),
-        ("t", t, ref.t),
-        ("accept_count", acc, ref.accept_count),
-        ("termination_reason", reason, ref.termination_reason),
-    ):
-        assert np.array_equal(np.asarray(a), np.asarray(b)), name
 
 
 @pytest.mark.strict_isolation

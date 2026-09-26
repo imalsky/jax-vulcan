@@ -2,7 +2,8 @@ name: oracle
 
 # Upstream-comparison suite against a pinned exoclime/VULCAN clone: slow, and
 # it builds upstream's FastChem for the EQ-seed agreement test. Also runs
-# test_solver_fast.py on the fixtures built below.
+# test_solver_fast.py on the fixtures built below, and the full tier (every
+# `slow` test, which tests.yml skips).
 # VULCAN_JAX_REQUIRE_ORACLE=1 turns a missing or wrong-revision oracle into a
 # failure instead of a skip.
 
@@ -14,7 +15,8 @@ on:
 jobs:
   oracle:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    # The full-tier step alone is ~70 min of single-core work on daw.
+    timeout-minutes: 180
     strategy:
       matrix:
         include:
@@ -73,14 +75,21 @@ jobs:
           VULCAN_JAX_REQUIRE_ORACLE: "1"
         run: python -m pytest ${{ matrix.select }} -q --tb=short -ra
 
-      # The CLI step-count gates (HD189 1495, HD209 1211, W39b 1202), slow-gated
-      # elsewhere. A step of its own so VULCAN_JAX_RUN_SLOW reaches no other
-      # test. HD189_vulcan3's count is arm64-only and is not run here.
-      - name: CLI step-count gates
+      # The full tier: the `slow` tests only (the normal tier is tests.yml),
+      # among them the CLI step-count gates HD189 1495 / HD209 1211 / W39b
+      # 1202. HD189_vulcan3's count is arm64-only and is not run here.
+      # test_forward_jvp_physical is deselected: its one-step FD probe swings
+      # with CPU/XLA past the 30% bound on this runner
+      # (test_forward_jvp_integration is the FD gate). One worker: the
+      # W39b tangent certificate peaks at 12.6 GB, the W39b solver child at
+      # 10.7 GB.
+      - name: Full tier
         if: matrix.family == 'vulcan2_ncho'
         env:
           VULCAN_JAX_RUN_SLOW: "1"
-        run: python -m pytest tests/test_step_count_gates.py -q --tb=short -ra
+        run: >-
+          python -m pytest tests -m slow -q --tb=short -ra --durations=15
+          --deselect tests/test_forward_jvp_physical.py
 
       # The oracle must come back byte-clean: upstream setup rewrites files in
       # place (make_chem_funs renumbers a network file, its FastChem build

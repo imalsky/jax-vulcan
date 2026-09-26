@@ -64,7 +64,9 @@ def _ref_TP_H14(pco, params, gs, Pb):
     "atm_type,P_b,P_t,nz,gs",
     [
         ("isothermal", 1e9, 1e-2, 50, 2140.0),
-        ("analytical", 1e9, 1e-2, 50, 2140.0),
+        # ~4 min: jax.scipy.special.expn is slow on a grid that mixes
+        # arguments below and above 1 (the top layers reach ~1e-7)
+        pytest.param("analytical", 1e9, 1e-2, 50, 2140.0, marks=pytest.mark.slow),
         ("file", 1e9, 1e-2, 100, 2140.0),
     ],
 )
@@ -465,20 +467,3 @@ def test_compute_settling_velocity_h2so4_negative():
     assert np.all(out[:, 2] < 0.0)
     assert np.all(out[:, 0] == 0.0) and np.all(out[:, 1] == 0.0)
 
-
-# Cross-check JAX TP_H14 vs scipy expn reference
-
-
-def test_TP_H14_matches_scipy_reference():
-    """JAX `analytical_TP_H14` matches the scipy.special.expn reference
-    to machine precision."""
-    from vulcan_jax.atm_setup import analytical_TP_H14
-
-    pco = np.logspace(9, -2, 100)
-    params = [120.0, 1500.0, 0.1, 0.02, 1.0, 1.0]
-    gs, Pb = 2140.0, 1e9
-    T_jax = np.asarray(analytical_TP_H14(pco, params, gs=gs, Pb=Pb))
-    # Re-build params each call: _ref_TP_H14 mutates T_irr in place.
-    T_ref = _ref_TP_H14(pco, list(params), gs=gs, Pb=Pb)
-    assert T_jax.shape == T_ref.shape
-    assert np.allclose(T_jax, T_ref, rtol=RTOL, atol=0.0)

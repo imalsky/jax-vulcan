@@ -13,7 +13,6 @@ import-baked atom-projection tables sized for the active network.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 import numpy as np
@@ -32,7 +31,6 @@ from vulcan_jax.steady_state_grad import (
 
 DATA = Path(__file__).resolve().parent / "data"
 HD189_FIXTURE = DATA / "adj_state_hd189.npz"
-_RUN_SLOW = os.environ.get("VULCAN_JAX_RUN_SLOW") == "1"
 PROJ_TOL = 1e-12  # the projector removes spanned directions to roundoff
 BASIS_TOL = 1e-10  # orthonormality and span of the QR null basis
 
@@ -212,10 +210,6 @@ def test_body_dt_danger_zone_rejected():
 
 @pytest.mark.slow
 @pytest.mark.skipif(not HD189_FIXTURE.exists(), reason="HD189 adjoint fixture missing")
-@pytest.mark.skipif(
-    not _RUN_SLOW,
-    reason="slow reverse-mode HD189 regression; set VULCAN_JAX_RUN_SLOW=1 to run",
-)
 def test_hd189_reaction_sensitivity_regression():
     """Reproduce the HD189 CH4 finite-difference anchors at percent level.
 

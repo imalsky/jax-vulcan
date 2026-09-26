@@ -110,6 +110,7 @@ def _check(case):
     assert moved < CONTINUE_TOL, moved
 
 
+@pytest.mark.slow
 @pytest.mark.parametrize("case", sorted(CASES))
 def test_certified_tangent_is_the_settled_sensitivity(tmp_path, case):
     from _helpers import run_self
