@@ -8,13 +8,13 @@ budget. Per-case detail lives in each test's docstring.
 
 from __future__ import annotations
 
-import contextlib
 import os
 import warnings
 from pathlib import Path
 
 import numpy as np
 import pytest
+from _helpers import load_tpk_state, set_cfg
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -25,56 +25,12 @@ warnings.filterwarnings("ignore")
 # Small helpers shared across cases.
 
 
-@contextlib.contextmanager
-def cfg_overrides(**kwargs):
-    """Snapshot/restore vulcan_cfg attributes around a block."""
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-
-    saved: dict = {}
-    sentinel = object()
-    for k in kwargs:
-        saved[k] = getattr(vulcan_cfg, k, sentinel)
-    try:
-        for k, v in kwargs.items():
-            setattr(vulcan_cfg, k, v)
-        yield vulcan_cfg
-    finally:
-        for k, v in saved.items():
-            if v is sentinel:
-                delattr(vulcan_cfg, k)
-            else:
-                setattr(vulcan_cfg, k, v)
-
-
-def _hd189_atm_minimal():
-    """Minimal HD189 pre-loop atmosphere (no photo, no rates, no EQ seed);
-    uses the private `state._Variables` / `_AtmData` containers to stay light.
-    """
-    from vulcan_jax.atm_setup import Atm
-    from vulcan_jax.state import _Variables, _AtmData
-    from vulcan_jax.config import default_config
-
-    _cfg = default_config()
-
-    data_var = _Variables()
-    data_atm = _AtmData()
-    make_atm = Atm()
-    data_atm = make_atm.f_pico(data_atm)
-    data_atm = make_atm.load_TPK(data_atm)
-    if _cfg.use_condense:
-        make_atm.sp_sat(data_atm)
-    return data_var, data_atm, make_atm
-
-
 def _run_full_state(count_max: int = 5):
     """Build the HD189 pre-loop RunState with `count_max` overridden for a
     short smoke run, and integrate it. Returns `(rs, rs_out)`.
 
-    Caller must snapshot/restore `count_max` / `count_min` /
-    `use_print_prog` via `cfg_overrides`; this helper sets them
-    unconditionally and does NOT wrap them itself.
+    Sets count_max / count_min / use_print_prog on the process default
+    config (conftest restores it).
     """
     from vulcan_jax.config import default_config
 
@@ -112,7 +68,7 @@ def test_lowT_limit_rates_noop_on_HD189():
     vulcan_cfg = default_config()
     from vulcan_jax.gibbs import load_nasa9
 
-    data_var, data_atm, _ = _hd189_atm_minimal()
+    data_var, data_atm, _ = load_tpk_state()
     net = net_mod.parse_network(vulcan_cfg.network)
     thermo_dir = Path(vulcan_cfg.network).parent
     if not (thermo_dir / "NASA9").exists():
@@ -171,14 +127,14 @@ def test_T_cross_sp_path_finite_positive():
     if not bool(getattr(vulcan_cfg, "use_photo", False)):
         pytest.skip("use_photo=False; nothing to compare.")
 
-    data_var, data_atm, _ = _hd189_atm_minimal()
+    data_var, data_atm, _ = load_tpk_state()
     import vulcan_jax.legacy_io as op
 
     rate = op.ReadRate()
     data_var = rate.read_rate(data_var, data_atm)
 
-    with cfg_overrides(T_cross_sp=["CO2", "H2O", "NH3"]):
-        static = photo_setup._build_photo_static_dense(data_var, data_atm)
+    set_cfg(T_cross_sp=["CO2", "H2O", "NH3"])
+    static = photo_setup._build_photo_static_dense(data_var, data_atm)
 
     absp_T_cross = np.asarray(static.absp_T_cross)
     assert absp_T_cross.shape[0] == 3, (
@@ -196,24 +152,16 @@ def test_use_vm_mol_populates_vm():
     """``use_vm_mol=True`` writes finite, non-zero advective velocity into
     ``atm.vm``.
     """
-    with cfg_overrides(use_vm_mol=True):
-        _, data_atm, make_atm = _hd189_atm_minimal()
-        # f_mu_dz needs ymix; populate via const_mix to avoid the EQ seed.
-        from vulcan_jax.ini_abun import InitialAbun
-        from vulcan_jax.state import _Variables
+    import vulcan_jax.legacy_io as op
+    from vulcan_jax.ini_abun import InitialAbun
 
-        data_var = _Variables()
-        with cfg_overrides(
-            ini_mix="const_mix",
-            const_mix={"H2": 0.9, "He": 0.0838, "H2O": 1e-3},
-        ):
-            ini = InitialAbun()
-            data_var = ini.ini_y(data_var, data_atm)
-
-        import vulcan_jax.legacy_io as op
-
-        data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
-        make_atm.mol_diff(data_atm)
+    set_cfg(use_vm_mol=True)
+    data_var, data_atm, make_atm = load_tpk_state()
+    # f_mu_dz needs ymix; populate via const_mix to avoid the EQ seed.
+    set_cfg(ini_mix="const_mix", const_mix={"H2": 0.9, "He": 0.0838, "H2O": 1e-3})
+    data_var = InitialAbun().ini_y(data_var, data_atm)
+    data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
+    make_atm.mol_diff(data_atm)
 
     vm = np.asarray(data_atm.vm)
     # vm is the interface-centered drift velocity: one entry per cell interface.
@@ -237,30 +185,22 @@ def test_use_settling_populates_vs_for_non_gas():
     if "H2O_l_s" not in species_list:
         pytest.skip("H2O_l_s not in HD189 network; cannot exercise settling.")
 
-    overrides = dict(
+    import vulcan_jax.legacy_io as op
+    from vulcan_jax.ini_abun import InitialAbun
+
+    set_cfg(
         use_settling=True,
         use_condense=True,
         non_gas_sp=["H2O_l_s"],
         condense_sp=["H2O"],
         r_p={"H2O_l_s": 5e-3},
         rho_p={"H2O_l_s": 0.9},
-        # ini_abun's H2O cold-trap branch mutates use_fix_sp_bot in-place
-        # (ini_abun.py:350); snapshot it so cfg_overrides restores cleanly.
-        use_fix_sp_bot={},
     )
-    with cfg_overrides(**overrides):
-        data_var, data_atm, make_atm = _hd189_atm_minimal()
-        from vulcan_jax.ini_abun import InitialAbun
-        import vulcan_jax.legacy_io as op
-
-        # const_mix avoids the EQ seed and is independent of condensables.
-        with cfg_overrides(
-            ini_mix="const_mix",
-            const_mix={"H2": 0.9, "He": 0.0838, "H2O": 1e-3},
-        ):
-            ini = InitialAbun()
-            data_var = ini.ini_y(data_var, data_atm)
-        data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
+    data_var, data_atm, make_atm = load_tpk_state()
+    # const_mix avoids the EQ seed and is independent of condensables.
+    set_cfg(ini_mix="const_mix", const_mix={"H2": 0.9, "He": 0.0838, "H2O": 1e-3})
+    data_var = InitialAbun().ini_y(data_var, data_atm)
+    data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
 
     vs = np.asarray(data_atm.vs)
     nz = data_atm.Tco.shape[0]
@@ -304,10 +244,9 @@ def test_bc_flux_loaded_from_file(flag, file_attr, file_path, target_sp):
     if not (ROOT / "src" / "vulcan_jax" / file_path).is_file():
         pytest.skip(f"BC file {file_path!r} missing.")
 
-    overrides = {flag: True, file_attr: file_path}
-    with cfg_overrides(**overrides):
-        _, data_atm, make_atm = _hd189_atm_minimal()
-        make_atm.BC_flux(data_atm)
+    set_cfg(**{flag: True, file_attr: file_path})
+    _, data_atm, make_atm = load_tpk_state()
+    make_atm.BC_flux(data_atm)
 
     arr_name = "top_flux" if flag == "use_topflux" else "bot_flux"
     arr = np.asarray(getattr(data_atm, arr_name))
@@ -333,7 +272,7 @@ def test_fix_species_runtime_smoke():
         if sp not in species_list:
             pytest.skip(f"{sp} not in network; cannot run fix_species smoke.")
 
-    cfg_kwargs = dict(
+    set_cfg(
         use_condense=True,
         use_settling=False,
         condense_sp=["H2O", "S8"],
@@ -346,15 +285,8 @@ def test_fix_species_runtime_smoke():
         rho_p={"H2O_l_s": 0.9, "S8_l_s": 2.07},
         humidity=1.0,
         use_relax=[],
-        # ini_abun's H2O cold-trap branch mutates use_fix_sp_bot in-place
-        # (ini_abun.py:350). Snapshot it here so the override restores cleanly.
-        use_fix_sp_bot={},
-        count_max=5,
-        count_min=1,
-        use_print_prog=False,
     )
-    with cfg_overrides(**cfg_kwargs):
-        _rs, rs_out = _run_full_state(count_max=5)
+    _rs, rs_out = _run_full_state(count_max=5)
 
     assert isinstance(rs_out.params.fix_species_start, (bool, np.bool_))
     # stop_conden_time was pushed past runtime so the pin should NOT have fired.
@@ -368,24 +300,19 @@ def test_use_fix_all_bot_keeps_bottom_at_eq_mix():
     """``use_fix_all_bot=True`` keeps the bottom layer at chemical-EQ mixing
     ratios (not just absolute density) across a short integration.
     """
-    with cfg_overrides(
-        use_fix_all_bot=True,
-        count_max=10,
-        count_min=1,
-        use_print_prog=False,
-    ):
-        rs, rs_out = _run_full_state(count_max=10)
-        bottom_ymix_pre = np.asarray(rs.step.ymix[0], dtype=np.float64)
-        n0_bot = float(rs.atm.n_0[0])
+    set_cfg(use_fix_all_bot=True)
+    rs, rs_out = _run_full_state(count_max=10)
+    bottom_ymix_pre = np.asarray(rs.step.ymix[0], dtype=np.float64)
+    n0_bot = float(rs.atm.n_0[0])
 
-        y_bot_post = np.asarray(rs_out.step.y[0], dtype=np.float64)
-        ymix_post = y_bot_post / max(n0_bot, 1.0)
-        target = bottom_ymix_pre * n0_bot
-        max_relerr = float(
-            np.max(np.abs(y_bot_post - target) / np.maximum(np.abs(target), 1e-300))
-        )
-        # The pin is a copy, so the bar is machine precision.
-        assert max_relerr < 1e-12, (
-            f"bottom-row drift exceeds tolerance: max relerr = {max_relerr:.3e}"
-        )
-        assert abs(ymix_post.sum() - bottom_ymix_pre.sum()) < 1e-10
+    y_bot_post = np.asarray(rs_out.step.y[0], dtype=np.float64)
+    ymix_post = y_bot_post / max(n0_bot, 1.0)
+    target = bottom_ymix_pre * n0_bot
+    max_relerr = float(
+        np.max(np.abs(y_bot_post - target) / np.maximum(np.abs(target), 1e-300))
+    )
+    # The pin is a copy, so the bar is machine precision.
+    assert max_relerr < 1e-12, (
+        f"bottom-row drift exceeds tolerance: max relerr = {max_relerr:.3e}"
+    )
+    assert abs(ymix_post.sum() - bottom_ymix_pre.sum()) < 1e-10

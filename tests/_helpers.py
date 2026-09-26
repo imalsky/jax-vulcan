@@ -19,6 +19,39 @@ R_JUP_CM = 7.1492e9  # Jupiter radius (cm), upstream phy_const.py r_jup
 HD189_RP_CM = 1.138 * R_JUP_CM  # HD 189733 b radius (cm)
 
 
+def set_cfg(**overrides):
+    """Set attributes on the shared process default config and return it.
+
+    conftest restores the config after every test, so no undo is needed.
+    """
+    from vulcan_jax.config import default_config
+
+    cfg = default_config()
+    for key, value in overrides.items():
+        setattr(cfg, key, value)
+    return cfg
+
+
+def load_tpk_state():
+    """`(var, atm, make_atm)` after f_pico and load_TPK (and sp_sat under
+    use_condense) on the process default config, in the legacy containers.
+
+    Partial setup: no rates, EQ seed or photo reads.
+    """
+    from vulcan_jax.atm_setup import Atm
+    from vulcan_jax.config import default_config
+    from vulcan_jax.state import _AtmData, _Variables
+
+    data_var = _Variables()
+    data_atm = _AtmData()
+    make_atm = Atm()
+    data_atm = make_atm.f_pico(data_atm)
+    data_atm = make_atm.load_TPK(data_atm)
+    if default_config().use_condense:
+        make_atm.sp_sat(data_atm)
+    return data_var, data_atm, make_atm
+
+
 def fast_cfg(**overrides):
     """The process default config, pinned for a fast, quiet, isothermal run.
 
@@ -29,18 +62,9 @@ def fast_cfg(**overrides):
     pinned: test_hybrid_vm_mol tests them, so each caller sets them
     explicitly.
     """
-    from vulcan_jax.config import default_config
-
-    cfg = default_config()
-    cfg.count_min = 1
-    cfg.use_print_prog = False
-    cfg.use_photo = False
-    cfg.use_ion = False
-    cfg.atm_type = "isothermal"
-    cfg.Kzz_prof = "Pfunc"
-    for key, value in overrides.items():
-        setattr(cfg, key, value)
-    return cfg
+    set_cfg(count_min=1, use_print_prog=False, use_photo=False, use_ion=False,
+            atm_type="isothermal", Kzz_prof="Pfunc")
+    return set_cfg(**overrides)
 
 
 def relerr(got, ref, floor=1e-30, mask=None) -> float:

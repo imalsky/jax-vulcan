@@ -6,7 +6,6 @@ charge_list invariant. `EQ` has its own file, `test_eq_seed.py`.
 
 from __future__ import annotations
 
-import contextlib
 import os
 import pickle
 import warnings
@@ -14,58 +13,12 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from _helpers import load_tpk_state, set_cfg
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 
 warnings.filterwarnings("ignore")
-
-
-# Helpers shared by every parametrized mode test.
-
-
-@contextlib.contextmanager
-def _cfg_overrides(**kwargs):
-    """Snapshot/restore vulcan_cfg attributes around a block."""
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-    saved = {}
-    sentinel = object()
-    for k in kwargs:
-        saved[k] = getattr(vulcan_cfg, k, sentinel)
-    try:
-        for k, v in kwargs.items():
-            setattr(vulcan_cfg, k, v)
-        yield vulcan_cfg
-    finally:
-        for k, v in saved.items():
-            if v is sentinel:
-                delattr(vulcan_cfg, k)
-            else:
-                setattr(vulcan_cfg, k, v)
-
-
-def _build_hd189_atm():
-    """Return `(data_var, data_atm, make_atm)` after `load_TPK` (and
-    `sp_sat` if condense is on). Partial setup: the full
-    `RunState.with_pre_loop_setup` would also run rates / the EQ seed / photo
-    reads these mode tests do not use.
-    """
-    from vulcan_jax.atm_setup import Atm
-    from vulcan_jax.state import _Variables, _AtmData
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-
-    data_var = _Variables()
-    data_atm = _AtmData()
-    make_atm = Atm()
-    data_atm = make_atm.f_pico(data_atm)
-    data_atm = make_atm.load_TPK(data_atm)
-    if vulcan_cfg.use_condense:
-        make_atm.sp_sat(data_atm)
-    return data_var, data_atm, make_atm
 
 
 # const_mix mode: algebraic, no EQ seed, no scipy.
@@ -78,13 +31,13 @@ def test_const_mix_matches_reference():
     from vulcan_jax.ini_abun import InitialAbun
     import vulcan_jax.composition as composition
 
-    data_var, data_atm, _ = _build_hd189_atm()
+    data_var, data_atm, _ = load_tpk_state()
     # Earth-style mixing dict (species that exist in HD189's network).
     cmix = {"CH4": 5.5e-4, "He": 0.097, "N2": 8.2e-5, "H2": 0.9028}
-    with _cfg_overrides(ini_mix="const_mix", const_mix=cmix):
-        ini = InitialAbun()
-        data_var = ini.ini_y(data_var, data_atm)
-        data_var = ini.ele_sum(data_var)
+    set_cfg(ini_mix="const_mix", const_mix=cmix)
+    ini = InitialAbun()
+    data_var = ini.ini_y(data_var, data_atm)
+    data_var = ini.ele_sum(data_var)
 
     y = np.asarray(data_var.y)
     M = np.asarray(data_atm.M)
@@ -110,7 +63,7 @@ def test_vulcan_ini_roundtrip(tmp_path):
     from vulcan_jax.ini_abun import InitialAbun
     import vulcan_jax.composition as composition
 
-    data_var, data_atm, _ = _build_hd189_atm()
+    data_var, data_atm, _ = load_tpk_state()
     prev_species = list(composition.species)
     shape = (len(data_atm.pco), len(prev_species))
     prev_y = np.arange(1, np.prod(shape) + 1, dtype=float).reshape(shape)
@@ -118,9 +71,9 @@ def test_vulcan_ini_roundtrip(tmp_path):
     with vul_path.open("wb") as handle:
         pickle.dump({"variable": {"species": prev_species, "y": prev_y}}, handle)
 
-    with _cfg_overrides(ini_mix="vulcan_ini", vul_ini=str(vul_path)):
-        ini = InitialAbun()
-        data_var = ini.ini_y(data_var, data_atm)
+    set_cfg(ini_mix="vulcan_ini", vul_ini=str(vul_path))
+    ini = InitialAbun()
+    data_var = ini.ini_y(data_var, data_atm)
 
     y = np.asarray(data_var.y)
     species_list = composition.species
@@ -148,7 +101,7 @@ def test_table_roundtrip(tmp_path):
     from vulcan_jax.ini_abun import InitialAbun
     import vulcan_jax.composition as composition
 
-    data_var, data_atm, _ = _build_hd189_atm()
+    data_var, data_atm, _ = load_tpk_state()
     nz_ = len(data_atm.pco)
     pco = np.asarray(data_atm.pco)
     n_0 = np.asarray(data_atm.n_0)
@@ -167,9 +120,9 @@ def test_table_roundtrip(tmp_path):
             row = [f"{pco[i]:.6e}"] + [f"{v:.6e}" for v in mix_values[i]]
             f.write(" ".join(row) + "\n")
 
-    with _cfg_overrides(ini_mix="table", vul_ini=str(table_path)):
-        ini = InitialAbun()
-        data_var = ini.ini_y(data_var, data_atm)
+    set_cfg(ini_mix="table", vul_ini=str(table_path))
+    ini = InitialAbun()
+    data_var = ini.ini_y(data_var, data_atm)
 
     y = np.asarray(data_var.y)
     for sp, mix in populated.items():
@@ -231,7 +184,7 @@ def test_charge_list_no_ions():
 
     vulcan_cfg = default_config()
 
-    data_var, data_atm, _ = _build_hd189_atm()
+    data_var, data_atm, _ = load_tpk_state()
     assert vulcan_cfg.use_ion is False, "test assumes HD189 default cfg"
     ini = InitialAbun()
     data_var = ini.ini_y(data_var, data_atm)
