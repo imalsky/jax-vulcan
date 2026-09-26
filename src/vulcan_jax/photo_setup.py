@@ -53,59 +53,12 @@ def _load_thresholds(species_in_network) -> dict[str, float]:
     }
 
 
-def _load_cross_csv(sp: str, use_ion: bool) -> np.ndarray:
-    """Read `cross_folder/{sp}/{sp}_cross.csv`. 4-column when `use_ion`, else 3-column."""
-    folder = _cross_folder()
-    path = folder + sp + "/" + sp + "_cross.csv"
-    names = (
-        ["lambda", "cross", "disso", "ion"] if use_ion else ["lambda", "cross", "disso"]
+def _read_table(path: str, names, delimiter: str | None = ",") -> np.ndarray:
+    """Read a cross-section / branch-ratio / Rayleigh table with a one-line
+    header. `names` lists the columns, or True to take them from the header."""
+    return np.genfromtxt(
+        path, dtype=float, delimiter=delimiter, skip_header=1, names=names
     )
-    try:
-        return np.genfromtxt(
-            path,
-            dtype=float,
-            delimiter=",",
-            skip_header=1,
-            names=names,
-        )
-    except Exception:
-        print("\nMissing the cross section from " + sp)
-        raise
-
-
-def _load_branch_csv(sp: str) -> np.ndarray:
-    """Read `cross_folder/{sp}/{sp}_branch.csv`. Column names auto-detected
-    from header (br_ratio_1, br_ratio_2, ...)."""
-    folder = _cross_folder()
-    path = folder + sp + "/" + sp + "_branch.csv"
-    try:
-        return np.genfromtxt(
-            path,
-            dtype=float,
-            delimiter=",",
-            skip_header=1,
-            names=True,
-        )
-    except Exception:
-        print("\nMissing the branching ratio from " + sp)
-        raise
-
-
-def _load_ion_branch_csv(sp: str) -> np.ndarray:
-    """Read `cross_folder/{sp}/{sp}_ion_branch.csv`."""
-    folder = _cross_folder()
-    path = folder + sp + "/" + sp + "_ion_branch.csv"
-    try:
-        return np.genfromtxt(
-            path,
-            dtype=float,
-            delimiter=",",
-            skip_header=1,
-            names=True,
-        )
-    except Exception:
-        print("\nMissing the ion branching ratio from " + sp)
-        raise
 
 
 def _discover_T_cross_files(sp: str) -> list[int]:
@@ -118,34 +71,6 @@ def _discover_T_cross_files(sp: str) -> list[int]:
             temp = temp_file.replace(sp, "").replace("_cross_", "").replace("K.csv", "")
             T_list.append(int(temp))
     return T_list
-
-
-def _load_T_cross_csv(sp: str, T: int, use_ion: bool) -> np.ndarray:
-    """Read `cross_folder/{sp}/{sp}_cross_{T}K.csv`."""
-    folder = _cross_folder()
-    path = folder + sp + "/" + sp + "_cross_" + str(T) + "K.csv"
-    names = (
-        ["lambda", "cross", "disso", "ion"] if use_ion else ["lambda", "cross", "disso"]
-    )
-    return np.genfromtxt(
-        path,
-        dtype=float,
-        delimiter=",",
-        skip_header=1,
-        names=names,
-    )
-
-
-def _load_rayleigh_csv(sp: str) -> np.ndarray:
-    """Read `cross_folder/rayleigh/{sp}_scat.txt`."""
-    folder = _cross_folder()
-    path = folder + "rayleigh/" + sp + "_scat.txt"
-    return np.genfromtxt(
-        path,
-        dtype=float,
-        skip_header=1,
-        names=["lambda", "cross"],
-    )
 
 
 def _make_bins(
@@ -441,17 +366,22 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
     bin_max: float | None = None
     diss_max: float | None = None
 
+    folder = _cross_folder()
+    cross_cols = ["lambda", "cross", "disso"] + (["ion"] if use_ion else [])
     for n_idx, sp in enumerate(absp_sp_list):
-        cross_raw[sp] = _load_cross_csv(sp, use_ion)
+        sp_path = folder + sp + "/" + sp
+        cross_raw[sp] = _read_table(sp_path + "_cross.csv", cross_cols)
         if use_ion and sp in ion_sp:
-            ion_ratio_raw[sp] = _load_ion_branch_csv(sp)
+            ion_ratio_raw[sp] = _read_table(sp_path + "_ion_branch.csv", True)
         if sp in photo_sp:
-            ratio_raw[sp] = _load_branch_csv(sp)
+            ratio_raw[sp] = _read_table(sp_path + "_branch.csv", True)
         if sp in T_cross_sp:
             T_list = _discover_T_cross_files(sp)
             cross_T_sp_list_local[sp] = T_list
             for tt in T_list:
-                cross_T_raw[(sp, tt)] = _load_T_cross_csv(sp, tt, use_ion)
+                cross_T_raw[(sp, tt)] = _read_table(
+                    sp_path + "_cross_" + str(tt) + "K.csv", cross_cols
+                )
             cross_T_raw[(sp, _ROOM_T_SAMPLE_K)] = cross_raw[sp]
             cross_T_sp_list_local[sp].append(_ROOM_T_SAMPLE_K)
 
@@ -460,11 +390,9 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
 
         sp_min = float(cross_raw[sp]["lambda"][0])
         sp_max = float(cross_raw[sp]["lambda"][-1])
-        try:
-            sp_diss = float(threshold[sp])
-        except KeyError:
-            print(sp + " not in thresholds.txt")
-            raise
+        if sp not in threshold:
+            raise KeyError(f"{sp} not in {folder}thresholds.txt")
+        sp_diss = float(threshold[sp])
         if n_idx == 0:
             bin_min, bin_max, diss_max = sp_min, sp_max, sp_diss
         else:
@@ -563,7 +491,9 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
 
     cross_scat_per_sp: dict[str, np.ndarray] = {}
     for sp in scat_sp_list:
-        scat_raw = _load_rayleigh_csv(sp)
+        scat_raw = _read_table(
+            folder + "rayleigh/" + sp + "_scat.txt", ["lambda", "cross"], None
+        )
         cross_scat_per_sp[sp] = _interp_zero_extrap(
             scat_raw["lambda"],
             scat_raw["cross"],
