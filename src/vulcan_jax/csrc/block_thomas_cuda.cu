@@ -2,11 +2,17 @@
 // block-Thomas factor and solve on [..., nz, ni, ni] blocks, with the same perm
 // convention (perm[i] = source row of permuted row i). Launch: one thread block
 // per batch element, 2 ni threads rounded up to a warp, the whole nz sweep inside
-// the kernel. Shared memory: two ni x ni double blocks plus O(ni) (about 125 KB
-// at ni = 89), opted in to the device maximum. A zero pivot gives inf/nan like
+// the kernel. Each kernel has two variants with bitwise equal results: two
+// ni x ni double blocks of shared memory plus O(ni) (about 125 KB at ni = 89),
+// or one (about 63 KB), which fits more blocks on an SM. A call takes two
+// buffers when they fit the device and need no more waves than one
+// (bt_choose); VULCAN_JAX_BT_BUFFERS=1 or 2 forces a variant. Shared memory is
+// opted in to the device maximum. A zero pivot gives inf/nan like
 // lax.linalg.lu, not an error. Build: python -m vulcan_jax.solver_fast --cuda.
 #include <cmath>
 #include <cstdint>
+#include <cstdlib>
+#include <cstring>
 #include <initializer_list>
 #include <limits>
 #include <mutex>
@@ -177,11 +183,18 @@ __device__ void bt_lu_block(double* A, int32_t* sperm, double* cand_abs, double*
 
 // Factors one batch element: A'_0 = D_0, A'_j = D_j - (c_j b_{j-1}^T) .*
 // inv(A'_{j-1}) with b = sup, c = sub, each A'_j LU-factored in shared memory
-// and written to lu and perm. Shared: A'_j and inv(A'_{j-1}) (ni^2 doubles
-// each), the pivot candidates (2 kMaxWarps doubles, kMaxWarps ints) and sperm
-// (ni ints). Per layer j >= 1 the barriers are: before the inverse (A'_{j-1}
-// and sperm visible), after it (inv complete), after the Schur assembly (A'_j
-// complete), then bt_lu_block's.
+// and written to lu and perm. Shared: A'_j and, with two buffers,
+// inv(A'_{j-1}) (ni^2 doubles each), the pivot candidates (2 kMaxWarps
+// doubles, kMaxWarps ints) and sperm (ni ints). With one buffer (kOneBuf) the
+// inverse reads the factors of A'_{j-1} back from lu, stored before the layer
+// barrier, builds inv in A itself and the Schur update runs in place: the same
+// operations in the same order. (Starting each forward substitution at the
+// row of e_s[perm]'s 1 is also bitwise for finite factors, but it takes the
+// sm_90 build from 74 to 105 registers, one block per SM fewer at ni 89.) Per
+// layer j >= 1 the barriers are: before the inverse (A'_{j-1}, sperm and,
+// with one buffer, its LU in lu visible), after it (inv complete), after the
+// Schur assembly (A'_j complete), then bt_lu_block's.
+template <bool kOneBuf>
 __global__ void bt_factor_kernel(const double* __restrict__ diag,
                                  const double* __restrict__ sup,
                                  const double* __restrict__ sub, double* __restrict__ lu,
@@ -189,7 +202,7 @@ __global__ void bt_factor_kernel(const double* __restrict__ diag,
   extern __shared__ double bt_smem[];
   const int blk = ni * ni;  // fits an int: the block lives in shared memory
   double* A = bt_smem;
-  double* Minv = A + blk;
+  double* Minv = kOneBuf ? A : A + blk;
   double* cand_abs = Minv + blk;
   double* cand_val = cand_abs + kMaxWarps;
   int32_t* cand_row = reinterpret_cast<int32_t*>(cand_val + kMaxWarps);
@@ -215,6 +228,7 @@ __global__ void bt_factor_kernel(const double* __restrict__ diag,
   const int num_rounds = (ni + npair - 1) / npair;
   for (int j = 1; j < nz; ++j) {
     __syncthreads();
+    const double* F = kOneBuf ? L + static_cast<int64_t>(j - 1) * blk : A;  // LU of A'_{j-1}
     // inv(A'_{j-1}) column by column, a lane pair per column: lanes 2m and
     // 2m+1 split every dot product and combine it with one __shfl_xor_sync.
     // Column s solves A'_{j-1} x = e_s with the rhs permuted (e_s[perm]) and
@@ -232,16 +246,16 @@ __global__ void bt_factor_kernel(const double* __restrict__ diag,
         for (int i = 0; i < ni; ++i) inv_col[i * ni] = (sperm[i] == s) ? 1.0 : 0.0;
       for (int i = 0; i < ni; ++i) {  // unit-lower L
         const int mid = i / 2;
-        double part = bt_dot4(A + i * ni, inv_col, ni, half ? mid : 0, half ? i : mid);
+        double part = bt_dot4(F + i * ni, inv_col, ni, half ? mid : 0, half ? i : mid);
         part += __shfl_xor_sync(pair_mask, part, 1);
         if (half == 0) inv_col[i * ni] -= part;
         __syncwarp(pair_mask);
       }
       for (int i = ni - 1; i >= 0; --i) {  // upper U
         const int mid = i + 1 + (ni - i - 1) / 2;
-        double part = bt_dot4(A + i * ni, inv_col, ni, half ? mid : i + 1, half ? ni : mid);
+        double part = bt_dot4(F + i * ni, inv_col, ni, half ? mid : i + 1, half ? ni : mid);
         part += __shfl_xor_sync(pair_mask, part, 1);
-        if (half == 0) inv_col[i * ni] = (inv_col[i * ni] - part) / A[i * ni + i];
+        if (half == 0) inv_col[i * ni] = (inv_col[i * ni] - part) / F[i * ni + i];
         __syncwarp(pair_mask);
       }
     }
@@ -286,12 +300,15 @@ __device__ inline void bt_swap(double*& a, double*& b) {
 // Solves one rhs batch element on the factors bt_index maps it to: the forward
 // sweep r'_j = r_j - c_j .* (A'_{j-1}^{-1} r'_{j-1}), then k_last = A'^{-1}
 // r'_last and k_j = A'_j^{-1} (r'_j - b_j .* k_{j+1}); x holds r' until k
-// overwrites it. Warp 0 runs every substitution while the other warps prefetch
-// the next layer's LU into the second shared buffer (a one-warp block does both
-// in turn). Shared: the current and the prefetched LU (ni^2 doubles each), t
-// and u (ni each). Per layer the barriers are: u filled and the spare buffer
-// free; the substitution done and the prefetch staged; in the forward sweep
-// also r'_j complete before its permuted read.
+// overwrites it. Warp 0 runs every substitution. With two buffers the other
+// warps prefetch the next layer's LU into the second one meanwhile (a one-warp
+// block does both in turn); with one (kOneBuf) all threads load it after the
+// substitution. Shared: the current and the prefetched LU (ni^2 doubles each;
+// one with kOneBuf), t and u (ni each). Per layer the barriers are: u filled
+// and the spare buffer free (one buffer: the layer loaded); the substitution
+// done and the prefetch staged; in the forward sweep also r'_j complete (and
+// the next layer loaded) before its permuted read.
+template <bool kOneBuf>
 __global__ void bt_solve_kernel(const double* __restrict__ lu,
                                 const int32_t* __restrict__ perm,
                                 const double* __restrict__ sup,
@@ -301,7 +318,7 @@ __global__ void bt_solve_kernel(const double* __restrict__ lu,
   extern __shared__ double bt_smem[];
   const int blk = ni * ni;  // fits an int: the block lives in shared memory
   double* Ac = bt_smem;     // the layer being solved
-  double* An = Ac + blk;    // the layer being prefetched
+  double* An = kOneBuf ? Ac : Ac + blk;  // the layer being prefetched (two buffers)
   double* t = An + blk;     // one layer's solution, and
   double* u = t + ni;       // the permuted rhs the substitution consumes
 
@@ -325,10 +342,11 @@ __global__ void bt_solve_kernel(const double* __restrict__ lu,
   for (int i = tid; i < ni; i += nt) u[i] = X[P[i]];  // r'_0, permuted
   for (int j = 1; j < nz; ++j) {
     __syncthreads();  // u filled, An free
-    if (prefetches)
+    if (!kOneBuf && prefetches)
       bt_load_block(An, L + static_cast<int64_t>(j) * blk, blk, prefetch_tid, prefetch_nt);
     if (warp == 0) bt_lu_solve_warp0(Ac, ni, u, t, lane);
     __syncthreads();  // t = A'_{j-1}^{-1} r'_{j-1}, An staged
+    if (kOneBuf) bt_load_block(Ac, L + static_cast<int64_t>(j) * blk, blk, tid, nt);
     for (int i = tid; i < ni; i += nt) {
       const int64_t o = static_cast<int64_t>(j) * ni + i;
       X[o] = R[o] - C[static_cast<int64_t>(j - 1) * ni + i] * t[i];
@@ -336,16 +354,17 @@ __global__ void bt_solve_kernel(const double* __restrict__ lu,
     __syncthreads();  // r'_j complete
     const int32_t* Pj = P + static_cast<int64_t>(j) * ni;
     for (int i = tid; i < ni; i += nt) u[i] = X[static_cast<int64_t>(j) * ni + Pj[i]];
-    bt_swap(Ac, An);
+    if (!kOneBuf) bt_swap(Ac, An);
   }
   __syncthreads();  // u filled, An free
-  if (prefetches && nz > 1)
+  if (!kOneBuf && prefetches && nz > 1)
     bt_load_block(An, L + static_cast<int64_t>(nz - 2) * blk, blk, prefetch_tid, prefetch_nt);
   if (warp == 0)  // u already holds r'_last, so x may overwrite it
     bt_lu_solve_warp0(Ac, ni, u, X + static_cast<int64_t>(nz - 1) * ni, lane);
   __syncthreads();
-  bt_swap(Ac, An);
+  if (!kOneBuf) bt_swap(Ac, An);
   for (int j = nz - 2; j >= 0; --j) {
+    if (kOneBuf) bt_load_block(Ac, L + static_cast<int64_t>(j) * blk, blk, tid, nt);
     // r'_j - b_j .* k_{j+1}, gathered straight into permuted order
     const int32_t* Pj = P + static_cast<int64_t>(j) * ni;
     for (int i = tid; i < ni; i += nt) {
@@ -353,11 +372,11 @@ __global__ void bt_solve_kernel(const double* __restrict__ lu,
       u[i] = X[o] - S[o] * X[o + ni];
     }
     __syncthreads();  // u filled, An free
-    if (prefetches && j > 0)
+    if (!kOneBuf && prefetches && j > 0)
       bt_load_block(An, L + static_cast<int64_t>(j - 1) * blk, blk, prefetch_tid, prefetch_nt);
     if (warp == 0) bt_lu_solve_warp0(Ac, ni, u, X + static_cast<int64_t>(j) * ni, lane);
     __syncthreads();  // k_j written, An staged
-    bt_swap(Ac, An);
+    if (!kOneBuf) bt_swap(Ac, An);
   }
 }
 
@@ -369,24 +388,26 @@ int bt_threads(int ni) {
 }
 
 // Dynamic shared memory of each kernel; the layouts are in the kernels.
-size_t bt_factor_shmem(int ni) {
-  return (2 * static_cast<size_t>(ni) * ni + 2 * kMaxWarps) * sizeof(double) +
+size_t bt_factor_shmem(int ni, bool one_buf) {
+  return ((one_buf ? 1 : 2) * static_cast<size_t>(ni) * ni + 2 * kMaxWarps) * sizeof(double) +
          (kMaxWarps + static_cast<size_t>(ni)) * sizeof(int32_t);
 }
 
-size_t bt_solve_shmem(int ni) {
-  return (2 * static_cast<size_t>(ni) * ni + 2 * static_cast<size_t>(ni)) * sizeof(double);
+size_t bt_solve_shmem(int ni, bool one_buf) {
+  return ((one_buf ? 1 : 2) * static_cast<size_t>(ni) * ni + 2 * static_cast<size_t>(ni)) *
+         sizeof(double);
 }
 
-// Per device: the most dynamic shared memory both kernels may use, or the CUDA
-// error that stopped the opt-in.
+// Per device: the most dynamic shared memory every kernel may use and the SM
+// count, or the CUDA error that stopped the opt-in.
 struct BtOptIn {
   cudaError_t status;
   int limit;
+  int sms;
 };
 
 // Dynamic shared memory above the 48 KB default needs a per-kernel opt-in.
-// Both kernels are opted in once per device, to the device's maximum, so a
+// All four kernels are opted in once per device, to the device's maximum, so a
 // call changes no attribute: two differently sized calls cannot race on one,
 // and only the launch happens while XLA records a command buffer. XLA makes
 // the device's context current before calling a handler, so
@@ -397,11 +418,14 @@ BtOptIn bt_opt_in(int device) {
   std::lock_guard<std::mutex> lock(mu);
   const auto it = done.find(device);
   if (it != done.end()) return it->second;
-  int optin = 0;
+  int optin = 0, sms = 0;
   cudaError_t r = cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, device);
+  if (r == cudaSuccess) r = cudaDeviceGetAttribute(&sms, cudaDevAttrMultiProcessorCount, device);
   int limit = optin;
-  for (const void* k : {reinterpret_cast<const void*>(bt_factor_kernel),
-                        reinterpret_cast<const void*>(bt_solve_kernel)}) {
+  for (const void* k : {reinterpret_cast<const void*>(bt_factor_kernel<false>),
+                        reinterpret_cast<const void*>(bt_factor_kernel<true>),
+                        reinterpret_cast<const void*>(bt_solve_kernel<false>),
+                        reinterpret_cast<const void*>(bt_solve_kernel<true>)}) {
     cudaFuncAttributes a = {};
     if (r == cudaSuccess) r = cudaFuncGetAttributes(&a, k);
     // the opt-in maximum bounds static plus dynamic shared memory
@@ -409,22 +433,66 @@ BtOptIn bt_opt_in(int device) {
     if (r == cudaSuccess && dyn < limit) limit = dyn;
     if (r == cudaSuccess) r = cudaFuncSetAttribute(k, cudaFuncAttributeMaxDynamicSharedMemorySize, dyn);
   }
-  done[device] = BtOptIn{r, limit};
+  done[device] = BtOptIn{r, limit, sms};
   return done[device];
 }
 
 // An error unless `bytes` of dynamic shared memory fit the opted-in limit.
 ffi::Error bt_shared_fits(size_t bytes, const BtOptIn& opt) {
-  if (opt.status != cudaSuccess) {
-    return ffi::Error::Internal(std::string("block-Thomas shared-memory opt-in failed: ") +
-                                cudaGetErrorString(opt.status));
-  }
   if (bytes > static_cast<size_t>(opt.limit)) {
     return ffi::Error::InvalidArgument("block-Thomas needs " + std::to_string(bytes) +
                                        " B of shared memory per block; this device allows " +
                                        std::to_string(opt.limit));
   }
   return ffi::Error::Success();
+}
+
+// VULCAN_JAX_BT_BUFFERS, read once per process: unset or empty picks the
+// variant per call (bt_choose); "1" or "2" forces the one- or two-buffer
+// kernels, for the A/B and the byte-identity test.
+const char* bt_forced_buffers() {
+  static const char* const v = [] {
+    const char* e = std::getenv("VULCAN_JAX_BT_BUFFERS");
+    return (e == nullptr) ? "" : e;
+  }();
+  return v;
+}
+
+// Sets *one_buf to the variant a call of `batch` blocks launches. Two buffers
+// when they fit the device and need no more waves than one, a wave being the
+// SM count times the blocks of that variant resident on an SM (the occupancy
+// calculator, so the device's shared memory per SM, registers and block limit
+// all count): at equal waves the two-buffer kernels are as fast or faster
+// (the solve prefetches, the factor's inverse reads shared memory). Returns
+// the error that forbids the launch, if any.
+ffi::Error bt_choose(int device, int64_t batch, const void* two, size_t shmem2, const void* one,
+                     size_t shmem1, int threads, bool* one_buf) {
+  const BtOptIn opt = bt_opt_in(device);
+  if (opt.status != cudaSuccess) {
+    return ffi::Error::Internal(std::string("block-Thomas shared-memory opt-in failed: ") +
+                                cudaGetErrorString(opt.status));
+  }
+  const char* forced = bt_forced_buffers();
+  if (std::strcmp(forced, "1") == 0 || std::strcmp(forced, "2") == 0) {
+    *one_buf = forced[0] == '1';
+  } else if (forced[0] != '\0') {
+    return ffi::Error::InvalidArgument(std::string("VULCAN_JAX_BT_BUFFERS=") + forced +
+                                       ": expected 1, 2 or unset");
+  } else if (shmem2 > static_cast<size_t>(opt.limit)) {
+    *one_buf = true;
+  } else {
+    int per_sm2 = 0, per_sm1 = 0;
+    cudaError_t r = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm2, two, threads, shmem2);
+    if (r == cudaSuccess)
+      r = cudaOccupancyMaxActiveBlocksPerMultiprocessor(&per_sm1, one, threads, shmem1);
+    if (r != cudaSuccess) return ffi::Error::Internal(cudaGetErrorString(r));
+    const auto waves = [&](int per_sm) {  // no resident block: never chosen
+      const int64_t w = static_cast<int64_t>(per_sm) * opt.sms;
+      return (w > 0) ? (batch + w - 1) / w : std::numeric_limits<int64_t>::max();
+    };
+    *one_buf = waves(per_sm1) < waves(per_sm2);
+  }
+  return bt_shared_fits(*one_buf ? shmem1 : shmem2, opt);
 }
 
 // The launch's own error, if any; execution errors surface on the stream.
@@ -442,12 +510,17 @@ ffi::Error FactorImplCuda(cudaStream_t stream, int32_t device, ffi::Buffer<ffi::
   if (err.failure()) return err;
   if (shape.batch == 0 || shape.ni == 0) return ffi::Error::Success();
   if (shape.batch > kMaxGridX) return ffi::Error::InvalidArgument("batch exceeds the CUDA grid limit");
-  const size_t shmem = bt_factor_shmem(shape.ni);
-  err = bt_shared_fits(shmem, bt_opt_in(device));
+  const int threads = bt_threads(shape.ni);
+  bool one_buf = false;
+  err = bt_choose(device, shape.batch, reinterpret_cast<const void*>(bt_factor_kernel<false>),
+                  bt_factor_shmem(shape.ni, false),
+                  reinterpret_cast<const void*>(bt_factor_kernel<true>),
+                  bt_factor_shmem(shape.ni, true), threads, &one_buf);
   if (err.failure()) return err;
-  bt_factor_kernel<<<static_cast<unsigned int>(shape.batch), bt_threads(shape.ni), shmem, stream>>>(
-      diag.typed_data(), sup.typed_data(), sub.typed_data(), lu->typed_data(),
-      perm->typed_data(), shape.nz, shape.ni);
+  const auto kernel = one_buf ? bt_factor_kernel<true> : bt_factor_kernel<false>;
+  kernel<<<static_cast<unsigned int>(shape.batch), threads, bt_factor_shmem(shape.ni, one_buf),
+           stream>>>(diag.typed_data(), sup.typed_data(), sub.typed_data(), lu->typed_data(),
+                     perm->typed_data(), shape.nz, shape.ni);
   return bt_launch_status();
 }
 
@@ -461,12 +534,17 @@ ffi::Error SolveImplCuda(cudaStream_t stream, int32_t device, ffi::Buffer<ffi::F
   if (err.failure()) return err;
   if (shape.batch == 0 || shape.ni == 0) return ffi::Error::Success();
   if (shape.batch > kMaxGridX) return ffi::Error::InvalidArgument("batch exceeds the CUDA grid limit");
-  const size_t shmem = bt_solve_shmem(shape.ni);
-  err = bt_shared_fits(shmem, bt_opt_in(device));
+  const int threads = bt_threads(shape.ni);
+  bool one_buf = false;
+  err = bt_choose(device, shape.batch, reinterpret_cast<const void*>(bt_solve_kernel<false>),
+                  bt_solve_shmem(shape.ni, false),
+                  reinterpret_cast<const void*>(bt_solve_kernel<true>),
+                  bt_solve_shmem(shape.ni, true), threads, &one_buf);
   if (err.failure()) return err;
-  bt_solve_kernel<<<static_cast<unsigned int>(shape.batch), bt_threads(shape.ni), shmem, stream>>>(
-      lu.typed_data(), perm.typed_data(), sup.typed_data(), sub.typed_data(),
-      rhs.typed_data(), x->typed_data(), shape.nz, shape.ni, s);
+  const auto kernel = one_buf ? bt_solve_kernel<true> : bt_solve_kernel<false>;
+  kernel<<<static_cast<unsigned int>(shape.batch), threads, bt_solve_shmem(shape.ni, one_buf),
+           stream>>>(lu.typed_data(), perm.typed_data(), sup.typed_data(), sub.typed_data(),
+                     rhs.typed_data(), x->typed_data(), shape.nz, shape.ni, s);
   return bt_launch_status();
 }
 

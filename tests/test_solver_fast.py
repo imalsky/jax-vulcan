@@ -149,14 +149,7 @@ def compare(diag, sup, sub, rhs, tans, seed=1):
 def test_fast_matches_reference_on_random_system(fast):
     diag, sup, sub, rhs = _system(120, 93, 42, boost=1e10, scale=1e-3)
     tans = _system(120, 93, 43, boost=0.0, scale=1e-3)
-    try:
-        r = compare(diag, sup, sub, rhs, tans)
-    except Exception as e:
-        # ni = 93 needs ~136 KB of shared memory per block: a GH200 has it, a
-        # sm_89 card (~99 KB) does not, and the kernel refuses rather than fall back.
-        if fast.BACKEND == "ffi" and "shared memory per block" in str(e):
-            pytest.skip(f"this GPU cannot hold the ni=93 block: {e}".splitlines()[0])
-        raise
+    r = compare(diag, sup, sub, rhs, tans)
     if fast.BACKEND == "fast":
         assert r["primal_equal"], r
     else:
@@ -213,18 +206,10 @@ def _cuda_device():
     return dev
 
 
-@pytest.mark.parametrize("nz,ni,kind", [
-    (1, 5, "random"), (3, 16, "random"), (4, 33, "random"), (6, 64, "random"),
-    (3, 16, "tie"), (3, 16, "singular"),
-])
-def test_cuda_kernel_matches_cpu_kernel(nz, ni, kind):
-    """Raw factor and solve (one rhs and a stack on the same factors) of the
-    CUDA kernel against the CPU kernel, on blocks without a diagonal boost so
-    rows swap. `tie`: rows 2 and 5 tie for the first pivot (bit-equal |a|),
-    and the smaller row must win on both. `singular`: a duplicated row gives
-    a zero pivot, and both kernels must put the same inf/nan in the same
-    places. Permutations are equal, finite values within KERNEL_RTOL."""
-    dev = _cuda_device()
+def _kernel_case(nz, ni, kind):
+    """Blocks without a diagonal boost, so rows swap. `tie`: rows 2 and 5 tie
+    for the first pivot (bit-equal |a|). `singular`: a duplicated row gives a
+    zero pivot."""
     d, s, c, r = (np.array(a) for a in _system(nz, ni, ni, boost=0.0, scale=1.0))
     if kind == "tie":
         d[0, 2, 0] = 10.0 * np.abs(d[0, :, 0]).max()
@@ -232,6 +217,21 @@ def test_cuda_kernel_matches_cpu_kernel(nz, ni, kind):
         d[0, 5, 0] = -d[0, 2, 0]
     elif kind == "singular":
         d[0, 3] = d[0, 1]
+    return d, s, c, r
+
+
+@pytest.mark.parametrize("nz,ni,kind", [
+    (1, 5, "random"), (3, 16, "random"), (4, 33, "random"), (6, 64, "random"),
+    (3, 16, "tie"), (3, 16, "singular"),
+])
+def test_cuda_kernel_matches_cpu_kernel(nz, ni, kind):
+    """Raw factor and solve (one rhs and a stack on the same factors) of the
+    CUDA kernel against the CPU kernel (`_kernel_case`). On `tie` the smaller
+    row must win on both; on `singular` both kernels must put the same inf/nan
+    in the same places. Permutations are equal, finite values within
+    KERNEL_RTOL."""
+    dev = _cuda_device()
+    d, s, c, r = _kernel_case(nz, ni, kind)
     rs = np.stack([r, 2.0 * r, -r])
 
     def run(device):
@@ -260,11 +260,14 @@ def test_cuda_kernel_matches_cpu_kernel(nz, ni, kind):
 
 
 _SANITIZER_CHILD = r"""
+import os
 import jax, jax.numpy as jnp, numpy as np
 jax.config.update("jax_enable_x64", True)
 import vulcan_jax.solver_fast as fast_mod
 dev = jax.devices("cuda")[0]
-for nz, ni in [(1, 5), (3, 16), (4, 33), (6, 64)]:
+# ni 89 (the SNCHO network) in the one-buffer run only: two buffers exceed a sm_89 card
+one_buf = os.environ["VULCAN_JAX_BT_BUFFERS"] == "1"
+for nz, ni in [(1, 5), (3, 16), (4, 33), (6, 64)] + [(3, 89)] * one_buf:
     rng = np.random.default_rng(ni)
     d, s, c, r = (jax.device_put(jnp.asarray(a), dev) for a in (
         rng.standard_normal((nz, ni, ni)), rng.standard_normal((nz - 1, ni)),
@@ -276,13 +279,14 @@ for nz, ni in [(1, 5), (3, 16), (4, 33), (6, 64)]:
 """
 
 
+@pytest.mark.parametrize("buffers", ["1", "2"])
 @pytest.mark.parametrize("tool", ["memcheck", "racecheck", "synccheck", "initcheck"])
-def test_cuda_kernel_under_compute_sanitizer(tool):
+def test_cuda_kernel_under_compute_sanitizer(tool, buffers):
     """Opt-in: set VULCAN_JAX_COMPUTE_SANITIZER to the compute-sanitizer
     binary. The CUDA factor and a stacked solve on small pivoting shapes run
-    under each tool, and any report fails. XLA's platform allocator gives each
-    buffer its own allocation, so memcheck sees an overrun past it; command
-    buffers are off, so the launches are plain."""
+    under each tool, one- and two-buffer kernels, and any report fails. XLA's
+    platform allocator gives each buffer its own allocation, so memcheck sees
+    an overrun past it; command buffers are off, so the launches are plain."""
     exe = os.environ.get("VULCAN_JAX_COMPUTE_SANITIZER")
     if not exe:
         pytest.skip("set VULCAN_JAX_COMPUTE_SANITIZER to the compute-sanitizer binary to run")
@@ -290,10 +294,95 @@ def test_cuda_kernel_under_compute_sanitizer(tool):
         pytest.skip(f"{fast_mod._CUDA_LIB.name} not built (python -m vulcan_jax.solver_fast --cuda)")
     env = {k: v for k, v in os.environ.items() if k != "JAX_PLATFORMS"}
     env.update(XLA_PYTHON_CLIENT_ALLOCATOR="platform", XLA_PYTHON_CLIENT_PREALLOCATE="false",
-               XLA_FLAGS="--xla_gpu_enable_command_buffer=")
+               XLA_FLAGS="--xla_gpu_enable_command_buffer=", VULCAN_JAX_BT_BUFFERS=buffers)
     res = subprocess.run([exe, "--tool", tool, "--error-exitcode", "1", sys.executable, "-c",
                           _SANITIZER_CHILD], capture_output=True, text=True, env=env, timeout=600)
     assert res.returncode == 0, res.stdout[-4000:] + res.stderr[-4000:]
+
+
+# The one- and two-buffer CUDA kernels run the same operations in the same
+# order, so their outputs must be equal byte for byte, nan payloads included.
+# VULCAN_JAX_BT_BUFFERS is read once per process, so each variant runs in its
+# own child; the child captures the stage-1 systems on the CPU and returns
+# them too, so the comparison also proves both children solved the same bytes.
+BUFFER_DTS = (3.8e4, 1e6, 1e11)
+_BUFFER_NETS = {  # fixture, config, the child's network environment
+    "HD189": ("adj_state_hd189.npz", {"VULCAN_JAX_NETWORK": "thermo/NCHO_photo_network.txt"}),
+    "W39b": ("adj_state_w39b.npz", {"VULCAN_JAX_NETWORK": "thermo/SNCHO_photo_network.txt",
+                                    "VULCAN_JAX_ATOM_LIST": "H,O,C,N,S"}),
+}
+_BUFFERS_CHILD = r"""
+import os, sys
+import numpy as np
+repo, fixture, cfg_name, out = sys.argv[1:5]
+sys.path.insert(0, os.path.join(repo, "tests"))
+import jax, jax.numpy as jnp
+from test_solver_fast import BUFFER_DTS, _kernel_case, capture_stage1
+import vulcan_jax.solver_fast as fast_mod
+cpu, dev = jax.devices("cpu")[0], jax.devices("cuda")[0]
+with jax.default_device(cpu):
+    cases = {f"dt{dt:g}": [np.asarray(a) for a in capture_stage1(fixture, cfg_name, dt)]
+             for dt in BUFFER_DTS}
+if cfg_name == "HD189":
+    cases.update((kind, _kernel_case(3, 16, kind)) for kind in ("tie", "singular"))
+res = {}
+for name, (d, s, c, r) in cases.items():
+    a = [jax.device_put(jnp.asarray(v), dev) for v in (d, s, c, np.stack([r, 2.0 * r, -r]))]
+    lu, perm = jax.jit(fast_mod._ffi_factor)(*a[:3])
+    x = jax.jit(jax.vmap(fast_mod._ffi_solve, in_axes=(None, None, None, None, 0)))(lu, perm, *a[1:])
+    for k, v in zip(("diag", "sup", "sub", "rhs", "lu", "perm", "x"), (d, s, c, r, lu, perm, x)):
+        res[f"{name}/{k}"] = np.asarray(v)
+np.savez(out, **res)
+"""
+
+
+@pytest.fixture(scope="module")
+def buffer_variants(tmp_path_factory):
+    """Per network, each variant's child output ({"2": ..., "1": ...}), or the
+    reason the two-buffer kernel cannot run on this device."""
+    runs = {}
+
+    def run(net):
+        if net in runs:
+            return runs[net]
+        fixture, net_env = _BUFFER_NETS[net]
+        out, tmp = {}, tmp_path_factory.mktemp(net)
+        for buffers in ("2", "1"):
+            env = {k: v for k, v in os.environ.items() if k != "JAX_PLATFORMS"}
+            env.update(net_env, VULCAN_JAX_BT_BUFFERS=buffers)
+            path = tmp / f"buffers{buffers}.npz"
+            res = subprocess.run([sys.executable, "-c", _BUFFERS_CHILD, str(ROOT), fixture, net,
+                                  str(path)], capture_output=True, text=True, env=env, cwd=ROOT,
+                                 timeout=900)
+            if buffers == "2" and res.returncode and "shared memory per block" in res.stderr:
+                runs[net] = next(ln for ln in res.stderr.splitlines() if "shared memory per block" in ln)
+                return runs[net]
+            assert res.returncode == 0, res.stdout[-4000:] + res.stderr[-4000:]
+            out[buffers] = dict(np.load(path))
+        runs[net] = out
+        return out
+
+    return run
+
+
+@pytest.mark.parametrize("net,case", [(net, f"dt{dt:g}") for net in _BUFFER_NETS for dt in BUFFER_DTS]
+                         + [("HD189", "tie"), ("HD189", "singular")])
+def test_one_buffer_kernels_are_bitwise_the_two_buffer_ones(net, case, buffer_variants):
+    """Factor (lu, perm) and a three-rhs solve on shared factors (x) of the
+    one-buffer kernels against the two-buffer ones: the real stage-1 blocks of
+    both networks at the run's dt, 1e6 and dt_max, and `_kernel_case`'s tie
+    and singular blocks."""
+    _cuda_device()
+    fixture = _BUFFER_NETS[net][0]
+    if not (ROOT / "tests" / "data" / fixture).exists():
+        pytest.skip(f"{fixture} missing")
+    runs = buffer_variants(net)
+    if isinstance(runs, str):
+        pytest.skip(f"two-buffer kernel does not fit this GPU: {runs}")
+    two, one = runs["2"], runs["1"]
+    for k in ("diag", "sup", "sub", "rhs", "lu", "perm", "x"):
+        assert two[f"{case}/{k}"].tobytes() == one[f"{case}/{k}"].tobytes(), k
+    assert np.isfinite(one[f"{case}/x"]).all() != (case == "singular")
 
 
 def capture_stage1(fixture: str, cfg_name: str, dt: float):

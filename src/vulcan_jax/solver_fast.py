@@ -17,12 +17,14 @@ Same call shape as `solver.py`: `factor(diag, sup_d, sub_d)` once, then
    `ffi` is unsupported; use `fast` or `reference`.
 
 On a CUDA device the `ffi` backend runs `csrc/block_thomas_cuda.cu`, the same
-math and layout with one thread block per lane: the `ni x ni` block and the
-previous layer's inverse sit in dynamic shared memory, pivoting is in-block and
-the whole `nz` loop stays in the kernel, so a Ros2 step costs one factor launch
-and two solve launches. It is built only by `python -m vulcan_jax.solver_fast
---cuda` on a host with nvcc; without the library nothing changes here and a
-device call under `ffi` fails loudly at dispatch.
+math and layout with one thread block per lane: the `ni x ni` block (and, in
+the two-buffer variant, the previous layer's inverse) sits in dynamic shared
+memory, pivoting is in-block and the whole `nz` loop stays in the kernel, so a
+Ros2 step costs one factor launch and two solve launches. Each call picks the
+one- or two-buffer variant (bitwise equal) by batch width and the device's
+limits; `VULCAN_JAX_BT_BUFFERS=1|2` forces one. It is built only by `python
+-m vulcan_jax.solver_fast --cuda` on a host with nvcc; without the library
+nothing changes here and a device call under `ffi` fails loudly at dispatch.
 
 `jax_step` imports this module by default; `VULCAN_JAX_SOLVER=reference`
 restores the plain `solver.py` pair for A/B, and `ffi` selects the C++ kernel.
