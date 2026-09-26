@@ -12,7 +12,6 @@ Jupiter example with an analytical Heng+14 T-P so no atm file is read.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -155,7 +154,3 @@ def test_nh3_conden_batch_subprocess():
 
     res = run_child(_CHILD, network=CONDEN_NETWORK, label="NH3 batched-conden", timeout=1800)
     assert "PASS" in res.stdout, res.stdout
-
-
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-q", "-s"]))

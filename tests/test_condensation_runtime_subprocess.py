@@ -13,7 +13,6 @@ actually moves mass into `H2O_l_s` (full runner conden path).
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -119,7 +118,3 @@ def test_condensation_runtime_subprocess():
     assert "SETTLING_OK" in res.stdout, res.stdout
     assert "CONDEN_OK" in res.stdout, res.stdout
     assert res.stdout.strip().endswith("PASS")
-
-
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-q", "-s"]))

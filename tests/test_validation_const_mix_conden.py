@@ -11,7 +11,6 @@ H2S alone (saturation capping, no kinetics) is master-legal and must pass.
 from __future__ import annotations
 
 import os
-import sys
 from pathlib import Path
 
 import pytest
@@ -50,7 +49,3 @@ def test_kinetics_set_matches_sat_set():
 
     assert set(SUPPORTED_CONDEN_KINETICS) <= set(_SUPPORTED_CONDENSABLES)
     assert set(_SUPPORTED_CONDENSABLES) - set(SUPPORTED_CONDEN_KINETICS) == {"H2S"}
-
-
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-q"]))

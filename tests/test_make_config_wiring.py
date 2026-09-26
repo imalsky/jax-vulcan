@@ -13,7 +13,6 @@ With a make_config() namespace distinct from the global, this file pins:
 from __future__ import annotations
 
 import os
-import sys
 import warnings
 from pathlib import Path
 
@@ -240,7 +239,3 @@ def test_clip_fn_degenerate_layer_stays_finite():
         assert bool(jnp.all(jnp.isfinite(ymix_new))), (
             f"clip produced non-finite ymix (non_gas_present={non_gas_present})"
         )
-
-
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-q"]))

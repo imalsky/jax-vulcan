@@ -166,7 +166,3 @@ def test_lindemann_with_zero_k_inf_is_the_zero_rate_limit():
 
     with pytest.raises(ValueError, match="same shape"):
         rates_jax.compute_forward_k(net, T, M[:1])
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

@@ -222,7 +222,3 @@ def test_vm_mode_kernel_matches_reference():
         ("sub", sub_prod, sub_ref),
     ):
         assert _relerr(p, r) < BLOCK_RTOL, f"vm-mode {label} block disagrees"
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

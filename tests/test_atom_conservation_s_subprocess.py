@@ -14,7 +14,6 @@ injected SO2 defect is driven to machine-zero, mutating only reservoir rows;
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -128,7 +127,3 @@ def test_atom_conservation_s_subprocess():
     res = run_child(_CHILD, network=S_NETWORK, label="sulfur conservation")
     assert "ENABLED atoms=5" in res.stdout, res.stdout
     assert res.stdout.strip().endswith("PASS"), res.stdout
-
-
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-q", "-s"]))

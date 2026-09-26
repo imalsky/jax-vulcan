@@ -11,7 +11,6 @@ lanes' cross sections, photo firing and results differ; (3)
 from __future__ import annotations
 
 import os
-import sys
 import warnings
 from pathlib import Path
 
@@ -256,7 +255,3 @@ def test_refill_on_a_photo_tick_applies_photolysis_once():
     )
     for name, refilled, own in zip(fields, pair, alone):
         assert np.array_equal(np.asarray(refilled[1]), np.asarray(own[0])), name
-
-
-if __name__ == "__main__":
-    sys.exit(main())

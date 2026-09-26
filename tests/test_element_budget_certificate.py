@@ -182,7 +182,3 @@ def test_shipped_configs_declare_the_budget_tolerance():
         elif float(raw["element_budget_tol"]) > 1e-2:
             loose.append(os.path.basename(path))
     assert not undeclared and not loose, (undeclared, loose)
-
-
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-v"]))

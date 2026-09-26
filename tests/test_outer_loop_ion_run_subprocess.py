@@ -14,7 +14,6 @@ compute_Jion_jax fired inside the loop; (C) per-layer charge neutrality to
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 
 import pytest
@@ -193,7 +192,3 @@ def test_ion_chemistry_end_to_end(tmp_path):
     for marker in ("A WIRED", "B IONS", "C NEUTRAL", "D STABLE"):
         assert marker in res.stdout, f"missing {marker!r} stage:\n{res.stdout}"
     assert res.stdout.strip().endswith("PASS"), res.stdout
-
-
-if __name__ == "__main__":
-    sys.exit(pytest.main([__file__, "-q", "-s"]))

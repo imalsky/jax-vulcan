@@ -261,7 +261,3 @@ def test_repair_tridiagonal_solve_is_lapack_gtsv_with_its_tangent(hd189_state):
     dl3, d3, du3 = (jnp.array(v)[:, None] for v in ((0.0, -1.0, 2.0), (2.0, 1.0, 4.0), (-2.0, -3.0, 0.0)))
     x3 = js._tridiagonal_solve(dl3, d3, du3, jnp.ones((3, 1)))
     assert bool(jnp.allclose(x3[:, 0], jnp.array([2.0, 1.5, -0.5]), rtol=0, atol=1e-15)), x3
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

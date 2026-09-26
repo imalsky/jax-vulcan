@@ -10,7 +10,6 @@ recomputes cross x aflux on the host, so it is held to WRITER_RTOL.
 from __future__ import annotations
 
 import os
-import sys
 import warnings
 from pathlib import Path
 
@@ -225,7 +224,3 @@ def main() -> int:
 def test_main():
     """Pytest wrapper around main()."""
     assert main() == 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

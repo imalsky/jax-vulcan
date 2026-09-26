@@ -14,7 +14,6 @@ covered by test_vmap_step.py). Pins:
 from __future__ import annotations
 
 import os
-import sys
 import warnings
 from pathlib import Path
 
@@ -206,7 +205,3 @@ def main() -> int:
 @pytest.mark.strict_isolation
 def test_main():
     assert main() == 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
