@@ -579,7 +579,7 @@ def _assert_network_matches_import(cfg) -> None:
 
     try:
         want_net = _net_mod.parse_network(want_path)
-    except Exception as exc:
+    except (OSError, ValueError) as exc:
         # Announce the skip (skipped != passed), as the com_file guard does.
         warnings.warn(
             f"network import-lock guard could not parse cfg.network={want_path!r} "
@@ -627,7 +627,7 @@ def _assert_com_file_matches_import(cfg) -> None:
                 return  # same table content at a different vendored path
     except FileNotFoundError:
         pass  # requested table is missing -> definitely a mismatch
-    except Exception as exc:
+    except OSError as exc:
         # Announce the skip (skipped != passed); a silent return reads as a pass.
         warnings.warn(
             f"com_file import-lock guard could not compare tables "

@@ -1744,14 +1744,11 @@ def audit_adjoint_scope(
         )
         clip_dead_worst = float(_rel_dead.max())
 
-    if species is None:
-        try:  # label with the import-locked network when the width matches
-            from . import chem_funs
+    if species is None:  # label with the import-locked network when the width matches
+        from . import chem_funs
 
-            if len(chem_funs.spec_list) == y_np.shape[1]:
-                species = list(chem_funs.spec_list)
-        except Exception:
-            species = None
+        if len(chem_funs.spec_list) == y_np.shape[1]:
+            species = list(chem_funs.spec_list)
 
     order = np.argsort(rel.ravel())[::-1][: max(0, int(top_k))]
     worst_cells = []

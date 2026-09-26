@@ -172,12 +172,11 @@ def _bin_cross_and_branches(
                 ratio_raw[br_key],
                 bins,
             )
-        except Exception:
-            print(
+        except ValueError as e:
+            raise ValueError(
                 "The branches in the network file do not match the "
                 f"branching ratio file for {sp} ({br_key})"
-            )
-            raise
+            ) from e
         branches[i] = disso_at_bins * ratio_at_bins
     return cross_at_bins, branches
 

@@ -183,7 +183,7 @@ def _compare_cfgs(master_cfg: Path) -> list[str]:
     if "gs" in master:
         try:
             jax_gs = surface_gravity(jax_cfg)
-        except Exception as exc:  # noqa: BLE001 - surface the failure loudly
+        except Exception as exc:  # noqa: BLE001 - aggregated audit: record it, keep checking
             errors.append(f"JAX surface_gravity(HD189) failed: {exc!r}")
         else:
             if not math.isclose(float(master["gs"]), jax_gs, rel_tol=_GRAVITY_RTOL):

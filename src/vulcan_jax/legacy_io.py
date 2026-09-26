@@ -565,10 +565,7 @@ class Output(object):
             val = getattr(self._cfg, key)
             if callable(val) or isinstance(val, type) or hasattr(val, "__loader__"):
                 continue
-            try:
-                lines.append(f"{key} = {val!r}")
-            except Exception:
-                continue
+            lines.append(f"{key} = {val!r}")
         out_path = os.path.join(target_dir, "cfg_" + out_name[:-3] + "txt")
         with open(out_path, "w") as f:
             f.write("\n".join(lines) + "\n")
