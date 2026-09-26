@@ -2565,6 +2565,15 @@ class OuterLoop:
             ),
         )
 
+    def _gas_mask(self, atm) -> np.ndarray:
+        """(ni,) gas-species mask: `atm.gas_indx` when `non_gas_sp` is set,
+        else all True."""
+        if not self._cfg.non_gas_sp:
+            return np.ones(_NETWORK.ni, dtype=bool)
+        mask = np.zeros(_NETWORK.ni, dtype=bool)
+        mask[np.asarray(atm.gas_indx, dtype=int)] = True
+        return mask
+
     def _ensure_runner(self, var, atm) -> None:
         """Build the JIT'd runner on the first call; cached for subsequent."""
         if self._runner is not None:
@@ -2573,13 +2582,7 @@ class OuterLoop:
         nz = atm.Tco.shape[0]
         ni = _NETWORK.ni
 
-        # Gas index mask (ni,) — used only when non_gas_sp is non-empty.
-        gas_mask_np = np.zeros(ni, dtype=bool)
-        if self._cfg.non_gas_sp and hasattr(atm, "gas_indx"):
-            gas_mask_np[np.asarray(atm.gas_indx, dtype=int)] = True
-        else:
-            gas_mask_np[:] = True
-        gas_mask_jnp = jnp.asarray(gas_mask_np)
+        gas_mask_jnp = jnp.asarray(self._gas_mask(atm))
 
         # condense_zero_mask (nz, ni) -- True where delta is zeroed; all False
         # unless use_condense (condense_sp + non_gas_sp).
@@ -2708,21 +2711,21 @@ class OuterLoop:
         # Derive everything from the PhotoStaticInputs pytree; lazily build it
         # via Ros2JAX's own builder for unwired test sites.
         odesolver = self.odesolver
-        photo_static = getattr(odesolver, "_photo_static", None)
-        if photo_static is None and hasattr(odesolver, "_ensure_photo_static"):
+        photo_static = odesolver._photo_static
+        if photo_static is None:
             photo_static = odesolver._ensure_photo_static(var, atm)
 
-        photo_data = getattr(odesolver, "_photo_data", None)
+        photo_data = odesolver._photo_data
         if photo_data is None:
             photo_data = _photo_mod.photo_data_from_static(
                 photo_static, list(_NETWORK.species)
             )
             odesolver._photo_data = photo_data
-        photo_J_data = getattr(odesolver, "_photo_J_data", None)
+        photo_J_data = odesolver._photo_J_data
         if photo_J_data is None:
             photo_J_data = _photo_mod.photo_J_data_from_static(photo_static)
             odesolver._photo_J_data = photo_J_data
-        photo_ion_data = getattr(odesolver, "_photo_ion_data", None)
+        photo_ion_data = odesolver._photo_ion_data
         if self._cfg.use_ion:
             if photo_ion_data is None:
                 photo_ion_data = _photo_mod.photo_ion_data_from_static(photo_static)
@@ -2978,14 +2981,8 @@ class OuterLoop:
         var, atm, _ = _state_mod.legacy_view(rs, cfg=self._cfg)
         statics = self._build_statics(var, atm)
         refresh = self._build_refresh_static(atm)
-        ni = _NETWORK.ni
         nz = int(atm.Tco.shape[0])
-        gas_mask_np = np.zeros(ni, dtype=bool)
-        if self._cfg.non_gas_sp and hasattr(atm, "gas_indx"):
-            gas_mask_np[np.asarray(atm.gas_indx, dtype=int)] = True
-        else:
-            gas_mask_np[:] = True
-        conden = self._build_conden_static(var, atm, jnp.asarray(gas_mask_np))
+        conden = self._build_conden_static(var, atm, jnp.asarray(self._gas_mask(atm)))
         if conden is not None:
             c_Dg = jnp.asarray(conden.Dg_per_re, dtype=jnp.float64)
             c_sat_n = jnp.asarray(conden.sat_n_per_re, dtype=jnp.float64)
@@ -3215,7 +3212,7 @@ class OuterLoop:
             nega_y=float(state.nega_y),
             end_case=self._classify_end_case(state),
             switch_final_photo_frq=bool(state.is_final_photo_frq),
-            pic_count=int(getattr(rs_entry.params, "pic_count", 0)),
+            pic_count=int(rs_entry.params.pic_count),
             where_varies_most=jnp.asarray(
                 state.where_varies_most,
                 dtype=jnp.float64,
@@ -3353,7 +3350,7 @@ class OuterLoop:
         # (which does not carry the var.cross* dict surface).
         if (
             rs.photo_static is not None
-            and getattr(self.odesolver, "_photo_static", None) is None
+            and self.odesolver._photo_static is None
         ):
             self.odesolver._photo_static = rs.photo_static
 
@@ -3392,7 +3389,7 @@ class OuterLoop:
         var, atm, _ = _state_mod.legacy_view(rs, cfg=self._cfg)
         if (
             rs.photo_static is not None
-            and getattr(self.odesolver, "_photo_static", None) is None
+            and self.odesolver._photo_static is None
         ):
             self.odesolver._photo_static = rs.photo_static
         elif rs.photo_static is not None:

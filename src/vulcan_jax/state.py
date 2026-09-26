@@ -703,20 +703,14 @@ def _cfg_overlay(cfg):
         if name.startswith("_") or callable(val) or hasattr(val, "__loader__"):
             continue
         if hasattr(base, name):
-            try:
-                before[name] = copy.deepcopy(getattr(base, name))
-            except Exception:
-                before[name] = getattr(base, name)
+            before[name] = copy.deepcopy(getattr(base, name))
         else:
             added.append(name)
         # Copy mutable containers rather than aliasing: setup writes some
         # knobs in place through `base`, and a bare setattr would land those
         # writes in the CALLER's cfg, mutating it for a second run.
         if isinstance(val, (list, dict, set, bytearray)):
-            try:
-                val = copy.deepcopy(val)
-            except Exception:
-                pass  # uncopyable -> alias as before rather than fail setup
+            val = copy.deepcopy(val)
         setattr(base, name, val)
     try:
         yield
@@ -724,10 +718,7 @@ def _cfg_overlay(cfg):
         for name, val in before.items():
             setattr(base, name, val)
         for name in added:
-            try:
-                delattr(base, name)
-            except Exception:
-                pass
+            delattr(base, name)
 
 
 def _build_pre_loop_runstate(cfg, *, skip_chem_warmup: bool = False) -> RunState:

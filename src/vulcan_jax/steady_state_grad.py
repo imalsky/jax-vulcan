@@ -1391,7 +1391,7 @@ def make_body_terms(integ, converged_state, atm_static):
     atm_step = atm_static._replace(
         g=s.g, dzi=s.dzi, Hpi=s.Hpi, top_flux=s.top_flux, vs=s.vs
     )
-    if bool(st.use_vm_mol) and integ._refresh_static is not None:
+    if bool(st.use_vm_mol):
         from . import atm_refresh as _ar  # lazy: keep the module acyclic
 
         atm_step = atm_step._replace(
@@ -1415,17 +1415,15 @@ def make_body_terms(integ, converged_state, atm_static):
         use_vm_mol=jnp.asarray(s.hybrid_use_vm, dtype=jnp.float64)
     )
 
-    if integ._refresh_static is not None:
-        n_esc = int(np.asarray(integ._refresh_static.diff_esc_idx).size)
-        if n_esc > 0:
-            warnings.warn(
-                "diff_esc is active: the runner recomputes the diffusion-"
-                "limited escape flux from the top-layer densities; the "
-                "adjoint freezes top_flux at its converged value, so "
-                "d(phi_esc)/dy is dropped and TOA-coupled sensitivities are "
-                "leading-order only.",
-                stacklevel=2,
-            )
+    if int(np.asarray(integ._refresh_static.diff_esc_idx).size) > 0:
+        warnings.warn(
+            "diff_esc is active: the runner recomputes the diffusion-"
+            "limited escape flux from the top-layer densities; the "
+            "adjoint freezes top_flux at its converged value, so "
+            "d(phi_esc)/dy is dropped and TOA-coupled sensitivities are "
+            "leading-order only.",
+            stacklevel=2,
+        )
 
     started = bool(np.asarray(s.fix_species_started))
 
