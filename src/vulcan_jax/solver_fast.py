@@ -39,8 +39,10 @@ import ctypes
 import functools
 import os
 import platform
+import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import NamedTuple
 
@@ -160,8 +162,15 @@ def build(force: bool = False, cuda: bool = False) -> Path:
                f"-I{jax.ffi.include_dir()}"]
         if platform.system() == "Darwin":
             cmd += ["-undefined", "dynamic_lookup"]
-    cmd += [str(src), "-o", str(lib)]
-    subprocess.run(cmd, check=True)
+    # Compile in a private directory beside the library and rename it into
+    # place, so a concurrent first build never loads a half-written file.
+    tmp_dir = tempfile.mkdtemp(dir=lib.parent)
+    try:
+        tmp = os.path.join(tmp_dir, lib.name)
+        subprocess.run(cmd + [str(src), "-o", tmp], check=True)
+        os.replace(tmp, lib)
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
     return lib
 
 
