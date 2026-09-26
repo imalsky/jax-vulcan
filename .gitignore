@@ -5,8 +5,7 @@
 *.so
 *.dylib
 
-# Internal working documents (4-doc policy: README.md is the tracked
-# consumer-facing reference; CLAUDE.md, notes.md and todo.md are local-only).
+# Local-only working documents.
 CLAUDE.md
 notes.md
 todo.md
@@ -37,6 +36,7 @@ venv/
 .ruff_cache/
 .pytype/
 .pytest_cache/
+tests/.master_lock
 
 # Coverage
 .coverage
