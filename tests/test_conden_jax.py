@@ -162,7 +162,7 @@ def test_apply_h2o_relax_jax():
     nz, ni = 6, 3
     h2o_idx, h2o_l_s_idx = 0, 1
 
-    # Deliberately mix conden (y > sat) and evap (y < sat) layers.
+    # Mix conden (y > sat) and evap (y < sat) layers.
     y = np.zeros((nz, ni))
     sat = rng.uniform(0.1, 1.0, size=nz)
     y[:, h2o_idx] = sat * np.array([2.0, 0.5, 1.5, 0.3, 1.2, 0.8])

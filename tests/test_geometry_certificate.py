@@ -1,11 +1,9 @@
-"""The certified column must not depend on the geometry refresh cadence.
+"""The certified column does not depend on the geometry refresh cadence (C21).
 
-HD209 photo-off is the case that did: at `update_frq` 100 the run certified
-with its carried mu 26.3% off what the final ymix implies and its column
-1.56 in log VMR away from the `update_frq` 1 run (notes §1.10). The
-certificate now refreshes the geometry on its candidate step and requires
-mu/g/Hp/dzi/Hpi to move by less than `geom_conv_tol`; the two cadences then
-agree to 3e-3. A subprocess isolates the import-frozen chemistry network.
+The certificate refreshes geometry on its candidate step and requires
+mu/g/Hp/dzi/Hpi to move less than `geom_conv_tol`, so HD209 photo-off at
+update_frq 100 and 1 certify the same column (notes §1.10). Subprocess:
+import-frozen network.
 """
 
 import os

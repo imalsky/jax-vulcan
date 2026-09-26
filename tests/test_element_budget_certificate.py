@@ -1,7 +1,7 @@
 """The certificate's cumulative column element budget (C23).
 
 `loss_eps` rejects a step whose unweighted atom sum JUMPS; a slow drain walks
-past it (notes §1.12: a column certified having lost 21% of its sulfur).
+past it (notes §1.12).
 `budget_ok` closes that: the run accumulates the per-step change of every
 element's operator-weighted column, each step measured on the grid in force
 during it, normalised by the fixed t=0 column (`budget_ref`), and may end only
@@ -118,18 +118,10 @@ def test_certificate_requires_the_column_element_budget(drain, scale, reason, wh
     ],
 )
 def test_a_geometry_refresh_alone_never_moves_the_budget(err_c, reason, why):
-    """A refresh keeps y and changes dz, so it moves no atom and the budget
-    term must not move either -- in either direction.
-
-    The carry enters on a stale grid, compressed where the column's mass sits;
-    the refresh at the certificate candidate rebuilds the true dz and the
-    discrete integral grows by roughly 3x. `err_c` is the carbon error
-    accumulated before that refresh, stated twice: in `budget_err` (what the
-    shipped fixed-denominator term reads) and as the matching offset of
-    `budget_ref` (what a running reference would read at entry). A design that
-    shifts the reference on the refresh rescales the deficit by the geometry
-    factor -- -0.012 dilutes to -0.004 and certifies; the shipped term cannot.
-    """
+    """A refresh keeps y and changes dz, so it moves no atom and must not move
+    the budget: no error appears from nothing, and an accumulated -0.012 carbon
+    deficit is not diluted into tolerance by the refresh's ~3x change in the
+    discrete column."""
     import numpy as np
 
     import vulcan_jax.legacy_io as op
@@ -181,9 +173,7 @@ def test_a_geometry_refresh_alone_never_moves_the_budget(err_c, reason, why):
 
 
 def test_shipped_configs_declare_the_budget_tolerance():
-    """Every shipped config must DECLARE `element_budget_tol` (the runner has
-    no default: a physics knob that silently appears is how a certificate
-    stops meaning anything) and none may loosen it past the measured 1e-2."""
+    """Every shipped config declares `element_budget_tol` (the runner has no default) and none exceeds 1e-2."""
     undeclared, loose = [], []
     for path in sorted(glob.glob("src/vulcan_jax/configs/*.yaml")):
         raw = yaml.safe_load(Path(path).read_text())

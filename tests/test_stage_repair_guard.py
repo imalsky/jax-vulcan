@@ -1,26 +1,13 @@
-"""Guard on the Ros2 stage repair: a correction larger than its carrier cell
-can carry is skipped (`jax_step._REPAIR_MAX_CELL_FRAC`, per layer and atom,
-against `max(cell content, |raw stage change|)`).
+"""Guard on the Ros2 stage repair (`jax_step._REPAIR_MAX_CELL_FRAC`).
 
-The repair puts each atom's stage defect on a FIXED reservoir species
-(H2, H2O, CO, N2, H2S). Where that species is a trace in the layer the
-correction is 1e1 to 1e8 times the cell's own content and damages the cell
-instead of healing the layer: on the converged W39b column at dt 1e11 the
-unguarded repair drives H2S NEGATIVE across layers 83-94 (VMR 1e-8 to 2e-7,
-above the spectroscopic floor) where the raw solve is accurate to 1.1e-3
-(notes.md §1.13). A skipped correction leaves that layer's element budget
-open, which the certificate's cumulative term (C23) sees.
-
-Pins: (1) no H2S cell of that band is negative where the raw solve is
-positive, at dt 1e8 and 1e11 -- and the unguarded repair fails that, so the
-guard is what earns it (SNCHO, hence a subprocess: the network is
-import-frozen); (2) on the healthy HD189 column at dt 1e6 the p99 of the
-per-cell correction ratio stays under the 1.1e-2 of §1.13 and the guard
-clamps only the thermospheric exception that note names: H2O at 5923 K and
-6000 K, dissociated to a VMR of 5e-18 and below.
-
-`_REPAIR_MAX_CELL_FRAC = 0.0` drops every nonzero correction, so it IS the
-raw solve; `inf` is the unguarded repair.
+The repair puts each atom's stage defect on a fixed reservoir (H2, H2O, CO,
+N2, H2S); where that carrier is a trace the correction exceeds the cell and
+is skipped, leaving the layer's budget to the certificate (C23; notes
+§1.13). Pins: (1) on W39b layers 83-94 no H2S cell goes negative where the
+raw solve is positive, and the unguarded repair does invert one
+(subprocess: SNCHO is import-frozen); (2) on HD189 at dt 1e6 the guard
+clamps only dissociated carriers. `0.0` is the raw solve, `inf` the
+unguarded repair.
 """
 
 from __future__ import annotations
@@ -46,17 +33,10 @@ S_NETWORK = "thermo/SNCHO_photo_network.txt"
 BAND = slice(83, 95)  # W39b layers where H2S is a trace, not a reservoir
 _GAMMA = 1.0 + 2.0**-0.5
 
-# The band's H2S cells sit at VMR 1e-8 and the fixture is a converged solve
-# rebuilt on whatever machine runs the suite, so how many of them the UNGUARDED
-# repair inverts is a property of THAT column: 11-12 on the column that
-# motivated the guard (notes.md §1.13), 2-3 on the 0.15.0 EQ-seeded rebuild
-# (the unguarded stage-1 correction exceeds the cell in 2 of the 12 band cells
-# at dt 1e11, and those are the 2 the step inverts), 0 on the x86 runner of the
-# oracle workflow. The non-vacuity pin below is therefore read only off a
-# fixture built where it was measured AND on that machine (the arm64 fixture on
-# an x86 host inverts no cell), and pins only that the unguarded repair
-# inverts SOMETHING; what the guard itself must deliver -- no inverted cell --
-# is pinned everywhere.
+# How many band cells the unguarded repair inverts depends on the fixture's
+# column and host, so the non-vacuity pin runs only on a fixture built and
+# run on PINNED_MACHINE; the guard's own pin (no inverted cell) runs
+# everywhere.
 PINNED_MACHINE = "arm64"
 
 
@@ -164,14 +144,9 @@ def test_unguarded_repair_inverts_the_w39b_band(w39b_band_counts):
     reason="HD189 fixture missing (npz artifacts are gitignored)",
 )
 def test_guard_clamps_only_trace_carrier_cells_of_the_hd189_column():
-    """At dt 1e6 the p99 of the per-cell correction ratio on this healthy
-    column is 1.2e-5, under the 1.1e-2 of notes.md §1.13, and the guard
-    clamps only the thermospheric exception that note names: H2O at 5923 K
-    and 6000 K, where the carrier has dissociated (VMR 5e-18 and 3e-23) and
-    the correction is 1e4 to 1e8 times the cell. Stage 1 is bit-identical to
-    the unguarded repair on every other cell; stage 2 is not and carries no
-    identity pin -- the two dropped stage-1 corrections reach ~9000 cells
-    through the coupled solve."""
+    """At dt 1e6 the p99 per-cell correction ratio stays under 1.1e-2 (notes
+    §1.13), the guard clamps only carriers below VMR 1e-10, and stage 1 is
+    unchanged on every other cell."""
     import vulcan_jax.jax_step as jax_step
     args = ("adj_state_hd189.npz", "default", 1e6)
     y, g1, _ = stage_arrays(*args, jax_step._REPAIR_MAX_CELL_FRAC)

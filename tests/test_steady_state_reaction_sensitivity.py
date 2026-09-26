@@ -1,7 +1,7 @@
 """Tests for the production reverse-mode steady-state reaction sensitivity.
 
 Two layers:
-* Fast unit tests of the load-bearing algebra (zero mask, null-space
+* Fast unit tests of the algebra (zero mask, null-space
   deflation, projector, `dL/d(ln k)` chain rule); no converged column needed.
 * A slow HD189 fixture regression running the full adjoint against the
   documented finite-difference anchors; pays a ~10-20 min cold compile, so
@@ -55,10 +55,8 @@ def test_safe_inv_y_masks_exact_zeros():
 
 
 def test_conserved_null_basis_annihilates_atom_vectors():
-    """The deflation projector kills the analytic atom-count vectors. The
-    most load-bearing property: a wrong `dz`, a mis-sliced `compo`, or a
-    wrong log-space scaling all break it.
-    """
+    """The deflation projector kills the analytic atom-count vectors; a wrong
+    `dz`, a mis-sliced `compo` or a wrong log-space scaling breaks it."""
     rng = np.random.default_rng(0)
     nz, ni, n_atoms = 6, 4, 3
     y_star = jnp.asarray(rng.uniform(1.0, 10.0, size=(nz, ni)))
@@ -214,8 +212,8 @@ def test_hd189_reaction_sensitivity_regression():
     """Reproduce the HD189 CH4 finite-difference anchors at percent level.
 
     Full solver-map adjoint (defaults: body_dt=1e7, n_solves=3) on the saved
-    converged photo-off state. It lands ~0.7% vs FD, so the anchor tolerance
-    is 3%. Sign and top-6 ranking are the strongest assertions.
+    converged photo-off state. Sign and top-6 ranking are the strongest
+    assertions.
     """
     import vulcan_jax.chem_funs as chem_funs
     from vulcan_jax.jax_step import AtmStatic
@@ -227,8 +225,7 @@ def test_hd189_reaction_sensitivity_regression():
     dz = jnp.asarray(d["dz"])
     compo = jnp.asarray(d["compo"])
     _atm_fields = {k[5:]: jnp.asarray(d[k]) for k in d.files if k.startswith("atm__")}
-    # The fixture predates `diff_esc_mask`; HD189 ships `diff_esc: []`, so an
-    # all-False mask reproduces the state it was captured in.
+    # HD189 ships diff_esc: []; splice an all-False diff_esc_mask into fixtures that lack it.
     _atm_fields.setdefault("diff_esc_mask", jnp.zeros(y_star.shape[1], dtype=jnp.bool_))
     atm = AtmStatic(
         **_atm_fields,
@@ -264,9 +261,8 @@ def test_hd189_reaction_sensitivity_regression():
     # near the fixed point, so its atom-count vectors are only approximately
     # null; broken conservation still reads O(1).
     assert info["null_quality"] < 1e-2
-    # Solver-regime guards (calibrated per-twin residuals {0.29, 0.05, 0.10},
-    # spread 0.047): the ensemble MEDIAN residual must stay out of the
-    # stagnation regime; one wandering twin is tolerated.
+    # Median twin residual stays out of the stagnation regime (calibrated twins
+    # 0.05-0.29); one wandering twin is tolerated.
     assert float(np.median(info["resids"])) < 0.2, (
         f"median resid {np.median(info['resids']):.2e} — stagnation regime"
     )
@@ -274,9 +270,7 @@ def test_hd189_reaction_sensitivity_regression():
     assert info["ensemble_spread"] < 0.15, (
         f"ensemble spread {info['ensemble_spread']:.2e} — twins disagree"
     )
-    # pair_antisym can read O(1) even when the rows are FD-accurate, so it is
-    # NOT a strict gate here. Only assert it stays finite/bounded; FD
-    # agreement below is the real validation.
+    # pair_antisym can read O(1) on FD-accurate rows: bound it only; the FD check below is the validation.
     assert 0.0 <= info["pair_antisym"] <= 1.1, info["pair_antisym"]
     assert np.all(np.isfinite(dLdlnk))
 
@@ -285,8 +279,7 @@ def test_hd189_reaction_sensitivity_regression():
     top = np.argsort(np.abs(dLdlnk[: net.nr + 1]))[::-1][:6]
     assert 13 in top or 14 in top, f"dominant CH4 reaction missing from top-6: {top}"
 
-    # Percent-level FD agreement (measured ~0.7% on this fixture; 3% gives
-    # headroom).
+    # 3% bar: this fixture lands ~0.7% from FD.
     for r in (13, 14):
         rel = abs(dLdlnk[r] - HD189_FD_ANCHORS[r]) / abs(HD189_FD_ANCHORS[r])
         assert rel < 0.03, (

@@ -1,8 +1,8 @@
 """Verify every species' molecular mass is consistent with its atom counts.
 
 `thermo/all_compose.txt` lists, per species, the per-element atom counts and a
-molecular `mass`. A transcription error in the `mass` column (e.g. `NH3_l_s`
-once carried NH2's mass, 16.023 instead of 17.031) silently corrupts the mean
+molecular `mass`. A transcription error in the `mass` column (a whole-atom
+slip such as NH2's 16.023 for NH3_l_s) silently corrupts the mean
 molecular weight, settling velocity, and molecular diffusion for that species.
 
 This test recomputes each molecular mass from the atom counts and standard
@@ -58,8 +58,8 @@ _TOL = 0.12
 # The vendored upstream all_compose.txt defines these species twice (same atom
 # counts). Three pairs disagree in mass; production's first-wins `.index`
 # selects the values below. HCS's 45.178 sits 0.099 amu above its elemental
-# sum (the SECOND row's 45.079 is the consistent one) — an upstream data bug,
-# kept for parity: measured effect is ~7e-5 on one moldiff coefficient.
+# sum (the second row's 45.079 is the consistent one): an upstream data bug
+# kept for parity (~7e-5 on one moldiff coefficient).
 _KNOWN_DUPLICATE_SPECIES = {"C4H2", "CH3O2", "CH3OOH", "C2H4O", "CH3NO2", "HCS"}
 _KNOWN_FIRST_WINS_MASS = {"C2H4O": 44.054, "CH3NO2": 61.042, "HCS": 45.178}
 
@@ -137,7 +137,7 @@ def main() -> int:
                     )
                 break
 
-    # Explicit guard on the previously-wrong row.
+    # NH3_l_s must carry NH3's mass.
     if abs(mass_by_sp.get("NH3_l_s", 0.0) - 17.031) > 1e-6:
         ok = False
         print(f"FAIL: NH3_l_s mass {mass_by_sp.get('NH3_l_s')} != 17.031")

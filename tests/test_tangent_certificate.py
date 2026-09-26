@@ -1,16 +1,11 @@
-"""`OuterLoop.run_jvp` certifies the sensitivity, not only the state.
+"""`OuterLoop.run_jvp` certifies the tangent, not only the state (C22).
 
-A `jax.jvp` through the runner stops when the COLUMN certifies; the tangent
-carried alongside has its own relaxation and nothing checked it (from a
-converged warm start the column certifies at `count_min` with the tangent
-unrelaxed, planner notes §1.7). `run_jvp` holds the tangent's change over
-the same lookback, per cell over y, to the same two-branch tolerance as the
-column. Checked along d/d ln Kzz (a tangent in finite-difference-step units,
-`H`) on HD209 photo-off and on W39b photo-on -- the regime the planner's
-AD-build `dt_max` cap exists for (notes §1.15): the certified tangent must
-match a central difference of the primal runner, and continuing the SAME
-carry past the certificate must not move it. One subprocess per case isolates
-the import-frozen chemistry network.
+A `jax.jvp` through the runner stops when the column certifies, possibly
+with the tangent unrelaxed; `run_jvp` holds the tangent's change over the
+same lookback to the column's tolerance. Along d/d ln Kzz on HD209
+photo-off and W39b photo-on, the certified tangent matches a central
+difference and does not move when the carry continues. One subprocess per
+case (import-frozen network).
 """
 
 import os
@@ -21,14 +16,9 @@ import sys
 import pytest
 
 # case -> (config, use_photo, network, atom_list, vmr_floor, fd_signal_min).
-# Network and atom list are import-frozen, so each case needs its own child
-# process. `vmr_floor` is where a central difference still resolves the
-# derivative: 1e-8 photo-off (below it FD is roundoff on 1e-20 VMRs), 1e-4 on
-# the photo-on column. There 87 of the 2395 cells above 1e-8 -- trace C/N/S
-# radicals in the photolysis-dominated top 35 layers -- respond to +/-0.1 in
-# ln Kzz too nonlinearly to difference: their one-sided slopes differ by up to
-# a factor 4.9 (N, layer 133: forward -2.22, backward -0.45) and the certified
-# tangent lies inside that bracket on 86 of the 87. notes §1.10.
+# vmr_floor is where a central difference still resolves the derivative;
+# above 1e-8 on the photo-on column, top-layer radicals respond too
+# nonlinearly to +/-H (notes §1.10).
 CASES = {
     "HD209_photo_off": ("HD209", False, "thermo/NCHO_photo_network.txt",
                         "H,O,C,N", 1e-8, 0.1),

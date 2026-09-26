@@ -1,13 +1,9 @@
 """A non-finite state must never be scored as converged.
 
-Regression guard for the defect where `_conv_jax`'s masks — all `<`/`>`
-comparisons, which are False for NaN — silently dropped poisoned cells from
-the `longdy` maximum, so an all-NaN state read `longdy == 0.0` (*perfectly*
-converged) and the run reported `end_case=1` "Integration successful".
-VULCAN-master cannot do this: its `np.amax(longdy[ymix>0]/ymix[ymix>0])`
-(op.py:1055) reduces an empty selection and raises. The fix forces
-`longdy = +inf` on any non-finite `y`/`ymix` cell, reproducing master's "can
-never converge" semantics inside a jittable reduction.
+`<`/`>` masks are False for NaN. Without a guard, a poisoned cell drops out
+of the longdy maximum and an all-NaN state scores 0 (converged). Master's
+`np.amax(longdy[ymix>0]/...)` (op.py:1055) raises on the empty selection;
+`_longdy_reduce` instead forces +inf on any non-finite y/ymix cell.
 """
 
 from __future__ import annotations
@@ -51,10 +47,7 @@ def test_healthy_unconverged_state_is_not_converged():
 
 
 def test_single_nan_cell_cannot_improve_the_score():
-    """Poisoning the one cell carrying the signal must not erase it.
-
-    Pre-fix, NaN-ing that cell took longdy from 0.03996 to 0.0.
-    """
+    """Poisoning the one cell carrying the signal must not erase it."""
     y, ymix, y_old, n_0 = _mk()
     before = float(_longdy(y, ymix, y_old, n_0))
     y_bad = y.at[1, 2].set(jnp.nan)
@@ -105,14 +98,10 @@ def _delta(sol, delta_arr, ymix_old, *, atol=1e-2, mtol=1e-22):
 
 
 def test_sub_atol_cell_gives_a_finite_batch_independent_tangent():
-    """A density that is positive but below atol (and above the 1e-300 floor)
-    is masked out of both maxima, yet its cell passes the `> 0` guard. If the
-    masked numerator is divided by the raw tiny denominator, the division's
-    tangent is `0 * den**-2 = 0 * inf = NaN` there, and the `jnp.max` JVP
-    multiplies tangents by a 0/1 indicator (it does not select), so the max's
-    tangent is NaN -- except that XLA rewrites the unbatched multiply into a
-    select and hides it. The reductions must not rely on that: plain and
-    vmapped tangents are finite and equal (TOI-7169 b, S8 at 1e-160 cm^-3)."""
+    """A positive sub-atol cell (TOI-7169 b S8 at 1e-160) must give finite
+    plain and vmapped tangents that agree. A masked numerator over the raw tiny
+    denominator gives 0 * inf in the batched max tangent, which the unbatched
+    select rewrite hides."""
     y, ymix, y_old, n_0 = _mk()
     y = y.at[0, 1].set(1e-160)
     t = jnp.ones_like(y)

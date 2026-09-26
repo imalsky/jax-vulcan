@@ -18,10 +18,7 @@ os.chdir(ROOT)
 
 from oracle import oracle_dir_or_skip  # noqa: E402
 
-# The oracle location comes from $VULCAN_MASTER_DIR only, never a sibling
-# guess. The PARENT process verifies the pinned revision and a clean tree
-# (run_oracle_subprocess -> oracle_worktree -> require_oracle) and points
-# this at a temporary COPY; see oracle.oracle_dir_or_skip.
+# The parent verifies the pin and passes a temporary copy (oracle.oracle_dir_or_skip).
 VULCAN_MASTER = oracle_dir_or_skip("this diffusion comparison")
 
 warnings.filterwarnings("ignore")
@@ -162,17 +159,10 @@ def main() -> int:
     print(f"jac super block max relerr: {max_sup_err:.3e}")
     print(f"jac sub block max relerr:   {max_sub_err:.3e}")
 
-    # Tolerances (do not tighten without re-deriving):
-    # - operator 1e-3: He sits near diffusive equilibrium, so its net flux is
-    #   a ~12-digit cancellation of ~1e10 terms and the worst cell rides the
-    #   float64 roundoff floor (~3e-4) even though the formulas match
-    #   op.diffdf to ~1 ULP; the next legitimate signal is ~7e-6, so a real
-    #   bug stays catchable.
-    # - diag 2.0: extracting the ~1e-4 diff_jac residue from ~1e10 lhs terms
-    #   loses ~14 digits, and lhs_jac_tot itself is slightly inconsistent
-    #   with its own op.diffdf at heavy condensables (our Jacobian is the
-    #   correct one there; direct apply_diffusion vs diffdf is ~2e-6).
-    # - sup/sub 1e-10: no cancellation issue there.
+    # Bars: operator 1e-3 (He's net flux is a ~12-digit cancellation; worst
+    # cell ~3e-4 at the roundoff floor). diag 2.0 (the ~1e-4 diffusion residue
+    # is extracted from ~1e10 LHS terms, and lhs_jac_tot disagrees with
+    # op.diffdf at heavy condensables). sup/sub 1e-10 (no cancellation).
     ok = (
         relerr.max() < 1e-3
         and max_diag_err < 2.0

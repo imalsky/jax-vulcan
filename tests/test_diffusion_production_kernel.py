@@ -72,10 +72,7 @@ def main() -> int:
         denom = np.maximum(np.abs(ref), 1e-30 * max(np.abs(ref).max(), 1e-300))
         return float(np.max(np.abs(prod - ref) / denom))
 
-    # 1. Coefficient arrays at machine precision. Tolerance 1e-11: C_mol's
-    # FP-ordering noise rides up to ~2e-12 on some compositions (mean-molecular-
-    # weight gradient); eddy coeffs still land at ~5e-16, so real regressions
-    # stay visible.
+    # 1. Coefficients: 1e-11 (C_mol FP-ordering noise reaches ~2e-12; eddy terms ~5e-16).
     for label, p, r in (
         ("A_eddy", A_eddy, coeffs.A_eddy),
         ("B_eddy", B_eddy, coeffs.B_eddy),

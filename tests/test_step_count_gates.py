@@ -1,10 +1,9 @@
 """The CLI step-count gates: HD189 1495, HD209 1211, W39b 1202.
 
-A physics-neutral change keeps these counts exactly (CLAUDE.md parity rule
-3, notes §0). HD189_vulcan3 is left out: its 2603 is an arm64 count, and
-x86-64 ends on the hybrid phase-1 budget at 4018 (notes §1.13). Each run is
-a full integration (~2 min on one core), so the file is slow-gated; oracle.yml
-runs it in the release gate.
+A physics-neutral change keeps these counts (notes §0). HD189_vulcan3 is left
+out because its count is platform-dependent (notes §1.13). Each run is a full
+integration (~2 min on one core), so the file is slow-gated; oracle.yml runs
+it in the release gate.
 """
 
 from __future__ import annotations

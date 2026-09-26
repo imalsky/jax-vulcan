@@ -1,9 +1,7 @@
 """YAML config loader (`vulcan_jax.config`).
 
-Covers the authored-YAML surface that replaced the hand-written `vulcan_cfg`
-module: derived-value resolution, gravity from Mp/Rp, the CWD-first override,
-env-frozen knobs, and caller overrides. Durable across the module deletion
-(does not reference the old `vulcan_cfg` / `cfg_examples` sources).
+Covers derived-value resolution, gravity from Mp/Rp, the CWD-first override,
+env-frozen knobs, caller overrides and the dt_max cap.
 """
 
 from __future__ import annotations
@@ -25,12 +23,8 @@ from vulcan_jax.config import (
     validate_overrides,
 )
 
-# Adopted surface gravity (cm/s^2) each shipped config must reproduce via
-# g = G*Mp/Rp^2. default reproduces the historical HD189 Mp=1.118 m_jup value.
+# Surface gravity (cm/s^2) each shipped config must reproduce via g = G*Mp/Rp^2.
 _EXPECTED_GS = {
-    # default.yaml is HD189-flavored and must reproduce the adopted 2140
-    # (an earlier 2139.770515 pin enshrined a raw-literature-Mp slip that
-    # shifted photolysis J up to ~7%; see notes.md, Validation).
     "default": 2140.0,
     "HD189": 2140.0,
     "HD209": 936.0,
@@ -44,8 +38,7 @@ def test_expected_gs_covers_every_shipped_config():
     """A newly added config must not slip past this file's coverage.
 
     `_EXPECTED_GS` is hand-maintained; without this check a new
-    `configs/*.yaml` would silently go untested by every parametrized test
-    below (which is how HD189_vulcan3.yaml would have been missed).
+    `configs/*.yaml` would go untested by every parametrized test below.
     """
     from vulcan_jax._paths import PACKAGE_ROOT
 
@@ -92,8 +85,7 @@ def test_overrides_win_over_yaml_and_derived():
 def test_cwd_configs_override(tmp_path, monkeypatch):
     cfgdir = tmp_path / "configs"
     cfgdir.mkdir()
-    # A minimal config that reuses the packaged default's frozen knobs is not
-    # needed here; we only assert the CWD file is preferred and parsed.
+    # Asserts only that the CWD file is preferred and parsed.
     (cfgdir / "mine.yaml").write_text(
         textwrap.dedent(
             """

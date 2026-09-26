@@ -1,29 +1,11 @@
-"""Validate that the JAX runner is one-shot and the in-runner
-convergence check terminates the integration without Python-side polling.
+"""The runner is one-shot and its in-loop convergence check ends the run.
 
-Three assertions:
-
-  1. **Ring buffer + chronology**: a count_max=50 HD189 run leaves the
-     convergence ring holding min(count, conv_step) = 51 entries (the
-     runner exits when `accept_count > count_max`, so the final
-     accept_count is 51), in strictly increasing time order when read
-     from slot `(accept_count - L) % conv_step` on. The first entry is the
-     post-step-1 state (not the pre-loop initial state — matches
-     `op.save_step` semantics, which appends AFTER the accepted step). The
-     last entry equals the final `t`.
-
-  2. **longdy / longdydt populated**: after the runner returns,
-     `rs.step.longdy` and `rs.step.longdydt` are finite and positive (the
-     in-runner conv check ran and updated them at every accepted step).
-
-  3. **Single-shot termination via count_max**: with count_max=50, the
-     runner exits exactly when `accept_count > count_max`. The count
-     becomes 51 (50 accepted body iterations + the off-by-one
-     terminating attempt that triggers `>`) and end_case = 3
-     ("Maximal allowed steps exceeded").
-
-The ring buffer is sized at `conv_step` (500 by default), so 50 < 500 and
-it holds the full trajectory; longer runs overwrite the oldest slots.
+A count_max=50 HD189 run must:
+(1) leave the conv ring with 51 strictly increasing times, read from slot
+    (accept_count - L) % conv_step; the first is a post-step state (as
+    op.save_step) and the last is the final t;
+(2) leave longdy and longdydt finite and positive;
+(3) end with count == count_max + 1 and end_case 3.
 """
 
 from __future__ import annotations

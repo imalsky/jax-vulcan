@@ -3,9 +3,7 @@
 Pins that the NH3 cold-trap index rides `ProfileVars` per lane (not the
 runner closure): two cold Jupiter-like profiles with genuinely different
 cold-trap indices are run solo and batched on profile A's runner, and each
-lane must match its solo run for the abundant species (see the YMIX_FLOOR
-note in the child for why bitwise all-species agreement is impossible under
-vmap).
+lane must match its solo run on the abundant species (YMIX_FLOOR).
 
 The default import-locked network has no `NH3_l_s`, so the child selects the
 lowT Jupiter network via `$VULCAN_JAX_NETWORK`; config values follow master's
@@ -49,8 +47,7 @@ cfg = default_config()
 # where applicable); analytical T-P so the two profiles need no atm files.
 cfg.atm_type = "analytical"
 cfg.atm_base = "H2"
-# Deterministic fixed diffusion scheme for the batched regime (the new hybrid
-# default would flip schemes mid-run per lane).
+# Fixed diffusion scheme: the hybrid would flip schemes mid-run per lane.
 cfg.use_vm_mol = False
 cfg.use_hybrid_vm_mol = False
 cfg.nz = 60
@@ -121,20 +118,9 @@ batched = integA.run_batch(
 )
 out = outer_loop.unstack_integ_states(batched, 2)
 
-# Batch-vs-solo agreement is asserted on the abundant, well-conditioned
-# species (ymix > 1e-4: the H2/He bath, CH4, and the condensing gases
-# H2O/NH3). It CANNOT be asserted bitwise across all species: jax.vmap fuses
-# reductions in a different order than the scalar runner, so the batched and
-# solo trajectories diverge at the ULP level, and this stiff network amplifies
-# that chaotically in ill-conditioned trace radicals (C2H4, N, NO, ... at
-# <1e-10 abundance reach ~15% by convergence) while the abundant species stay
-# tight (~1e-5). All per-lane inputs and the step count are identical (the
-# stacked c_nh3_sat/k_arr differ by lane and accept_count matches solo) — only
-# FP associativity differs. The invariant this test targets, no per-lane state
-# leak (lane 0's cold-trap index / sat profile / Dg bleeding into lane 1),
-# would corrupt the abundant condensing gases: a leak drives relB ~0.1+ (the
-# original baked-index bug gave 0.16), far above the 1e-2 gate, so it is still
-# fully caught here.
+# vmap reorders reductions, so trace radicals (<1e-10) diverge chaotically
+# between batch and solo; only ymix > 1e-4 is compared. A per-lane leak
+# moves the condensing gases by ~0.1, far above the 1e-2 bar.
 YMIX_FLOOR = 1e-4
 
 def rel(b, r):

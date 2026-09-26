@@ -1,8 +1,6 @@
 """Shared test helpers: config pinning and child-process launching.
 
-Neither belongs in `oracle.py` -- nothing here touches the upstream VULCAN
-checkout, and importing that module would pull the oracle machinery into tests
-that never use it.
+Neither belongs in `oracle.py`: nothing here touches the upstream checkout.
 """
 
 from __future__ import annotations
@@ -18,14 +16,12 @@ ROOT = Path(__file__).resolve().parent.parent
 def fast_cfg(**overrides):
     """The process default config, pinned for a fast, quiet, isothermal run.
 
-    Mutates and returns the shared cached `default_config()` object, exactly as
-    the per-file `_pin_cfg` copies it replaces did -- callers rely on the
-    mutation being visible to later `default_config()` readers in the same
-    process.
+    Mutates and returns the shared cached `default_config()` object; callers
+    rely on the mutation being visible to later `default_config()` readers.
 
-    The diffusion-scheme knobs (`use_vm_mol`, `use_hybrid_vm_mol`) are
-    deliberately NOT pinned here: they are the system under test in
-    test_hybrid_vm_mol, so each caller sets them explicitly or not at all.
+    The diffusion-scheme knobs (`use_vm_mol`, `use_hybrid_vm_mol`) are not
+    pinned: test_hybrid_vm_mol tests them, so each caller sets them
+    explicitly.
     """
     from vulcan_jax.config import default_config
 

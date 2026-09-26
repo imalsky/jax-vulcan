@@ -12,7 +12,7 @@ Jacobian is block-tridiagonal with off-diagonal blocks diagonal in species,
 so they are represented as ni-vectors.
 
 VULCAN's lhs_jac_tot treats `ysum` as constant when differentiating;
-VULCAN-JAX matches this convention exactly.
+VULCAN-JAX matches this convention.
 
 Variants via the `mode` argument to build_diffusion_coeffs:
     'gravity'       diffdf:           central scheme (Hpi/ms*g/alpha terms)

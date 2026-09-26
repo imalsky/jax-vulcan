@@ -1,9 +1,7 @@
 """Validate JAX diffusion variants (vm / settling / settling_vm) against VULCAN.
 
-VULCAN's op.diffdf_vm and op.diffdf_settling provide reference NumPy
-implementations. We don't actually run end-to-end with these (use_vm_mol /
-use_settling configs are off in HD189), but the diffusion operators themselves
-can be validated on synthetic state with vm/vs populated.
+The vm, settling and settling_vm operators are checked against op.diffdf_vm /
+op.diffdf_settling on a synthetic state with vm/vs populated.
 """
 
 from __future__ import annotations
@@ -21,10 +19,7 @@ os.chdir(ROOT)
 
 from oracle import oracle_dir_or_skip  # noqa: E402
 
-# The oracle location comes from $VULCAN_MASTER_DIR only, never a sibling
-# guess. The PARENT process verifies the pinned revision and a clean tree
-# (run_oracle_subprocess -> oracle_worktree -> require_oracle) and points
-# this at a temporary COPY; see oracle.oracle_dir_or_skip.
+# The parent verifies the pin and passes a temporary copy (oracle.oracle_dir_or_skip).
 VULCAN_MASTER = oracle_dir_or_skip("this diffusion-variant comparison")
 warnings.filterwarnings("ignore")
 
@@ -104,12 +99,12 @@ def main() -> int:
     coeffs_setvm = diff_mod.build_diffusion_coeffs(data_var.y, data_atm, cfg_setvm)
     diff_setvm_jax = diff_mod.apply_diffusion(data_var.y, coeffs_setvm)
 
-    # KNOWN upstream self-inconsistency (do not "fix" us to match): master's
+    # Upstream inconsistency: master's
     # op.diffdf_settling_vm omits the vm advective term at j=0 while
     # op.diffdf_vm keeps it (vm_branch carries the same quirk). VULCAN-JAX
     # stays self-consistent at j=0 across all modes, so in the settling+vm
     # combo the two agree everywhere except the j=0 row, which differs by
-    # exactly the omitted vm bottom-flux term. Verify rows 1.. at the FP
+    # the omitted vm bottom-flux term. Verify rows 1.. at the FP
     # floor and pin the j=0 gap to that exact term.
     abs_floor3 = 1e-12 * np.abs(diff_setvm_ref).max()
     pseudo_relerr_setvm = np.abs(diff_setvm_jax[1:] - diff_setvm_ref[1:]) / np.maximum(
@@ -135,7 +130,7 @@ def main() -> int:
         f"diffdf_settling_vm j=0 gap == omitted vm term: max relerr = {j0_relerr.max():.3e}"
     )
 
-    # === All modes: also test that the original 'gravity' mode still works ===
+    # === gravity mode (default) ===
     diff_gravity_ref = np.asarray(odes.diffdf(data_var.y, data_atm), dtype=np.float64)
     cfg_gravity = _CfgShim(vulcan_cfg, use_vm_mol=False, use_settling=False)
     coeffs_gravity = diff_mod.build_diffusion_coeffs(data_var.y, data_atm, cfg_gravity)

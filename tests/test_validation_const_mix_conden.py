@@ -1,19 +1,11 @@
-"""Upfront-validation coverage for two master-parity failure modes.
+"""Up-front refusal of two configs master cannot run.
 
-1. `const_mix` keys that are not network species. VULCAN-master fails on
-   the same configuration (`build_atm.ini_y` calls `species.index(sp)`
-   unconditionally — its shipped Earth example crashes on 'Ar' at
-   `build_atm.py:200`), so inert/background gases are NOT live master
-   physics to port. `validate_runtime_config` rejects the config upfront
-   with an explanation rather than letting a bare `ValueError` surface deep
-   inside setup.
+1. A const_mix key that is not a network species: master's ini_y calls
+   species.index(sp) and fails (build_atm.py:200).
+2. A condense_sp entry outside the supported set: master's op.conden
+   leaves its rate at zero.
 
-2. `condense_sp` entries outside the supported condensate set. Master's
-   `op.conden` has explicit branches for {H2O, NH3, H2SO4, S2, S4, S8, C}
-   and silently leaves any other condensate's rate at zero; VULCAN-JAX
-   raises. The validator lists both tiers (kinetics vs sat-data-only H2S)
-   before any setup work runs. H2S alone stays master-legal (saturation
-   capping without conden kinetics) and must validate cleanly.
+H2S alone (saturation capping, no kinetics) is master-legal and must pass.
 """
 
 from __future__ import annotations

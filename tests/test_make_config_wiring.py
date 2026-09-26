@@ -5,7 +5,7 @@ With a make_config() namespace distinct from the global, this file pins:
     2. runner overrides (count_max) reach OuterLoop's static config,
     3. nothing leaks onto the global vulcan_cfg module afterward,
     4. an import-locked-network override fails fast with a clear message,
-    5. the clip normalization stays finite on a degenerate all-zero layer.
+    5. the clip normalization stays finite on a degenerate all-zero layer,
     6. an OuterLoop refuses a RunState that has already run, and a second
        fresh RunState's result reports its own atoms.
 """
@@ -131,12 +131,10 @@ def test_output_reads_cfg_not_global():
 
 
 
-# Import-locked knob refusals: network/atom_list/com_file are frozen at the
-# first `import vulcan_jax`, so a conflicting make_config value must fail
-# FAST with a clear message ($VULCAN_JAX_NETWORK / "import-locked"), never
-# the cryptic k_arr shape error 30 s into setup. One case per conflict class;
-# the two synthetic networks prove species+nr equality is NOT sufficient
-# (the codegen RHS and k_arr indexing are order- and identity-specific).
+# Import-frozen knobs (network, atom_list, com_file): a conflicting
+# make_config value must raise at setup with a clear message, not a
+# downstream k_arr shape error. The reordered and renamed networks show that
+# equal species and nr counts are not sufficient.
 def _case_alternate(tmp_path):
     return dict(network="thermo/SNCHO_photo_network.txt"), "import-locked"
 
@@ -209,7 +207,7 @@ def test_save_cfg_serializes_active_cfg(tmp_path, monkeypatch):
     dest = tmp_path / "dest"
     work.mkdir()
     dest.mkdir()
-    monkeypatch.chdir(work)  # cwd deliberately != dname
+    monkeypatch.chdir(work)  # cwd != dname
     legacy_io.Output(cfg=cfg).save_cfg(str(dest))
     content = (dest / cfg.output_dir / "cfg_custom.txt").read_text()
     assert "count_max = 7" in content
@@ -232,9 +230,8 @@ def test_clip_fn_degenerate_layer_stays_finite():
             [-1e-25, -1e-25, -1e-25],  # all negative -> all clip to 0 (0/0 risk)
         ]
     )
-    # No ymix argument: master's second clip rule tests the POST-solve ymix,
-    # which reduces to "zero every negative" (see _clip_prologue), so the
-    # closure never needed the previous step's mixing ratios.
+    # No ymix argument: master's second clip rule reads the post-solve ymix,
+    # which reduces to "zero every negative" (see _clip_prologue).
     for non_gas_present in (False, True):
         clip = _make_clip_fn(
             non_gas_present, gas_mask, pos_cut=1e-20, nega_cut=-1e-20

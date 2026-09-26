@@ -202,9 +202,9 @@ def _run(cfg_kw, state_kw, terms, photo_recompute_k):
 def test_scope_findings_match_expected_severities(
     cfg_kw, state_kw, terms, photo_k, expected
 ):
-    """Each configuration emits exactly the expected codes at the expected
-    severity -- no more, no fewer. Exactness is the point: an extra "error"
-    blocks a valid gradient and a missing one ships a wrong gradient."""
+    """Each configuration emits the expected codes at the expected severity,
+    no more and no fewer: an extra "error" blocks a valid gradient and a
+    missing one ships a wrong gradient."""
     got = {(f["code"], f["severity"]) for f in _run(cfg_kw, state_kw, terms, photo_k)}
     assert got == {ALWAYS, *expected}
 
@@ -225,7 +225,5 @@ def test_every_finding_is_well_formed_and_unique():
             assert len(f["message"]) > 40, f"{case_id}/{f['code']}: stub message"
         seen_codes.update(codes)
 
-    # 12 distinct codes across the emitter's 17 `add(...)` sites (several codes
-    # are raised at more than one severity). If a code is added to the emitter
-    # without a case here, this is what notices.
+    # One case per code the emitter can raise; a new code without a case fails this count.
     assert len(seen_codes) == 12, sorted(seen_codes)

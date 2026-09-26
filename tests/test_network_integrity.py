@@ -1,4 +1,4 @@
-"""Network-file integrity: no silent duplicates, honest T-range accounting.
+"""Network-file integrity: no silent duplicates, pinned T-range exposure.
 
 The parser is positional and appends every reaction row, so a reaction
 duplicated within one section is double-counted in both directions with no
@@ -10,11 +10,8 @@ select must stay clean.
 The trailing `Temp` annotation column documents each thermal rate's fitted
 range. Nothing enforces it at runtime (matching VULCAN-master), so
 `runtime_validation.report_rate_temp_ranges` reports the exposure once per
-run. The pinned counts here are measured on the shipped atm-file profiles;
-they move only when the network files or the range parser change.
-
-Run from VULCAN-JAX/:
-    pytest tests/test_network_integrity.py
+run. The pinned counts are for the shipped atm-file profiles and move only
+with the network files or the range parser.
 """
 
 from __future__ import annotations
@@ -66,10 +63,9 @@ _SHIPPED_NETWORKS = sorted(glob.glob("src/vulcan_jax/thermo/*network*.txt"))
 def test_no_reaction_row_is_dropped(net_path):
     """Every non-comment bracketed row must reach the parsed network.
 
-    The id column is optional upstream (make_chem_funs.py:65-73 reads the
-    equation by `partition('[')` and renumbers from its own counter); a
-    leading-integer requirement silently dropped eight rows across two
-    shipped files. Each row occupies a forward and a reverse slot.
+    The id column is optional upstream (make_chem_funs.py:65-73 renumbers),
+    so a row without one must still parse. Each row occupies a forward and a
+    reverse slot.
     """
     with open(net_path) as fh:
         rows = sum(
@@ -123,7 +119,6 @@ def test_temp_range_annotation_parser(annotation, expected):
     assert _parse_temp_ranges(annotation.split()) == expected
 
 
-# Measured 2026-08-21 on the shipped atm-file profiles (see module docstring).
 # any/all = rows outside the union of their documented ranges in >=1 / all
 # profile layers; no_range = rows whose annotation has no parseable range.
 _EXPOSURE = {
@@ -136,8 +131,7 @@ _EXPOSURE = {
 def test_advisory_fires_per_profile_not_per_network(capsys, monkeypatch):
     """A second profile on the same network must report; the same one must not.
 
-    The exposure depends on Tco, so caching by network path alone silently
-    suppressed every case after the first (e.g. HD209 after HD189).
+    The exposure depends on Tco, so the report is cached per profile, not per network.
     """
     from vulcan_jax import runtime_validation as rv
 

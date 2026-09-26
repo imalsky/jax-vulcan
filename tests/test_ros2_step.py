@@ -18,10 +18,7 @@ os.chdir(ROOT)
 
 from oracle import oracle_dir_or_skip  # noqa: E402
 
-# The oracle location comes from $VULCAN_MASTER_DIR only, never a sibling
-# guess. The PARENT process verifies the pinned revision and a clean tree
-# (run_oracle_subprocess -> oracle_worktree -> require_oracle) and points
-# this at a temporary COPY; see oracle.oracle_dir_or_skip.
+# The parent verifies the pin and passes a temporary copy (oracle.oracle_dir_or_skip).
 VULCAN_MASTER = oracle_dir_or_skip("this Ros2 step comparison")
 
 warnings.filterwarnings("ignore")
@@ -109,10 +106,7 @@ def main() -> int:
     for i, v in k_dict.items():
         k_arr[i] = v
 
-    # Production one-step kernel: codegen RHS + analytical Jacobian + JAX
-    # diffusion + diagonal-aware block Thomas. This is the same hot path the
-    # outer loop calls, so this test cannot accidentally validate only the
-    # preserved segment_sum reference RHS.
+    # Production one-step kernel, the same hot path the outer loop calls.
     atm_static = make_atm_static(data_atm, ni, nz)
     sol_jax, _ = jax_ros2_step(
         jnp.asarray(y0),

@@ -26,30 +26,18 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 from oracle import oracle_dir_or_sentinel  # noqa: E402
 
-# Oracle location from $VULCAN_MASTER_DIR only, never a sibling guess. The
-# parent verifies the pinned revision + clean tree and points this at a
-# temporary COPY; the per-test is_dir() skips below handle "not configured".
+# The parent verifies the pin and passes a temporary copy; the per-test
+# is_dir() skips below handle an unset oracle.
 VULCAN_MASTER = oracle_dir_or_sentinel()
 
 from vulcan_jax._paths import PACKAGE_ROOT
 
-# (count_max, update_frq, diff_esc, rtol, ymix_min). The first case is the
-# default HD189 config for 20 accepted steps at the FP-accumulation floor over
-# every cell. The second fires the hydrostatic refresh 40 times and refreshes
-# the diffusion-limited escape flux with it over 200 steps: an escape Jacobian
-# term applied outside upstream's upwind variants diverges to 3.7e-3 at the TOA
-# by step 200 while the no-escape control sits at 9e-8 (measured),
-# so the bar is 1e-6 over cells with master ymix > 1e-10 (trace cells clip to
-# zero on different steps once dt has grown, so the all-cell metric is noise).
-#
-# The 19-step bar is 5.0e-9, measured: 3.084e-9 with the JAX rate build and
-# 2.486e-9 with a NumPy rate build. The two rate
-# tables differ by 5.7e-14 relative and 19 stiff steps amplify that; the JAX
-# build is the one the master rate oracles grade (4.5e-16 on the forward
-# rates, test_rates.py; 5.7e-14 on the reverse, test_gibbs.py). Both numbers
-# are only reproducible because `_run_script` pins PYTHONHASHSEED: master's
-# trajectory is not (see there). Without the pin this case straddled 3.0e-9,
-# taking 1.826e-9 or 3.084e-9 at random.
+# (count_max, update_frq, diff_esc, rtol, ymix_min). Case 1: default HD189
+# for 20 steps over every cell, at the FP-accumulation floor (JAX and NumPy
+# rate builds differ by 5.7e-14 and 19 stiff steps amplify it; worst 3.1e-9).
+# Case 2: 200 steps with 40 hydrostatic refreshes and H escape, over cells
+# with master ymix > 1e-10 (trace cells clip on different steps); a
+# misapplied escape Jacobian term reads 3.7e-3.
 MATCHED_CASES = [
     (19, 100, [], 5.0e-9, 0.0),
     (199, 5, ["H"], 1.0e-6, 1.0e-10),
@@ -144,12 +132,9 @@ def run() -> None:
             text=True,
             timeout=600,
         )
-        # make_chem_funs.py writes chem_funs.py BEFORE its post-codegen
-        # check_conserv() sanity check, which raises under numpy>=1.24
-        # (str(numpy.bytes_) -> "b'OH'", so compo_row.index('OH') fails). That
-        # crash is benign to the generated module: master's own vulcan.py
-        # ignores make_chem_funs's exit code (os.system). So only bail if the
-        # generated chem_funs.py does not import with a valid (ni, nr).
+        # make_chem_funs.py writes chem_funs.py before its check_conserv(), which
+        # raises under numpy>=1.24; master's vulcan.py ignores that exit code, so
+        # only the module's importability matters.
         if res.returncode != 0:
             probe = subprocess.run(
                 [
@@ -281,11 +266,8 @@ vulcan_cfg.count_min = count_max + 1
 vulcan_cfg.trun_min = 1e22
 vulcan_cfg.update_frq = update_frq
 vulcan_cfg.diff_esc = diff_esc
-# Master comparison is the PRE-FLIP central-difference baseline: the pinned
-# VULCAN 2 oracle's own use_vm_mol (off by default) is the setup-frozen
-# cell-centred form, not vm_branch's refreshed interface form, and the hybrid phase flip extends the
-# step budget past count_max on phase-0 exhaustion (count+1000), which breaks
-# the matched-count contract. Pin both vm_branch defaults off for this oracle.
+# The pinned VULCAN 2 oracle has no refreshed-interface vm and no hybrid
+# flip (which extends the budget past count_max), so both are off.
 vulcan_cfg.use_vm_mol = False
 vulcan_cfg.use_hybrid_vm_mol = False
 vulcan_cfg.use_print_prog = False
@@ -294,15 +276,8 @@ from vulcan_jax.runtime_validation import validate_runtime_config
 
 validate_runtime_config(vulcan_cfg, root=jax_root)
 
-# Start from MASTER's initial column. The two codes seed from
-# different equilibrium solvers (this port minimizes Gibbs energy on its own
-# NASA-9 data, master shells out to FastChem; they agree to 7.9e-3 dex, see
-# tests/test_eq_seed.py), and a matched-step comparison of two trajectories
-# started from different columns measures the seeds, not the solvers. Swapping
-# the `EQ` loader is the right injection point: ini_y -> _compute_ymix ->
-# ele_sum and everything after it (mu/dz via f_mu_dz, the photo optical depth,
-# the conservation projection's atom references and the C23 budget) is then
-# derived from master's column exactly as it would be from our own.
+# Seed from master's initial column (module docstring); everything after
+# ini_y derives from it.
 import vulcan_jax.ini_abun as _ini_abun
 
 _MASTER_Y = np.asarray(
@@ -370,17 +345,9 @@ def _run_script(
     python: str | None = None,
     timeout: float = 600.0,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a Python script string in a subprocess, under a PINNED hash seed.
-
-    VULCAN-master's 20-step trajectory is not reproducible run to run: with the
-    interpreter's default random hash seed, five runs of `_MASTER_SCRIPT` gave
-    five different `y` (same `y_ini`, same count); with PYTHONHASHSEED=0 three
-    runs were bit-identical. This side is deterministic either way (the JAX half
-    against one fixed master npz gave the same `y` under eight fixed seeds and
-    under three random ones), so the pin is what makes a matched-step number
-    mean anything. Same remedy as the `photo_sp` set-order finding
-    (notes.md 1.3).
-    """
+    """Run a script string in a subprocess with PYTHONHASHSEED=0: master's
+    matched-step trajectory depends on set order and is not reproducible
+    without it (notes §2.9)."""
     return subprocess.run(
         [python or sys.executable, "-c", script, *map(str, args)],
         capture_output=True,
@@ -413,10 +380,7 @@ def _atom_dict(data: np.lib.npyio.NpzFile) -> dict[str, float]:
 
 @pytest.mark.master_serial
 def test_audit_refuses_a_contaminated_oracle() -> None:
-    """The audit must refuse an oracle checkout carrying VULCAN-JAX's own code
-    (auditing against such a tree is circular); `_check_oracle_is_pristine`
-    must fire on it. Do not weaken this guard.
-    """
+    """The audit refuses an oracle checkout carrying VULCAN-JAX's own code (auditing against it is circular)."""
     from tools.audit_master_parity import _check_oracle_is_pristine
 
     with tempfile.TemporaryDirectory(prefix="fake_oracle_") as tmp:
@@ -537,18 +501,11 @@ def test_default_hd189_preloop_and_matched_steps_match_master(
 
 
 # --- condensation: the `fix_species` pin snapshot (C24) ----------------------
-# `fix_species` + `use_relax` is upstream's own Earth methodology
-# (cfg_examples/vulcan_cfg_Earth.py:107-120) and no shipped VULCAN-JAX config
-# sets `use_condense`, so this matched-step run is the only guard on the order
-# of the pin snapshot and the relax. `CHO_photo_network_lowT.txt` is the
-# smallest vendored network carrying a condensation reaction
-# (`299 [ H2O -> H2O_l_s ]`) and is byte-identical in both trees; isothermal
-# 250 K + const_mix + no photo needs neither an equilibrium seed nor cross
-# sections, so the only moving parts beyond the shared Ros2 core are the
-# condensation kernels, the saturation table and the relaxation path. 51
-# steps: the pin
-# fires at `t > stop_conden_time` on step 45, leaving the frozen reservoir six
-# steps to show.
+# Upstream's Earth methodology (cfg_examples/vulcan_cfg_Earth.py:107-120).
+# No shipped config condenses, so this is the only guard on the order of
+# pin snapshot and relax. It uses the smallest vendored network with a
+# condensation row; isothermal const_mix with photo off needs no EQ seed or
+# cross sections. The pin fires on step 45, leaving six steps.
 CONDEN_STEPS = 50
 CONDEN_KNOBS = {
     "atom_list": ["H", "O", "C"],
@@ -614,10 +571,7 @@ CONDEN_MASTER_ONLY = {
 CONDEN_JAX_ONLY = {
     "use_vm_mol": False, "use_hybrid_vm_mol": False, "high_temp_cut": False,
 }
-# Machine-tolerance bar: the realised max is 8.5e-16 over the masked cells and
-# 0.0 on the H2O_l_s column. Snapshotting the POST-relax y instead scores 1.0
-# on the mask, 7.3e-3 on the column and 11 nonzero condensate layers against
-# master's 18 (measured 2026-09-13, notes.md 1.10).
+# Machine tolerance: realised 8.5e-16 on masked cells, 0.0 on the H2O_l_s column.
 CONDEN_RTOL = 1.0e-12
 
 
@@ -651,9 +605,9 @@ out_npz = Path(sys.argv[2])
     + """%(master_cfg)s\n"""
 )
 
-# make_chem_funs.py writes chem_funs.py BEFORE its own post-codegen
-# check_conserv(), which raises under numpy>=1.24; master's vulcan.py ignores
-# its exit code too, so only the generated module's importability matters.
+# make_chem_funs.py writes chem_funs.py before its check_conserv(), which
+# raises under numpy>=1.24; master's vulcan.py ignores that exit code, so
+# only the module's importability matters.
 res = subprocess.run([sys.executable, "make_chem_funs.py"], cwd=str(master_root),
                      capture_output=True, text=True, timeout=1800)
 probe = subprocess.run(

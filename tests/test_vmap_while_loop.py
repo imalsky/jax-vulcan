@@ -38,15 +38,9 @@ YMIX_FLOOR = 1e-15  # ignore ULP-noise trace species below this in the ref
 
 
 def _pin_cfg():
-    """Pin vulcan_cfg for a fast, photo-off batched run (the emulator regime;
-    photo-on batching is covered by test_vmap_photo_batch). Mirrors
-    test_outer_loop_smoke.
-
-    Batched/emulator generation wants a deterministic, fixed diffusion scheme:
-    the hybrid phase flip turns count-exhaustion into a mid-run scheme switch
-    with a per-lane extended budget, which breaks the freeze-on-done
-    equivalence premise, so the hybrid default is pinned off here.
-    """
+    """Fast photo-off batched config (photo-on: test_vmap_photo_batch). Hybrid
+    vm_mol is off: its per-lane scheme switch on count exhaustion breaks
+    freeze-on-done equivalence."""
     return fast_cfg(
         count_max=COUNT_MAX,
         use_vm_mol=False,

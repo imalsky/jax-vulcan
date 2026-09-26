@@ -7,9 +7,6 @@ The analytical Jacobian is built from stoichiometry directly:
 
 vs. `chem_jac` which materialises the same matrix via `jax.jacrev`. Both
 must agree to machine precision on a real (y, M, k) state.
-
-Standalone test: does NOT require ../VULCAN-master/. Uses VULCAN-JAX's
-local rate-coef + atmosphere build path (legacy_io.ReadRate + build_atm).
 """
 
 from __future__ import annotations
@@ -58,9 +55,7 @@ def _check_jacobians(state) -> int:
 
     print(f"max rel err (significant cells): {max_rel:.3e}")
 
-    # Tolerance: analytical and AD-built Jacobians should agree to machine
-    # precision per entry. Allow 1e-12 to accommodate float64 reduction-order
-    # differences between the two scatter patterns.
+    # Same matrix by two summation orders: 1e-12 covers reduction-order noise.
     ok = max_rel < 1e-12
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1

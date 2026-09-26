@@ -1,14 +1,10 @@
 """Every knob `runtime_validation` bound-checks must be declared in every
 shipped config.
 
-`_validate_numerical_bounds` bound-checks what a config DECLARES and skips what
-it does not, so there is exactly one home for each value: no literal default
-beside a knob (`getattr(cfg, "rtol", 0.2)`), which would be a second copy of a
-number the YAML owns. That skip is only safe while the shipped configs declare
-everything, and this test is what makes it safe -- without it, deleting a knob
-from a YAML would silently turn its bound check off instead of failing.
-
-Also pins that no such literal comes back.
+`_validate_numerical_bounds` checks what a config declares and skips the
+rest, so the YAML is the only home of each value. That holds only while
+every shipped config declares every checked knob and the validator has no
+literal getattr defaults; both are pinned here.
 """
 from __future__ import annotations
 
@@ -61,7 +57,7 @@ def _config_files() -> list[Path]:
 def test_every_shipped_config_declares_every_checked_knob(cfg_path):
     declared = set(yaml.safe_load(cfg_path.read_text()) or {})
     required = _checked_knobs() - _CONDITIONAL
-    # dt_max is DERIVED by config.py (runtime * 1e-5), never written in YAML.
+    # dt_max is derived by config.py, never written in YAML.
     required.discard("dt_max")
     missing = sorted(required - declared)
     assert not missing, (

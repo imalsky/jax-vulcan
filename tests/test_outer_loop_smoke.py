@@ -1,10 +1,8 @@
 """Smoke test for outer_loop.OuterLoop.
 
 Runs 50 accepted Ros2 steps end-to-end on the HD189 reference state and
-asserts: exact step count, atom_loss under MAX_ATOM_LOSS, no retries on the
-smooth HD189 case, and finite-positive dt / t.
-
-The canonical smoke test for any change to outer_loop.py (~10s incl. JIT).
+asserts: exact step count, atom_loss under MAX_ATOM_LOSS, and
+finite-positive dt / t.
 """
 
 from __future__ import annotations
@@ -23,13 +21,7 @@ os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
 
-# Per-atom atom_loss bound over 50 HD189 steps with the reservoir-species
-# conservation projection. A BOUND, not a target: the drift is roundoff the
-# projection leaves behind, so its exact value depends on XLA compilation
-# choices and on how far the initial state sits from chemical equilibrium.
-# The Gibbs seed, built on the same NASA-9 data as the reverse rates, starts
-# close enough that 50 steps leave -3.53e-10 (measured, reproducible to every
-# printed digit); 1e-8 is ~28x that, so a 10x regression still trips it.
+# Roundoff the conservation projection leaves over 50 HD189 steps (~3.5e-10); a 10x regression still trips 1e-8.
 MAX_ATOM_LOSS = 1.0e-8
 
 

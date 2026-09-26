@@ -3,22 +3,22 @@
 Five heterogeneous isothermal profiles (photo off) are the queue; `run_batch`
 on the same five is the reference. Pins:
 
-  1. NO REFILL — with `n_lanes >= n_jobs` nothing is refilled, so every job
-     starts at tick 0 exactly as a plain-batch lane does and the result is
+  1. No refill: with `n_lanes >= n_jobs` nothing is refilled, so every job
+     starts at tick 0 as a plain-batch lane does and the result is
      bitwise `run_batch`'s.
-  2. REFILL — a refilled lane enters the loop at a tick the plain batch never
+  2. Refill: a refilled lane enters the loop at a tick the plain batch never
      gave it, which moves the photo / geometry cadence but not the fixed
      point: same termination reason, mixing ratios equal at the convergence
      scale, and the call is deterministic.
-  3. IDLE LANES — more lanes than jobs: the spare lane is frozen from the
+  3. Idle lanes: more lanes than jobs: the spare lane is frozen from the
      start and never writes a result.
-  4. POISONED JOB — an all-NaN job exits with reason 5 and does not move its
+  4. Poisoned job: an all-NaN job exits with reason 5 and does not move its
      queue neighbours: with the same lane count and chunk their histories are
      the same with and without it appended, so their results are bitwise
      equal.
-  5. LANE REUSE — the jobs refilled into the lane a poisoned job died in come
+  5. Lane reuse: the jobs refilled into the lane a poisoned job died in come
      back finite and on the batch's fixed point.
-  6. ARGUMENT GUARDS — an empty queue and a lane count below 1 raise.
+  6. Argument guards: an empty queue and a lane count below 1 raise.
 """
 
 from __future__ import annotations

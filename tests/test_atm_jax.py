@@ -188,7 +188,7 @@ def test_compute_mol_diff_vm_matches_vm_branch_reference():
 
 def test_vm_branch_differentiates_wrt_Tco():
     """Forward-mode tangent of the interface vm w.r.t. a Tco scale is finite and
-    matches a central difference -- the new vm expression is on the AD surface."""
+    matches a central difference."""
     from vulcan_jax.atm_jax import _mol_diff
 
     species_list, ms_arr, nz, ni, Tco, n_0, g, Hp, dz, alpha = (
@@ -312,8 +312,8 @@ def test_jvp_M_Dzz_wrt_Tco_matches_fd(hd189_state):
 
 def test_analytical_TP_front_end_differentiates():
     """The Heng+14 T(P) front-end composes onto the Tco leaf: dTco/dT_irr is
-    finite. Keep the NARROW pressure range: `jax.scipy.special.expn`'s
-    forward-mode is very slow over a deep column's many decades."""
+    finite. The pressure range stays narrow: `jax.scipy.special.expn`'s
+    forward mode is slow over many decades."""
     pco = jnp.asarray(np.logspace(5.0, 4.0, 8))  # narrow -> small expn argument
     base = jnp.asarray([500.0, 1200.0, 0.1, 0.02, 0.7, 0.7], dtype=jnp.float64)
 
@@ -324,9 +324,7 @@ def test_analytical_TP_front_end_differentiates():
     assert np.isfinite(float(tangent)) and float(tangent) != 0.0
 
 
-# No separate through-solver test is needed: the equivalence test above proves
-# build_atm_static feeds the runner exactly as the frozen production AtmStatic
-# does. Full-run T sensitivity: examples/grad_physical_example.py.
+# Full-run T sensitivity: examples/grad_physical_example.py.
 
 
 def test_pco_from_endpoints_matches_logspace_and_differentiates():

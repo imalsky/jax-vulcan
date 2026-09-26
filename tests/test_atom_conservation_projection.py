@@ -2,7 +2,7 @@
 
 XLA's FMA fusion breaks the exact stoichiometric nullspace of the codegen RHS;
 the projection distributes the residual across the reservoir species
-(H2, H2O, CO, N2) so each layer conserves H/O/C/N exactly. A VULCAN-JAX
+(H2, H2O, CO, N2) so each layer conserves H/O/C/N. A VULCAN-JAX
 correctness feature with no master analogue (notes.md, atom-conservation
 projection record).
 
@@ -177,18 +177,10 @@ def _hd189_step_inputs():
 
 def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch):
     """Both Ros2 stage vectors satisfy `c0 a^T k - a^T T k = a^T b_tr` in every
-    layer at every dt (the identity the stage system implies once the
-    chemistry terms are projected), and with transport off a step conserves
-    every layer's element content. Before the stage repair the identity
-    failed by 6e-4 (dt 1e11), 6e-2 (1e13) and 3 (1e15) of the layer's own
-    c0 |a^T y| on this column, which is what drained elements from long
-    large-dt runs (notes.md §1.13). Ratios here are against the absolute
-    size of the terms, so the floor is float64 roundoff for the closed-layer
-    change; the identity residual after the repair is set by the correction
-    tridiagonal's conditioning (~T/c0, growing with dt) and measured
-    1e-13 at dt <= 1e11, 2e-13 to 1e-11 at the 1e15 cap depending on the
-    rate table (C20), so its bar sits 1e6 below the leak it
-    guards, not at roundoff."""
+    layer at every dt, and with transport off a step changes no layer's element
+    content by more than REPAIR_ABS_FLOOR of its density (notes §1.13). The
+    identity bar is set by the correction tridiagonal's conditioning (~T/c0),
+    not by roundoff."""
     import jax
     import jax.numpy as jnp
     import vulcan_jax.jax_step as jax_step
@@ -200,15 +192,9 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch):
     zero = atm._replace(
         Kzz=0 * atm.Kzz, Dzz=0 * atm.Dzz, vz=0 * atm.vz, vm=0 * atm.vm, vs=0 * atm.vs
     )
-    # Both contracts below are the REPAIR's, so the trace-carrier guard is
-    # LIFTED: `jax_step._REPAIR_MAX_CELL_FRAC` (pinned by
-    # test_stage_repair_guard.py) deliberately leaves a layer's identity open
-    # where the fixed reservoir is a trace -- on this column the 1e-24-VMR H2O
-    # of the 6000 K top, where the correction is 1e10 to 1e16 times the cell.
-    # Both callees are jitted HERE through fresh lambdas so they trace after
-    # the lift: jax caches the traced jaxpr per Python function, so re-jitting
-    # `jax_ros2_step.__wrapped__` itself would reuse a trace made with the
-    # shipped value if anything compiled it earlier in this process.
+    # These are the repair's contracts, so the trace-carrier guard
+    # (_REPAIR_MAX_CELL_FRAC, test_stage_repair_guard.py) is lifted. Fresh
+    # lambdas make jit trace after the patch (jax caches a trace per function).
     monkeypatch.setattr(jax_step, "_REPAIR_MAX_CELL_FRAC", float("inf"))
     defects = jax.jit(lambda *a: stage_defects(*a))
     step = jax.jit(lambda *a: jax_step.jax_ros2_step.__wrapped__(*a))
@@ -216,21 +202,12 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch):
     for dt in (1e8, 1e11, 1e13, 1e15):
         k1, k2, d1, d2, bound = defects(y, k_arr, jnp.float64(dt), atm, net)
         assert bool(jnp.all(jnp.isfinite(k1)) & jnp.all(jnp.isfinite(k2))), dt
-        # Residual defect over the bound the repair leaves it under (the
-        # roundoff of the terms or REPAIR_ABS_FLOOR of the layer density);
-        # 1e3 x roundoff covers the correction tridiagonal's conditioning
-        # at the 1e15 cap (1e-11 of the terms measured).
+        # Defect over the repair's bound; 1e3 covers the correction tridiagonal's conditioning at the 1e15 cap.
         identity[dt] = max(float(jnp.max(jnp.abs(d1) / bound)), float(jnp.max(jnp.abs(d2) / bound)))
     assert all(v < 1e3 for v in identity.values()), identity
-    # The repair runs at every dt (no dt gate) and leaves alone a
-    # defect under config.REPAIR_ABS_FLOOR of the layer's density (roundoff
-    # by measurement; correcting it stalled a small-dt column by moving
-    # 1e-21 of a layer onto a 1e-21 H2S cell every stage, notes.md §1.13).
-    # Contract: per layer and atom the uncorrected element change is
-    # bounded by that floor times the layer density (measured <= 4x the
-    # floor over two stages; 10x here), at every dt, the small ones
-    # included (LU error 1e-9 at 1e4 s and 3e-7 at 1e6 s relative to
-    # content, both corrected).
+    # The uncorrected element change per layer and atom stays under
+    # REPAIR_ABS_FLOOR of the layer density at every dt (worst 4x over two
+    # stages; bar 10x).
     from vulcan_jax.config import REPAIR_ABS_FLOOR
     for dt in (1e4, 1e6, 1e8, 1e11, 1e13, 1e15):
         sol, _ = step(y, k_arr, jnp.float64(dt), zero, net)
@@ -241,19 +218,10 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch):
 
 
 def test_repair_tridiagonal_solve_is_lapack_gtsv_with_its_tangent():
-    """`jax_step._tridiagonal_solve`, the batched partial-pivoting sweep
-    the stage repair uses instead of `lax.linalg.tridiagonal_solve`
-    (a per-system cuSPARSE call on the GPU, notes.md §2.9), IS LAPACK dgtsv:
-    backward stable (componentwise residual < 5e-15) on the HD189 repair
-    matrices `c0 - T_rho` at every dt from 1e4 s to the 1e15 s cap, and
-    within 1e-12 of the CPU primitive on systems that force row
-    swaps, where an unpivoted sweep meets an exact zero pivot (a wrong-sign
-    sub-diagonal from the central-difference drift can do that, notes.md
-    §1.13). Its tangent, taken through the sweep's `where`s, matches the
-    primitive's JVP rule (a second solve) and a dense solve on a
-    well-conditioned swap-forcing system; a vmap over directions is the
-    per-direction result to roundoff (the retrieval's 6-direction
-    program)."""
+    """`jax_step._tridiagonal_solve`, the repair's partial-pivoting sweep, is
+    LAPACK dgtsv: backward stable on the HD189 repair matrices from dt 1e4 s to
+    the 1e15 s cap, within 1e-12 of `lax.linalg.tridiagonal_solve` on
+    swap-forcing systems, with a matching JVP and vmap over directions."""
     import jax
     import jax.numpy as jnp
     from jax.lax.linalg import tridiagonal_solve
@@ -282,9 +250,8 @@ def test_repair_tridiagonal_solve_is_lapack_gtsv_with_its_tangent():
     def close(a, b, tol):
         return bool(jnp.all(jnp.isfinite(a))) and float(jnp.max(jnp.abs(a - b))) <= tol * float(jnp.max(jnp.abs(b)))
 
-    # The real systems are ill-conditioned at large dt (~1e13 at the cap), so
-    # two exact solvers may differ there; the platform-free invariant is the
-    # sweep's own backward error (measured 1.1e-16 to 2.9e-16 on the Mac).
+    # Ill-conditioned at large dt (~1e13 at the cap), so the invariant is the
+    # sweep's own backward error, not agreement with another solver.
     for dt in (1e4, 1e8, 1e11, 1e13, 1e15):
         d = 1.0 / (js._ROS2_GAMMA * dt) - diag_d[:, ridx]
         x = js._tridiagonal_solve(dl, d, du, g)

@@ -1,18 +1,9 @@
 """Forward-mode AD through a physical *transport* knob (eddy diffusion Kzz).
 
-The rate path has its own parity tests; this guards that a physical input (Kzz)
-is correctly on the AD graph through one Ros2 step. It is the forward-mode /
-physical-knob complement to the reverse-mode reaction-sensitivity tests, and
-stays fast by differentiating a single step (no convergence).
-
-Why not a tight jvp-vs-FD assertion here: the single-step diffusion signal is
-~1e-6 of the abundances, so a finite difference of the ~1e19 scalar loss hits
-the float64 cancellation floor (verified: FD swings sign as eps shrinks). The
-robust correctness check is forward-vs-reverse-mode agreement, which is immune to
-that cancellation; a coarse FD is kept only as an independent sign/magnitude
-sanity. Tight FD validation of Kzz is intrinsically *end-to-end* (the cumulative
-effect on a converged column is O(1) relative) and is covered by
-`test_forward_jvp_integration.py` (<0.1% vs re-converged FD).
+The one-step signal is ~1e-6 of the abundances, so a finite difference sits
+on the float64 cancellation floor. The check is jvp == vjp, with a coarse FD
+for sign and magnitude only. The converged-column FD check is
+test_forward_jvp_integration.py.
 """
 
 from __future__ import annotations
@@ -67,10 +58,7 @@ def test_per_step_kzz_forward_mode():
     atm = _synthetic_atm(net, nz)
     prof = jnp.linspace(1.0, 3.0, nz)[:, None]  # vertical gradient -> diffusion acts
     y = jnp.full((nz, net.ni), 1e10) * prof
-    # Near-zero chemistry isolates transport: three-body rates multiply M = 1e15,
-    # so 1e-15 would give a 1e-10 s chemistry timescale (a stiff garbage step
-    # with |k| ~ 1e6 |y| whose derivative is ill-conditioned); 1e-30 keeps the
-    # Jacobian ~1e-5 s^-1 against c0 ~ 1 s^-1.
+    # Near-zero rates isolate transport: 1e-30 keeps the chemistry Jacobian (~1e-5 s^-1) far below c0 (~1 s^-1).
     k_arr = jnp.full((net.nr + 1, nz), 1e-30)
     dt = jnp.float64(5e-1)
     ch = nz // 2

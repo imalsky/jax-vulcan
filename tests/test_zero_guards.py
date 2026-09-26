@@ -1,9 +1,4 @@
-"""Regression tests for division-by-zero guards.
-
-Exercises the guards added to prevent NaN/Inf when:
-  1. ysum (gas-species sum) reaches zero in a layer (jax_step diffusion)
-  2. mu (mean molecular weight) reaches zero in a layer (atm_refresh)
-"""
+"""A layer with ysum = 0 (diffusion coefficients) or mu = 0 (atm refresh) must give finite outputs."""
 
 from __future__ import annotations
 

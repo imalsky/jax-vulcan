@@ -1,14 +1,10 @@
 """Every required numerical oracle must be obtainable from THIS repository.
 
-The four `tests/data/*.npz` fixtures are deliberately mandatory -- `conftest.py`
-fails collection when one is missing, because a skipped numerical oracle still
-reports a green suite -- so their generators must live in-repo and take no
-path outside it (two once lived only in an unpublished sibling and hardcoded
-a dead absolute root).
-
-These tests are cheap and structural: they pin the generator locations and
-the manifest/verify machinery. They do NOT run the generators (each converges
-a real model).
+The four `tests/data/*.npz` fixtures are mandatory (conftest fails
+collection when one is missing, since a skipped oracle still reports
+green), so their generators must live in this repo and use no path outside
+it. These structural tests pin the generator locations and the
+manifest/verify machinery; they do not run the generators.
 """
 
 from __future__ import annotations
@@ -33,9 +29,8 @@ def _gen_module():
 def test_fixture_generators_live_in_repo():
     """conftest's required set and gen_fixtures' produced set must agree; no
     generator may point outside this repository or hardcode an absolute user
-    path (the exact rot that made the old sibling-repo generators
-    unrunnable). String literals are checked in the AST, so prose in a
-    docstring does not trip it."""
+    path. String literals are checked in the AST, so docstring prose does not
+    trip it."""
     import conftest
 
     gen = _gen_module()

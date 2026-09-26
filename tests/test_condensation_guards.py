@@ -1,16 +1,10 @@
-"""Guards that keep condensation honest under differentiation.
+"""Guards that refuse differentiation through condensation (F1, F3).
 
-Condensation is a forward-model capability only. The completed, pinned
-condensation state is not differentiable-through (transient snapshot, discrete
-phase-boundary switches; pinned-species jvp vs FD ~0.91 rel). These tests pin
-the guards that enforce that contract:
-
-* forward-config hardening (`_validate_condensation`), lifted into the core so a
-  bare VULCAN-JAX run is guarded like the retrieval wrapper;
-* the input-sensitivity refusal (`steady_state_input_sensitivity` raises on a
-  condensation-active state, both in-window and post-pin).
-
-Full scope: notes.md (Differentiability).
+The pinned condensation state is not differentiable: it is a transient
+snapshot with discrete phase switches (pinned-species jvp vs FD ~0.91
+rel). Pinned here: _validate_condensation's config checks, and
+steady_state_input_sensitivity's refusal of a condensation-active state,
+both in-window and post-pin.
 """
 
 from __future__ import annotations

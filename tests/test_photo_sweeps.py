@@ -1,10 +1,9 @@
 """The two-stream sweeps as associative scans must match the sequential ones.
 
-`photo._two_stream_sweeps` replaced two `lax.scan` sweeps with associative
-scans (same affine recurrences, depth log2(nz) instead of nz). The
-sequential form is kept here verbatim as the oracle: on random
-production-shaped inputs and on the real HD189 photo state the two must
-agree to roundoff, and the lowered kernel must carry no while loop.
+`photo._two_stream_sweeps` runs the two affine recurrences as associative
+scans (depth log2 nz). The sequential lax.scan form below is the oracle:
+the two agree to roundoff on random and HD189 inputs, and the lowering has
+no while loop.
 """
 
 from __future__ import annotations
@@ -28,7 +27,7 @@ BAR_HD189 = 1e-11
 
 
 def _sweeps_sequential(chi, phi, xi, i_d, i_u, dflux_u_prev, mu_ang):
-    """The pre-associative-scan sweeps, copied from the sequential version."""
+    """Sequential lax.scan form of the two-stream sweeps (oracle)."""
     nz, nbin = chi.shape
     dflux_d_top = jnp.zeros(nbin)
 

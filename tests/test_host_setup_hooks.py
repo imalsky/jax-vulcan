@@ -1,8 +1,7 @@
 """Unit test for the host-setup parallelism hook.
 
-This backs the GPU-batched emulator's parallel host setup (one spawn worker
-per profile): skipping the chem-RHS JIT warmup must leave the returned
-RunState byte-identical, because the warmup result is discarded.
+`skip_chem_warmup` must leave the RunState byte-identical (the warmup
+result is discarded), so parallel host setup may skip it.
 
 All CPU; mirrors `test_vmap_while_loop` for the fast photo-off setup.
 """

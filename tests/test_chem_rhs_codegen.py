@@ -27,19 +27,14 @@ from vulcan_jax._paths import resolve_data_path
 
 from oracle import oracle_dir_or_sentinel  # noqa: E402
 
-# Oracle location from $VULCAN_MASTER_DIR only, never a sibling guess. The
-# parent verifies the pinned revision + clean tree and points this at a
-# temporary COPY; the per-test is_dir() skips below handle "not configured".
+# The parent verifies the pin and passes a temporary copy; the per-test
+# is_dir() skips below handle an unset oracle.
 VULCAN_MASTER = oracle_dir_or_sentinel()
 PROJECT_ROOT = ROOT.parent
 
 # Roundoff allowance for an atom residual, as a fraction of the summed
-# magnitude of the terms that residual cancels. float64 eps is 2.2e-16 and the
-# cancelled sums run over hundreds of species and reaction terms, so this is a
-# few thousand ulps. Measured worst elementwise ratio on the HD209 state:
-# projected RHS 3.3e-17, unjitted RHS 3.3e-16, projected Jacobian 1.6e-16 --
-# four decades under the floor, while the arm64 raw jitted RHS sits at 2.9e-10,
-# i.e. above it.
+# magnitude of the terms it cancels: a few thousand ulps over hundreds of
+# terms (notes §1.8).
 _ATOM_RESIDUAL_EPS = 1.0e-12
 
 
@@ -261,15 +256,9 @@ def _hd209_repeated_final_layer_fixture() -> tuple[
 
 
 def test_hd209_jit_rhs_projection_removes_atom_residual() -> None:
-    """Projected HD209 RHS carries no atom residual above float64 roundoff.
-
-    HD209 C drift is the raw JIT RHS residual, not source stoichiometry: the
-    unjitted evaluation is exact to roundoff, the jitted one need not be. HOW
-    MUCH drift there is to remove is a compiler property -- XLA fuses the
-    multiply chains into FMA on macOS/arm64 (C residual 3e9-1.2e10, 2.9e-10 of
-    the row scale) and does not on the ubuntu x86-64 runner (197.4, already
-    roundoff) -- so only the post-projection state is asserted.
-    """
+    """Projected HD209 RHS carries no atom residual above float64 roundoff. The
+    raw jitted residual depends on the compiler (FMA fusion differs by
+    platform), so only the unjitted and projected residuals are asserted."""
     import jax
     import jax.numpy as jnp
     import vulcan_jax.make_chem_funs as mcf
@@ -309,13 +298,7 @@ def test_hd209_jit_rhs_projection_removes_atom_residual() -> None:
 
 
 def test_hd209_jacobian_projection_uses_same_reservoir_rows() -> None:
-    """Projected chemistry Jacobian: residual at roundoff, reservoir rows only.
-
-    "The projection shrinks the raw residual" is not an invariant: the raw
-    Jacobian residual is already at roundoff on both platforms (C rows 1.2e-4
-    of a 1.3e12 row scale on macOS/arm64, 3.8e-5 on the ubuntu x86-64 runner),
-    so on x86 the projection's own roundoff (2.1e-4) exceeds what it removes.
-    """
+    """Projected chemistry Jacobian: atom residual at roundoff, only reservoir rows changed."""
     import jax
     import jax.numpy as jnp
     import vulcan_jax.chem as chem_mod
@@ -342,23 +325,11 @@ def test_hd209_jacobian_projection_uses_same_reservoir_rows() -> None:
 
 
 def test_codegen_matches_numpy_oracle():
-    """Codegen RHS matches chem_rhs_numpy at 1e-5 with a per-species floor.
-
-    The floor (1e-12 of each species's peak |dydt|) absorbs float64
-    cancellation noise on trace species; the 1e-5 threshold absorbs XLA FMA
-    fusion vs NumPy `*` chains. The master oracle test verifies term order.
-
-    Evaluated on a PERTURBED column, not on the pre-loop one. The seed is a
-    Gibbs minimizer on the same NASA-9 data the reverse rates
-    use, so the pre-loop column sits AT chemical equilibrium: gross forward
-    and reverse fluxes cancel and the net RHS is a small difference of large
-    terms, which makes a per-cell RELATIVE comparison of two float64
-    summation orders ill-posed (measured 4.0e+04 there, while the two agree
-    to 2.5e-06 of the species' own peak |dydt|). Scaling every species by
-    exp(u), u ~ U(-1, 1) from a fixed seed, moves the column off equilibrium
-    without changing its magnitudes, and the 1e-5 bar is meaningful again
-    (measured 7.3e-14 there, and 1e-15 on the bulk species).
-    """
+    """Codegen RHS matches chem_rhs_numpy at 1e-5 with a per-species floor. The
+    floor (1e-12 of each species' peak |dydt|) absorbs cancellation on trace
+    species; 1e-5 absorbs XLA FMA fusion. The column is scaled by exp(U(-1,1))
+    off equilibrium: at the EQ seed the net RHS is a small difference of large
+    terms, where a per-cell relative comparison is ill-posed (notes §1.8)."""
     y, M, k_arr, net = _capture_state()
     y = y * np.exp(np.random.default_rng(0).uniform(-1.0, 1.0, y.shape))
 
@@ -389,9 +360,6 @@ def test_codegen_matches_numpy_oracle():
             r = np.abs(out_codegen[:, j] - out_numpy[:, j]) / denom
             bulk_relerr[sp] = (float(r.max()), peak)
 
-    # 1e-5 absorbs XLA FMA-vs-NumPy `*` chain drift on cancellation-prone
-    # cells (same emission ORDER on both sides, but XLA may fuse multiplies
-    # into FMA). Well below the 12% (~0.05 dex) target.
     assert max_rel < 1e-5, (
         f"codegen vs numpy oracle disagreement: max relerr={max_rel:.3e} "
         f"at layer {idx[0]} species {net.species[idx[1]]} (threshold 1e-5)"
@@ -432,10 +400,7 @@ from pathlib import Path
 import numpy as np
 
 ROOT = Path.cwd()                               # set by test caller; = VULCAN-JAX
-# Oracle location comes from $VULCAN_MASTER_DIR, never from a sibling guess:
-# an auto-detected ../VULCAN-master pins nothing, and the copy on this project's
-# machine is not even a git checkout. `tests/oracle.py` resolves it and verifies
-# the pinned revision + a clean tree before any comparison runs.
+# The parent verifies the pinned oracle (tests/oracle.py) and passes the copy's path.
 raw_oracle = os.environ.get("VULCAN_MASTER_DIR")
 if not raw_oracle:
     raise RuntimeError("VULCAN_MASTER_DIR is required by the master driver")
@@ -499,20 +464,9 @@ for i, vec in k_dict.items():
 
 out_codegen = np.asarray(fn(jnp.asarray(y), jnp.asarray(M), jnp.asarray(k_full)))
 
-# Bulk-species check: the W39b benchmark cares about H2O, CO2, SO, SO2
-# and the cleanly-summed H2/CO/S/H2S baseline. Threshold 1e-5 is well
-# below the 0.05 dex (12% relative) target on the converged state and
-# 4 orders of magnitude under the ~1e-4 absolute floor of a vectorised
-# summation, which drifted H2O/CO2/SO/SO2 by 0.25-0.49 dex.
-#
-# Heavy-hydrocarbon trace radicals (C2H6, C4H3, ...) are not validated
-# here — they cancel from large rates down to small absolute residues,
-# and XLA fusion of the multiply chains into FMA produces a residue
-# that differs from master's NumPy `*` chain. Both are valid float64
-# arithmetic; the difference is per-multiply ULP that compounds in
-# the cancellation. The master-parity integration tests
-# (test_default_master_parity / test_eq_seed) validate
-# the physically meaningful state, which is what matters end-to-end.
+# Bulk species only: trace radicals cancel to residues where XLA FMA fusion
+# and NumPy `*` chains legitimately differ; test_default_master_parity
+# validates the end-to-end state.
 bulk_species = ("H2O", "CO2", "SO", "SO2", "H2", "CO", "S", "H2S")
 bulk_ok = True
 worst_bulk = 0.0

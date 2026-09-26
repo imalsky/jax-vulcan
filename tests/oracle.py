@@ -1,31 +1,18 @@
 """Pinned, isolated access to an upstream VULCAN checkout for oracle tests.
 
-Three rules (each guards against a failure that actually happened):
+Four rules:
 
-1. NO SILENT SIBLING. `VULCAN_MASTER_DIR` must name the checkout; never
-   auto-detect `../VULCAN-master/` (an unversioned, hand-patched copy was once
-   cited as evidence of upstream behavior).
+1. `VULCAN_MASTER_DIR` names the checkout; there is no default path.
+2. `require_oracle()` checks HEAD against tests/science_sources.yaml and a
+   clean tree before any calculation (reaction indices are positional).
+3. `oracle_worktree()` hands out a temporary copy, since upstream setup
+   rewrites files in place, and proves the original unchanged afterwards.
+4. An upstream defect corrected on both sides is listed once in
+   `ORACLE_CODE_DELTAS` and applied to the copy only; each delta must match
+   the pinned text once.
 
-2. EXACT REVISION, CLEAN TREE. `require_oracle()` verifies HEAD against
-   `tests/science_sources.yaml` and a clean worktree BEFORE any calculation.
-   Reaction indices are positional, so a one-commit-newer checkout must fail
-   with one clear message, not a cascade of rate-index failures.
-
-3. NEVER MUTATE THE ORACLE. Upstream setup rewrites files in place
-   (make_chem_funs renumbers a network file; FastChem writes into
-   fastchem_vulcan/). `oracle_worktree()` hands out a temporary COPY and
-   proves the original unchanged afterwards.
-
-4. DECLARED DELTAS ON THE COPY ONLY. A confirmed upstream defect corrected on
-   BOTH sides (notes.md §3.1) is listed once in `ORACLE_CODE_DELTAS` and
-   applied to the temporary copy by `apply_code_deltas()`; the pinned checkout
-   and `../VULCAN-master` are never edited. Each delta must match the pinned
-   text exactly once, so a re-pin to an upstream that changed the block fails
-   loudly here instead of silently comparing two different formulas.
-
-Local runs may skip when no oracle is configured; a release CI job must set
-`VULCAN_JAX_REQUIRE_ORACLE=1` so a missing oracle FAILS instead of skipping
-(skipped != passed).
+Local runs skip without an oracle; release CI sets
+`VULCAN_JAX_REQUIRE_ORACLE=1` so a missing oracle fails.
 """
 
 from __future__ import annotations
@@ -88,24 +75,12 @@ def _fail_or_skip(msg: str):
 
 
 def oracle_dir_or_skip(what: str) -> Path:
-    """Oracle path for a RE-EXEC'D CHILD, skipping the module when unset.
+    """Oracle path for a re-exec'd child; skip the module when unset.
 
-    Call this at module scope in an oracle test that runs itself as a
-    subprocess. It is deliberately weaker than `require_oracle`, and the split
-    is the whole design:
-
-    - The PARENT pytest process verifies the pin -- `run_oracle_subprocess`
-      goes through `oracle_worktree` -> `require_oracle`, which checks the
-      exact commit and a clean tree -- then copies the checkout and points
-      `VULCAN_MASTER_DIR` at the COPY.
-    - The CHILD reads that copy. It cannot re-verify the revision because the
-      copy has no `.git` by construction (upstream setup rewrites files in
-      place, so the child must never touch the real checkout).
-
-    So a bare existence check is the correct check HERE, and only here. Under
-    a plain `pytest tests/` with no oracle configured, this skips the module,
-    which is how these files behave on a fresh clone. With
-    `VULCAN_JAX_REQUIRE_ORACLE=1` it fails instead (skipped != passed).
+    The parent (`run_oracle_subprocess` -> `oracle_worktree` -> `require_oracle`)
+    verifies the pin and points `VULCAN_MASTER_DIR` at a copy with no `.git`, so
+    the child can only check existence. Fails instead under
+    `VULCAN_JAX_REQUIRE_ORACLE=1`.
     """
     raw = os.environ.get(ENV_DIR)
     path = Path(raw).expanduser().resolve() if raw else None
@@ -178,9 +153,7 @@ def require_oracle(family: str) -> Path:
             f"    git clone {spec['repo']} /tmp/vulcan-oracle\n"
             f"    git -C /tmp/vulcan-oracle checkout {want}\n"
             f"    export {ENV_DIR}=/tmp/vulcan-oracle\n"
-            "There is deliberately no default sibling path: comparing against "
-            "whatever happens to sit in ../VULCAN-master is what this "
-            "machinery exists to prevent.")
+            "There is no default path.")
 
     if not path.is_dir():
         _fail_or_skip(f"{ENV_DIR}={path} does not exist")
@@ -189,9 +162,7 @@ def require_oracle(family: str) -> Path:
     if rc != 0 or not head:
         _fail_or_skip(
             f"{ENV_DIR}={path} is not a git checkout, so its revision cannot "
-            "be verified. An unversioned copy cannot serve as an oracle: the "
-            "one on this project's machine was hand-patched with VULCAN-JAX's "
-            "own code and then cited as upstream evidence. Clone "
+            "be verified; an unversioned copy cannot serve as an oracle. Clone "
             f"{spec['repo']} and check out {want[:12]}.")
 
     if head != want:
@@ -204,7 +175,7 @@ def require_oracle(family: str) -> Path:
             "Reaction indices are POSITIONAL, so a different revision shifts "
             "every rate/Gibbs comparison and produces failures unrelated to "
             "the ported kernels. Check out the pinned commit, or update "
-            "tests/science_sources.yaml deliberately and re-measure.")
+            "tests/science_sources.yaml and re-run the oracle tests.")
 
     rc, dirty = _git(path, "status", "--porcelain")
     if rc != 0:
@@ -213,11 +184,10 @@ def require_oracle(family: str) -> Path:
         _fail_or_skip(
             f"oracle checkout {path} is DIRTY:\n"
             + "\n".join(f"    {ln}" for ln in dirty.splitlines()[:20])
-            + "\nAn oracle must be pristine. Note that upstream setup code "
-              "rewrites files in place (make_chem_funs renumbers a network "
-              "file; FastChem writes into fastchem_vulcan/), so a dirty tree "
-              "is often the residue of an earlier test run that failed to use "
-              "oracle_worktree(). Reset it: git -C "
+            + "\nAn oracle must be pristine: upstream setup rewrites files in "
+              "place (make_chem_funs renumbers a network file; FastChem writes "
+              "into fastchem_vulcan/), so a dirty tree is usually residue of a "
+              "run outside oracle_worktree(). Reset it: git -C "
             f"{path} checkout . && git -C {path} clean -fd")
 
     return path
@@ -321,10 +291,8 @@ def oracle_worktree(
                     f"oracle config does not exist: {config_source}")
             shutil.copy2(config_source, dst / "vulcan_cfg.py")
         oracle_fastchem = dst / "fastchem_vulcan"
-        # Upstream ships FastChem SOURCE, never a binary, so any oracle test
-        # reaching ini_mix='EQ' dies with exit 127. Build UPSTREAM'S OWN
-        # source: this port carries no FastChem, and the oracle must be
-        # upstream's initializer with upstream's data, unmodified.
+        # Upstream ships FastChem source only, so an ini_mix='EQ' oracle run needs a
+        # build of upstream's own source (the oracle stays unmodified).
         if oracle_fastchem.is_dir() and not (oracle_fastchem / "fastchem").exists():
             shutil.copy2(_oracle_fastchem_binary(family, src),
                          oracle_fastchem / "fastchem")

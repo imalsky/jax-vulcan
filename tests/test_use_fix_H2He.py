@@ -1,24 +1,11 @@
-"""`use_fix_H2He` Hycean-world bottom pin (op.py:2935-2941).
+"""use_fix_H2He bottom pin (op.py:2935-2941).
 
-When `vulcan_cfg.use_fix_H2He=True`, master snapshots the bottom-layer
-mixing ratios of H2 and He at the first per-step iteration with
-`var.t > 1e6` and pins those values via `vulcan_cfg.use_fix_sp_bot`
-thereafter. The JAX port replicates the snapshot+pin inside
-`outer_loop._make_runner`'s body via a one-shot `h2he_pinned` carry
-flag.
-
-This test:
-  1. Seeds `t = 1.5e6` so the trip fires on the first accepted step.
-  2. Captures `ymix[0, H2]` / `ymix[0, He]` BEFORE the run.
-  3. Runs a 5-step HD189 integration with `use_fix_H2He=True`.
-  4. Asserts the carry pinned (`h2he_pinned`) the pre-run mixing ratios
-     (`h2he_mix`), and that `y[0, H2_idx]` / `y[0, He_idx]` after the run
-     equal `pre_ymix[0, sp] * n_0[0]` up to the layer renormalization:
-     upstream pins `sol[0]` BEFORE clip and the `y = n_0 * ymix` rebalance
-     (op.py:2945-2946), so the pinned density is rescaled by
-     n_0[0] / sum(sol[0]) (~1e-8 here), not held to machine precision.
-
-Standalone — no `../VULCAN-master/` oracle needed.
+Master snapshots the bottom H2/He mixing ratios at the first step with
+t > 1e6 and pins them through use_fix_sp_bot; the runner does this with a
+one-shot h2he_pinned carry. Seeded at t = 1.5e6, a 5-step HD189 run must
+snapshot the pre-run ratios and hold y[0] at ymix_pre * n_0[0] to 1e-6.
+The pin is not exact because upstream pins sol[0] before the clip and the
+y = n_0 * ymix rebalance (op.py:2945-2946).
 """
 
 from __future__ import annotations

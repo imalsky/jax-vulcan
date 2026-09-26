@@ -1,4 +1,4 @@
-"""Regression tests for disabled molecular diffusion transport terms."""
+"""Disabled molecular diffusion (Dzz = 0, Hpi = 0) keeps the diffusion coefficients finite."""
 
 from __future__ import annotations
 

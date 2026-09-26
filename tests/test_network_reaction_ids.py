@@ -5,14 +5,9 @@ runs, so a file that upstream has run through has `file_id == parser_position` o
 every row. A file that has been fetched from a remote, hand-edited, or simply
 never run does not. Five of the eleven networks vendored here are in that state.
 
-`legacy_io.ReadRate.read_rate` used to build `pho_rate_index` / `ion_rate_index`
-from the id column, while `network.parse_network` builds them from the position
-and `rates.build_rate_array` / `rates.apply_remove_list` index `k_arr`
-positionally. On any file where the two disagree this wrote a photolysis rate
-into the wrong reaction slot, silently or with an out-of-range IndexError.
-
-Run from VULCAN-JAX/:
-    pytest tests/test_network_reaction_ids.py
+Every index into k_arr (parser, legacy_io.ReadRate, rates.build_rate_array,
+apply_remove_list) is positional; keying photolysis by the id column puts a
+rate in the wrong slot or out of range.
 """
 
 from __future__ import annotations
@@ -82,7 +77,7 @@ def _configured_networks() -> dict[str, list[str]]:
 def test_photo_rate_index_is_positional_and_in_range(net_path):
     """Every photo/ion index must be an in-range odd (forward) slot of k_arr.
 
-    This is the property the old id-column indexing violated. `k_arr` has
+    `k_arr` has
     `nr + 1` rows with row 0 unused, so a valid forward slot is odd and
     `<= nr`.
     """
@@ -139,16 +134,13 @@ def test_photo_indices_are_parser_positions():
     assert sorted(net.pho_rate_index.values()) == sorted(photo_positions)
 
 
-# Guard against a silent regression in the shipped results
 
 
 def test_configured_networks_have_consistent_ids():
     """Every network a shipped config selects must be renumbered.
 
-    Not a correctness requirement -- the fix makes stale files parse correctly
-    anyway -- but it pins the fact that no shipped config's results moved when
-    the indexing was corrected, and it keeps `cfg.remove_list` written against
-    these files meaningful.
+    Not needed for correctness (parsing is positional), but it keeps
+    cfg.remove_list entries read off these files meaningful.
     """
     offenders = []
     for net_name in _configured_networks():

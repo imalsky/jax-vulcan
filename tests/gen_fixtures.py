@@ -6,16 +6,12 @@ That one command, run in a clean clone with no sibling repositories, produces
 all four fixtures and writes `tests/data/FIXTURES.json` recording each file's
 SHA-256 alongside the commit, config, and dependency versions that made it.
 
-The fixtures are deliberately required -- `conftest.py` fails collection when
-one is missing, because a skipped numerical oracle still reports green -- but
-they are gitignored (~36 MB), so a clean clone must be able to regenerate them.
-
-ONE PROCESS PER NETWORK. The reaction network is frozen at the first
-`import vulcan_jax`, and the HD189 and W39b adjoint states need different
-networks (C-H-N-O vs SNCHO). Each generator therefore runs as a subprocess.
-
-COST. The two adjoint states each converge a real run; expect a few minutes
-each on a laptop. The two photo fixtures are setup-only and fast.
+The fixtures are required (conftest fails collection when one is missing)
+but gitignored (~36 MB), so a clean clone must regenerate them. The network
+is frozen at the first `import vulcan_jax` and the two adjoint states need
+different networks, so each generator runs in its own subprocess. The
+adjoint states each converge a real run (minutes); the photo fixtures are
+fast.
 """
 
 from __future__ import annotations
@@ -150,9 +146,7 @@ def write_manifest() -> dict:
     manifest = {
         "generated_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "vulcan_jax_commit": _git_head(),
-        # The adjoint states are a converged solve, so a consumer that pins a
-        # machine-dependent number off them can tell whether it is reading the
-        # column that number was measured on.
+        # Converged states are machine-dependent; record the machine they came from.
         "platform_machine": platform.machine(),
         "versions": _versions(),
         "config_sha256_16": _config_identity(),

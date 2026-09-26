@@ -9,31 +9,27 @@
 # (`tools/audit_master_parity.py`, `_check_oracle_is_pristine`).
 #
 # Not a cross-version network mapper: if upstream moves, pin a new revision
-# here deliberately (and re-measure), never teach the audit to translate
-# between reaction numbering schemes.
+# here and re-run the oracle tests.
 
 schema_version: 1
 
 # ---------------------------------------------------------------------------
 # Upstream oracle revisions, per test family.
 # ---------------------------------------------------------------------------
-# `VULCAN_MASTER_DIR` must point at a clean checkout of the named repository at
-# EXACTLY the named commit. There is deliberately no default sibling path: an
-# arbitrary `../VULCAN-master` is what this manifest exists to stop.
-# A confirmed upstream defect corrected on BOTH sides is a declared code delta
-# in tests/oracle.py::ORACLE_CODE_DELTAS, applied to the disposable copy only
-# (never to a pinned checkout); see `intentional_divergences` below.
+# `VULCAN_MASTER_DIR` names a clean checkout at the named commit; there is no
+# default path. An upstream defect corrected on both sides is a code delta in
+# tests/oracle.py::ORACLE_CODE_DELTAS, applied to the disposable copy only
+# (see `intentional_divergences`).
 oracles:
 
   vulcan2_ncho:
     repo: https://github.com/exoclime/VULCAN
     commit: 80f75b9bf243a5a8db55eb04a5806269f56125e7
     why: >-
-      The parent of 39f1906, the commit that removed
-      `NH3 + CH -> NH2 + CH2` from NCHO_photo_network.txt. The vendored
-      VULCAN-JAX network is BYTE-IDENTICAL to this revision's file, so reaction
-      positions line up and rate/Gibbs comparisons are meaningful. Any later
-      revision shifts every index past that reaction.
+      Parent of 39f1906, which removed `NH3 + CH -> NH2 + CH2` from
+      NCHO_photo_network.txt. The vendored network is byte-identical to this
+      revision's file, so reaction positions line up; any later revision shifts
+      every index past that reaction.
     used_by:
       - tests/test_gibbs.py
       - tests/test_chem.py
@@ -51,14 +47,10 @@ oracles:
     repo: https://github.com/exoclime/VULCAN
     commit: 897033769d62caa27ee44f7360dcaba1e947919c
     why: >-
-      The last VULCAN 2 master revision (master now carries VULCAN 3), kept
-      as the reference for the FastChem P/S
-      element-ORDER correction (notes.md, Parity & bug guide, C12). Upstream's own 2026-07-28
-      "fix" (8970337) is INERT: it edited `fc_list` while the defect is the row
-      order of the shipped .dat file, so the report must cite the .dat, not
-      fc_list. This revision
-      is NOT valid for the NCHO reaction-index families above -- it postdates
-      39f1906.
+      Last VULCAN 2 master revision; reference for the FastChem P/S
+      element-order correction (C12). Its fc_list edit (8970337) leaves the row
+      order of the shipped .dat unchanged, so cite the .dat. Not valid for the
+      NCHO reaction-index families: it postdates 39f1906.
     used_by: []   # provenance of the two abundance presets below; no test runs it
 
   vulcan3_vm_branch:
@@ -66,11 +58,9 @@ oracles:
     branch: vm_branch
     commit: 84d010dce7769d365b3669e7edf9fb649709f706
     why: >-
-      The VULCAN 3 source for the ported features below. This is ONE commit
-      after 362cfa21901a46133e14e24cd1fc8ab4c0f9565c, the base the port
-      originally cited; the intervening change corrects the FastChem
-      element-list order. That distinction is scientifically load-bearing and is
-      recorded here rather than hidden behind a branch name.
+      VULCAN 3 source for the features below: one commit after
+      362cfa21901a46133e14e24cd1fc8ab4c0f9565c, and that commit corrects the
+      FastChem element-list order.
     features_claimed_from_it:
       - "upwind molecular diffusion (use_vm_mol, op.update_mu_dz form)"
       - "hybrid in-loop upwind->central phase flip (use_hybrid_vm_mol)"
@@ -81,14 +71,9 @@ oracles:
 # ---------------------------------------------------------------------------
 # Supported vendored scientific inputs.
 # ---------------------------------------------------------------------------
-# These are the files this port promises to carry faithfully, and the ONLY ones
-# `tools/audit_master_parity.py` compares. Whole-tree equality was the previous
-# rule and it cannot succeed: current public master ships CRAHCNO_V3 / HNC /
-# NCCN files this release does not carry, and the Shami base carries many
-# unrelated historical files, so the audit failed on "file set mismatch" before
-# comparing anything that matters.
-#
-# sha256 is of the file as vendored under src/vulcan_jax/.
+# The files this port carries faithfully and the only ones
+# tools/audit_master_parity.py compares (upstream trees carry networks this
+# release does not). sha256 is of the file as vendored under src/vulcan_jax/.
 supported_inputs:
 
   thermo/NCHO_photo_network.txt:
@@ -157,17 +142,13 @@ supported_inputs:
     oracle: vulcan2_fastchem_ps_order
     diverges: [C12_fastchem_ps_order, lodders2019_rocky_suppressed]
     note: >-
-      DEFAULT hybrid preset: rocky elements suppressed to -3.0; S and He rows
-      approximate Lodders 2019 Table 8, the C/N/O rows are upstream's Lodders 2009 file
-      values. default/HD189/HD189_vulcan3 use the file unchanged; HD209/W39b
-      override network elements other than H in custom mode. The
-      header says so; the hash covers header and rows alike. The row ORDER and
-      the leading comment block no longer matter to this port (the Gibbs seed
-      reads rows by symbol), but both are kept byte-identical so the file can
-      still be staged into an upstream checkout, where FastChem reads slots
-      positionally and eats line 1.
-      ALWAYS match this file before quoting any cross-code number -- unmatched,
-      HD189 disagrees with upstream by ~20% median.
+      Default hybrid preset: rocky elements at -3.0, S and He approximately
+      Lodders 2019 Table 8, C/N/O upstream's Lodders 2009 values.
+      default/HD189/HD189_vulcan3 use it unchanged; HD209/W39b override network
+      elements other than H in custom mode. Row order and header stay
+      byte-identical so the file can be staged into an upstream checkout
+      (FastChem reads slots positionally and skips line 1); the port reads rows
+      by symbol.
 
   thermo/solar_element_abundances_lodders2009.dat:
     sha256: 9a83f9b8cc51380b5adcc3c764cec54f0b2f2bfbc0b8b34313d6da2873af95fd
@@ -183,9 +164,8 @@ supported_inputs:
 # ---------------------------------------------------------------------------
 # Intentional divergences from upstream.
 # ---------------------------------------------------------------------------
-# Exact upstream byte parity is NOT the goal where upstream is known wrong.
-# Exact documentation and a test for each deliberate difference IS. Anything
-# not listed here that differs is drift, and the audit fails on it.
+# Each intentional difference from upstream is listed here with a test;
+# anything else that differs is drift, and the audit fails on it.
 intentional_divergences:
 
   C20_ch3oh_troe_log10:
@@ -230,41 +210,36 @@ intentional_divergences:
     reason: >-
       Master's builder (atm/make_spectra_in_nm.py; copy in tools/data_prep/)
       multiplied by R_star where the surface-flux conversion divides, so the
-      shipped eps Eri spectrum is low by exactly R_star^4.
+      shipped eps Eri spectrum is low by R_star^4.
     recorded_in: notes.md (Parity & bug guide, C4)
 
   P18_gj1214_upstream_regenerated:
     files: [atm/stellar_flux/sflux-GJ1214.txt]
     reason: >-
       The pinned vulcan2_ncho copy pads 133.75-181.55 nm with 464 zero-flux
-      rows that bin into the FUV photolysis drive as real zeros (P18). Upstream
-      deleted those rows when it regenerated the file (bb9255b1); the same
-      regeneration lowers every flux by a constant 1.392 (median ratio old/new;
-      the 1.385-1.399 spread is the old file's three-significant-digit
-      rounding) and prints seven digits. The wavelength grid is otherwise
-      identical to 2e-11 nm. The (distance/R_star) upstream used is not in
-      either tree: the builder (atm/stellar_flux/read_muscles_spectra_in_nm.py;
-      copy in tools/data_prep/) still encodes 47.5 ly / 0.2064 r_sun and
-      reproduces the OLD normalisation.
+      rows that bin into the FUV photolysis drive as real zeros (P18).
+      Upstream's regeneration (bb9255b1) deletes them and lowers every flux by
+      a constant 1.392; the wavelength grid is otherwise identical. The builder
+      in tools/data_prep/ (47.5 ly / 0.2064 r_sun) reproduces the
+      pre-regeneration normalisation.
     recorded_in: notes.md (Parity & bug guide, P18)
 
   C12_fastchem_ps_order:
     files: [thermo/solar_element_abundances.dat]
     reason: >-
       Upstream swaps the P and S rows of the element-abundance file relative to
-      the element list FastChem reads. CONFIRMED still open at exoclime HEAD
-      (introduced 604ca6e). Measured impact on a real W39b column: atomic S
-      moves 2.6-3.1 dex; every molecule <= 0.004 dex.
+      the element list FastChem reads (introduced 604ca6e, open at exoclime
+      HEAD). On a W39b column atomic S moves 2.6-3.1 dex, molecules <= 0.004 dex.
     recorded_in: notes.md (Parity & bug guide, C12)
 
   lodders2019_rocky_suppressed:
     files: [thermo/solar_element_abundances.dat]
     reason: >-
-      The DEFAULT hybrid preset keeps upstream C/N/O and uses approximately
+      The default hybrid preset keeps upstream C/N/O and uses approximately
       Lodders 2019 He/S, with rocky elements suppressed to -3.0 for NCHO/SNCHO
       networks that carry no Mg/Si/Fe
       species to hold the oxygen. Upstream ships Lodders 2009 at solar. This is
-      a CONFIG CHOICE, not a correction: both files ship and
+      a config choice, not a correction: both files ship and
       `fastchem_solar_abundance_file` selects.
     recorded_in: notes.md (Validation)
 
@@ -278,22 +253,20 @@ intentional_divergences:
 
   controller_defaults:
     reason: >-
-      Solver tuning and vm_branch controller defaults differ deliberately; the
+      Solver tuning and vm_branch controller defaults differ from upstream; the
       audit ignores them via INTENTIONAL_JAX_DELTAS / JAX_ONLY_DEFAULTS.
     recorded_in: tools/audit_master_parity.py
 
 # ---------------------------------------------------------------------------
 # Explicitly NOT in this release.
 # ---------------------------------------------------------------------------
-# Stated so that an oracle checkout carrying them is recognised as a NEWER
-# upstream than this release supports, rather than as a missing-file error. Do
-# not copy any of these into the repository to make an audit pass.
+# An oracle checkout carrying these is newer than this release supports, not
+# a missing-file error. Do not copy them in to make an audit pass.
 not_in_this_release:
   networks:
     - CRAHCNO_V3
     - HNC thermochemistry
     - NCCN thermochemistry
   reason: >-
-    Porting the newer network and the new HNC/NCCN thermochemistry is an
-    explicit non-goal of the 2026-08 release. Their presence in an oracle
-    checkout means that checkout is newer than the pinned revisions above.
+    Out of scope for this port; their presence in an oracle checkout means it
+    is newer than the pinned revisions above.

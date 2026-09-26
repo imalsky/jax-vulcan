@@ -48,7 +48,7 @@ def _cfg_overrides(**kwargs):
 
 def _build_hd189_atm():
     """Return `(data_var, data_atm, make_atm)` after `load_TPK` (and
-    `sp_sat` if condense is on). Deliberately partial setup: the full
+    `sp_sat` if condense is on). Partial setup: the full
     `RunState.with_pre_loop_setup` would also run rates / the EQ seed / photo
     reads these mode tests do not use.
     """
@@ -201,7 +201,7 @@ def test_table_roundtrip(tmp_path):
 )
 def test_const_lowT_matches_scipy(O_H, C_H, He_H, N_H):
     """JAX Newton on the 5-mol H2/H2O/CH4/He/NH3 system matches scipy
-    fsolve to 1e-13 (in practice ~1e-16 on solar-like ratios)."""
+    fsolve to 1e-13."""
     import jax.numpy as jnp
     from scipy.optimize import fsolve
     from vulcan_jax.ini_abun import _abun_lowT_residual, _jax_newton

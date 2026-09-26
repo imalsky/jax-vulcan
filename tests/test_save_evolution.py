@@ -1,21 +1,9 @@
-"""`save_evolution` time-series capture in the OuterLoop runner.
+"""save_evolution time series from the OuterLoop runner.
 
-When `vulcan_cfg.save_evolution=True`, master appends `var.y` and `var.t`
-to `var.y_time` / `var.t_time` every accepted step (op.py:1096-1099) and
-slices by `save_evo_frq` at save time. The JAX OuterLoop captures the
-trajectory directly at the configured cadence into a fixed-size buffer.
-
-This test runs HD189 with `save_evolution=True, save_evo_frq=10` for
-`count_max=50` accepted steps and asserts:
-  1. `rs.step.t_evo` has the expected length:
-     `ceil((count_max + 1) / save_evo_frq)` (6).
-  2. `t_evo` is monotonic.
-  3. `y_evo[i]` snapshot for each i >= 1 is a valid (nz, ni) array
-     with no NaN / inf.
-  4. The pickle save round-trips the time-series under the same key names
-     as master (`y_time` / `t_time`, loadable by `plot_py/plot_evolution.py`).
-
-Standalone — no `../VULCAN-master/` oracle needed.
+Master appends y/t every accepted step (op.py:1096-1099) and keeps every
+save_evo_frq-th. HD189 with count_max=50 and save_evo_frq=10 must give 6
+finite snapshots at increasing t, and the .vul must round-trip them under
+master's y_time/t_time keys (plot_py/plot_evolution.py).
 """
 
 from __future__ import annotations
@@ -46,11 +34,7 @@ def main() -> int:
     vulcan_cfg = legacy_io.default_config()
     save_evo_frq = 10
     count_max = 50
-    # Master runs `count_max + 1` save_steps (op.py:1080 uses `>`, not `>=`),
-    # then post-slices `var.y_time[::save_evo_frq]`, so the kept length is
-    # `ceil((count_max + 1) / save_evo_frq)` = (count_max + save_evo_frq)
-    # // save_evo_frq. For (50, 10) that's 6 entries (indices 0,10,20,30,
-    # 40,50 of y_time[0..50]).
+    # Master saves count_max + 1 steps (op.py:1080 uses `>`) and keeps y_time[::save_evo_frq].
     expected_n = (count_max + save_evo_frq) // save_evo_frq  # 6
 
     original_save_evo = vulcan_cfg.save_evolution

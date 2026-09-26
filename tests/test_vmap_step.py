@@ -1,8 +1,4 @@
-"""Demonstrate vmap-able batched Ros2 step.
-
-Builds a single VULCAN-master state, replicates y across a batch dimension,
-calls jax.vmap(jax_ros2_step) and verifies all batch elements agree.
-"""
+"""jax.vmap(jax_ros2_step) over identical HD189 states must reproduce the single step (sol and delta) to 1e-12."""
 
 from __future__ import annotations
 
@@ -27,10 +23,7 @@ def main() -> int:
 
     vulcan_cfg = default_config()
 
-    # Build the canonical HD189 pre-loop state via the typed constructor
-    # and derive a `(var, atm, _)` shim for legacy attribute access. The
-    # shim carries `var.y` / `var.k_arr` / `atm.*` populated from the
-    # typed pytree.
+    # HD189 pre-loop state; legacy_view gives var.y / var.k_arr / atm.*.
     from vulcan_jax.state import RunState, legacy_view
 
     rs = RunState.with_pre_loop_setup(vulcan_cfg)

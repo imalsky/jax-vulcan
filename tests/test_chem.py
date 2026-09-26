@@ -18,10 +18,7 @@ os.chdir(ROOT)
 
 from oracle import oracle_dir_or_skip  # noqa: E402
 
-# The oracle location comes from $VULCAN_MASTER_DIR only, never a sibling
-# guess. The PARENT process verifies the pinned revision and a clean tree
-# (run_oracle_subprocess -> oracle_worktree -> require_oracle) and points
-# this at a temporary COPY; see oracle.oracle_dir_or_skip.
+# The parent verifies the pin and passes a temporary copy (oracle.oracle_dir_or_skip).
 VULCAN_MASTER = oracle_dir_or_skip("this chemdf/symjac comparison")
 
 warnings.filterwarnings("ignore")
@@ -140,8 +137,7 @@ def main() -> int:
             max_jac_idx = j
     print(f"chem_jac max relerr: {max_jac_relerr:.3e} at layer {max_jac_idx}")
 
-    # Bulk-species criterion: the W39b benchmark species must agree tightly
-    # (a looser ~1e-4 floor once produced 0.25-0.49 dex converged-state drift).
+    # The W39b benchmark species carry the converged-state comparison, so they get their own 1e-5 bar.
     bulk_relerr = 0.0
     for sp in ("H2O", "CO2", "SO", "SO2", "H2", "CO", "S", "H2S"):
         if sp in net.species_idx:
@@ -153,8 +149,6 @@ def main() -> int:
             bulk_relerr = max(bulk_relerr, r)
     print(f"bulk-species worst relerr: {bulk_relerr:.3e}")
 
-    # chem_rhs is codegen-backed (master-faithful per-reaction term order).
-    # On cells > 1e-6 of species peak, rtol=1e-5; on bulk species, 1e-5.
     ok = (max_relerr < 1e-5) and (bulk_relerr < 1e-5) and (max_jac_relerr < 1e-6)
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1

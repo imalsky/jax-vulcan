@@ -199,9 +199,8 @@ def _cfg_guard(request, _cfg_snapshot_session):
 
 @pytest.fixture(autouse=True, scope="module")
 def _release_jax_caches_per_module():
-    """Drop a module's compiled programs when it finishes. Kept, they pile up
-    per xdist worker (one held 5.3 GB before its next test) and four workers
-    reached ~16 GB together, the whole GitHub runner."""
+    """Drop a module's compiled programs when it finishes, so per-xdist-worker
+    caches do not exhaust runner memory (notes §1.8)."""
     yield
     _clear_jax_caches()
 
@@ -298,12 +297,9 @@ def hd189_state(_hd189_pristine: HD189State) -> HD189State:
 
 
 # --- numerical-oracle fixture guard -----------------------------------------
-# These .npz oracles stay OUT of git on purpose (~36 MB, all regenerable with
-# `python tests/gen_fixtures.py --all`, no sibling checkout needed). When one
-# is missing the tests comparing against it would SKIP and the suite would
-# still go green, so collection must fail loudly instead (skipped != passed).
-#
-# path -> the generator that writes it.
+# Untracked .npz oracles (~36 MB; `python tests/gen_fixtures.py --all`). A
+# missing one would make its tests skip and the suite pass, so collection
+# fails instead. path -> the generator that writes it.
 _EXPECTED_FIXTURES = {
     "tests/data/adj_state_hd189.npz": "tests/_gen_adj_state.py hd189",
     "tests/data/adj_state_w39b.npz": "tests/_gen_adj_state.py w39b",

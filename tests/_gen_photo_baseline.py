@@ -3,9 +3,8 @@
 Writes `photo_setup_hd189_baseline.npz` (default HD189 cfg: T_cross_sp=[],
 use_ion=False) and `photo_setup_hd189_T_dep.npz` (T_cross_sp patched to
 ['CO2','H2O','NH3']) with the exact key schema `tests/test_photo_setup.py`
-compares against. The fixtures are NOT tracked in git (blanket *.npz
-gitignore; the T-dep file is ~31 MB) -- the tests skip when they are
-missing and this script recreates them.
+compares against. The fixtures are gitignored; `tests/gen_fixtures.py --all`
+drives this script.
 
 Run from VULCAN-JAX/:
     python tests/_gen_photo_baseline.py [--out DIR]

@@ -37,7 +37,7 @@ def _find_rxn_idx(net, eq: str) -> int:
 def _load_nasa9_local(net):
     """Load NASA-9 coefficients fresh via `gibbs.load_nasa9`.
 
-    Deliberately avoids the module-level `nasa9_coeffs`: tests that pop
+    Avoids the module-level `nasa9_coeffs`: tests that pop
     `chem_funs` from `sys.modules` can re-resolve it to upstream's SymPy
     module, which lacks the JAX-side private attribute.
     """

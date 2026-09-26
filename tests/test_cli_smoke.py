@@ -1,9 +1,7 @@
 """Smoke-test the production console entry point `vulcan_jax_cli.cli_main`.
 
-The CLI (the `vulcan-jax` console script) is the one path a user actually runs,
-yet the rest of the suite builds the pipeline by hand in fixtures and never
-exercises `cli_main`. This runs it end-to-end on the default HD189 config with
-a tiny step cap and asserts it produces a schema-correct `.vul` file.
+The console entry point, run end to end on HD189 with a tiny step cap,
+writes a schema-correct `.vul`.
 
 The CLI loads its config by name/path (`load_config`), so the tiny-cap overrides
 are delivered through a real resolved YAML written to the temp dir, and

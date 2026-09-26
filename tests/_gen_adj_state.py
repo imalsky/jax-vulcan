@@ -143,7 +143,7 @@ def build_w39b(out_dir: Path) -> Path:
     Photo is held FROZEN at its converged `k_arr` (the rate table including the
     photolysis rows the runner populated), so the solver-map step-vjp gives the
     frozen-photo adjoint: the leading-order thermochemistry sensitivity of SO2.
-    The dJ/dy feedback is second order and deliberately omitted.
+    The dJ/dy feedback (second order) is omitted.
     """
     t0 = time.time()
     # Import-locked: must precede the first `import vulcan_jax` in this process.

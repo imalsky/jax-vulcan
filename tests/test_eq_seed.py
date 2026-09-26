@@ -1,16 +1,15 @@
 """The `ini_mix: EQ` Gibbs seed: agreement with upstream, and its own invariants.
 
-Since 0.15.0 the seed is a JAX Gibbs minimizer over the loaded network's own
-gas species, using the same NASA-9 polynomials as the reverse rates, in place
-of a FastChem subprocess. Two independent things need proving:
+The seed is a JAX Gibbs minimizer over the loaded network's gas species, on
+the NASA-9 polynomials of the reverse rates. Two things need proving:
 
-1. It is the SAME equilibrium. `test_seed_matches_upstream_fastchem` runs the
+1. It is the same equilibrium. `test_seed_matches_upstream_fastchem` runs the
    pinned upstream VULCAN's own initializer on the same column with the same
    elemental abundances and compares dex by dex. The two codes share no
    algorithm, no species list and no thermochemical table, so the bar is the
    measured agreement (see MAX_DEX below), not machine precision.
 
-2. It is EXACT where it must be: element ratios, normalisation, excluded
+2. It is exact where it must be: element ratios, normalisation, excluded
    species, and the jit / vmap / jvp boundary. Those need no oracle.
 
 Both sides run in subprocesses: the network is import-frozen, so the W39b
@@ -32,32 +31,19 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 from oracle import oracle_dir_or_sentinel
 
-# Oracle location from $VULCAN_MASTER_DIR only, never a sibling guess. The
-# parent verifies the pinned revision + clean tree and points the probe at a
-# temporary COPY; the per-test is_dir() skip below handles "not configured".
+# The parent verifies the pin and passes a temporary copy; the per-test
+# is_dir() skip below handles an unset oracle.
 VULCAN_MASTER = oracle_dir_or_sentinel()
 
 from vulcan_jax._paths import PACKAGE_ROOT
 
-# Measured as max |log10(y_jax / y_master)| over cells where master's mixing
-# ratio exceeds YMIX_FLOOR, against upstream at the pinned vulcan2_ncho
-# revision:
-#     HD189 (NCHO)   max 7.86e-03  median 5.84e-05  p99 6.44e-04  (3337 cells)
-#     W39b  (SNCHO)  max 7.72e-03  median 9.06e-05  p99 7.89e-04  (4897 cells)
-# The bar is 3x the worse of those. Both maxima are HO2, a 1e-12 radical.
-# The floor of the disagreement is FastChem's own convergence accuracy
-# (1.0e-4 in its parameters.dat, ~4.3e-5 dex) plus two different
-# thermochemical tables.
-#
-# The full-solar Lodders 2009 preset is deliberately NOT a case here: with
-# every rocky element at solar, upstream's FastChem locks oxygen into
-# MgO/SiO2/FeO, and a Gibbs minimizer over an NCHO network has no species to
-# do that with. Measured divergence 0.166 dex on H2O/CH4/CO2 (max 0.370),
-# entirely master-side -- the two presets carry identical C/N/O rows, so this
-# port's seed barely moves between them. notes.md 2.9.
+# 3x the worst max |log10(y_jax/y_master)| over cells with master ymix >
+# YMIX_FLOOR (HD189 7.86e-3, W39b 7.72e-3, both HO2). The full-solar Lodders
+# 2009 preset is not a case: upstream's FastChem locks O into rock species
+# an NCHO network lacks (notes §2.9).
 MAX_DEX = 2.4e-2
 YMIX_FLOOR = 1.0e-15
-ELEMENT_RTOL = 3.2e-8
+ELEMENT_RTOL = 3.2e-8  # 3x worst recovery (1.04e-8, isothermal 300 K) at fastchem_newton_tol 1e-12
 
 # (case id, VULCAN-JAX config, abundance preset)
 CASES = [
@@ -145,10 +131,9 @@ res = subprocess.run(
     [sys.executable, "make_chem_funs.py"],
     cwd=str(root), capture_output=True, text=True, timeout=900,
 )
-# make_chem_funs.py writes chem_funs.py BEFORE its post-codegen check_conserv(),
-# which raises under numpy>=1.24 (str(numpy.bytes_) -> "b'OH'"). That crash is
-# benign to the generated module -- master's own vulcan.py ignores the exit
-# code -- so only bail if the module does not import with a valid (ni, nr).
+# make_chem_funs.py writes chem_funs.py before its check_conserv(), which
+# raises under numpy>=1.24; master's vulcan.py ignores that exit code, so
+# only the module's importability matters.
 if res.returncode != 0:
     probe = subprocess.run(
         [sys.executable, "-c",
@@ -245,8 +230,8 @@ def _master_cfg(master_root: Path, config_name: str, scratch: Path) -> Path:
     """Write the master-side `vulcan_cfg.py` for one case.
 
     Upstream has no W39b config, so that one is resolved from the shipped
-    YAML on top of the oracle's own legacy surface (old modules import
-    derived knobs such as `gs` that VULCAN-JAX no longer carries), and the
+    YAML on top of the oracle's own legacy surface (its modules import `gs`,
+    which VULCAN-JAX derives from Mp/Rp), and the
     checksummed W39b inputs are staged into the disposable copy.
     """
     from vulcan_jax.config import load_config
@@ -329,10 +314,6 @@ def test_seed_reproduces_its_element_vector_and_normalisation(Tiso) -> None:
     Element ratios recovered from the output must be the requested `b`, the
     mixing ratios must sum to one, and species the seed excludes must be
     exactly zero. Nothing here depends on an oracle.
-
-    ELEMENT_RTOL is 3x the worst recovery measured over these three columns
-    (1.04e-08, the isothermal 300 K one); it is set by `fastchem_newton_tol`,
-    whose 1e-12 is the floor this kernel reaches -- 1e-14 does not converge.
     """
     import jax.numpy as jnp
 
@@ -366,7 +347,7 @@ def test_ratios_path_matches_the_config_path_and_moves_carbon() -> None:
     """The per-lane `ratios` seed equals the config path, bit for bit.
 
     Then doubling C/H must move the carbon carriers and leave helium alone:
-    the retrieval's cold start drives exactly this path.
+    the retrieval's cold start drives this path.
     """
     import jax.numpy as jnp
 
@@ -403,9 +384,8 @@ def test_ratios_path_matches_the_config_path_and_moves_carbon() -> None:
         np.asarray(ini_abun.element_vector(jnp.zeros(0), empty)),
         ini_abun._element_vector(),
     )
-    # A partial override under use_solar=True, the retrieval's case: every
-    # element it does not name keeps the preset on both paths (before 5657a25
-    # the host path took <X>_H for them instead).
+    # A partial override under use_solar=True (the retrieval's case): elements
+    # it does not name keep the preset on both paths.
     c_only = {"C": 2.0 * ratios["C"]}
     np.testing.assert_array_equal(
         np.asarray(ini_abun.element_vector(
@@ -428,16 +408,9 @@ def test_ratios_path_matches_the_config_path_and_moves_carbon() -> None:
 
 
 def test_solver_controls_force_a_retrace() -> None:
-    """A tighter or looser config must not reuse the trace that baked in the
-    old controls.
-
-    `eq_seed` reads the tolerance and the iteration cap at TRACE time, and
-    JAX keys its trace cache on the traced function plus the argument shapes,
-    so a jit wrapper per key is not by itself enough. The observable: after a
-    converged run at the shipped 450 iterations, the same column at
-    `max_iter = 1` must come back all-NaN (the seed's "did not converge"
-    signal), not silently repeat the converged answer.
-    """
+    """Changing the seed's solver controls retraces: `eq_seed` reads tol and
+    max_iter at trace time, so after a converged run `max_iter = 1` must
+    return the all-NaN non-convergence signal."""
     import jax.numpy as jnp
 
     from vulcan_jax import ini_abun

@@ -3,7 +3,7 @@ update_phi_esc + `var.y = n_0 * var.ymix` on HD189.
 
 Same kernel on both sides: master's sweeps write `zco[i+1]` before reading
 it for `g[i+1]`, so its g(z) is self-consistent exactly as
-`update_mu_dz_jax` is (measured 0.0 relative difference on g). Every
+`update_mu_dz_jax` is. Every
 refreshed field, including the diffusion-limited escape flux (`diff_esc`
 forced to ['H'] on both sides), is held to REFRESH_RTOL.
 """
@@ -24,10 +24,7 @@ os.chdir(ROOT)
 
 from oracle import oracle_dir_or_skip  # noqa: E402
 
-# The oracle location comes from $VULCAN_MASTER_DIR only, never a sibling
-# guess. The PARENT process verifies the pinned revision and a clean tree
-# (run_oracle_subprocess -> oracle_worktree -> require_oracle) and points
-# this at a temporary COPY; see oracle.oracle_dir_or_skip.
+# The parent verifies the pin and passes a temporary copy (oracle.oracle_dir_or_skip).
 VULCAN_MASTER = oracle_dir_or_skip("this atm-refresh comparison")
 
 warnings.filterwarnings("ignore")

@@ -142,7 +142,7 @@ def test_dirty_checkout_fails_and_says_why(fake_oracle, monkeypatch):
     finally:
         monkeypatch.setitem(orc.manifest()["oracles"]["vulcan2_ncho"],
                             "commit", want)
-    # ... and a plain directory (the local ../VULCAN-master) is refused too
+    # ... and a plain directory (no .git) is refused too
     plain = fake_oracle.parent / "plain-copy"
     plain.mkdir()
     monkeypatch.setenv(orc.ENV_DIR, str(plain))
@@ -191,16 +191,9 @@ def test_worktree_gives_a_copy_and_proves_the_original_is_untouched(
 
 
 def test_the_oracle_workflow_matches_the_manifest():
-    """.github/workflows/oracle.yml must pin the manifest's exact commits.
-
-    The workflow clones upstream itself, so its SHAs are a second copy of
-    `science_sources.yaml`. If they drift, the release gate silently compares
-    against the wrong revision -- and because reaction indices are positional,
-    that produces failures (or passes) unrelated to the ported kernels.
-
-    Also checks every selected path exists, so a renamed test file cannot
-    quietly drop out of the gate.
-    """
+    """oracle.yml pins the manifest's commits and selects only existing test
+    files. It clones upstream itself, so drifted SHAs would compare against the
+    wrong revision (reaction indices are positional)."""
     import yaml as _yaml
 
     wf_path = ROOT / ".github" / "workflows" / "oracle.yml"
@@ -224,7 +217,7 @@ def test_the_oracle_workflow_matches_the_manifest():
             assert (ROOT / rel).is_file(), (
                 f"oracle.yml selects {rel}, which does not exist")
 
-    # vulcan3_vm_branch has no test file yet; only assert what is claimed.
+    # Every family a test names must have an oracle.yml job.
     used_in_tests = set()
     for f in sorted((ROOT / "tests").glob("test_*.py")):
         for fam in manifest:

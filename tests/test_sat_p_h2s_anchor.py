@@ -1,13 +1,8 @@
 """Anchor the H2S saturation-pressure unit conversion to physical references.
 
-The Giauque & Blue (1936) Antoine fit for H2S outputs pressure in cmHg, so the
-cgs conversion is `* 0.01333 (cmHg->bar) * 1e6 (bar->dyne/cm^2)`. A prior
-version multiplied by 0.001333 (the mmHg factor), making the saturation
-pressure exactly 10x too low. This test pins the corrected value against two
-independent literature anchors so the factor cannot silently regress:
-
-  * Normal boiling point T = 212.8 K, where P(H2S) = 1 atm by definition.
-  * Triple point T = 187.66 K, where P(H2S) ~ 0.233 bar (literature).
+The Giauque & Blue (1936) Antoine fit gives cmHg, so the cgs factor is
+0.01333 * 1e6; the mmHg factor would be 10x low. Anchors: normal boiling
+point 212.8 K at 1 atm, and triple point 187.66 K at ~0.233 bar.
 
 A unit test only — no EQ seed, no VULCAN-master, no integration.
 """
@@ -38,8 +33,7 @@ def main() -> int:
         f"H2S sat_p @ {T_triple} K = {p_triple:.4e} dyne/cm^2 (expect ~0.233 bar); relerr {triple_rel:.3f}"
     )
 
-    # 3% tolerance: the Antoine fit is not exact at these anchors, but a 10x
-    # unit error (the regression we are guarding against) is far outside it.
+    # 3% / 5%: the Antoine fit is not exact at the anchors; a 10x unit error is far outside both.
     if boil_rel > 0.03:
         print("FAIL: H2S saturation pressure at the boiling point is not ~1 atm")
         ok = False

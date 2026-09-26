@@ -1,24 +1,11 @@
-"""Batched (vmap-across-profiles) photochemistry: `run_batch` with photo on.
+"""Batched photochemistry: `run_batch` with photolysis on.
 
-The only T-P-dependent pieces of the photo statics are the two T-interpolated
-cross-section stacks (`absp_T_cross`, `cross_J_T`); they ride `ProfileVars`
-per lane while everything else (star, wavelength grid, branch maps, cfg
-scalars) stays closure-baked and batch-constant. Three properties:
-
-  1. SOLO/BATCH EQUIVALENCE — profile B, run solo on its OWN runner (closure
-     baked from B), matches lane 1 of a batch whose runner is baked from A.
-     If any per-profile photo field were left in the closure, lane 1 would
-     silently use A's cross sections while soloB uses B's → divergence.
-  2. VACUITY GUARDS — the two lanes' T-dep cross sections genuinely differ
-     (different Tiso → different interpolation), the photo branch genuinely
-     fired (nonzero actinic flux, photo k-rows populated), and the two
-     profiles' results differ.
-  3. SAME-STAR GUARD — `prepare_runstate` rejects a profile whose TOA
-     stellar flux differs from the first profile's (only T-P may vary
-     across a photo batch).
-
-Fast-ish: isothermal atmosphere (no atm file), const_mix init (no EQ seed),
-small nz / count_max, photo cadence lowered so the branch fires repeatedly.
+The T-interpolated cross sections (`absp_T_cross`, `cross_J_T`) ride
+`ProfileVars` per lane; the rest of the photo statics is closure-baked.
+Pins: (1) profile B solo on its own runner matches lane 1 of a batch baked
+from A, so no per-profile photo field stays in the closure; (2) vacuity: the
+lanes' cross sections, photo firing and results differ; (3)
+`prepare_runstate` rejects a different TOA stellar flux.
 """
 
 from __future__ import annotations
@@ -44,26 +31,17 @@ COUNT_MAX = 30
 # the vacuity checks below catch a closure leak.
 RTOL = 5e-2
 YMIX_FLOOR = 1e-15
-# ymix is judged by SCALE, not bit identity: |lane - its own solo| against
-# |soloA - soloB|. A closure-baked per-profile photo field makes lane 1 BE
-# soloA (ratio ~1); bit identity is a property of the XLA version, not of the
-# code (holds through jax 0.9.2, breaks from 0.10 by a 6.4e-7 step-controller
-# time offset; measured ratio 6.5e-7 at 0.11.1, ~1e-22 at 0.9.2; notes 1.8).
+# ymix is judged by scale, |lane - own solo| / |soloA - soloB|: a
+# closure-baked photo field makes lane 1 equal soloA (ratio ~1). Bit
+# identity depends on the XLA version (notes §1.8).
 SCALE_TOL = 1e-4
 
 
 def _pin_cfg(**extra):
-    """Pin vulcan_cfg for a small photo-ON batched run: isothermal T-P,
-    const_mix init, lowered photo cadence so the branch fires within
-    COUNT_MAX. Mirrors test_vmap_while_loop._pin_cfg.
-
-    `ini_mix="const_mix"` avoids the EQ seed. The fixed diffusion scheme is
-    deterministic for the batched/emulator regime (the hybrid default would
-    flip schemes mid-run per lane). `T_cross_sp=["H2O"]` selects the vendored
-    T-dependent 423K-2360K tables: the two Tiso values interpolate to
-    different per-layer cross sections, which is exactly the per-lane data
-    this test must prove rides the carry.
-    """
+    """Small photo-on batched config: isothermal, const_mix init, fixed
+    diffusion scheme (the hybrid flips schemes per lane), photo cadence low
+    enough to fire within COUNT_MAX. `T_cross_sp=["H2O"]` gives the two Tiso
+    lanes different cross sections."""
     return fast_cfg(**{
         "count_max": COUNT_MAX,
         "use_photo": True,
@@ -232,14 +210,10 @@ def test_queue_refill_starts_on_its_own_photolysis():
 
 @pytest.mark.strict_isolation
 def test_queue_without_refill_is_the_photo_batch():
-    """`run_queue` with one lane per job, PHOTOLYSIS ON: nothing is refilled,
-    so every job runs the ticks `run_batch` gives it and the result must be
-    bitwise `run_batch`'s. The photo-off twin of this pin is
-    test_run_queue.test_queue_without_refill_is_the_batch; only with photo on
-    can the initial fill see the photo branch twice before its first
-    chemistry step (which moves prev_aflux and aflux_change, and aflux_change
-    gates the convergence certificate).
-    """
+    """`run_queue` with one lane per job and photolysis on is bitwise
+    `run_batch`. With photo on, the initial fill can hit the photo branch twice
+    before the first chemistry step and move aflux_change, which gates the
+    certificate. Photo-off twin: test_run_queue."""
     from vulcan_jax import outer_loop
 
     vulcan_cfg = _pin_cfg()

@@ -1,19 +1,12 @@
 """Validate `photo_setup._build_photo_static_dense` against locally captured
 npz fixtures.
 
-The fixtures (`tests/data/photo_setup_hd189_baseline.npz` and
-`tests/data/photo_setup_hd189_T_dep.npz`) are the canonical oracle for
-the photo cross-section preprocessing. They are NOT tracked in git (the
-blanket *.npz gitignore; the T-dep file is ~31 MB) -- on a fresh clone
-these tests skip; regenerate the fixtures with
-`python tests/_gen_photo_baseline.py`.
+The fixtures (`tests/data/photo_setup_hd189_{baseline,T_dep}.npz`) are
+gitignored; `python tests/gen_fixtures.py --all` regenerates them.
 
 The fixture comparison is exact except for NumPy-version ULP drift in
 `np.arange` wavelength bins and the interpolated cross sections derived
 from those bins.
-
-Run from VULCAN-JAX/:
-    pytest tests/test_photo_setup.py
 """
 
 from __future__ import annotations
