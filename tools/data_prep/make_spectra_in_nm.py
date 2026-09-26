@@ -7,7 +7,6 @@ concatenates them, and writes `flux-HD189_Moses11.txt`.
 """
 
 import numpy as np
-import scipy
 
 # au is upstream's value (not phy_const's): it reproduces upstream's files.
 au = 1.4959787e13  # cm

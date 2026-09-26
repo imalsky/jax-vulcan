@@ -9,7 +9,6 @@ are hardcoded inline (see the per-star reference block below).
 """
 
 import numpy as np
-import scipy
 from astropy.io import fits
 
 # au is upstream's value (not phy_const's): it reproduces upstream's files.

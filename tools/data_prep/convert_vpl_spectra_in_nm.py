@@ -7,7 +7,6 @@ surface (scaled by (au/r_sun)^2), and writes `VPL_solar.txt`.
 """
 
 import numpy as np
-import scipy
 
 ### PHYS CONSTANTS
 # Planck constant times the light speed
