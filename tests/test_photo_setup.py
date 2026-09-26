@@ -132,7 +132,7 @@ def _check_static_against_fixture(
 
 @pytest.mark.skipif(not _BASELINE_FIXTURE.exists(), reason=_REGEN_HINT)
 def test_photo_setup_matches_baseline_fixture():
-    """HD189 default — T_cross_sp=[], use_ion=False."""
+    """HD189 default: T_cross_sp=[], use_ion=False."""
     import vulcan_jax.photo_setup as photo_setup
     from vulcan_jax.config import default_config
 

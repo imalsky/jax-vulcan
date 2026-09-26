@@ -4,7 +4,7 @@ The Giauque & Blue (1936) Antoine fit gives cmHg, so the cgs factor is
 0.01333 * 1e6; the mmHg factor would be 10x low. Anchors: normal boiling
 point 212.8 K at 1 atm, and triple point 187.66 K at ~0.233 bar.
 
-A unit test only — no EQ seed, no VULCAN-master, no integration.
+A unit test only: no EQ seed, no VULCAN-master, no integration.
 """
 
 from __future__ import annotations

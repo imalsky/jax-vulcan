@@ -68,7 +68,7 @@ def test_regrid_noop(P_b, T):
     assert high_temp_cut_regrid(pco, Tco, T_max=3500.0, P_min=1e6, P_t=1e-2, nz=nz) is None
 
 
-# End-to-end through load_TPK (file mode) — deep column drops below T_max
+# End-to-end through load_TPK (file mode): deep column drops below T_max
 
 
 def _write_hot_tp_file(path: Path) -> None:

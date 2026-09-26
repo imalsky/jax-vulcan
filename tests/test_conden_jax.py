@@ -418,7 +418,7 @@ def test_nh3_conden_top_vmap_per_lane():
         if not np.array_equal(np.asarray(ymixb[lane]), np.asarray(ymixb[0])):
             lanes_differ += 1
     # Vacuity guard: different tops must actually change the result.
-    assert lanes_differ > 0, "all lanes identical — conden_top had no effect"
+    assert lanes_differ > 0, "all lanes identical; conden_top had no effect"
 
 
 def test_no_op_when_inactive():

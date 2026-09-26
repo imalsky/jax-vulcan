@@ -37,7 +37,7 @@ def main() -> int:
     data_var, data_atm, _ = legacy_view(rs)
 
     # Perturb ymix so mu (hence the scale height and zco) is non-trivial
-    # relative to the initial state — otherwise the refresh reproduces the
+    # relative to the initial state; otherwise the refresh reproduces the
     # pre-loop profile and the test is vacuous.
     rng = np.random.default_rng(0)
     pert = 1.0 + 1e-3 * rng.standard_normal(data_var.ymix.shape)

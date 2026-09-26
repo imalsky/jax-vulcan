@@ -15,7 +15,7 @@ file-order-dependent. The vendored upstream table ships exactly six duplicated
 species (three disagreeing in mass); that state is pinned below so any new
 duplicate, or any change to which value wins, fails loudly.
 
-Pure data check — no EQ seed, no VULCAN-master, no integration.
+Pure data check: no EQ seed, no VULCAN-master, no integration.
 """
 
 from __future__ import annotations

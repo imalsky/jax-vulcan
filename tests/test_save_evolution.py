@@ -22,7 +22,7 @@ warnings.filterwarnings("ignore")
 
 
 def main() -> int:
-    # Re-anchor cwd at every test entry — earlier tests in the suite may
+    # Re-anchor cwd at every test entry: earlier tests in the suite may
     # have chdir'd elsewhere, breaking the save_out's relative output_dir.
     os.chdir(ROOT)
     import vulcan_jax.legacy_io as legacy_io

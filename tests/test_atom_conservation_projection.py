@@ -84,7 +84,7 @@ def main() -> int:
     raw_def = raw.copy()
     raw_def[:, inj_idx] += delta
 
-    resid_def = raw_def @ atom_counts  # (nz, n_atoms) — now nonzero
+    resid_def = raw_def @ atom_counts  # (nz, n_atoms), now nonzero
     projected = np.asarray(jax_step._project_chem_rhs(jnp.asarray(raw_def)))
     proj_resid = projected @ atom_counts
 

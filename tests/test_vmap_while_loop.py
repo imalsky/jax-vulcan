@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
-# Termination via count_max for speed → reason 3 ("too_many"). Kept small so
+# Termination via count_max for speed -> reason 3 ("too_many"). Kept small so
 # the whole batch integrates in a few seconds including JIT compile.
 COUNT_MAX = 40
 # Batched runs use the iteration-tick cadence for photolysis and geometry,

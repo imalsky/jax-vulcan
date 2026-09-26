@@ -37,7 +37,7 @@ def _fake_setup(
     use_relax=("H2O", "NH3"),
     fix_species=("H2O", "H2O_l_s", "S8"),
 ):
-    """Minimal (cfg, var, atm) fakes for make_conden_spec — no network import."""
+    """Minimal (cfg, var, atm) fakes for make_conden_spec, no network import."""
     cfg = SimpleNamespace(
         condense_sp=list(condense_sp),
         use_relax=list(use_relax),
@@ -53,7 +53,7 @@ def _fake_setup(
 
 
 def _profiles():
-    """(T iso, T sloped, pco, n_0, Dzz) — 160-250 K, away from every sat-curve kink.
+    """(T iso, T sloped, pco, n_0, Dzz): 160-250 K, away from every sat-curve kink.
 
     Two pressure decades only: with a deep column the 1/p factor swamps the
     Clausius-Clapeyron drop and the sat-mix minimum pins to the bottom layer,

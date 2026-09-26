@@ -41,14 +41,14 @@ def test_roundtrip_field_set_complete(hd189_state):
             "bot_fix_sp",
         }, f"AtmInputs.{name} unexpectedly empty (shape={arr.shape})"
 
-    # Rate constants — densified (nr+1, nz) array, non-empty.
+    # Rate constants: densified (nr+1, nz) array, non-empty.
     k_arr = np.asarray(pt.rate.k)
     assert k_arr.ndim == 2, f"rate.k must be 2D, got {k_arr.shape}"
     assert k_arr.shape[1] == hd189_state.atm.Tco.shape[0], (
         f"rate.k second dim must be nz, got {k_arr.shape}"
     )
 
-    # PhotoInputs — sflux_top is populated when use_photo=True.
+    # PhotoInputs: sflux_top is populated when use_photo=True.
     from vulcan_jax.config import default_config
 
     vulcan_cfg = default_config()

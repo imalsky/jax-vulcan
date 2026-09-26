@@ -62,7 +62,7 @@ def main() -> int:
     # Chronology: t should be strictly increasing.
     if not np.all(np.diff(t_arr) > 0):
         print(
-            "FAIL: ring times not strictly increasing — ring "
+            "FAIL: ring times not strictly increasing; ring "
             "reconstruction is in the wrong order"
         )
         ok = False

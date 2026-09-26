@@ -272,11 +272,11 @@ def test_hd189_reaction_sensitivity_regression():
     # Median twin residual stays out of the stagnation regime (calibrated twins
     # 0.05-0.29); one wandering twin is tolerated.
     assert float(np.median(info["resids"])) < 0.2, (
-        f"median resid {np.median(info['resids']):.2e} — stagnation regime"
+        f"median resid {np.median(info['resids']):.2e}: stagnation regime"
     )
     assert info["resid"] < 0.5, f"max twin resid {info['resid']:.2e}"
     assert info["ensemble_spread"] < 0.15, (
-        f"ensemble spread {info['ensemble_spread']:.2e} — twins disagree"
+        f"ensemble spread {info['ensemble_spread']:.2e}: twins disagree"
     )
     # pair_antisym can read O(1) on FD-accurate rows: bound it only; the FD check below is the validation.
     assert 0.0 <= info["pair_antisym"] <= 1.1, info["pair_antisym"]
@@ -291,6 +291,6 @@ def test_hd189_reaction_sensitivity_regression():
     for r in (13, 14):
         rel = abs(dLdlnk[r] - HD189_FD_ANCHORS[r]) / abs(HD189_FD_ANCHORS[r])
         assert rel < 0.03, (
-            f"r{r}: {dLdlnk[r]:+.3e} vs FD {HD189_FD_ANCHORS[r]:+.3e} (rel {rel:.2f}) "
-            "— the adjoint should be percent level"
+            f"r{r}: {dLdlnk[r]:+.3e} vs FD {HD189_FD_ANCHORS[r]:+.3e} (rel {rel:.2f}); "
+            "the adjoint should be percent level"
         )

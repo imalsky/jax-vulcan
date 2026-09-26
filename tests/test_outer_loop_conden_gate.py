@@ -29,7 +29,7 @@ def test_conden_gate_uses_entry_time_t() -> None:
     line = text[idx : text.find("\n", idx)]
     assert "s.t" in line and "t_next" not in line, (
         f"conden gate must compare `s.t >= start_conden_time` (entry-time), "
-        f"not `t_next`. Found: {line!r}. See op.py:856 — master gates on "
+        f"not `t_next`. Found: {line!r}. See op.py:856: master gates on "
         f"`var.t` before save_step advances it."
     )
 

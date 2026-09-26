@@ -196,7 +196,7 @@ def test_import_locked_overrides_fail_fast(case, tmp_path):
 
 def test_save_cfg_serializes_active_cfg(tmp_path, monkeypatch):
     """Output(cfg=cfg).save_cfg writes the ACTIVE cfg's values (so make_config
-    runs are reproducible), not a copy of the packaged vulcan_cfg.py — and it
+    runs are reproducible), not a copy of the packaged vulcan_cfg.py, and it
     writes under dname even when the cwd is somewhere else."""
     import vulcan_jax
     from vulcan_jax import legacy_io

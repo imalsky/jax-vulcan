@@ -78,14 +78,14 @@ def main() -> int:
             )
             ok = False
 
-    # 3. HD189 is smooth — no retries should fire.
+    # 3. HD189 is smooth: no retries should fire.
     if para.nega_count + para.loss_count + para.delta_count > 0:
         print(
             f"WARN: retries fired on HD189 (nega={para.nega_count}, "
             f"loss={para.loss_count}, delta={para.delta_count}); "
             "this is unexpected for the smooth baseline."
         )
-        # Don't fail — retries are correct behavior, just unusual on HD189.
+        # Don't fail: retries are correct behavior, just unusual on HD189.
 
     # 4. dt is finite and positive (catch NaN/inf crashes).
     import math
