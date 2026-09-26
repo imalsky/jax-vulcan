@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import copy
 import fcntl as _fcntl
-import importlib
 import os
 import sys
 import warnings
@@ -23,16 +22,6 @@ from typing import Any
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-
-# Oracle location comes from $VULCAN_MASTER_DIR only, never a sibling guess:
-# an auto-detected ../VULCAN-master pins no revision. `tests/oracle.py`
-# verifies the pinned commit and a clean worktree before any comparison runs.
-# This constant exists only so the import-leak cleanup below can strip the
-# path from sys.path.
-_master_env = os.environ.get("VULCAN_MASTER_DIR")
-VULCAN_MASTER = (Path(_master_env).expanduser().resolve() if _master_env
-                 else Path("/nonexistent/VULCAN-oracle-unset"))
-VULCAN_MASTER_STR = str(VULCAN_MASTER)
 
 # Many tests assume cwd == ROOT for relative data paths.
 os.chdir(ROOT)
@@ -61,57 +50,8 @@ def _assert_testing_repo_checkout() -> None:
 _assert_testing_repo_checkout()
 
 
-# vulcan_cfg snapshot/restore fixtures.
-
-_MASTER_ONLY_MODULE_NAMES = (
-    "op",
-    "build_atm",
-    "store",
-)
-
-_VULCAN_JAX_MODULE_NAMES = (
-    "vulcan_jax.legacy_io",
-    "vulcan_jax.chem_funs",
-    "vulcan_jax.network",
-    "vulcan_jax.rates_jax",
-    "vulcan_jax.gibbs",
-    "vulcan_jax.chem",
-    "vulcan_jax.atm_setup",
-    "vulcan_jax.ini_abun",
-    "vulcan_jax.photo_setup",
-    "vulcan_jax.outer_loop",
-    "vulcan_jax.state",
-    "vulcan_jax.jax_step",
-    "vulcan_jax.op_jax",
-    "vulcan_jax.composition",
-)
-
-
-def _module_is_under(mod: Any, root: Path) -> bool:
-    """Return True when a loaded module came from `root`."""
-    module_file = getattr(mod, "__file__", None)
-    if module_file is None:
-        return False
-    try:
-        Path(module_file).resolve().relative_to(root.resolve())
-    except (OSError, ValueError):
-        return False
-    return True
-
-
-def _restore_import_state(snap: dict | None = None) -> None:
-    """Drop sibling-master modules and restore canonical VULCAN-JAX modules."""
-    # Remove VULCAN-master path leakage.
-    sys.path[:] = [p for p in sys.path if p != VULCAN_MASTER_STR]
-    for name in _MASTER_ONLY_MODULE_NAMES:
-        mod = sys.modules.get(name)
-        if mod is not None and _module_is_under(mod, VULCAN_MASTER):
-            sys.modules.pop(name, None)
-    if snap is None:
-        return
-    for name, mod in snap.get("modules", {}).items():
-        if sys.modules.get(name) is not mod:
-            sys.modules[name] = mod
+# Config snapshot/restore fixtures. Upstream modules are only ever imported
+# in subprocesses, so the parent's import state needs no restoring.
 
 
 def _clear_jax_caches() -> None:
@@ -141,23 +81,12 @@ def _snapshot_cfg_attrs(cfg_module) -> dict:
 @pytest.fixture(scope="session", autouse=True)
 def _cfg_snapshot_session():
     """Snapshot the process default config (a single object that
-    `state._cfg_overlay` mutates in place) plus canonical VULCAN-JAX modules,
-    so `_cfg_guard` can restore them after every test."""
-    _restore_import_state()
+    `state._cfg_overlay` mutates in place) so `_cfg_guard` can restore it
+    after every test."""
     from vulcan_jax.config import default_config
 
     canonical = default_config()
-    canonical_modules: dict[str, Any] = {}
-    for name in _VULCAN_JAX_MODULE_NAMES:
-        try:
-            canonical_modules[name] = importlib.import_module(name)
-        except Exception:
-            pass
-    snap = {
-        "cfg": canonical,
-        "attrs": _snapshot_cfg_attrs(canonical),
-        "modules": canonical_modules,
-    }
+    snap = {"cfg": canonical, "attrs": _snapshot_cfg_attrs(canonical)}
     yield snap
     _restore_cfg(snap)
 
@@ -166,7 +95,6 @@ def _restore_cfg(snap: dict) -> None:
     """Restore every snapshotted attribute on the process default config and
     drop any attribute a test added."""
     canonical = snap["cfg"]
-    _restore_import_state(snap)
     snap_attrs = snap["attrs"]
     for name, val in snap_attrs.items():
         try:
@@ -233,8 +161,8 @@ def pytest_configure(config):
     )
     config.addinivalue_line(
         "markers",
-        "strict_isolation: restore VULCAN-JAX import/config state and clear "
-        "JAX caches before and after the test.",
+        "strict_isolation: restore the default config and clear JAX caches "
+        "before and after the test.",
     )
 
 
@@ -245,28 +173,19 @@ class HD189State:
     var: Any
     atm: Any
     para: Any
-    make_atm: Any
-    output: Any
     solver: Any
 
 
 @pytest.fixture(scope="session")
 def _hd189_pristine() -> HD189State:
     """One-time HD189 pre-loop build."""
-    import vulcan_jax.legacy_io as op
-
-    from vulcan_jax.config import default_config
-
-    cfg = default_config()
-
-    from vulcan_jax.atm_setup import Atm
     import vulcan_jax.op_jax as op_jax
+    from vulcan_jax.config import default_config
     from vulcan_jax.state import RunState, legacy_view
 
+    cfg = default_config()
     rs = RunState.with_pre_loop_setup(cfg)
     data_var, data_atm, data_para = legacy_view(rs)
-    make_atm = Atm()
-    output = op.Output()
 
     solver = op_jax.Ros2JAX()
     if cfg.use_photo and rs.photo_static is not None:
@@ -276,8 +195,6 @@ def _hd189_pristine() -> HD189State:
         var=data_var,
         atm=data_atm,
         para=data_para,
-        make_atm=make_atm,
-        output=output,
         solver=solver,
     )
 
@@ -290,8 +207,6 @@ def hd189_state(_hd189_pristine: HD189State) -> HD189State:
         var=copy.deepcopy(p.var),
         atm=copy.deepcopy(p.atm),
         para=copy.deepcopy(p.para),
-        make_atm=p.make_atm,
-        output=p.output,
         solver=p.solver,
     )
 
