@@ -10,14 +10,8 @@ import numpy as np
 from . import chem_funs
 
 
-# The validator bound-checks knobs a config DECLARES; it never supplies one.
-# A literal default here would be a second copy of a number the YAML owns, so
-# the two could drift and this module would then validate a value the run
-# never uses. `_declared` returns None for an undeclared knob and the caller
-# skips it (the runner reads the knob itself and fails there).
-# `tests/test_runtime_validation_knobs.py` pins that every shipped config
-# declares every knob checked here, so the skip cannot hide anything in
-# practice.
+# Checks only declared knobs and never supplies a default;
+# test_runtime_validation_knobs.py pins that shipped configs declare them.
 _ABSENT = object()
 
 
@@ -244,9 +238,8 @@ def _validate_numerical_bounds(cfg) -> list[str]:
             errors.append(f"high_temp_cut_P={htc_P} must be > 0 (dyne/cm^2).")
 
     # --- numerical core -----------------------------------------------------
-    # Knobs a typo makes silently wrong rather than loudly broken (nz=1 and an
-    # inverted P_b/P_t both ran to completion). Sign/ordering checks only; no
-    # opinion about what a good value is.
+    # Knobs a typo makes silently wrong rather than loudly broken.
+    # Sign/ordering checks only; no opinion about what a good value is.
     nz = _declared(cfg, "nz", int)
     if nz is None:
         errors.append("nz is not declared; every config must set the layer count.")
@@ -340,9 +333,8 @@ def _validate_numerical_bounds(cfg) -> list[str]:
         v = int(getattr(cfg, key))
         if v < 1:
             errors.append(f"{key}={v} must be >= 1.")
-    # NO count_min-vs-count_max ordering check: `count_min = count_max + 1` is
-    # a deliberate idiom ("run exactly count_max steps") used by the parity
-    # harness and benchmarks; an ordering constraint would reject those runs.
+    # No count_min <= count_max check: count_min = count_max + 1 runs
+    # count_max steps (the parity harness and benchmarks use it).
 
     # The refresh counter is int32 and used as a modulo divisor in the runner.
     for key in ("ini_update_photo_frq", "final_update_photo_frq"):
@@ -537,8 +529,6 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
 # One report per (network, T-grid signature, exposure) per process: repeated
 # rebuilds of the SAME case stay quiet, but a different profile on the same
 # network reports again — the exposure depends on Tco, not just the network.
-# (vulcan-forward builds the RunState once per model; per-proposal T varies
-# on-graph, so this cannot spam a retrieval log.)
 _TEMP_RANGE_REPORTED: set[tuple] = set()
 
 

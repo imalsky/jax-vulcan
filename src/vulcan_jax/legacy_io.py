@@ -31,15 +31,10 @@ species = chem_funs.spec_list
 def _warn_stale_reaction_ids(
     network_path: str, stale: list[tuple[int, int, str]]
 ) -> None:
-    """Announce a network file whose written reaction ids are stale.
-
-    Upstream's ``make_chem_funs.py`` renumbers a network file in place, so
-    ``file_id == parser_position`` only holds for files that have been run
-    through upstream; 5 of the 11 vendored networks are not in that state.
-    The rate array is indexed by POSITION everywhere, so the parse is correct
-    regardless, but a ``cfg.remove_list`` written from a stale file's id
-    column selects the wrong reactions. Say so rather than pass silently.
-    """
+    """Warn when written photo/ion ids differ from parse positions (the file
+    was not renumbered upstream). Rates are indexed by position, but a
+    ``cfg.remove_list`` taken from the id column picks the wrong reactions
+    (C14)."""
     if not stale:
         return
     shown = ", ".join(
@@ -72,7 +67,7 @@ class ReadRate(object):
     def read_rate(self, var, atm):
         """Copy the parsed network's host-side metadata onto `var`.
 
-        Sets exactly the attributes something reads: `Rf` (reaction text by
+        Sets the attributes something reads: `Rf` (reaction text by
         parser position), the photo/ion branch indices, and
         `conden_re_list`. The Arrhenius columns and the section markers are
         read off the `Network` everywhere, never off `var`, so they are not
@@ -93,14 +88,6 @@ class ReadRate(object):
         ]
         _warn_stale_reaction_ids(net.network_path, list(net.stale_ids))
         return var
-
-    # `make_bins_read_cross` is intentionally not vendored. The dense
-    # `PhotoStaticInputs` pytree built by `photo_setup.populate_photo` /
-    # `photo_setup._build_photo_static_dense` is the canonical photo-input
-    # surface; the .vul writer synthesizes the legacy dict views from it
-    # at pickle time (see `_synthesize_cross_dicts` below). Tests that
-    # need master's dict view use master's `op.ReadRate().make_bins_read_cross`
-    # from sys.path.
 
 
 
@@ -206,7 +193,7 @@ def _synthesize_J_sp_dict(
     `pho_rate_index` is in `cfg.remove_list` (op.py:2785). Reading J from
     `runstate.rate.k` therefore loses the J-rate for any removed branch.
     We integrate `aflux * cross` directly so removed branches still report
-    their true photolysis rate, exactly matching master's writer.
+    their true photolysis rate, as master's writer does.
 
     Branch 0 is the across-branch sum (op.py:2783).
 
@@ -312,9 +299,7 @@ def _synthesize_save_dicts(runstate, cfg, photo_static=None):
         var_save["atom_ini"] = {sp: float(ai[i]) for i, sp in enumerate(a.atom_order)}
         var_save["atom_sum"] = {sp: float(as_[i]) for i, sp in enumerate(a.atom_order)}
         var_save["atom_loss"] = {sp: float(al[i]) for i, sp in enumerate(a.atom_order)}
-        # `atom_conden` historically tracked condensation losses; until
-        # we route conden through the typed schema, publish zeros so the
-        # .vul reader's downstream code keeps working.
+        # The runner does not track atom_conden; zeros keep the .vul schema.
         var_save["atom_conden"] = {sp: 0.0 for sp in a.atom_order}
 
     # Photo runtime (when use_photo).
@@ -348,9 +333,6 @@ def _synthesize_save_dicts(runstate, cfg, photo_static=None):
         var_save["Rf"] = dict(md.Rf)
         if use_photo:
             var_save["n_branch"] = dict(md.n_branch)
-            # Both branches: integrate cross × aflux directly so removed
-            # photo/ion reactions still publish their J-rate (master writes
-            # J_sp for ALL branches and only skips the var.k assignment).
             var_save["J_sp"] = _synthesize_J_sp_dict(
                 runstate,
                 md.n_branch,
@@ -379,10 +361,7 @@ def _synthesize_save_dicts(runstate, cfg, photo_static=None):
                 tuple(),
             )
 
-    # Evolution buffer — only when save_evolution. The OuterLoop fills
-    # `runstate.step.y_evo` / `t_evo` (already sliced to the populated
-    # prefix in `_unpack_state_to_runstate`); we expose them under
-    # the legacy `var.y_time` / `var.t_time` schema.
+    # Evolution buffer under the legacy y_time / t_time keys.
     if use_save_evo and runstate.step is not None:
         var_save["y_time"] = np.asarray(runstate.step.y_evo, dtype=np.float64)
         var_save["t_time"] = np.asarray(runstate.step.t_evo, dtype=np.float64)
@@ -575,16 +554,11 @@ class Output(object):
         overrides) to `cfg_<out_name>.txt` under `dname/output_dir`, skipping
         private, callable, type, and module attributes so it re-reads as Python.
         """
-        # Create the directory at the actual write location (dname/output_dir),
-        # not relative to the cwd: a cwd != dname caller would otherwise create
-        # cwd/output_dir and then fail to write.
+        # Create the directory where the file is written, not under the cwd.
         output_dir, out_name = self._cfg.output_dir, self._cfg.out_name
         target_dir = os.path.join(dname, output_dir)
         os.makedirs(target_dir, exist_ok=True)
 
-        # Serialize the ACTIVE config (self._cfg), including load_config()
-        # overrides. Values are repr'd so the file re-reads as Python; the
-        # reproducible artifact is the resolved YAML from config.dump_config.
         lines = []
         for key in sorted(vars(self._cfg)):
             if key.startswith("_"):

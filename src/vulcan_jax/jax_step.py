@@ -56,8 +56,7 @@ def _build_chem_projection_tables() -> tuple[
     """Build static reservoir-projection tables for chemistry conservation.
 
     Conserves every atom in ``cfg.atom_list`` that has a composition column and
-    a tracked reservoir species, so SNCHO conserves S while the C-H-N-O
-    networks stay bit-for-bit unchanged. ``reservoir_counts`` is invertible for
+    a tracked reservoir species, so SNCHO also conserves S. ``reservoir_counts`` is invertible for
     every atom subset: the C, N and S columns each have a single nonzero entry,
     so the solve always reduces to the invertible H/O block.
     """
@@ -166,53 +165,29 @@ def _stage_defect(k, b_tr, c0, diag_d, sup_d, sub_d, with_scale=False):
     return defect, parts @ _CHEM_ATOM_COUNTS
 
 
-# Roundoff floor of the stage element defect relative to the absolute size of
-# its terms: ~500 float64 ulps. Measured residual of an exact stage 1e-16 to
-# 2e-15, of a leaking one 1e-7 to 1e-6 (§1.13).
+# Stage-defect roundoff floor relative to the size of its terms (~500 float64
+# ulps; notes §1.13).
 _DEFECT_FLOOR = 1e-13
 
-# Largest correction the repair may put on a carrier cell, as a fraction of
-# what that cell has to work with: `max(cell content, |raw stage change|)`.
-# Above it the FIXED reservoir is a trace in that layer and the correction
-# damages the cell instead of healing the layer. Measured over dt 1e4-1e15 on
-# both converged fixtures and the HD189 pre-loop column (§1.13): with transport
-# on, every ratio above 1 is a carrier that is no longer the carrier there --
-# VMR <= 1e-4, H2 dissociated above 5000 K, W39b H2S 13-24 across layers 83-94
-# at dt 1e11 (the cells the repair drives negative) -- while a real carrier
-# stays under 1e-2 and reaches 1 only at the 1e15 cap. The cell content
-# alone is the wrong denominator (§2.1): with transport off the correction is
-# `defect * gamma * dt` and exceeds a 5.6e-4-by-volume H2O cell by 1e2-1e10
-# while staying of order the stage vector, which would switch the repair off
-# where it is doing its job.
+# Largest repair correction on a carrier cell, as a fraction of max(cell,
+# |raw stage change|); above it the reservoir is a trace there and the
+# correction would damage the cell (notes §1.13).
 _REPAIR_MAX_CELL_FRAC = 1.0
 
-# Layers per iteration of the repair sweep's two scans. Measured on the solo
-# HD189 step and its 3-direction jvp (XLA:CPU, §1.13): 1 / 8 / 32 layers give
-# 7 / 33 / 219 fusions per sweep body, i.e. ~427 / ~264 / ~438 kernels per
-# sweep once the loop runs, and jvp compiles of 19 / 20 / 35 s (fully
-# unrolled: killed past 574 s, register 74). 8 has the fewest kernels.
+# Layers per scan iteration of the repair sweep: fewest kernels at an
+# acceptable jvp compile time (notes §1.13).
 _REPAIR_SWEEP_UNROLL = 8
 
 
 def _tridiagonal_solve(dl, d, du, g):
-    """Solve `dl[i] x[i-1] + d[i] x[i] + du[i] x[i+1] = g[i]` along axis 0,
-    one system per trailing index (`dl[0]` and `du[-1]` unused, as
-    `lax.linalg.tridiagonal_solve`). LAPACK dgtsv's algorithm, Gaussian
-    elimination with partial pivoting (a row swap leaves a fill-in on the
-    second superdiagonal), as two `lax.scan`s over the layers in plain
-    elementwise ops, so every system a program holds -- lanes, reservoirs,
-    tangent directions -- is solved by the same kernels. Pivoting costs
-    arithmetic only, not launches, and the repair matrix needs it: with the
-    central-difference molecular-diffusion drift a few sub-diagonal entries
-    of `c0 - T_rho` take the wrong sign, and such a matrix can put an exact
-    zero on an unpivoted pivot (notes §1.13). `lax.linalg.tridiagonal_solve`
-    itself is a per-system cuSPARSE call on the GPU as soon as a system has
-    more than one right-hand side, which the JVP's direction stack is: about
-    a third of a gradient step, and the one custom call that kept the `ffi`
-    loop out of a command buffer (notes §2.9). The scans stay rolled: a full
-    unroll made the jvp compile over 15x slower than the primitive (register
-    74); `_REPAIR_SWEEP_UNROLL` layers per iteration gives the fewest fusions
-    per sweep of the rolled settings (notes §1.13)."""
+    """Solve `dl x[i-1] + d x[i] + du x[i+1] = g` along axis 0, one system
+    per trailing index (`dl[0]`, `du[-1]` unused).
+
+    LAPACK dgtsv partial-pivoting elimination as two rolled `lax.scan`s of
+    elementwise ops, so lanes, reservoirs and tangent directions share
+    kernels; pivoted because central-difference drift can zero an unpivoted
+    pivot. Replaces `lax.linalg.tridiagonal_solve`, a per-system cuSPARSE
+    call on GPU (notes §1.13, §2.9)."""
     du = du.at[-1].set(0.0)  # the last swap reads it as the fill-in
 
     def fwd(row, below):
@@ -253,43 +228,21 @@ def _tridiagonal_solve(dl, d, du, g):
 
 
 def _repair_stage(k, b_tr, c0, diag_d, sup_d, sub_d, fix_mask, n_tot, y):
-    """Put the element content of a Ros2 stage vector back where its own
-    linear system says it belongs. `n_tot` is the (nz, 1) layer density; the
-    reservoir cells of `y`, the state the step starts from, bound the
-    correction.
+    """Move a Ros2 stage vector's per-layer element defect (`_stage_defect`)
+    onto the reservoir species with one scalar tridiagonal solve
+    `(c0 - T_rho) c = g` per reservoir. `n_tot` is the (nz, 1) layer density;
+    the reservoir cells of `y` (the step's start state) bound the correction.
 
-    The exact solution of the stage system satisfies the per-layer identity
-    of `_stage_defect`. The pivoted LU stops returning it once
-    `c0 = 1/(gamma dt)` is small against the chemistry (cond ~1e23 at
-    dt 1e11 s): `k` comes back with the wrong element content, ~1e-3 per step
-    at dt 1e11 and 1e-2 to 1e-1 at 1e13-1e15 while the column still moves,
-    and a run that takes thousands of such steps drains an element
-    (notes.md §1.13). The defect goes onto the reservoir species; `T` is
-    diagonal in species, so that is one scalar tridiagonal solve
-    `(c0 - T_rho) c = g` per reservoir. Layers holding a pinned cell are left
-    alone (a pin opens the layer's budget by construction). Resolvable while
-    `c0` is not negligible against `T`, i.e. dt <= config.DT_MAX_S. Applied
-    at every dt: a defect is corrected only above two floors, the roundoff
-    of its own terms (`_DEFECT_FLOOR`) and `config.REPAIR_ABS_FLOOR` of the
-    layer's density. The second is what lets the repair run at small dt:
-    near a steady state the terms vanish with the defect, so the ratio floor
-    never fires, and a roundoff-sized defect (1e-21 of the layer) put on a
-    reservoir that is itself a trace (H2S at 1e-21 in a cool upper
-    atmosphere) is a 10% kick on that cell every stage, which stalls the
-    column (notes.md §1.13). Real leaks are >= 1e-7 of the layer per stage.
-    A correction over `_REPAIR_MAX_CELL_FRAC` of its carrier cell is skipped:
-    there the fixed reservoir is a trace and the repair damages the cell
-    instead of healing the layer (notes.md §1.13, §2.1).
-    Not in VULCAN 2.0 (op.py:2914 and :2929 solve and move on).
+    At small c0 = 1/(gamma dt) the pivoted LU leaks elements (notes §1.13).
+    A defect is corrected only above both `_DEFECT_FLOOR` of its terms and
+    `REPAIR_ABS_FLOOR` of the layer density. Pinned layers are skipped. A
+    correction over `_REPAIR_MAX_CELL_FRAC` of its carrier is dropped. Not in
+    VULCAN 2.0 (op.py:2914, :2929).
     """
     if not _CHEM_PROJECTION_ENABLED:
         return k
     ridx = _CHEM_RESERVOIR_IDX
     defect, scale = _stage_defect(k, b_tr, c0, diag_d, sup_d, sub_d, with_scale=True)
-    # Only a defect that stands above the roundoff of its own terms is real;
-    # below the floor the solve was exact and a correction would only move
-    # float64 noise onto the reservoir cells (1e-5 cm^-3 at the bottom, a
-    # visible change in a trace cell).
     floor = jnp.maximum(_DEFECT_FLOOR * scale, REPAIR_ABS_FLOOR * c0 * n_tot)
     defect = jnp.where(jnp.abs(defect) > floor, defect, 0.0)
     g = -(defect @ _CHEM_INV_RESERVOIR_COUNTS)  # (nz, n_reservoir)
@@ -305,7 +258,7 @@ def _repair_stage(k, b_tr, c0, diag_d, sup_d, sub_d, fix_mask, n_tot, y):
         g = jnp.where(pinned, 0.0, g)
     c = _tridiagonal_solve(dl, d, du, g)
     # Per layer and atom: drop a correction the carrier cell cannot carry --
-    # one larger than BOTH the cell's own content and the carrier's raw stage
+    # one larger than both the cell's own content and the carrier's raw stage
     # change -- and leave the raw solve there. That layer's element budget
     # stays open, which the certificate's cumulative term (C23) sees.
     cap = _REPAIR_MAX_CELL_FRAC * jnp.maximum(y[:, ridx], jnp.abs(k[:, ridx]))
@@ -335,10 +288,8 @@ class AtmStatic(NamedTuple):
     bot_vdep: jnp.ndarray  # (ni,)
     gas_indx_mask: jnp.ndarray  # (ni,) bool
     diff_esc_mask: jnp.ndarray  # (ni,) bool, species in cfg.diff_esc
-    # Read as a FLOAT blend weight, not a plain bool: 1.0 = upwind molecular
-    # diffusion, 0.0 = central difference. `make_atm_static` seeds a Python
-    # bool, but the hybrid runner splices the carry's `hybrid_use_vm` (float64)
-    # in here mid-run, so anything consuming it must accept either.
+    # Blend weight (1.0 upwind, 0.0 central): a bool at build, float64 when
+    # the hybrid runner splices it in.
     use_vm_mol: bool | float | jnp.ndarray
     use_settling: bool
     use_topflux: bool
@@ -670,17 +621,9 @@ def _apply_diffusion_jax(
     return diff
 
 
-# Ros2 free parameter gamma = 1 + 1/sqrt(2) (Verwer et al. 1997). The stage-2
-# factor 2/(gamma*dt) and solution weights 3/(2*gamma), 1/(2*gamma) below
-# derive from it; matches VULCAN-master op.py.
-#
-# gamma is the L-stable choice and second order holds, but L-stability is a
-# property of the EXACT-Jacobian Rosenbrock. The Jacobian actually supplied
-# below is exact for chemistry and models transport with a diagonal-in-species
-# tridiagonal that omits the ysum coupling, so this is a second-order W-method:
-# second order for an arbitrary approximate Jacobian, with contractivity on
-# these columns coming from the post-step hydrostatic rebalance rather than
-# from the linear solve alone. The same omission is in both pinned upstreams.
+# gamma = 1 + 1/sqrt(2) (Verwer et al. 1997; op.py). The transport Jacobian
+# omits the ysum coupling, so this is a second-order W-method, as in both
+# upstreams.
 _ROS2_GAMMA = 1.0 + 2.0**-0.5
 
 
@@ -707,7 +650,7 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask,
     )
     rhs_y = _projected_chem_rhs(y, M, k_arr) + diff_at_y
     # Analytical Jacobian: <= 1e-13 vs the AD (jacrev) oracle, a gather along
-    # the network's static tables (ratios in notes.md §1.3).
+    # the network's static tables.
     chem_J = _project_chem_jac(chem_jac_analytical(y, M, k_arr, net))
 
     # Diffusion blocks are diagonal-in-species: pass off-diagonals as (nz-1, ni)
@@ -728,7 +671,7 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask,
     # non-empty". The inner `where` mirrors upstream's `y > 0` guard and keeps
     # the division and its derivative finite at y = 0. The entry exceeds the
     # true derivative by dzi[-1] (op.py:2106-2107, vm_branch op.py:2185-2186);
-    # kept for bit-parity, LHS only (notes §2.2 F-022 / P10, register 27).
+    # kept for bit-parity, LHS only (notes §2.2).
     y_top_pos = y[-1] > 0.0
     diff_lim = jnp.where(
         atm.diff_esc_mask & y_top_pos,
@@ -741,12 +684,9 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask,
 
     eye = jnp.eye(ni)
     on_diag = eye[None] != 0.0  # (1, ni, ni) — the block diagonal
-    # The transport diagonal and the row pins go in as part of the elementwise
-    # block build, not as `.at[:, di, di]` scatters: a scatter makes XLA
-    # materialise the whole (nz, ni, ni) block and copy it (measured: two
-    # transposes + two f64[nz,ni,ni] copies per stage). Per element the
-    # arithmetic is unchanged -- `x + (-diag_d)` is `x - diag_d` in IEEE, and
-    # off the diagonal nothing is touched.
+    # Diagonal and pins go in the elementwise build; a `.at` scatter makes XLA
+    # copy the whole (nz, ni, ni) block. Per element the arithmetic is
+    # unchanged (`x + (-diag_d)` is `x - diag_d` in IEEE).
     diag = c0 * eye[None] - chem_J
     diag = jnp.where(on_diag, diag - diag_d[:, :, None], diag)
     sup_neg = -sup_d  # (nz-1, ni)
@@ -776,7 +716,7 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask,
 
     # The reference pair differentiates through the LU and takes no operator.
     # `matrix_free=False` keeps the dense one: reverse-over-forward of the RHS
-    # made a step's VJP 1.9-3.2x slower (notes §2.9), so the adjoint keeps it.
+    # is slower in reverse mode (notes §2.9), so the adjoint keeps it.
     solve_kw = {"matvec": matvec} if matrix_free and _SOLVER != "reference" else {}
     factors = factor_block_thomas_diag_offdiag(diag, sup_neg, sub_neg)
     k1 = solve_block_thomas_diag_offdiag(factors, rhs_y, **solve_kw)
