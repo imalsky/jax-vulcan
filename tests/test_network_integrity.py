@@ -3,7 +3,7 @@
 The parser is positional and appends every reaction row, so a reaction
 duplicated within one section is double-counted in both directions with no
 error. The vendored TiSNCHO network ships three such duplicates (an upstream
-data bug; no shipped config selects it) — `parse_network` must REFUSE them
+data bug; no shipped config selects it): `parse_network` must REFUSE them
 (warn under `duplicates_ok=True`), and the networks the shipped configs DO
 select must stay clean.
 

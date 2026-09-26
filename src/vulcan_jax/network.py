@@ -118,7 +118,7 @@ _RE_LINE = re.compile(r"^\s*(\d*)\s*\[\s*([^\]]+)\s*\]\s*(.*)$")
 
 # Temperature annotations in the trailing `Temp` column: '250-2580',
 # '300-2.50E4', a bare measurement temperature '298', or comma-separated
-# lists of these. No sign and no negative exponent — temperatures are
+# lists of these. No sign and no negative exponent: temperatures are
 # positive Kelvin, and allowing 'E-' would make the range split ambiguous.
 _NUM = r"\d+(?:\.\d+)?(?:[Ee]\+?\d+)?"
 _RE_TEMP_RANGE = re.compile(rf"^({_NUM})-({_NUM})$")
@@ -165,7 +165,7 @@ def _announce_duplicate_reactions(
 
     The parser is positional and appends every row, so both copies of a
     duplicated reaction become independent slots and their contributions are
-    double-counted (forward AND reverse) — silent scientific corruption, so
+    double-counted (forward AND reverse), silent scientific corruption, so
     the default is to raise. Upstream's `make_chem_funs.py` only prints
     (`check_duplicate()`). The vendored TiSNCHO network ships three such
     duplicates (an upstream data bug); no shipped config selects it.
@@ -327,7 +327,7 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
             for _stoich, sp in reactants + products:
                 _intern_species(sp)
 
-            # Collapse species → stoich (M dropped here; tracked via has_M_*).
+            # Collapse species -> stoich (M dropped here; tracked via has_M_*).
             r_collapsed: dict[int, float] = {}
             for stoich, sp in reactants:
                 if sp == "M":
@@ -410,7 +410,7 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
 
             parser_i += 2
 
-    # parser_i has been bumped past the last reverse → nr = parser_i - 1.
+    # parser_i has been bumped past the last reverse -> nr = parser_i - 1.
     nr = parser_i - 1
     ni = len(species_order)
 
@@ -452,7 +452,7 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
     max_reac = max(max_reac, 1)
     max_prod = max(max_prod, 1)
 
-    PAD = ni  # pad → y[ni]=1; no-op multiplier and segment_sum drops the slot.
+    PAD = ni  # pad -> y[ni]=1; no-op multiplier and segment_sum drops the slot.
 
     # Reverse reactions store the forward's products in their reactant slot,
     # so both directions need to fit in the same `max_terms` width.
@@ -511,7 +511,7 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
             is_conden[ir] = True
         if sec == _SECTION_PHOTO:
             is_photo[i] = True
-            # Photo has no reverse — guarded via stop_rev_indx.
+            # Photo has no reverse; guarded via stop_rev_indx.
         if sec == _SECTION_ION:
             is_ion[i] = True
 

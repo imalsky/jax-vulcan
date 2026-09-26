@@ -683,7 +683,7 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask,
     )
 
     eye = jnp.eye(ni)
-    on_diag = eye[None] != 0.0  # (1, ni, ni) — the block diagonal
+    on_diag = eye[None] != 0.0  # (1, ni, ni), the block diagonal
     # Diagonal and pins go in the elementwise build; a `.at` scatter makes XLA
     # copy the whole (nz, ni, ni) block. Per element the arithmetic is
     # unchanged (`x + (-diag_d)` is `x - diag_d` in IEEE).

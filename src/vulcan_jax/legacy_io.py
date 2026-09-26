@@ -47,7 +47,7 @@ def _warn_stale_reaction_ids(
         f"Network {network_path} has {len(stale)} photo/ion reaction(s) whose "
         f"written id disagrees with its position: {shown}{more}. The file has not "
         "been renumbered by VULCAN's make_chem_funs.py. Rates are indexed by "
-        "position, so this run is correct — but any cfg.remove_list entry taken "
+        "position, so this run is correct, but any cfg.remove_list entry taken "
         "from this file's id column will select the WRONG reaction. Renumber the "
         "file, or write remove_list using positions (1-based, forward reactions "
         "odd).",
@@ -150,7 +150,7 @@ def _integrate_J_branch(
     Mirrors `op.compute_J` (op.py:2771-2780): a midpoint sum on each of the
     two-resolution sub-grids minus a half-weight correction at the four
     boundary samples (low-end, split, split-1, high-end). Works for both
-    1-D `cross_branch` of shape (nbin,) and 2-D (nz, nbin) — broadcasting
+    1-D `cross_branch` of shape (nbin,) and 2-D (nz, nbin): broadcasting
     handles per-layer T-dependent cross sections transparently.
     """
     flo = aflux[:, :din12_indx]
@@ -188,7 +188,7 @@ def _synthesize_J_sp_dict(
     T_cross_sp,
 ):
     """Reconstruct the legacy `{(sp, branch): array(nz)}` J-rate dict
-    from cross sections × actinic flux, matching `op.compute_J`.
+    from cross sections times actinic flux, matching `op.compute_J`.
 
     Master writes `var.J_sp[(sp, nbr)]` for ALL branches in `n_branch[sp]`
     (op.py:2764) and only skips writing `var.k[idx]` for branches whose
@@ -272,7 +272,7 @@ def _synthesize_save_dicts(runstate, cfg, photo_static=None):
     use_save_evo = bool(cfg.save_evolution)
     T_cross_sp = list(cfg.T_cross_sp)
 
-    # 1. Variable dict — mirrors the legacy var.var_save filter.
+    # 1. Variable dict: mirrors the legacy var.var_save filter.
     var_save = {"species": species, "nr": nr}
 
     # Rate dict from the dense (nr+1, nz) array.
@@ -368,7 +368,7 @@ def _synthesize_save_dicts(runstate, cfg, photo_static=None):
         var_save["y_time"] = np.asarray(runstate.step.y_evo, dtype=np.float64)
         var_save["t_time"] = np.asarray(runstate.step.t_evo, dtype=np.float64)
 
-    # 2. Atm dict — mirrors `vars(data_atm)`.
+    # 2. Atm dict: mirrors `vars(data_atm)`.
     atm_save = {}
     a_in = runstate.atm
     for f in a_in._fields:
@@ -385,7 +385,7 @@ def _synthesize_save_dicts(runstate, cfg, photo_static=None):
         atm_save["fix_sp_indx"] = dict(md.fix_sp_indx)
     atm_save["conden_min_lev"] = {}
 
-    # 3. Parameter dict — mirrors `vars(data_para)` from state._Parameters.
+    # 3. Parameter dict: mirrors `vars(data_para)` from state._Parameters.
     para_save = {}
     if runstate.params is not None:
         p = runstate.params

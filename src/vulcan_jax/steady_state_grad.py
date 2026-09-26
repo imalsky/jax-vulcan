@@ -187,7 +187,7 @@ def _warn_poor_convergence(
             f"steady_state_reaction_sensitivity: median LGMRES relative residual {resid:.2e} "
             f"exceeds {_ADJOINT_RESID_WARN:.0e}: the solve is in the stagnation "
             "regime observed on closed columns (dominant-reaction magnitudes "
-            "bounce ~+/-25% around FD there; sign and ranking remain robust — "
+            "bounce ~+/-25% around FD there; sign and ranking remain robust; see "
             "README.md, Limits). Treat magnitudes as "
             "ranking weights only. More cycles do not reliably reduce the "
             "residual; scan body_dt for a lower-residual regime (see "
@@ -596,7 +596,7 @@ def _guard_unmodeled_processes(y_star, k_arr, net, body_terms):
             "rows inside both Ros2 stages and applies a post-step charge "
             "balance, neither of which is in the adjoint body map, so "
             "ion-coupled sensitivities would be silently wrong. Ion "
-            "columns are not supported by the steady-state adjoint — use "
+            "columns are not supported by the steady-state adjoint; use "
             "forward-mode."
         )
     conden_rows = np.asarray(network.is_conden, dtype=bool)
@@ -618,7 +618,7 @@ def _guard_unmodeled_processes(y_star, k_arr, net, body_terms):
         raise ValueError(
             "this state was converged with condensation active (nonzero "
             "conden rate rows and/or populated condensate species), but the "
-            "adjoint body map carries no condensation terms — the gradient "
+            "adjoint body map carries no condensation terms, so the gradient "
             "would be silently wrong on conden-coupled rows/layers. Pass "
             "body_terms from make_body_terms(integ, converged_state, "
             "atm_static) (conden rate-recompute + relax kernels + partial "
@@ -1281,7 +1281,7 @@ def make_body_terms(integ, converged_state, atm_static):
     st = integ._statics
     if st is None:
         raise ValueError(
-            "make_body_terms: the runner has not been built/run — integrate "
+            "make_body_terms: the runner has not been built/run; integrate "
             "first (integ(rs) or integ._runner(state, atm_static))."
         )
     cfg = integ._cfg
@@ -1435,7 +1435,7 @@ def _adjoint_scope_findings(
             "stages and applies the post-step charge balance e = -y.charge "
             "(outer_loop body_fn); neither is in the adjoint body map, so "
             "y_star is not a fixed point on the electron/ion rows and "
-            "ion-coupled sensitivities are wrong. Not supported — use "
+            "ion-coupled sensitivities are wrong. Not supported; use "
             "forward-mode for ion columns.",
         )
 
@@ -1461,8 +1461,8 @@ def _adjoint_scope_findings(
                 "error",
                 "use_condense=True: in-loop condensation is not in the adjoint "
                 "body map. (1) update_conden_rates rewrites the conden/evap "
-                "k-rows from y every accepted step — a dk/dy feedback exactly "
-                "analogous to photolysis dJ/dy — but the adjoint freezes k_arr; "
+                "k-rows from y every accepted step (a dk/dy feedback exactly "
+                "analogous to photolysis dJ/dy), but the adjoint freezes k_arr; "
                 "(2) the H2O/NH3 relax kernels move mass outside the Ros2 step; "
                 "(3) the runner's hydrostatic rebalance uses a gas-only ymix "
                 "denominator and skips non-gas species (hydro_partial), while "
@@ -1515,7 +1515,7 @@ def _adjoint_scope_findings(
                 "bottom-layer species after the hydrostatic balance; the pin is "
                 "not in the adjoint map, so bottom-row sensitivities for pinned "
                 "species are wrong. NOTE the global fp_err (max-norm relative to "
-                "max|y*|) can read ~1e-9 while a pinned trace row is 100% off — "
+                "max|y*|) can read ~1e-9 while a pinned trace row is 100% off; "
                 "trust the per-cell defect scan, not fp_err, here. "
                 "make_body_terms packs the pins automatically.",
             )
@@ -1563,7 +1563,7 @@ def _adjoint_scope_findings(
                 "info",
                 "photo_recompute_k carries dJ/dy, but dflux_u (the two-stream "
                 "upward-flux self-recursion) is held at its converged value "
-                "inside the recompute — a second-order truncation.",
+                "inside the recompute: a second-order truncation.",
             )
 
     if len(list(flag("diff_esc", []) or [])) > 0:
@@ -1592,7 +1592,7 @@ def _adjoint_scope_findings(
             "info",
             "use_hybrid_vm_mol=True: the run converges on the central-"
             "difference operator (phase 1), so the converged state carries "
-            "hybrid_use_vm=0 and the adjoint linearizes central diff — there "
+            "hybrid_use_vm=0 and the adjoint linearizes central diff; there "
             "is no upwind d(vm)/dy feedback to drop.",
         )
 
@@ -1617,7 +1617,7 @@ def _adjoint_scope_findings(
             "info",
             "Open/pinned boundaries break exact column atom conservation, so "
             "a deflated conserved-mass direction may not be a true null "
-            "direction — check info['null_quality'] from the sensitivity "
+            "direction; check info['null_quality'] from the sensitivity "
             "call (O(1) means the deflation is corrupting the solve).",
         )
 
@@ -1707,7 +1707,7 @@ def audit_adjoint_scope(
                     "severity": "error",
                     "message": f"atm fields {stale} differ from the converged "
                     "carry: splice the refreshed geometry before the adjoint "
-                    "— atm_static._replace(g=final.g, dzi=final.dzi, "
+                    "with atm_static._replace(g=final.g, dzi=final.dzi, "
                     "Hpi=final.Hpi, top_flux=final.top_flux, vs=final.vs).",
                 }
             )
@@ -1780,7 +1780,7 @@ def audit_adjoint_scope(
                     "message": f"max per-cell fixed-point defect "
                     f"{max_rel_defect:.2e} {where} (global fp_err "
                     f"{fp_err_global:.2e}): an O(1) move under one probe step "
-                    "cannot be convergence creep — the map the runner "
+                    "cannot be convergence creep: the map the runner "
                     "actually iterates includes a process (pin, conden "
                     "clamp, charge balance) this body map does not. See the "
                     "findings above and worst_cells.",
@@ -1798,7 +1798,7 @@ def audit_adjoint_scope(
                     "still creeping at the forward convergence tolerance "
                     "(the state-definition mismatch; typical for upper-"
                     "atmosphere trace species). Both bias the adjoint in "
-                    "those cells — converge/polish y_star tighter if they "
+                    "those cells; converge/polish y_star tighter if they "
                     "matter to your loss; check worst_cells against the "
                     "loss footprint.",
                 }
@@ -1880,7 +1880,7 @@ def audit_adjoint_scope(
                     f"point defect up to {loss_footprint_defect:.2e}: the "
                     "gradient of THIS loss is biased at that level "
                     "regardless of cause (unmodeled process or cells not "
-                    "fully converged) — fix the scope or converge tighter "
+                    "fully converged); fix the scope or converge tighter "
                     "before using it.",
                 }
             )

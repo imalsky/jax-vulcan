@@ -63,7 +63,7 @@ GAS_TO_CONDENSATE: dict[str, str] = {
 
 
 class CondenSpec(NamedTuple):
-    """Static condensation metadata — everything temperature-independent.
+    """Static condensation metadata: everything temperature-independent.
 
     Species identity, k_arr row indices, and the per-reaction coefficient
     `m / (rho_p * r_p**2)` (relax-shorted H2O/NH3 rows get 0.0, matching
@@ -89,7 +89,7 @@ class CondenSpec(NamedTuple):
     nh3_m_over_rho_r2: float
 
     # cfg.fix_species names, in config order; species with saturation data
-    # (members of `sat_names`) get a live sat-mix row, others a zero row —
+    # (members of `sat_names`) get a live sat-mix row, others a zero row,
     # mirroring `_Statics.fix_species_sat_mix`'s `sp in atm.sat_mix` gate.
     fix_names: Tuple[str, ...]
     sat_names: Tuple[str, ...]  # cfg.condense_sp (species with sat data)
@@ -110,7 +110,7 @@ class CondenProfile(NamedTuple):
     h2o_sat: jnp.ndarray  # (nz,)
     nh3_Dg: jnp.ndarray  # (nz,)
     nh3_sat: jnp.ndarray  # (nz,)
-    nh3_conden_top: jnp.ndarray  # () int32 — argmin(sat_mix['NH3'])
+    nh3_conden_top: jnp.ndarray  # () int32, argmin(sat_mix['NH3'])
     fix_species_sat_mix: jnp.ndarray  # (n_fix, nz)
 
 
@@ -204,7 +204,7 @@ def build_conden_profile(
     Parameters: `Tco`/`pco`/`n_0` are (nz,) layer temperature, pressure
     (dyne/cm^2), and total number density; `Dzz` is the (nz-1, ni)
     molecular-diffusion coefficient (interface-centered). All may be
-    traced — the function is jit/vmap/jvp-compatible: species identity
+    traced; the function is jit/vmap/jvp-compatible: species identity
     comes from the static `spec` (Python-level, unrolled at trace time),
     and the only discrete output is the NH3 cold-trap `argmin` index
     (integer-valued, carries no tangent).
@@ -255,7 +255,7 @@ def build_conden_profile(
     nh3_sat = _sat_n("NH3") if spec.nh3_active else zz
     if spec.nh3_active:
         # conden_top = argmin(sat_mix['NH3']) = argmin(sat_n / n_0);
-        # discrete by nature — moves layer-by-layer as T changes.
+        # discrete by nature, moves layer-by-layer as T changes.
         nh3_conden_top = jnp.argmin(nh3_sat / n_0).astype(jnp.int32)
     else:
         nh3_conden_top = jnp.int32(0)
@@ -319,11 +319,11 @@ class CondenStatic(NamedTuple):
     nh3_m_over_rho_r2: float
     # argmin(sat_mix['NH3']). Python int when closure-baked (single-profile);
     # 0-d int32 array when spliced per lane from ProfileVars in the batched
-    # runner — the kernel only compares it against jnp.arange, so both work.
+    # runner; the kernel only compares it against jnp.arange, so both work.
     nh3_conden_top: int | jnp.ndarray
 
     n_0: jnp.ndarray  # (nz,)  total number density
-    gas_indx_mask: jnp.ndarray  # (ni,)  bool — gas-only species mask
+    gas_indx_mask: jnp.ndarray  # (ni,)  bool, gas-only species mask
 
 
 def update_conden_rates(
@@ -348,7 +348,7 @@ def apply_h2o_relax_jax(
     """Implicit-Euler H2O cold-trap relaxation.
 
     Condense where `tau > 0` (y > sat), evaporate where `tau < 0`. Mass
-    moves into / out of `H2O_l_s`. The final ymix → y projection uses the
+    moves into / out of `H2O_l_s`. The final ymix -> y projection uses the
     *pre-relax* gas-sum; no-op when `h2o_active=False`.
     """
     if not st.h2o_active:
@@ -398,7 +398,7 @@ def apply_nh3_relax_jax(
 
     Differences from H2O: no humidity factor, and condensation is clamped
     to layers at or below `nh3_conden_top = argmin(sat_mix['NH3'])`.
-    Clips `ymix[NH3_l_s] >= 0` post-update — the unclamped evap branch
+    Clips `ymix[NH3_l_s] >= 0` post-update: the unclamped evap branch
     can drive it negative for layers above `conden_top`.
     """
     if not st.nh3_active:

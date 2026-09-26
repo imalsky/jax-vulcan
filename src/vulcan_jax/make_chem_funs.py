@@ -73,8 +73,8 @@ def emit_chem_rhs_source(net: Network) -> str:
         lines.append(f"    v_{i} = {forward_expr} - {reverse_expr}")
 
     # Per-species accumulators: walk forward reactions in i=1, 3, 5, ...
-    # order. For each reaction, attribute its v_i to participating species
-    # — products first (sign +), then reactants (sign -), each repeated by
+    # order. For each reaction, attribute its v_i to participating species:
+    # products first (sign +), then reactants (sign -), each repeated by
     # stoich. This matches master line 1300's `+1*v_5 +1*v_5` for OH on
     # the product side of `O + H2O -> OH + OH` (stoich 2, two adds).
     species_terms: list[list[str]] = [[] for _ in range(ni)]
@@ -162,7 +162,7 @@ def build_chem_rhs(net: Network) -> Callable:
     `(y[nz, ni], M[nz], k[nr+1, nz]) -> dydt[nz, ni]`. The XLA-compiled
     artifact is reused across processes via JAX's persistent disk cache
     (configured in `vulcan_jax_cli.py`). The Python source cache file under
-    `__pycache__/` is for human inspection — `cat` it to compare against
+    `__pycache__/` is for human inspection: `cat` it to compare against
     VULCAN-master's `chem_funs.py` reaction lambdas.
     """
     key = chem_rhs_cache_key(net)

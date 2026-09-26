@@ -12,7 +12,7 @@ handful of values that are functions of other knobs, and returns a ``Config``
 namespace whose attribute surface is what the runtime reads
 (``cfg.nz``, ``cfg.network``, ...). ``default_config()`` is the process-wide
 default, loaded once from ``configs/default.yaml`` at first ``import
-vulcan_jax`` — it resolves the import-frozen knobs (``network`` / ``atom_list``
+vulcan_jax``; it resolves the import-frozen knobs (``network`` / ``atom_list``
 / ``com_file``), honoring the ``$VULCAN_JAX_*`` overrides, once per process.
 """
 
@@ -156,8 +156,8 @@ _KNOWN_KEYS: frozenset[str] | None = None
 def _known_config_keys() -> frozenset[str]:
     """Canonical set of accepted config keys (read once, cached).
 
-    Sourced from the *packaged* ``default.yaml`` — the maintained superset, since
-    every shipped config is a subset of its keys — plus the derived keys that
+    Sourced from the *packaged* ``default.yaml`` (the maintained superset, since
+    every shipped config is a subset of its keys) plus the derived keys that
     authored YAML omits but a resolved/dumped config carries. Read raw (not via
     ``load_config``) so building the schema cannot recurse through validation.
     """

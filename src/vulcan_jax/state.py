@@ -632,7 +632,7 @@ def _assert_com_file_matches_import(cfg) -> None:
         warnings.warn(
             f"com_file import-lock guard could not compare tables "
             f"({type(exc).__name__}: {exc}); the check was SKIPPED, not passed. "
-            f"cfg.com_file={want_r!r} vs import-time {have_r!r} — if these differ "
+            f"cfg.com_file={want_r!r} vs import-time {have_r!r}; if these differ "
             f"in content, ini_abun is using the import-time table.",
             RuntimeWarning,
             stacklevel=2,

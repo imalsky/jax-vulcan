@@ -410,8 +410,8 @@ def _validate_condensation(cfg) -> list[str]:
                 f"condense_sp entry {sp!r} is not a supported condensate. "
                 f"Condensation kinetics are ported for "
                 f"{sorted(SUPPORTED_CONDEN_KINETICS)}; {sat_only} have "
-                "saturation data only (capping/cold-trap, no conden reactions "
-                "— as in VULCAN-master). New condensates must be added "
+                "saturation data only (capping/cold-trap, no conden reactions, "
+                "as in VULCAN-master). New condensates must be added "
                 "explicitly with physical constants and tests."
             )
     return errors
@@ -448,7 +448,7 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
                 errors.append(
                     f"fix_species entries not in the loaded network: {missing}. "
                     f"The network is import-locked, so this cannot be fixed after "
-                    f"`import vulcan_jax` — either drop these entries or set "
+                    f"`import vulcan_jax`: either drop these entries or set "
                     f"$VULCAN_JAX_NETWORK to a network containing them before the "
                     f"first import."
                 )
@@ -469,7 +469,7 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
                 errors.append(
                     f"const_mix key {sp!r} is not a species of the loaded "
                     "network. Inert/background gases without network "
-                    "reactions are not supported — VULCAN-master fails on "
+                    "reactions are not supported; VULCAN-master fails on "
                     "the same configuration (build_atm.ini_y calls "
                     "species.index(sp) unconditionally, e.g. its shipped "
                     "Earth example crashes on 'Ar'). Remove the key or use "
@@ -530,7 +530,7 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
 
 # One report per (network, T-grid signature, exposure) per process: repeated
 # rebuilds of the SAME case stay quiet, but a different profile on the same
-# network reports again — the exposure depends on Tco, not just the network.
+# network reports again: the exposure depends on Tco, not just the network.
 _TEMP_RANGE_REPORTED: set[tuple] = set()
 
 
@@ -572,7 +572,7 @@ def report_rate_temp_ranges(net, Tco) -> None:
     text `Temp` column) that neither VULCAN implementation enforces, so hot
     or cold profiles silently extrapolate many fitted rates. Say so once per
     distinct (network, T grid, exposure), against the ACTUAL model T grid.
-    Advisory only — no rate is altered or gated (VULCAN-master evaluates
+    Advisory only: no rate is altered or gated (VULCAN-master evaluates
     every rate everywhere, and parity requires the same here).
     """
     if net.temp_ranges is None:

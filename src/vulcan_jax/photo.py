@@ -443,9 +443,9 @@ def pack_J_to_k_index_map(photo_J, var, cfg):
     """Build static index arrays mapping each branch to its `var.k` reaction index.
 
     Returns four (n_br,) arrays plus their T-branch counterparts:
-        branch_re_idx     int64 — reaction index in k_arr (1..nr); 0 if inactive
-        branch_active     bool  — True if this branch should write into k_arr
-        branch_T_re_idx   int64 — same, for T-dep branches
+        branch_re_idx     int64: reaction index in k_arr (1..nr); 0 if inactive
+        branch_active     bool: True if this branch should write into k_arr
+        branch_T_re_idx   int64: same, for T-dep branches
         branch_T_active   bool
 
     Inactive entries point at index 0 (an unused slot, since reactions are

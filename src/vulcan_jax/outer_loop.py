@@ -3,7 +3,7 @@
 The full VULCAN integration runs inside one `jax.lax.while_loop`: per-step
 kernel (chem RHS, analytical Jacobian, diffusion, block-Thomas) composed
 with photo update, atm refresh, condensation, ion charge balance,
-fix-all-bot, adaptive rtol, photo-frequency ini→final switch, and a
+fix-all-bot, adaptive rtol, photo-frequency ini->final switch, and a
 ring-buffered convergence check. No Python loop, no NumPy on the hot path.
 
 The accept/reject decision and dt formula match VULCAN-master's `op.Ros2`
@@ -111,7 +111,7 @@ class ProfileVars(NamedTuple):
     c_h2o_sat: jnp.ndarray  # (nz,)
     c_nh3_Dg: jnp.ndarray  # (nz,)
     c_nh3_sat: jnp.ndarray  # (nz,)
-    c_nh3_conden_top: jnp.ndarray  # () int32 — argmin(sat_mix['NH3'])
+    c_nh3_conden_top: jnp.ndarray  # () int32, argmin(sat_mix['NH3'])
     # from _PhotoStatic: the only T-P-dependent photo statics; the rest is
     # star/network/grid-fixed and must be batch-constant (prepare_runstate
     # guards this). Placeholder shape (0, 1, 1) when use_photo=False.
@@ -174,7 +174,7 @@ class JaxIntegState(NamedTuple):
     # index `accept_count % conv_step` and cond_fn reads longdy/longdydt
     # to terminate. `rtol`/`loss_criteria` ride in the carry so the
     # adaptive-rtol updates fire inside the body without retracing.
-    # `update_photo_frq`/`is_final_photo_frq` drive the ini→final switch.
+    # `update_photo_frq`/`is_final_photo_frq` drive the ini->final switch.
     y_time_ring: jnp.ndarray  # (conv_step, nz, ni) float64
     t_time_ring: jnp.ndarray  # (conv_step,)        float64
     longdy: jnp.ndarray  # ()                  float64
@@ -182,15 +182,15 @@ class JaxIntegState(NamedTuple):
     where_varies_most: jnp.ndarray  # (nz, ni)            float64
     longdy_seen_min: (
         jnp.ndarray
-    )  # ()                  float64 — running min of longdy across accepted steps
+    )  # ()                  float64, running min of longdy across accepted steps
     count_since_new_min: (
         jnp.ndarray
-    )  # ()  int32           — accepted steps since longdy reached a new minimum
+    )  # ()  int32, accepted steps since longdy reached a new minimum
     rtol: jnp.ndarray  # ()                  float64
     loss_criteria: jnp.ndarray  # ()                  float64
     update_photo_frq: jnp.ndarray  # ()                  int32
     is_final_photo_frq: jnp.ndarray  # ()                  bool
-    geom_ok: jnp.ndarray  # ()  bool — refreshed geometry agreed at the last certificate candidate
+    geom_ok: jnp.ndarray  # ()  bool, refreshed geometry agreed at the last certificate candidate
     budget_ok: jnp.ndarray  # () bool  column element budget held at the last candidate
     budget_ref: jnp.ndarray  # (n_atoms,) the t=0 operator-weighted atom column on the t=0 grid (fixed; the budget denominator)
     budget_err: jnp.ndarray  # (n_atoms,) accumulated per-step column change / budget_ref, each step on its own grid
@@ -250,17 +250,17 @@ class _PhotoStatic(NamedTuple):
     photo_J_data: _photo_mod.PhotoJData  # J cross sections (passed for branch_keys)
     cross_J: jnp.ndarray  # (n_br, nbin)
     cross_J_T: jnp.ndarray  # (n_br_T, nz, nbin)
-    branch_re_idx: jnp.ndarray  # (n_br,)   int64 — k_arr row to write
+    branch_re_idx: jnp.ndarray  # (n_br,)   int64, k_arr row to write
     branch_active: jnp.ndarray  # (n_br,)   bool
     branch_T_re_idx: jnp.ndarray  # (n_br_T,) int64
     branch_T_active: jnp.ndarray  # (n_br_T,) bool
     photo_ion_data: Optional[_photo_mod.PhotoJData]
     cross_Jion: jnp.ndarray  # (n_ion_br, nbin)
-    ion_branch_re_idx: jnp.ndarray  # (n_ion_br,) int64 — k_arr row to write
+    ion_branch_re_idx: jnp.ndarray  # (n_ion_br,) int64, k_arr row to write
     ion_branch_active: jnp.ndarray  # (n_ion_br,) bool
     bins: jnp.ndarray  # (nbin,)   wavelength grid (nm)
     sflux_top: jnp.ndarray  # (nbin,)   TOA stellar flux
-    din12_indx: int  # static — wavelength split index for J integration
+    din12_indx: int  # static: wavelength split index for J integration
     dbin1: float
     dbin2: float
     mu_zenith: float  # cos(sl_angle)
@@ -269,7 +269,7 @@ class _PhotoStatic(NamedTuple):
     hc: float  # planck * c (erg nm)
     f_diurnal: float  # diurnal flux average (1.0 tidally locked)
     flux_atol: float  # aflux_change masking floor
-    ag0_is_zero: bool  # static — selects compute_flux branch
+    ag0_is_zero: bool  # static: selects compute_flux branch
 
 
 def _compute_atom_loss(
@@ -332,7 +332,7 @@ def _make_clip_fn(
     pos_cut: float,
     nega_cut: float,
 ):
-    """Build a `clip(y_in) → (y_clip, ymix_new, small_inc, nega_inc)` closure.
+    """Build a `clip(y_in) -> (y_clip, ymix_new, small_inc, nega_inc)` closure.
 
     `non_gas_present` selects between the gas-only / total `ysum` denominators
     at closure time so the traced body keeps a single branch. The two
@@ -556,7 +556,7 @@ def _make_conden_branch(conden_static: _conden_mod.CondenStatic):
 class _Statics(NamedTuple):
     """Per-run static inputs to the JAX runner.
 
-    Closed-over by the runner — never appears in the carry. The
+    Closed-over by the runner; never appears in the carry. The
     convergence/termination caps and the adaptive-rtol /
     photo-frequency-switch knobs all live here.
     """
@@ -589,16 +589,16 @@ class _Statics(NamedTuple):
     element_budget_tol: float  # certificate: max cumulative column element drift
     budget_ref_atom: int  # column of compo_arr the budget is measured against (H)
     mtol_conv: float
-    conver_ignore_mask: jnp.ndarray  # (ni,) bool — species to drop from longdy
-    condense_zero_conv_mask: jnp.ndarray  # (nz, ni) bool — non_gas_sp columns
-    n_0: jnp.ndarray  # (nz,) — atm.n_0; seeds pv.n_0 (the (y-y_old)/n_0 ratio)
-    Kzz: jnp.ndarray  # (nz-1,) — atm.Kzz; seeds pv.Kzz (slope_min recompute)
+    conver_ignore_mask: jnp.ndarray  # (ni,) bool, species to drop from longdy
+    condense_zero_conv_mask: jnp.ndarray  # (nz, ni) bool, non_gas_sp columns
+    n_0: jnp.ndarray  # (nz,) atm.n_0; seeds pv.n_0 (the (y-y_old)/n_0 ratio)
+    Kzz: jnp.ndarray  # (nz-1,) atm.Kzz; seeds pv.Kzz (slope_min recompute)
 
     # Photo / adaptive-rtol cadence statics. The dynamic counterparts ride
     # in the carry (s.update_photo_frq / s.rtol / s.loss_criteria).
     use_photo: bool
     use_atm_refresh: bool
-    use_vm_mol: bool  # upwind molecular diffusion → refresh vm in-loop with mu
+    use_vm_mol: bool  # upwind molecular diffusion -> refresh vm in-loop with mu
     hybrid_vm_mol: bool  # two-stage: converge upwind, then finish central-diff
     use_conden: bool
     final_update_photo_frq: int
@@ -625,9 +625,9 @@ class _Statics(NamedTuple):
     # corresponding arrays are zero placeholders the body never reads.
     use_ion: bool
     e_idx: int  # species index of 'e' (0 if use_ion=False)
-    charge_arr: jnp.ndarray  # (ni,) — compo[i]['e'] over charge_list, 0 elsewhere
+    charge_arr: jnp.ndarray  # (ni,) compo[i]['e'] over charge_list, 0 elsewhere
     use_fix_all_bot: bool
-    bottom_n: jnp.ndarray  # (ni,) — bottom_ymix * n_0[0]; pinned each step
+    bottom_n: jnp.ndarray  # (ni,) bottom_ymix * n_0[0]; pinned each step
     use_fix_sp_bot: bool
     fix_sp_bot_idx: jnp.ndarray  # (n_fix_sp_bot,) int32
     fix_sp_bot_mix: jnp.ndarray  # (n_fix_sp_bot,)
@@ -784,7 +784,7 @@ def _make_runner(
       6. ring-buffer append (on accept)
       7. recompute (longdy, longdydt) against the ring
       8. adaptive rtol
-      9. photo-frequency ini→final switch
+      9. photo-frequency ini->final switch
 
     `cond_fn` then checks `(t > runtime) | (count > count_max) |
     (ready & converged)`.
@@ -1007,7 +1007,7 @@ def _make_runner(
         #
         # Gate photo on `retry_count==0` so reject loops don't re-fire it.
         # Cadence is `accept_count % update_photo_frq == 0`; the dynamic
-        # update_photo_frq lives in the carry for the ini→final switch.
+        # update_photo_frq lives in the carry for the ini->final switch.
         if photo_branch is not None:
             if lane_axis is None:
                 photo_due = (
@@ -1330,7 +1330,7 @@ def _make_runner(
             s_for_conv,
             accept_count_next,
         )
-        # Only refresh longdy/longdydt on accepted steps — rejected steps
+        # Only refresh longdy/longdydt on accepted steps; rejected steps
         # don't change the ring contents in any meaningful way.
         longdy_next = jnp.where(do_accept, longdy_new_val, s.longdy)
         longdydt_next = jnp.where(do_accept, longdydt_new_val, s.longdydt)
@@ -1637,7 +1637,7 @@ def _make_runner(
             jnp.where(accept, dt_after_normal, next_dt_if_reject),
         )
 
-        # Photo-frequency ini→final switch when longdy / longdydt drop
+        # Photo-frequency ini->final switch when longdy / longdydt drop
         # below their respective cfg.photo_switch_* thresholds.
         # Upstream evaluates `conv()` (which writes longdy/longdydt) only once
         # `t > trun_min and count > count_min` (op.py:1069); before that both
@@ -2199,7 +2199,7 @@ def stack_atm_statics(atms: "list[AtmStatic]") -> AtmStatic:
 
     Array leaves gain a leading batch axis; the four toggle flags are kept as
     scalars (broadcast under vmap via `_ATM_STATIC_BATCH_AXES`) and must be
-    identical across the batch — bucket by toggle-combo before calling.
+    identical across the batch: bucket by toggle-combo before calling.
     """
     first = atms[0]
     flags = ("use_vm_mol", "use_settling", "use_topflux", "use_botflux")
@@ -2293,7 +2293,7 @@ class OuterLoop:
 
         self._species = list(_NETWORK.species)
 
-        # Atom ordering captured once at init; dict↔array conversion relies on it.
+        # Atom ordering captured once at init; dict<->array conversion relies on it.
         self._atom_order = [
             a for a in self._cfg.atom_list if a not in self._cfg.loss_ex
         ]
@@ -3343,7 +3343,7 @@ class OuterLoop:
         results (`stack_integ_states` / `stack_atm_statics`) into one batch
         for `run_batch`. All profiles in a single `run_batch` call must share
         the same nz / toggle-combo / `pref_indx` so the closure and array
-        shapes match — the emulator buckets accordingly. This mirrors the
+        shapes match; the emulator buckets accordingly. This mirrors the
         setup `__call__` does up to (but not including) the runner call.
         """
         validate_runtime_config(self._cfg)

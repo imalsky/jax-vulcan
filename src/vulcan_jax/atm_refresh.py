@@ -1,7 +1,7 @@
 """Pure-JAX atmosphere-refresh kernels: mu/dz/g/Hp + diffusion-limited escape.
 
 The hydrostatic loop is a true sequential dependency
-(`zco[i+1] = zco[i] + dz[i]`) and uses two `lax.scan`s — one upward from
+(`zco[i+1] = zco[i] + dz[i]`) and uses two `lax.scan`s: one upward from
 `pref_indx` and one downward to 0; the downward scan is length-0 when
 `pref_indx == 0`.
 """
@@ -56,7 +56,7 @@ def update_mu_dz_jax(ymix: jnp.ndarray, st: AtmRefreshStatic):
     """Recompute (mu, g, Hp, dz, zco, dzi, Hpi) from the current ymix (nz, ni).
 
     Shapes: mu (nz,), g (nz,), Hp (nz,), dz (nz,), zco (nz+1,), dzi (nz-1,),
-    Hpi (nz-1,). `Ti` is intentionally not returned — it depends only on the
+    Hpi (nz-1,). `Ti` is intentionally not returned: it depends only on the
     static `Tco` and is captured once at OuterLoop init.
     """
     Tco = st.Tco
@@ -165,8 +165,8 @@ def update_phi_esc_jax(
     """Diffusion-limited escape flux at TOA for each species in `diff_esc_idx`,
     floored at `-max_flux`; other species pass through unchanged.
 
-    Inputs: y (nz, ni) number densities, g / Hp (nz,) — only the top layer is
-    used, top_flux_in (ni,). Returns (ni,), the top boundary flux with the
+    Inputs: y (nz, ni) number densities, g / Hp (nz,) (only the top layer is
+    used), top_flux_in (ni,). Returns (ni,), the top boundary flux with the
     escape species overwritten.
     """
     diff_esc_idx = st.diff_esc_idx

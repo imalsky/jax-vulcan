@@ -46,7 +46,7 @@ if [ -z "${load1:-}" ]; then
   load1="$(sysctl -n vm.loadavg 2>/dev/null | awk '{print $2}')"
 fi
 if [ -z "${load1:-}" ]; then
-  echo "load average: unavailable (sysctl/uptime blocked) — skipping the"
+  echo "load average: unavailable (sysctl/uptime blocked); skipping the"
   echo "  pre-flight load check; the per-run cpu/wall guard still applies."
 else
   echo "load average (1 min): $load1   (threshold $LOAD_MAX on $_NCPU cores)"
