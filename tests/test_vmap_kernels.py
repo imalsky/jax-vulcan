@@ -7,9 +7,8 @@ common JAX failure mode where a kernel inadvertently closes over a
 non-vmappable variable or has a static shape that depends on a
 batched dimension.
 
-Mirrors `test_vmap_step.py`'s pattern but covers the per-layer
-chemistry, the analytical Jacobian, the diagonal-offdiag block
-solver, and the photo optical-depth kernel.
+Covers the codegen chemistry RHS, the analytical Jacobian, the
+diagonal-offdiag block solver and the photo optical-depth kernel.
 """
 
 from __future__ import annotations
@@ -27,16 +26,7 @@ os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
 
-def _build_state():
-    """Build the canonical HD189 state once for kernel testing."""
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-    from vulcan_jax.state import RunState, legacy_view
-
-    rs = RunState.with_pre_loop_setup(vulcan_cfg)
-    data_var, data_atm, _ = legacy_view(rs)
-    return rs, data_var, data_atm
+VMAP_RTOL = 1e-12
 
 
 def _max_relerr(a: np.ndarray, b: np.ndarray, floor: float = 1e-30) -> float:
@@ -45,114 +35,45 @@ def _max_relerr(a: np.ndarray, b: np.ndarray, floor: float = 1e-30) -> float:
     return float(np.max(np.abs(a - b) / np.maximum(np.abs(b), floor)))
 
 
-def test_chem_rhs_codegen_vmap_consistency() -> None:
-    """`vmap(chem_rhs_codegen)` over a batch agrees with single calls."""
+@pytest.mark.parametrize(
+    "kernel", ["chem_rhs_codegen", "chem_jac_analytical", "compute_tau_jax"]
+)
+def test_hd189_kernel_vmap_matches_single_calls(hd189_state, kernel) -> None:
+    """`vmap(kernel)` over perturbed HD189 columns agrees with single calls."""
     import jax
     import jax.numpy as jnp
+    import vulcan_jax.chem as chem_mod
     import vulcan_jax.chem_funs as chem_funs
-
-    _, data_var, data_atm = _build_state()
-
-    y = jnp.asarray(data_var.y, dtype=jnp.float64)
-    M = jnp.asarray(data_atm.M, dtype=jnp.float64)
-    k_arr = jnp.asarray(data_var.k_arr, dtype=jnp.float64)
-
-    BATCH = 4
-    rng = np.random.default_rng(0)
-    y_batch = jnp.stack(
-        [y * (1.0 + 1e-6 * rng.standard_normal(y.shape)) for _ in range(BATCH)],
-        axis=0,
-    )
-
-    single = [chem_funs.chem_rhs_codegen(y_batch[b], M, k_arr) for b in range(BATCH)]
-    batched = jax.vmap(chem_funs.chem_rhs_codegen, in_axes=(0, None, None))(
-        y_batch, M, k_arr
-    )
-
-    for b in range(BATCH):
-        rel = _max_relerr(batched[b], single[b])
-        assert rel < 1e-12, (
-            f"chem_rhs_codegen vmap drift at batch {b}: relerr={rel:.3e}"
-        )
-
-
-def test_chem_rhs_segment_sum_reference_vmap_consistency() -> None:
-    """The segment_sum reference RHS remains vmap-consistent."""
-    import jax
-    import jax.numpy as jnp
-    from _oracles import chem_rhs_segment_sum
+    import vulcan_jax.network as net_mod
+    import vulcan_jax.photo as photo_mod
     from vulcan_jax.config import default_config
 
-    vulcan_cfg = default_config()
-    import vulcan_jax.network as net_mod
-    import vulcan_jax.chem as chem_mod
+    y = jnp.asarray(hd189_state.var.y, dtype=jnp.float64)
+    M = jnp.asarray(hd189_state.atm.M, dtype=jnp.float64)
+    k_arr = jnp.asarray(hd189_state.var.k_arr, dtype=jnp.float64)
+    if kernel == "chem_rhs_codegen":
+        fn, args, batch, seed = chem_funs.chem_rhs_codegen, (M, k_arr), 4, 0
+    elif kernel == "chem_jac_analytical":
+        net_jax = chem_mod.to_jax(net_mod.parse_network(default_config().network))
+        fn, args, batch, seed = chem_mod.chem_jac_analytical, (M, k_arr, net_jax), 3, 1
+    else:
+        photo_static = hd189_state.solver._photo_static
+        if photo_static is None:
+            pytest.skip("use_photo=False: no tau kernel to validate")
+        photo_data = photo_mod.photo_data_from_static(photo_static, chem_funs.spec_list)
+        dz = jnp.asarray(hd189_state.atm.dz, dtype=jnp.float64)
+        fn, args, batch, seed = photo_mod.compute_tau_jax, (dz, photo_data), 3, 3
 
-    _, data_var, data_atm = _build_state()
-    net = net_mod.parse_network(vulcan_cfg.network)
-    net_jax = chem_mod.to_jax(net)
-
-    y = jnp.asarray(data_var.y, dtype=jnp.float64)
-    M = jnp.asarray(data_atm.M, dtype=jnp.float64)
-    k_arr = jnp.asarray(data_var.k_arr, dtype=jnp.float64)
-
-    BATCH = 4
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(seed)
     y_batch = jnp.stack(
-        [y * (1.0 + 1e-6 * rng.standard_normal(y.shape)) for _ in range(BATCH)],
+        [y * (1.0 + 1e-6 * rng.standard_normal(y.shape)) for _ in range(batch)],
         axis=0,
     )
-
-    single = [
-        chem_rhs_segment_sum(y_batch[b], M, k_arr, net_jax)
-        for b in range(BATCH)
-    ]
-    batched = jax.vmap(chem_rhs_segment_sum, in_axes=(0, None, None, None))(
-        y_batch, M, k_arr, net_jax
-    )
-
-    for b in range(BATCH):
+    single = [fn(y_batch[b], *args) for b in range(batch)]
+    batched = jax.vmap(fn, in_axes=(0,) + (None,) * len(args))(y_batch, *args)
+    for b in range(batch):
         rel = _max_relerr(batched[b], single[b])
-        assert rel < 1e-12, f"segment_sum RHS vmap drift at batch {b}: relerr={rel:.3e}"
-
-
-def test_chem_jac_analytical_vmap_consistency() -> None:
-    """`vmap(chem_jac_analytical)` agrees with single calls."""
-    import jax
-    import jax.numpy as jnp
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-    import vulcan_jax.network as net_mod
-    import vulcan_jax.chem as chem_mod
-
-    _, data_var, data_atm = _build_state()
-    net = net_mod.parse_network(vulcan_cfg.network)
-    net_jax = chem_mod.to_jax(net)
-
-    y = jnp.asarray(data_var.y, dtype=jnp.float64)
-    M = jnp.asarray(data_atm.M, dtype=jnp.float64)
-    k_arr = jnp.asarray(data_var.k_arr, dtype=jnp.float64)
-
-    BATCH = 3
-    rng = np.random.default_rng(1)
-    y_batch = jnp.stack(
-        [y * (1.0 + 1e-6 * rng.standard_normal(y.shape)) for _ in range(BATCH)],
-        axis=0,
-    )
-
-    single = [
-        chem_mod.chem_jac_analytical(y_batch[b], M, k_arr, net_jax)
-        for b in range(BATCH)
-    ]
-    batched = jax.vmap(chem_mod.chem_jac_analytical, in_axes=(0, None, None, None))(
-        y_batch, M, k_arr, net_jax
-    )
-
-    for b in range(BATCH):
-        rel = _max_relerr(batched[b], single[b])
-        assert rel < 1e-12, (
-            f"chem_jac_analytical vmap drift at batch {b}: relerr={rel:.3e}"
-        )
+        assert rel < VMAP_RTOL, f"{kernel} vmap drift at batch {b}: relerr={rel:.3e}"
 
 
 def test_block_thomas_diag_offdiag_vmap_consistency() -> None:
@@ -198,48 +119,3 @@ def test_block_thomas_diag_offdiag_vmap_consistency() -> None:
         assert rel < 1e-10, (
             f"block_thomas_diag_offdiag vmap drift at batch {b}: relerr={rel:.3e}"
         )
-
-
-def test_compute_tau_jax_vmap_consistency() -> None:
-    """`vmap(compute_tau_jax)` over batched y agrees with single calls.
-
-    Skips when use_photo=False. Builds a PhotoData pytree once and
-    feeds different y batches through it.
-    """
-    import jax
-    import jax.numpy as jnp
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-
-    if not vulcan_cfg.use_photo:
-        pytest.skip("use_photo=False: no tau kernel to validate")
-
-    rs, _, data_atm = _build_state()
-    if rs.photo_static is None:
-        pytest.skip("no photo_static on the built state: tau kernel not wired")
-
-    import vulcan_jax.photo as photo_mod
-    import vulcan_jax.chem_funs as chem_funs
-
-    photo_data = photo_mod.photo_data_from_static(rs.photo_static, chem_funs.spec_list)
-    y = jnp.asarray(rs.step.y, dtype=jnp.float64)
-    dz = jnp.asarray(data_atm.dz, dtype=jnp.float64)
-
-    BATCH = 3
-    rng = np.random.default_rng(3)
-    y_batch = jnp.stack(
-        [y * (1.0 + 1e-6 * rng.standard_normal(y.shape)) for _ in range(BATCH)],
-        axis=0,
-    )
-
-    single = [
-        photo_mod.compute_tau_jax(y_batch[b], dz, photo_data) for b in range(BATCH)
-    ]
-    batched = jax.vmap(photo_mod.compute_tau_jax, in_axes=(0, None, None))(
-        y_batch, dz, photo_data
-    )
-
-    for b in range(BATCH):
-        rel = _max_relerr(batched[b], single[b])
-        assert rel < 1e-12, f"compute_tau_jax vmap drift at batch {b}: relerr={rel:.3e}"

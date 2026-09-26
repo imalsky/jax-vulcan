@@ -1,7 +1,7 @@
 """Reference kernels only the tests use: independent oracles for production code.
 
-- `chem_rhs_segment_sum` / `chem_jac`: the vectorised `y**stoich` +
-  `segment_sum` RHS and its `jax.jacrev`, the oracle for the analytical
+- `chem_jac`: the `jax.jacrev` of the vectorised `y**stoich` +
+  `segment_sum` RHS, the oracle for the analytical
   Jacobian `chem.chem_jac_analytical` (jacrev is an order of magnitude slower,
   notes §1.3; the Jacobian has no cancellation amplifier, so the RHS form's
   term order does not matter here).
@@ -67,11 +67,6 @@ def chem_rhs_per_layer_segment_sum(y, M, k, net):
     )[: net.ni]
     return prod - loss
 
-
-chem_rhs_segment_sum = jax.vmap(
-    chem_rhs_per_layer_segment_sum,
-    in_axes=(0, 0, 1, None),
-)
 
 # jacrev beats jacfwd here ("scatter at the end" pattern).
 chem_jac_per_layer = jax.jacrev(chem_rhs_per_layer_segment_sum, argnums=0)
