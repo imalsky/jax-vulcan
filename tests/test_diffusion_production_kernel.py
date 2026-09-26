@@ -164,6 +164,7 @@ def test_vm_mode_kernel_matches_reference():
         use_settling=False,
         use_topflux=bool(getattr(vulcan_cfg, "use_topflux", False)),
         use_botflux=bool(getattr(vulcan_cfg, "use_botflux", False)),
+        diff_esc=[],
     )
     atm_static = jax_step.make_atm_static(data_atm, ni, nz, cfg=cfg_vm)
     assert tuple(np.asarray(atm_static.vm).shape) == (nz - 1, ni)

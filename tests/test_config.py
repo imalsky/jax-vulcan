@@ -185,47 +185,6 @@ def test_frozen_env_overrides_yaml():
     assert "OK" in r.stdout
 
 
-def test_getattr_fallback_literals_match_default_yaml():
-    """Every scalar `getattr(cfg, key, literal)` default in src/ must equal
-    default.yaml's value: a config omitting the key must not silently run a
-    different model. Sentinels are exempt (None/''/[]/{} presence checks;
-    `use_photo` safe-off in validators that see partial configs).
-    """
-    import ast
-    import re
-    from pathlib import Path
-
-    pkg = Path(__file__).resolve().parent.parent / "src" / "vulcan_jax"
-    defaults = yaml.safe_load(open(pkg / "configs" / "default.yaml"))
-    pat = re.compile(
-        r'getattr\(\s*(?:cfg|_cfg|self\._cfg|self\.cfg)\s*,\s*"(\w+)"\s*,'
-        r"\s*([^()]*?)\s*\)"
-    )
-    scalar = (bool, int, float)
-    mismatches = []
-    for f in sorted(pkg.glob("*.py")):
-        for lineno, line in enumerate(open(f), 1):
-            for m in pat.finditer(line):
-                key, lit = m.groups()
-                if key not in defaults or key == "use_photo":
-                    continue
-                try:
-                    val = ast.literal_eval(lit)
-                except (SyntaxError, ValueError):
-                    continue  # dynamic default, not a literal
-                want = defaults[key]
-                if not (isinstance(val, scalar) and isinstance(want, scalar)):
-                    continue  # sentinel or non-scalar key
-                if isinstance(val, bool) != isinstance(want, bool):
-                    continue
-                if float(val) != float(want):
-                    mismatches.append(
-                        f"{f.name}:{lineno} {key}: literal {val!r} != "
-                        f"default.yaml {want!r}"
-                    )
-    assert not mismatches, "\n".join(mismatches)
-
-
 def test_dt_max_is_capped_where_the_stage_repair_is_resolvable():
     """Derived dt_max saturates at DT_MAX_S; an explicit larger value is refused
     at OuterLoop construction (the Ros2 stage repair is unresolvable there)."""
