@@ -9,7 +9,7 @@ locally without editing packaged files.
 ``default.yaml`` (a knob the file omits takes that value), folds the
 import-frozen environment overrides, applies caller overrides, resolves the
 handful of values that are functions of other knobs, and returns a ``Config``
-namespace whose attribute surface is exactly what the runtime reads
+namespace whose attribute surface is what the runtime reads
 (``cfg.nz``, ``cfg.network``, ...). ``default_config()`` is the process-wide
 default, loaded once from ``configs/default.yaml`` at first ``import
 vulcan_jax`` — it resolves the import-frozen knobs (``network`` / ``atom_list``
@@ -76,28 +76,19 @@ _FROZEN_ENV = {
     "com_file": "VULCAN_JAX_COM_FILE",
 }
 
-# Values that are functions of other knobs. Authored YAML omits them; an
-# explicit YAML/override value always wins (they are only filled when absent).
-# Largest step the Ros2 stage repair (jax_step._repair_stage) can resolve: its
-# correction system `(c0 - T) c = g`, c0 = 1/(gamma dt), is as singular as the
-# stage system it corrects by dt = 1e17 s (notes.md §1.13). Upstream derives
-# runtime*1e-5 = 1e17 s; no shipped run steps past 1.3e6 s.
+# Largest step the Ros2 stage repair (jax_step._repair_stage) can resolve;
+# its correction system is as singular as the stage system by 1e17 s
+# (notes §1.13).
 DT_MAX_S = 1.0e15
 # Smallest stage element defect the repair corrects, as a fraction of the
-# layer's number density (times c0, the defect's units). Measured
-# corrections: a real leak is >= 1e-7 of the layer per stage (1e-7 to 1.7 in
-# a 3500 K bottom); the roundoff that stalled the JWST tool's HD 189733 b
-# column was 1e-21 of the layer, and that column is bit-identical to its
-# unrepaired solve for any floor from 1e-11 up (2911 steps instead of 1506
-# at 1e-12: sub-1e-11 LU errors on minor elements get corrected and cost
-# steps without changing the certificate). notes.md §1.13. Below the floor a
-# defect is left alone, so the uncorrected element error per step is
-# bounded by this fraction of the layer (a few times it over two stages).
+# layer number density (times c0); real leaks sit >= 1e-7 (notes §1.13).
 REPAIR_ABS_FLOOR = 1.0e-11
 # dt_max = runtime * 1e-5 (vulcan_cfg.py:136); the photo-frequency switch
 # threshold is 10 * yconv_min (op.py:819).
 _DT_MAX_RUNTIME_FRAC = 1e-5
 _PHOTO_SWITCH_LONGDY_FACTOR = 10.0
+# Values that are functions of other knobs. Authored YAML omits them; an
+# explicit YAML/override value always wins (they are only filled when absent).
 _DERIVED = (
     ("dt_max", lambda d: min(d["runtime"] * _DT_MAX_RUNTIME_FRAC, DT_MAX_S)),
     ("photo_switch_longdy_thresh",
@@ -105,45 +96,37 @@ _DERIVED = (
     ("para_anaTP", lambda d: copy.deepcopy(d["para_warm"])),
 )
 
-# Config knobs removed in past migrations. A stored or overridden value that
-# silently does nothing is exactly the failure the standing "fail fast and loud"
-# rule forbids, so these are intercepted with a targeted migration message
-# instead of being merged as an inert attribute.
+# Retired keys: refused with a remedy instead of merged as inert attributes
+# (tools/audit_master_parity.py reads the names).
 _REMOVED_KEYS: dict[str, str] = {
     "gs": (
-        "surface gravity is now derived as G*Mp/Rp**2 by atm_setup.surface_gravity; "
-        "set `Mp` (planet mass, g) and `Rp` (planet radius, cm) instead"
+        "gravity is derived as G*Mp/Rp**2; set `Mp` (planet mass, g) and `Rp` "
+        "(planet radius, cm) and remove the key"
     ),
     "fix_species_time": (
-        "the fix_species pin is gated on `stop_conden_time` (the runner pins "
-        "condensing species once t exceeds it); set `stop_conden_time` instead"
+        "the fix_species pin starts at `stop_conden_time`; set that and "
+        "remove the key"
     ),
     "use_print_delta": (
-        "the per-step delta print was not ported (a VULCAN-master live-UI "
-        "knob); use `use_print_prog` for progress output"
+        "no per-step delta print; use `use_print_prog` and remove the key"
     ),
     "fastchem_met_scale": (
-        "the equilibrium seed carries only the loaded network's own elements, "
-        "so there are no other metals to scale; set `<X>_H` for the elements "
-        "of `atom_list`, or point `fastchem_solar_abundance_file` at a "
-        "different preset (drop the key)"
+        "the equilibrium seed carries only the network's own elements; set "
+        "`<X>_H` for the elements of `atom_list` or pick another "
+        "`fastchem_solar_abundance_file`, and remove the key"
     ),
     **dict.fromkeys(
         ("use_conv_stall", "conv_stall_window"),
-        "the JAX-only stalled-convergence fallback was removed (no shipped "
-        "config enabled it); a run ends on the convergence certificate or a "
-        "cap (drop the key)",
+        "a run ends on the convergence certificate or a cap; remove the key",
     ),
     "report_column_atom_loss": (
-        "the end-of-run column print was removed; the certificate's element "
-        "budget term (`element_budget_tol`) holds the operator-weighted "
-        "column on every run, and `ini_abun.column_atoms` computes it "
-        "(drop the key)"
+        "the element-budget term (`element_budget_tol`) checks the "
+        "operator-weighted column on every run and `ini_abun.column_atoms` "
+        "computes it; remove the key"
     ),
     **dict.fromkeys(
         ("use_pi_controller", "pi_controller_alpha", "pi_controller_beta"),
-        "the Gustafsson PI step-size controller was removed; the master-faithful "
-        "I-controller is the only dt control (drop the key)",
+        "the master-faithful I-controller is the only dt control; remove the key",
     ),
     **dict.fromkeys(
         (
@@ -153,18 +136,18 @@ _REMOVED_KEYS: dict[str, str] = {
             "y_time_freq", "plot_spec",
         ),
         "VULCAN-JAX has no plotter or live UI; plot the `.vul` output with "
-        "VULCAN's plot_py/ scripts (drop the key)",
+        "VULCAN's plot_py/ scripts and remove the key",
     ),
     "print_prog_num": (
         "`use_print_prog` prints one progress block at the end of the run; "
-        "there is no per-N-step print (drop the key)"
+        "remove the key"
     ),
-    "output_humanread": "the `.vul` output is always a pickle (drop the key)",
-    "use_shark": "master's end-of-run shark message was not ported (drop the key)",
-    "ode_solver": "Ros2 is the only solver (drop the key)",
+    "output_humanread": "the `.vul` output is always a pickle; remove the key",
+    "use_shark": "there is no end-of-run shark message; remove the key",
+    "ode_solver": "Ros2 is the only solver; remove the key",
     "gibbs_text": (
-        "reverse rates read thermo/NASA9/<species>.txt directly (gibbs.py), "
-        "not master's Gibbs code template (drop the key)"
+        "reverse rates read thermo/NASA9/<species>.txt (gibbs.py); remove "
+        "the key"
     ),
 }
 
@@ -224,7 +207,7 @@ class Config(types.SimpleNamespace):
 
     A ``SimpleNamespace`` subclass so ``vars(cfg)``, ``getattr(cfg, name,
     default)``, ``setattr``, dynamic keys (``getattr(cfg, sp + "_H")``), and
-    ``copy.deepcopy`` all behave exactly as the reflection layer
+    ``copy.deepcopy`` all behave as the reflection layer
     (``make_config`` / ``state._cfg_overlay`` / ``legacy_io.Output.save_cfg``)
     expects.
     """
