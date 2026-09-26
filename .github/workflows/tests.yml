@@ -12,17 +12,9 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      # jax is pinned to the version the suite's tolerances are calibrated
-      # against (the pyproject floor is the oldest API-compatible release).
-      # test_vmap_photo_batch judges batch-vs-solo by scale ratio, so the pin
-      # can move once a newer release is re-measured against the gates.
-      # exogibbs pinned and installed with --no-deps: of its declared deps the
-      # gas-equilibrium path only needs pandas (exogibbs.io.load_data), which
-      # is installed explicitly here; pyfastchem/xarray/thermochem are for
-      # parts this package never touches and pyfastchem has no linux-aarch64
-      # wheel (the GPU node installs this way). pip still resolves them from
-      # the `exogibbs` requirement in pyproject on this x86_64 runner, where
-      # they are merely wasted download.
+      # jax pinned to the version the tolerances are calibrated against (pyproject holds the API floor).
+      # exogibbs --no-deps: only pandas is needed (exogibbs.io.load_data);
+      # pyfastchem has no linux-aarch64 wheel.
       - name: Install
         run: |
           python -m pip install --no-deps "exogibbs==0.6.0"
@@ -36,7 +28,7 @@ jobs:
       - name: Run tests
         env:
           VULCAN_JAX_ALLOW_MISSING_FIXTURES: "1"
-        # Three workers: four together ran the 16 GB runner out of memory.
+        # Three workers: four exceed the 16 GB runner.
         # Deselected, one reason each:
         #   test_nh3_conden_batch_subprocess: ~10 min, a local-only test.
         #   test_forward_jvp_physical: its one-step FD probe swings with CPU/XLA

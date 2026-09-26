@@ -38,7 +38,7 @@ test -z "$(git status --porcelain --untracked-files=no)" || { echo "dirty tree";
 # Releases come from main only: the commit and tag below land on the checked-out
 # branch, and `git push origin main` would not carry a bump made elsewhere.
 [ "$(git branch --show-current)" = "main" ] || { echo "release from main, not $(git branch --show-current)"; exit 1; }
-unset PYTHONSAFEPATH   # strips the cwd from sys.path and breaks the parity tests (CLAUDE.md)
+unset PYTHONSAFEPATH   # strips the cwd from sys.path and breaks the parity tests
 python -m pytest tests -q
 
 # 2) Bump patch version in src/vulcan_jax/_version.py

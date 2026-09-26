@@ -1,18 +1,13 @@
 name: oracle
 
-# The upstream-comparison suite, run against a REAL pinned checkout of
-# exoclime/VULCAN. Separate from `tests.yml` because it is slow and needs an
-# upstream clone, from which the tests compile upstream's own FastChem (its EQ
-# initializer, which the agreement test compares this port's Gibbs seed
-# against; tests/oracle.py). It also runs test_solver_fast.py, whose
-# real-block cases need the fixtures built below.
-#
-# VULCAN_JAX_REQUIRE_ORACLE=1 is the point of this workflow: it turns a
-# missing or wrong-revision oracle into a FAILURE instead of a skip. Without
-# it a broken clone step would look green (skipped != passed).
+# Upstream-comparison suite against a pinned exoclime/VULCAN clone: slow, and
+# it builds upstream's FastChem for the EQ-seed agreement test. Also runs
+# test_solver_fast.py on the fixtures built below.
+# VULCAN_JAX_REQUIRE_ORACLE=1 turns a missing or wrong-revision oracle into a
+# failure instead of a skip.
 
 on:
-  workflow_dispatch:        # release gate: run it deliberately before tagging
+  workflow_dispatch:        # release gate: run before tagging
   schedule:
     - cron: "17 5 * * 1"    # and weekly, against the pinned revisions
 
@@ -45,45 +40,29 @@ jobs:
 
       # Same pin as tests.yml: the version the suite's tolerances are
       # calibrated against.
-      # exogibbs pinned and installed with --no-deps: of its declared deps the
-      # gas-equilibrium path only needs pandas (exogibbs.io.load_data), which
-      # is installed explicitly here; pyfastchem/xarray/thermochem are for
-      # parts this package never touches and pyfastchem has no linux-aarch64
-      # wheel (the GPU node installs this way). pip still resolves them from
-      # the `exogibbs` requirement in pyproject on this x86_64 runner, where
-      # they are merely wasted download.
+      # exogibbs --no-deps: only pandas is needed (exogibbs.io.load_data);
+      # pyfastchem has no linux-aarch64 wheel.
       - name: Install
         run: |
           python -m pip install --no-deps "exogibbs==0.6.0"
           python -m pip install pandas
           python -m pip install -e ".[dev,plot]" "jax==0.6.2"
 
-      # One family runs today (vulcan2_ncho; vulcan2_fastchem_ps_order is kept
-      # in science_sources.yaml for provenance only). A directory per family
-      # keeps a second family, if one returns, from seeing this one's revision. require_oracle checks the exact commit AND a
-      # clean worktree, so a dirty or wrong clone fails loudly here.
+      # require_oracle checks the exact commit and a clean worktree.
       - name: Clone the pinned upstream oracle
         run: |
           git clone --quiet https://github.com/exoclime/VULCAN "$RUNNER_TEMP/oracle-${{ matrix.family }}"
           git -C "$RUNNER_TEMP/oracle-${{ matrix.family }}" checkout --quiet ${{ matrix.commit }}
           test -z "$(git -C "$RUNNER_TEMP/oracle-${{ matrix.family }}" status --porcelain)"
 
-      # The four .npz oracles are gitignored and conftest.py fails collection
-      # when one is missing, so the release gate GENERATES them instead of
-      # setting VULCAN_JAX_ALLOW_MISSING_FIXTURES: that switch is the developer
-      # escape hatch and conftest.py says release CI must not set it (a skipped
-      # numerical oracle still reports green). No sibling checkout is needed.
+      # The .npz fixtures are gitignored; the release gate generates them
+      # rather than set VULCAN_JAX_ALLOW_MISSING_FIXTURES (a skipped oracle
+      # reports green).
       - name: Build the numerical-regression fixtures
         run: python tests/gen_fixtures.py --all
 
-      # test_chem_rhs_codegen.py's two HD209 projection cases read a CONVERGED
-      # HD209 state from output/HD209.vul (or a sibling jax_paper checkout,
-      # which CI does not have) and fail without it, since the release gate may
-      # not take the ALLOW_MISSING_FIXTURES skip. Converge it here instead: the
-      # CLI writes output/<out_name> relative to the cwd, so running from the
-      # checkout puts it exactly where the test looks. 1211 steps, ~45 s on the
-      # reference laptop plus a cold XLA compile; ncho only (a second family
-      # does not select that file).
+      # test_chem_rhs_codegen's HD209 projection cases read a converged
+      # output/HD209.vul; the CLI writes it relative to the cwd.
       - name: Converge HD209 (the codegen tests' steady-state oracle)
         if: matrix.family == 'vulcan2_ncho'
         run: python -m vulcan_jax.vulcan_jax_cli --config HD209
