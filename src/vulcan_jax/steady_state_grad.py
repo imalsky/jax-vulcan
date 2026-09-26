@@ -99,13 +99,18 @@ _TWIN_PERTURB = 1e-13
 # the Krylov trajectories of a semi-converged solve, ~13 orders below the
 # gradient signal so the exact solution is unchanged.
 
+_TOP_K = 10
+# Entries in the ranked reports: the ensemble spread and pair sums (top
+# reactions by |mean|, notes §2.5) and the audit's worst cells.
+
 _SPREAD_WARN = 0.15
-# Warn above this ensemble spread (max over top-10 reactions by |mean| of
+# Warn above this ensemble spread (max over the top reactions by |mean| of
 # (max-min)/|mean|): the twins disagree on the reactions one would report;
-# treat magnitudes as ranking weights.
+# treat magnitudes as ranking weights (notes §2.5).
 
 LGMRES_INNER_M = 60
-# scipy.sparse.linalg.lgmres inner Krylov dimension.
+# scipy.sparse.linalg.lgmres inner Krylov dimension (untuned; notes §1.5
+# calibrated 250/8).
 
 LGMRES_OUTER_K = 40
 # Augmentation vectors carried across restarts; the LGMRES knob that fixes
@@ -116,7 +121,7 @@ LGMRES_MAXITER = 4
 # per-cycle x0 warm-start (the validated configuration).
 
 LGMRES_CYCLES = 10
-# Number of warm-start cycles.
+# Number of warm-start cycles (untuned; notes §1.5 calibrated 250/8).
 
 LGMRES_RTOL = 1e-12
 # Relative-residual target; tighter buys nothing once finite-tolerance state
@@ -124,7 +129,7 @@ LGMRES_RTOL = 1e-12
 
 _ADJOINT_RESID_WARN = 0.2
 # Warn above this MEDIAN relative LGMRES residual across the ensemble
-# (median is robust to a single wandering twin).
+# (median is robust to a single wandering twin; notes §2.5).
 
 _FP_ERR_WARN = 1e-2
 # Warn above this body-map fixed-point error: y_star is off the steady-state
@@ -157,6 +162,10 @@ _AUDIT_LOSS_FOOTPRINT_FRAC = 1e-3
 # audit_adjoint_scope's "loss footprint": cells whose log-space cotangent
 # magnitude |y* dL/dy| is within this fraction of the maximum -- the cells the
 # loss actually reads, where a fixed-point defect directly biases the gradient.
+
+_STALE_GEOMETRY_RTOL = 1e-12
+# audit_adjoint_scope: a spliced refresh field (g, dzi, Hpi, top_flux, vs)
+# must match the converged carry to float noise.
 
 _REBUILD_CONSISTENCY_WARN = 1e-8
 # steady_state_input_sensitivity: warn when rebuild(p0) reproduces the
@@ -505,13 +514,13 @@ def _lgmres_solve(
 
 def _topk_ensemble_spread(g_stack: np.ndarray) -> float:
     """Twin disagreement on the components one would report: max over the
-    TOP-10 by |mean| of (max-min)/|mean|. Weaker components carry larger
+    top `_TOP_K` by |mean| of (max-min)/|mean|. Weaker components carry larger
     relative bounce and would alarm on noise that never enters a ranking."""
     if g_stack.shape[0] <= 1:
         return 0.0
     g_mean = g_stack.mean(axis=0)
     order = np.argsort(np.abs(g_mean))[::-1]
-    top = order[: min(10, order.size)]
+    top = order[: min(_TOP_K, order.size)]
     top = top[np.abs(g_mean[top]) > 0.0]
     if not top.size:
         return 0.0
@@ -991,14 +1000,14 @@ def steady_state_reaction_sensitivity(
     # Twin-to-twin disagreement on the reactions one would actually report.
     ensemble_spread = _topk_ensemble_spread(g_stack)
 
-    # Forward/reverse pair antisymmetry over the top-10: near partial
+    # Forward/reverse pair antisymmetry over the top `_TOP_K`: near partial
     # equilibrium dL/dln k_f ~ -dL/dln k_r, so |g_f+g_r|/max(|g_f|,|g_r|)
     # should be small. Diagnostic only (see module docstring); photolysis /
     # irreversible rows (all-zero reverse k) are skipped.
     g_mean_full = np.asarray(dL_dlnk)
     k_np = np.asarray(k_arr)
     pair_antisym = 0.0
-    for r in np.argsort(np.abs(g_mean_full))[::-1][:10]:
+    for r in np.argsort(np.abs(g_mean_full))[::-1][:_TOP_K]:
         r = int(r)
         f = r if r % 2 == 1 else r - 1
         rev = f + 1
@@ -1727,7 +1736,7 @@ def audit_adjoint_scope(
     body_dt: float = BODY_MAP_DT,
     species: Sequence[str] | None = None,
     min_ymix: float = _AUDIT_MIN_YMIX,
-    top_k: int = 10,
+    top_k: int = _TOP_K,
     print_report: bool = True,
 ):
     """Scan a run for physics the adjoint's body map drops -- BEFORE trusting it.
@@ -1793,7 +1802,7 @@ def audit_adjoint_scope(
                 continue
             a_np, b_np = np.asarray(a), np.asarray(b)
             if a_np.shape != b_np.shape or not np.allclose(
-                a_np, b_np, rtol=1e-12, atol=0.0
+                a_np, b_np, rtol=_STALE_GEOMETRY_RTOL, atol=0.0
             ):
                 stale.append(name)
         if stale:

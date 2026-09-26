@@ -584,13 +584,17 @@ def _load_const_mix_y(data_atm) -> tuple[np.ndarray, list[str]]:
     return y, charge_list
 
 
+# Newton initial guess for the H2/H2O/CH4/He/NH3 system (build_atm.py:35).
+_LOWT_M0 = (0.9, 0.1, 0.0, 0.0, 0.0)
+
+
 def _load_const_lowT_y(data_atm) -> tuple[np.ndarray, list[str]]:
     """Solve the 5-mol H2/H2O/CH4/He/NH3 system via JAX Newton."""
     O_H = float(_CFG.O_H)
     C_H = float(_CFG.C_H)
     He_H = float(_CFG.He_H)
     N_H = float(_CFG.N_H)
-    m0 = jnp.array([0.9, 0.1, 0.0, 0.0, 0.0], dtype=jnp.float64)
+    m0 = jnp.array(_LOWT_M0, dtype=jnp.float64)
     max_iter = int(_CFG.fastchem_newton_max_iter)
     tol = float(_CFG.fastchem_newton_tol)
     ini_mol = np.asarray(

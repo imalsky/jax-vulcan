@@ -28,6 +28,13 @@ from . import photo as _photo_mod
 from . import atm_refresh as _atm_refresh_mod
 from . import conden as _conden_mod
 from . import state as _state_mod
+from .state import (
+    TERM_CONVERGED,
+    TERM_NONFINITE,
+    TERM_RUNNING,
+    TERM_RUNTIME,
+    TERM_STEP_COUNT,
+)
 from .ini_abun import column_atoms
 from .jax_step import AtmStatic, jax_ros2_step, make_atm_static
 from .runtime_validation import validate_runtime_config
@@ -61,10 +68,12 @@ _PLATEAU_NEW_MIN_FRAC = 0.95
 # Hybrid vm_mol phase-flip budget, vm_branch@84d010d stop(): count_min =
 # count + 100 on every flip (op.py:1107, 1128, 1152); count_max = count + 2000
 # after convergence (op.py:1108), count + 1000 after the runtime or
-# step-count limit (op.py:1129, 1153).
+# step-count limit (op.py:1129, 1153); runtime grows 10% on a runtime flip
+# (op.py:1130).
 _HYBRID_FLIP_COUNT_MIN_EXTRA = 100
 _HYBRID_FLIP_COUNT_MAX_EXTRA_CONV = 2000
 _HYBRID_FLIP_COUNT_MAX_EXTRA_BUDGET = 1000
+_HYBRID_FLIP_RUNTIME_FACTOR = 1.1
 
 
 class ProfileVars(NamedTuple):
@@ -205,8 +214,7 @@ class JaxIntegState(NamedTuple):
 
     # Batched-runner termination state (unused by the single-profile path).
     # `is_done` freezes a finished lane while stragglers finish.
-    # `termination_reason`: 0 running, 1 converged, 2 runtime, 3 step-count,
-    # 5 non-finite (4 is unassigned).
+    # `termination_reason`: one of the TERM_* codes.
     is_done: jnp.ndarray  # ()  bool
     termination_reason: jnp.ndarray  # ()  int32
 
@@ -281,16 +289,16 @@ def _step_size(
     dt_var_max: float,
     dt_min: float,
     dt_max: float,
-    safety: float = 0.9,
-    zero_delta_frac: float = 0.01,
+    safety: float,
+    zero_delta_frac: float,
 ) -> jnp.ndarray:
     """Adaptive Ros2 dt update. Returns the next dt (scalar, seconds).
 
     I-control (default, master-faithful):
     `h_factor = clip(safety * (rtol/delta)^0.5, dt_var_min, dt_var_max)`,
     `h_new = clip(dt * h_factor, dt_min, dt_max)`; `delta == 0` substitutes
-    `zero_delta_frac * rtol`. Production passes `safety`/`zero_delta_frac`
-    from cfg; the defaults serve direct callers (tests / standalone).
+    `zero_delta_frac * rtol` (cfg.step_size_safety /
+    cfg.step_size_zero_delta_frac).
     """
     delta_eff = jnp.where(delta < UNDERFLOW_DENOM, zero_delta_frac * rtol, delta)
     h_factor = safety * (rtol / delta_eff) ** 0.5
@@ -980,14 +988,15 @@ def _make_runner(
         real_term = real_term | non_finite
         reason = jnp.where(
             non_finite,
-            jnp.int32(5),
+            jnp.int32(TERM_NONFINITE),
             jnp.where(
                 conv_term,
-                jnp.int32(1),
+                jnp.int32(TERM_CONVERGED),
                 jnp.where(
                     too_long,
-                    jnp.int32(2),
-                    jnp.where(too_many, jnp.int32(3), jnp.int32(0)),
+                    jnp.int32(TERM_RUNTIME),
+                    jnp.where(too_many, jnp.int32(TERM_STEP_COUNT),
+                              jnp.int32(TERM_RUNNING)),
                 ),
             ),
         )
@@ -1574,7 +1583,9 @@ def _make_runner(
                 jnp.where(runtime_flip | count_flip, count_max_budget, s.count_max_dyn),
             )
             runtime_dyn_next = jnp.where(
-                runtime_flip, s.runtime_dyn * jnp.float64(1.1), s.runtime_dyn
+                runtime_flip,
+                s.runtime_dyn * jnp.float64(_HYBRID_FLIP_RUNTIME_FACTOR),
+                s.runtime_dyn,
             )
             longdy_next = jnp.where(do_flip, jnp.float64(jnp.inf), longdy_next)
             longdydt_next = jnp.where(do_flip, jnp.float64(jnp.inf), longdydt_next)
@@ -1931,7 +1942,8 @@ def _make_runner(
             jnp.where(
                 real_term,
                 reason,
-                jnp.where(became_nan, jnp.int32(5), jnp.int32(0)),
+                jnp.where(became_nan, jnp.int32(TERM_NONFINITE),
+                          jnp.int32(TERM_RUNNING)),
             ),
         )
         return frozen._replace(is_done=is_done_next, termination_reason=reason_next)
@@ -3110,7 +3122,7 @@ class OuterLoop:
             evo_idx=jnp.int32(0),
             # Batched-runner flags; the single-profile path never reads them.
             is_done=jnp.bool_(False),
-            termination_reason=jnp.int32(0),
+            termination_reason=jnp.int32(TERM_RUNNING),
             # Phase seed: upwind (1.0) when use_vm_mol, else central (0.0);
             # only hybrid runs ever flip it.
             hybrid_use_vm=jnp.float64(1.0 if bool(self._statics.use_vm_mol) else 0.0),
@@ -3288,11 +3300,11 @@ class OuterLoop:
         (termination_reason 5) or a "converged" state that is not finite.
         """
         reason = int(state.termination_reason)
-        if reason in (2, 3):
+        if reason in (TERM_RUNTIME, TERM_STEP_COUNT):
             return reason
-        if reason == 1 and bool(jnp.all(jnp.isfinite(state.y))):
-            return 1
-        return 5
+        if reason == TERM_CONVERGED and bool(jnp.all(jnp.isfinite(state.y))):
+            return TERM_CONVERGED
+        return TERM_NONFINITE
 
     def _report_end(self, end_case, reason, count, longdy, longdydt,
                     aflux_change, var, para) -> None:

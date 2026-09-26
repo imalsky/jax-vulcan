@@ -94,9 +94,14 @@ DT_MAX_S = 1.0e15
 # defect is left alone, so the uncorrected element error per step is
 # bounded by this fraction of the layer (a few times it over two stages).
 REPAIR_ABS_FLOOR = 1.0e-11
+# dt_max = runtime * 1e-5 (vulcan_cfg.py:136); the photo-frequency switch
+# threshold is 10 * yconv_min (op.py:819).
+_DT_MAX_RUNTIME_FRAC = 1e-5
+_PHOTO_SWITCH_LONGDY_FACTOR = 10.0
 _DERIVED = (
-    ("dt_max", lambda d: min(d["runtime"] * 1e-5, DT_MAX_S)),
-    ("photo_switch_longdy_thresh", lambda d: d["yconv_min"] * 10.0),
+    ("dt_max", lambda d: min(d["runtime"] * _DT_MAX_RUNTIME_FRAC, DT_MAX_S)),
+    ("photo_switch_longdy_thresh",
+     lambda d: d["yconv_min"] * _PHOTO_SWITCH_LONGDY_FACTOR),
     ("para_anaTP", lambda d: copy.deepcopy(d["para_warm"])),
 )
 

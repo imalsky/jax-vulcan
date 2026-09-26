@@ -128,6 +128,16 @@ class StepInputs(NamedTuple):
     t_evo: jnp.ndarray = jnp.zeros((0,), dtype=jnp.float64)
 
 
+# Termination codes (JaxIntegState.termination_reason, ParamInputs.end_case):
+# 1-3 are master's end_case (op.py:1072-1084); 5 (non-finite, or stopped
+# without converging and without a cap) is JAX-only; 0 means still running.
+TERM_RUNNING = 0
+TERM_CONVERGED = 1
+TERM_RUNTIME = 2
+TERM_STEP_COUNT = 3
+TERM_NONFINITE = 5
+
+
 class ParamInputs(NamedTuple):
     """Convergence + retry counters that cross the runner boundary."""
 
@@ -143,11 +153,10 @@ class ParamInputs(NamedTuple):
     pic_count: int
     where_varies_most: jnp.ndarray  # shape: (nz, ni)
     fix_species_start: bool
-    # Why the integration stopped: 0 running, 1 converged, 2 runtime,
-    # 3 step-count, 5 non-finite (4 is unassigned). Codes match the runner's
-    # `JaxIntegState.termination_reason`; `end_case` is the coarser master
+    # Why the integration stopped (a TERM_* code, the runner's
+    # `JaxIntegState.termination_reason`); `end_case` is the coarser master
     # code. Defaulted so a positional constructor may omit it.
-    termination_reason: int = 0
+    termination_reason: int = TERM_RUNNING
 
 
 class AtomInputs(NamedTuple):
@@ -252,9 +261,8 @@ class StellarFlux(NamedTuple):
     def_bin_max: float
 
 
-# Photolysis wavelength window (nm): cross sections / stellar flux are only
-# used inside this band, so the stellar-flux bin range is clamped to it. Matches
-# VULCAN-master's fixed 2-700 nm photo grid.
+# Photolysis wavelength window (nm): the stellar-flux bin range is clamped to
+# it, as master's store.py:79-80.
 _SFLUX_BIN_MIN_NM = 2.0
 _SFLUX_BIN_MAX_NM = 700.0
 

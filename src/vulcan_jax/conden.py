@@ -156,7 +156,7 @@ def make_conden_spec(cfg, var, atm, species_idx) -> CondenSpec:
     if h2o_active:
         h2o_idx = int(species_idx["H2O"])
         h2o_l_s_idx = int(species_idx["H2O_l_s"])
-        h2o_m_over_rho_r2 = (18.0 / Navo) / (
+        h2o_m_over_rho_r2 = (GAS_MASS_G_PER_MOL["H2O"] / Navo) / (
             float(atm.rho_p["H2O_l_s"]) * float(atm.r_p["H2O_l_s"]) ** 2
         )
     else:
@@ -167,7 +167,7 @@ def make_conden_spec(cfg, var, atm, species_idx) -> CondenSpec:
     if nh3_active:
         nh3_idx = int(species_idx["NH3"])
         nh3_l_s_idx = int(species_idx["NH3_l_s"])
-        nh3_m_over_rho_r2 = (17.0 / Navo) / (
+        nh3_m_over_rho_r2 = (GAS_MASS_G_PER_MOL["NH3"] / Navo) / (
             float(atm.rho_p["NH3_l_s"]) * float(atm.r_p["NH3_l_s"]) ** 2
         )
     else:

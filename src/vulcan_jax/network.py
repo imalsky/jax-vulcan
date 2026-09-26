@@ -154,6 +154,10 @@ def _parse_temp_ranges(tokens: list[str]) -> tuple[tuple[float, float], ...]:
     return tuple(reversed(out))
 
 
+# Duplicate reactions listed by name in the parse error.
+_DUPS_SHOWN = 4
+
+
 def _announce_duplicate_reactions(
     network_path: str, dups: list[tuple[str, int, int]], duplicates_ok: bool
 ) -> None:
@@ -172,9 +176,9 @@ def _announce_duplicate_reactions(
         return
     shown = "; ".join(
         f"{eq!r} at positions {first} and {second}"
-        for eq, first, second in dups[:4]
+        for eq, first, second in dups[:_DUPS_SHOWN]
     )
-    more = f" (+{len(dups) - 4} more)" if len(dups) > 4 else ""
+    more = f" (+{len(dups) - _DUPS_SHOWN} more)" if len(dups) > _DUPS_SHOWN else ""
     msg = (
         f"Network {network_path} contains {len(dups)} duplicated reaction(s) "
         f"within the same section: {shown}{more}. Both copies are parsed as "

@@ -22,6 +22,7 @@ from .config import default_config
 from . import chem_funs
 from .chem_funs import ni, nr
 from .live_ui import master_tableau20
+from .state import TERM_NONFINITE, TERM_RUNTIME, TERM_STEP_COUNT
 
 _CFG = default_config()
 species = chem_funs.spec_list
@@ -541,9 +542,9 @@ class Output(object):
         per-atom loss and rejection counters.
         """
         why = {
-            2: f"Maximal allowed runtime exceeded ({self._cfg.runtime:.1e} sec)",
-            3: f"Maximal allowed steps exceeded ({self._cfg.count_max} steps)",
-            5: "Stopped without converging and without hitting a cap "
+            TERM_RUNTIME: f"Maximal allowed runtime exceeded ({self._cfg.runtime:.1e} sec)",
+            TERM_STEP_COUNT: f"Maximal allowed steps exceeded ({self._cfg.count_max} steps)",
+            TERM_NONFINITE: "Stopped without converging and without hitting a cap "
             f"(termination_reason {getattr(para, 'termination_reason', 0)}); "
             "the state may be non-finite",
         }.get(case)

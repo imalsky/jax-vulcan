@@ -42,11 +42,16 @@ _SPECIAL_OH_CH3 = "OH + CH3 + M -> CH3OH + M"
 # tangent-safe.
 _EXP_ARG_MAX = 709.0
 
-# Three Moses+2005 low-T rate caps, applied to the post-Lindemann forward slot
-# below a temperature threshold on cool-atmosphere networks.
-_LOWT_CAP_RXN_CH3 = "H + CH3 + M -> CH4 + M"  # T <= 277.5 K, Lindemann cap
-_LOWT_CAP_RXN_C2H4 = "H + C2H4 + M -> C2H5 + M"  # T <= 300 K, constant 3.7e-30
-_LOWT_CAP_RXN_C2H5 = "H + C2H5 + M -> C2H6 + M"  # T <= 200 K, constant 2.49e-27
+# Moses+2005 low-T rate caps, master's lim_lowT_rates (exoclime@80f75b9
+# op.py:320-340): at T <= T_max (K) the post-Lindemann forward slot takes the
+# cap. CH3's cap is the Lindemann form k0 / (1 + k0 M / kinf) with
+# kinf = 2.06e-10 T^-0.4 (op.py:322-328); the other two are constants
+# (op.py:330-340).
+_LOWT_CAP_CH3 = ("H + CH3 + M -> CH4 + M", 277.5, 6.0e-29)  # (rxn, T_max, k0)
+_LOWT_CAP_CONST = (  # (rxn, T_max, k_cap)
+    ("H + C2H4 + M -> C2H5 + M", 300.0, 3.7e-30),
+    ("H + C2H5 + M -> C2H6 + M", 200.0, 2.49e-27),
+)
 
 
 def _arrhenius(a, n, E, T):
@@ -171,20 +176,16 @@ def apply_lowT_caps(
             rows.setdefault(net.Rf.get(i, ""), i)
 
     k = k_fwd
-    i = rows.get(_LOWT_CAP_RXN_CH3)
+    rxn, t_max, k0 = _LOWT_CAP_CH3
+    i = rows.get(rxn)
     if i is not None:
-        # Moses+2005 cap: k0=6e-29, kinf=2.06e-10*T^-0.4 (Lindemann form).
-        # Master's lim_lowT_rates (exoclime@80f75b9 op.py:320-340): this cap
-        # op.py:322-328, the C2H4 one :330-334, the C2H5 one :336-340.
         kinf = 2.06e-10 * Tz**-0.4
-        cap = 6.0e-29 / (1.0 + 6.0e-29 * Mz / kinf)
-        k = k.at[i].set(jnp.where(Tz <= 277.5, cap, k[i]))
-    i = rows.get(_LOWT_CAP_RXN_C2H4)
-    if i is not None:
-        k = k.at[i].set(jnp.where(Tz <= 300.0, 3.7e-30, k[i]))
-    i = rows.get(_LOWT_CAP_RXN_C2H5)
-    if i is not None:
-        k = k.at[i].set(jnp.where(Tz <= 200.0, 2.49e-27, k[i]))
+        cap = k0 / (1.0 + k0 * Mz / kinf)
+        k = k.at[i].set(jnp.where(Tz <= t_max, cap, k[i]))
+    for rxn, t_max, k_cap in _LOWT_CAP_CONST:
+        i = rows.get(rxn)
+        if i is not None:
+            k = k.at[i].set(jnp.where(Tz <= t_max, k_cap, k[i]))
     return k
 
 

@@ -11,6 +11,9 @@ import numpy as np
 
 from .phy_const import UNDERFLOW_DENOM
 
+# Single-scattering albedo cap: keeps w0 < 1 (no pure scatterer), op.py:2638.
+_W0_MAX = 1.0 - 1e-8
+
 
 class PhotoData(NamedTuple):
     """Pre-stacked cross-section arrays for JAX photochem.
@@ -215,7 +218,7 @@ def compute_flux_jax(
 
     w0 = tot_scat / jnp.maximum(tot_abs + tot_scat, UNDERFLOW_DENOM)
     w0 = jnp.where(jnp.isnan(w0), 0.0, w0)
-    w0 = jnp.minimum(w0, 1.0 - 1e-8)
+    w0 = jnp.minimum(w0, _W0_MAX)
 
     # Direct beam: exp(-tau / cos(arccos(-mu_ang))) simplifies to exp(tau / mu_ang)
     # because cos(arccos(x)) = x for x in [0, 1] and -mu_ang lies in that range.
