@@ -7,7 +7,9 @@ the `custom_linear_solve` tangent agrees with differentiating through the LU
 and its linearised residual is never worse, reverse mode (steady_state_grad's
 `jax.vjp` through the step) agrees, and vmap is consistent. Random systems at
 the VULCAN shape, then the real HD189 blocks at four dt (the W39b blocks in a
-SNCHO child, slow-gated like the other W39b children).
+SNCHO child, slow-gated like the other W39b children). On a CUDA host the GPU
+kernel is also checked against the CPU kernel on pivoting, tied and singular
+blocks, and, opt-in, under compute-sanitizer.
 """
 
 from __future__ import annotations
@@ -15,6 +17,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import jax
@@ -37,6 +40,9 @@ import vulcan_jax.solver_fast as fast_mod
 
 ROOT = Path(__file__).resolve().parent.parent
 DTS = (1e2, 3.8e4, 1e6, 1e11)
+# CUDA kernel against the CPU kernel, normwise over the finite entries; they
+# differ by reassociation and FMA contraction (measured up to 2.2e-14 here).
+KERNEL_RTOL = 1e-13
 
 
 @pytest.fixture(params=["fast", "ffi"])
@@ -195,6 +201,99 @@ def test_ffi_solve_takes_a_stack_of_rhs_on_shared_factors(fast, nested):
     # ... and nothing anywhere in the module materialises `lu` once per direction
     copied = f"tensor<{'2x' if nested else ''}{ndir}x{nz}x{ni}x{ni}xf64>"
     assert copied not in txt, copied
+
+
+def _cuda_device():
+    try:
+        dev = jax.devices("cuda")[0]
+    except RuntimeError:
+        pytest.skip("no CUDA device visible to JAX: the CUDA kernel is not checked")
+    if not fast_mod._CUDA_LIB.exists():
+        pytest.skip(f"{fast_mod._CUDA_LIB.name} not built (python -m vulcan_jax.solver_fast --cuda)")
+    return dev
+
+
+@pytest.mark.parametrize("nz,ni,kind", [
+    (1, 5, "random"), (3, 16, "random"), (4, 33, "random"), (6, 64, "random"),
+    (3, 16, "tie"), (3, 16, "singular"),
+])
+def test_cuda_kernel_matches_cpu_kernel(nz, ni, kind):
+    """Raw factor and solve (one rhs and a stack on the same factors) of the
+    CUDA kernel against the CPU kernel, on blocks without a diagonal boost so
+    rows swap. `tie`: rows 2 and 5 tie for the first pivot (bit-equal |a|),
+    and the smaller row must win on both. `singular`: a duplicated row gives
+    a zero pivot, and both kernels must put the same inf/nan in the same
+    places. Permutations are equal, finite values within KERNEL_RTOL."""
+    dev = _cuda_device()
+    d, s, c, r = (np.array(a) for a in _system(nz, ni, ni, boost=0.0, scale=1.0))
+    if kind == "tie":
+        d[0, 2, 0] = 10.0 * np.abs(d[0, :, 0]).max()
+        d[0, 5] = d[0, 2] + 0.25
+        d[0, 5, 0] = -d[0, 2, 0]
+    elif kind == "singular":
+        d[0, 3] = d[0, 1]
+    rs = np.stack([r, 2.0 * r, -r])
+
+    def run(device):
+        a = [jax.device_put(jnp.asarray(v), device) for v in (d, s, c, r, rs)]
+        lu, perm = jax.jit(fast_mod._ffi_factor)(*a[:3])
+        x = jax.jit(fast_mod._ffi_solve)(lu, perm, a[1], a[2], a[3])
+        xs = jax.jit(jax.vmap(fast_mod._ffi_solve, in_axes=(None, None, None, None, 0)))(
+            lu, perm, a[1], a[2], a[4])
+        return [np.asarray(v) for v in (lu, perm, x, xs)]
+
+    cpu, gpu = run(jax.devices("cpu")[0]), run(dev)
+    np.testing.assert_array_equal(gpu[1], cpu[1])
+    if kind == "tie":
+        assert cpu[1][0, 0] == 2, cpu[1][0]
+    elif kind == "singular":
+        assert not np.isfinite(cpu[2]).all()
+    else:
+        assert (cpu[1] != np.arange(ni)).any()
+    for name, i in (("lu", 0), ("x", 2), ("stacked x", 3)):
+        g, ref = gpu[i], cpu[i]
+        fin = np.isfinite(ref)
+        np.testing.assert_array_equal(np.isfinite(g), fin, err_msg=name)
+        np.testing.assert_array_equal(np.where(fin, 0.0, g), np.where(fin, 0.0, ref), err_msg=name)
+        err = np.abs(g[fin] - ref[fin]).max(initial=0.0)
+        assert err <= KERNEL_RTOL * np.abs(ref[fin]).max(initial=0.0), (name, err)
+
+
+_SANITIZER_CHILD = r"""
+import jax, jax.numpy as jnp, numpy as np
+jax.config.update("jax_enable_x64", True)
+import vulcan_jax.solver_fast as fast_mod
+dev = jax.devices("cuda")[0]
+for nz, ni in [(1, 5), (3, 16), (4, 33), (6, 64)]:
+    rng = np.random.default_rng(ni)
+    d, s, c, r = (jax.device_put(jnp.asarray(a), dev) for a in (
+        rng.standard_normal((nz, ni, ni)), rng.standard_normal((nz - 1, ni)),
+        rng.standard_normal((nz - 1, ni)), rng.standard_normal((nz, ni))))
+    lu, perm = jax.jit(fast_mod._ffi_factor)(d, s, c)
+    xs = jax.jit(jax.vmap(fast_mod._ffi_solve, in_axes=(None, None, None, None, 0)))(
+        lu, perm, s, c, jnp.stack([r, 2.0 * r, -r]))
+    assert np.isfinite(np.asarray(xs)).all(), (nz, ni)
+"""
+
+
+@pytest.mark.parametrize("tool", ["memcheck", "racecheck", "synccheck", "initcheck"])
+def test_cuda_kernel_under_compute_sanitizer(tool):
+    """Opt-in: set VULCAN_JAX_COMPUTE_SANITIZER to the compute-sanitizer
+    binary. The CUDA factor and a stacked solve on small pivoting shapes run
+    under each tool, and any report fails. XLA's platform allocator gives each
+    buffer its own allocation, so memcheck sees an overrun past it; command
+    buffers are off, so the launches are plain."""
+    exe = os.environ.get("VULCAN_JAX_COMPUTE_SANITIZER")
+    if not exe:
+        pytest.skip("set VULCAN_JAX_COMPUTE_SANITIZER to the compute-sanitizer binary to run")
+    if not fast_mod._CUDA_LIB.exists():
+        pytest.skip(f"{fast_mod._CUDA_LIB.name} not built (python -m vulcan_jax.solver_fast --cuda)")
+    env = {k: v for k, v in os.environ.items() if k != "JAX_PLATFORMS"}
+    env.update(XLA_PYTHON_CLIENT_ALLOCATOR="platform", XLA_PYTHON_CLIENT_PREALLOCATE="false",
+               XLA_FLAGS="--xla_gpu_enable_command_buffer=")
+    res = subprocess.run([exe, "--tool", tool, "--error-exitcode", "1", sys.executable, "-c",
+                          _SANITIZER_CHILD], capture_output=True, text=True, env=env, timeout=600)
+    assert res.returncode == 0, res.stdout[-4000:] + res.stderr[-4000:]
 
 
 def capture_stage1(fixture: str, cfg_name: str, dt: float):
