@@ -118,7 +118,9 @@ def compare(diag, sup, sub, rhs, tans, seed=1):
     b_lin = tans[3] - fast_mod._matvec(tans[0], tans[1], tans[2], x0)
     # the rhs-cotangent solves the transposed system, A^T g = w
     diag_t = jnp.swapaxes(diag, 1, 2)
-    gres = lambda g: _resid(diag_t, sub, sup, g, w)
+    def gres(g):
+        return _resid(diag_t, sub, sup, g, w)
+
     # the backward-stable third arm of each, on the SAME b_lin and w
     return {
         "primal_equal": bool(jnp.array_equal(x0, x1)),

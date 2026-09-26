@@ -318,7 +318,9 @@ def test_repair_tridiagonal_solve_is_lapack_gtsv_with_its_tangent():
     scale = float(jnp.max(jnp.abs(t_ref)))
     assert float(jnp.max(jnp.abs(t_new - t_ref))) < 1e-12 * scale
     dirs = jnp.stack([g * s for s in (1.0, -0.5, 0.25)])
-    solve_g = lambda gg: js._tridiagonal_solve(dl, d, du, gg)
+    def solve_g(gg):
+        return js._tridiagonal_solve(dl, d, du, gg)
+
     batched = jax.vmap(lambda v: jax.jvp(solve_g, (g,), (v,))[1])(dirs)
     assert close(batched, jnp.stack([jax.jvp(solve_g, (g,), (v,))[1] for v in dirs]), 1e-13)
     dl3, d3, du3 = (jnp.array(v)[:, None] for v in ((0.0, -1.0, 2.0), (2.0, 1.0, 4.0), (-2.0, -3.0, 0.0)))

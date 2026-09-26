@@ -81,9 +81,13 @@ vulcan_jax = [
 [tool.setuptools.dynamic]
 version = { attr = "vulcan_jax._version.__version__" }
 
-# These modules intentionally set up sys.path / os.chdir (so vulcan_cfg's
-# relative paths resolve, or to stage VULCAN-master) before importing, so the
-# module-level imports legitimately come after executable statements (E402).
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+# These modules intentionally set up sys.path / os.chdir / jax x64 (so
+# vulcan_cfg's relative paths resolve, or to stage VULCAN-master), or skip
+# the module, before importing, so the module-level imports legitimately
+# come after executable statements (E402).
 [tool.ruff.lint.per-file-ignores]
 "src/vulcan_jax/__init__.py" = ["E402"]
 "examples/grad_reverse_example.py" = ["E402"]
@@ -97,4 +101,8 @@ version = { attr = "vulcan_jax._version.__version__" }
 "tests/test_default_master_parity.py" = ["E402"]
 "tests/test_photo_ion.py" = ["E402"]
 "tests/test_steady_state_reaction_sensitivity.py" = ["E402"]
+"tests/test_adjoint_scope_findings.py" = ["E402"]
+"tests/test_eq_seed.py" = ["E402"]
+"tests/test_photo_sweeps.py" = ["E402"]
+"tests/test_solver_fast.py" = ["E402"]
 "src/vulcan_jax/vulcan_jax_cli.py" = ["E402"]

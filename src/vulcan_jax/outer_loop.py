@@ -2652,9 +2652,9 @@ class OuterLoop:
         key = (act_s, act_a)
         if key not in self._runner_jvp_cache:
             self._runner_jvp_cache[key] = self._make_runner_jvp(act_s, act_a)
-        pick = lambda dtree, act: [
-            d for d, a in zip(jax.tree_util.tree_leaves(dtree), act) if a
-        ]
+        def pick(dtree, act):
+            return [d for d, a in zip(jax.tree_util.tree_leaves(dtree), act) if a]
+
         ds_act, da_act = pick(dstate, act_s), pick(datm, act_a)
         # One direction at the primal's rank (what `jax.jvp` hands out) rides
         # in as D=1 and is squeezed back out, so a single-tangent caller gets

@@ -43,7 +43,6 @@ CONTINUE_STEPS = 1000
 
 
 def _build(case, kzz_scale=1.0):
-    import numpy as np
     from vulcan_jax.config import load_config
     from vulcan_jax.jax_step import make_atm_static
     from vulcan_jax.legacy_io import Output
