@@ -6,10 +6,6 @@ update_frq 100 and 1 certify the same column (notes §1.10). Subprocess:
 import-frozen network.
 """
 
-import os
-from pathlib import Path
-import subprocess
-import sys
 
 CADENCE_TOL = 1e-2   # measured 3.1e-3 at geom_conv_tol 1e-3; 1.56 without the term
 
@@ -49,12 +45,10 @@ def _check():
 
 
 def test_certified_column_is_geometry_cadence_independent(tmp_path):
-    env = dict(os.environ, VULCAN_JAX_NETWORK="thermo/NCHO_photo_network.txt",
-               VULCAN_JAX_ATOM_LIST="H,O,C,N", OMP_NUM_THREADS="1")
-    result = subprocess.run([sys.executable, str(Path(__file__).resolve())],
-                            cwd=tmp_path, env=env, text=True,
-                            capture_output=True, timeout=1800)
-    assert result.returncode == 0, result.stdout + result.stderr
+    from _helpers import run_self
+
+    run_self(__file__, network="thermo/NCHO_photo_network.txt",
+             atom_list="H,O,C,N", cwd=tmp_path)
 
 
 if __name__ == "__main__":

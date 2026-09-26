@@ -8,9 +8,6 @@ difference and does not move when the carry continues. One subprocess per
 case (import-frozen network).
 """
 
-import os
-from pathlib import Path
-import subprocess
 import sys
 
 import pytest
@@ -115,13 +112,10 @@ def _check(case):
 
 @pytest.mark.parametrize("case", sorted(CASES))
 def test_certified_tangent_is_the_settled_sensitivity(tmp_path, case):
+    from _helpers import run_self
+
     network, atom_list = CASES[case][2:4]
-    env = dict(os.environ, VULCAN_JAX_NETWORK=network,
-               VULCAN_JAX_ATOM_LIST=atom_list, OMP_NUM_THREADS="1")
-    result = subprocess.run([sys.executable, str(Path(__file__).resolve()), case],
-                            cwd=tmp_path, env=env, text=True,
-                            capture_output=True, timeout=1800)
-    assert result.returncode == 0, result.stdout + result.stderr
+    run_self(__file__, case, network=network, atom_list=atom_list, cwd=tmp_path)
 
 
 if __name__ == "__main__":

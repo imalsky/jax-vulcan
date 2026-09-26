@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 R_JUP_CM = 7.1492e9  # Jupiter radius (cm), upstream phy_const.py r_jup
 HD189_RP_CM = 1.138 * R_JUP_CM  # HD 189733 b radius (cm)
+SELF_RUN_TIMEOUT_S = 1800  # one or more full converged runs per child
 
 
 def set_cfg(**overrides):
@@ -133,6 +134,17 @@ def tpk_cfg(**overrides):
     )
     fields.update(overrides)
     return SimpleNamespace(**fields)
+
+
+def run_self(test_file, *args, network: str, atom_list: str, cwd) -> None:
+    """Re-run `test_file` as a single-threaded script with `network` and
+    `atom_list` selected (both are import-frozen); assert a clean exit."""
+    env = dict(os.environ, VULCAN_JAX_NETWORK=network,
+               VULCAN_JAX_ATOM_LIST=atom_list, OMP_NUM_THREADS="1")
+    result = subprocess.run([sys.executable, str(Path(test_file).resolve()), *args],
+                            cwd=cwd, env=env, text=True, capture_output=True,
+                            timeout=SELF_RUN_TIMEOUT_S)
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 def run_child(child_src: str, *, network: str, label: str, timeout: int = 600):

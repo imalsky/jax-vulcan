@@ -4,10 +4,6 @@ Uses the paper's HD189 photo-off comparison, without saved output or sibling
 dependencies. A subprocess isolates the import-frozen chemistry network.
 """
 
-import os
-from pathlib import Path
-import subprocess
-import sys
 
 
 def _check_gradient():
@@ -60,12 +56,10 @@ def _check_gradient():
 
 
 def test_kzz_jvp_matches_reconverged_finite_difference(tmp_path):
-    env = dict(os.environ, VULCAN_JAX_NETWORK="thermo/NCHO_photo_network.txt",
-               VULCAN_JAX_ATOM_LIST="H,O,C,N", OMP_NUM_THREADS="1")
-    result = subprocess.run([sys.executable, str(Path(__file__).resolve())],
-                            cwd=tmp_path, env=env, text=True,
-                            capture_output=True, timeout=1800)
-    assert result.returncode == 0, result.stdout + result.stderr
+    from _helpers import run_self
+
+    run_self(__file__, network="thermo/NCHO_photo_network.txt",
+             atom_list="H,O,C,N", cwd=tmp_path)
 
 
 if __name__ == "__main__":
