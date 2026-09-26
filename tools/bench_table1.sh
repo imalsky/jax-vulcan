@@ -1,12 +1,9 @@
 #!/usr/bin/env bash
 # Table 1 benchmark: VULCAN 2.0 vs VULCAN-JAX 3.0, free convergence, one host.
 #
-# WHY THE TIMING GUARD EXISTS
-# A 2026-07 Table 1 run measured VULCAN 2.0 at 363 s CPU across 1238 s wall (ratio 0.29) on a
-# throttled machine, and the 16.8x speedup derived from it had to be retracted. So this script
-# records user+sys beside real and refuses to print a speedup unless VULCAN 2.0's cpu/wall is
-# near 1.0; step counts are load-independent and are still reported when the guard rejects.
-# Background: notes.md §1.9 (environment and timing traps).
+# VULCAN 2.0 is single-threaded: a speedup is printed only when its cpu/wall
+# is near 1 (contention or throttling inflates wall time). Step counts are
+# load-independent and always reported (notes §1.9).
 #
 # Usage:  tools/bench_table1.sh [HD189|HD209|W39b] ...     (default: all three)
 
@@ -18,11 +15,13 @@ MASTER="$PROJECT/VULCAN-master"
 PY="${BENCH_PYTHON:-python}"
 OUT="${BENCH_OUT:-/tmp/bench_table1_$(date +%Y%m%d_%H%M%S)}"
 CPU_WALL_MIN="${CPU_WALL_MIN:-0.85}"   # VULCAN 2.0 is single-threaded: cpu/wall must be ~1
-# Load ceiling scales with core count: a bare "2.0" is wrong on a 12-core box, where
-# load 6 still leaves half the cores idle. Default is half the cores.
+# Load ceiling: half the cores.
 _NCPU="$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null \
-         || nproc 2>/dev/null || echo 4)"
-case "$_NCPU" in ''|*[!0-9]*) _NCPU=4 ;; esac
+         || nproc 2>/dev/null || true)"
+case "$_NCPU" in ''|*[!0-9]*)
+  echo "ABORT: cannot read the core count (getconf, sysctl and nproc all failed)." >&2
+  exit 1 ;;
+esac
 LOAD_MAX="${LOAD_MAX:-$(awk "BEGIN{printf \"%.1f\", $_NCPU/2}")}"
 
 mkdir -p "$OUT"
@@ -62,8 +61,7 @@ command -v caffeinate >/dev/null && CAF="caffeinate -dims" || CAF=""
 
 # time a command, emitting "real user sys" to stdout
 timed() { local log="$1"; shift
-  # Python, not `/usr/bin/time -p`: separating time's stderr from the child's needs fd
-  # juggling that kept silently leaving the .time file empty and blanking the summary.
+  # Python rather than /usr/bin/time: keeps the child's stderr out of the timing line.
   # shellcheck disable=SC2086  # $CAF is an intentional word-split prefix
   "$PY" - "$log" $CAF "$@" <<'TIMEEOF'
 import resource, subprocess, sys, time
@@ -93,12 +91,12 @@ t = p.read_text()
 t = re.sub(r"^network\s*=.*$", f"network = '{net}'", t, flags=re.M)
 for k in ("use_print_prog", "use_live_plot", "use_live_flux", "use_plot_end", "use_plot_evo"):
     t = re.sub(rf"^{k}\s*=.*$", f"{k} = False", t, flags=re.M)
-# the hand-patched sibling copy's wall_clock_max = 1800 s (not an upstream knob) aborts a healthy HD189 benchmark mid-integration:
-# that run needs ~2000+ s even at cpu/wall 0.97, so the timer, not convergence, would end it.
+# wall_clock_max (a knob of the hand-patched sibling, not upstream) must not end the run.
+wall = "wall_clock_max = 1.e9"
 if re.search(r"^wall_clock_max\s*=", t, flags=re.M):
-    t = re.sub(r"^wall_clock_max\s*=.*$", "wall_clock_max = 1.e9", t, flags=re.M)
+    t = re.sub(r"^wall_clock_max\s*=.*$", wall, t, flags=re.M)
 else:
-    t += "\nwall_clock_max = 1.e9\n"
+    t += f"\n{wall}\n"
 p.write_text(t)
 PYEOF
   read -r m_real m_user m_sys < <(cd "$W" && timed "$W/run.log" "$PY" vulcan.py)
