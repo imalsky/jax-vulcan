@@ -162,7 +162,7 @@ def seed_elements() -> tuple[str, ...]:
 # Sequential warm start, layer by layer. ExoGibbs's name: it flips the
 # arrays, so on VULCAN's grid (index 0 = bottom) the scan starts at the cold
 # top. `scan_hot_from_top` shifts the seed past the HD189_vulcan3 gate's step
-# cap (notes §2.9, register 70).
+# cap.
 _SEED_METHOD = "scan_hot_from_bottom"
 
 _OPTIONS_CACHE: dict[tuple[float, int], EquilibriumOptions] = {}

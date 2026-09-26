@@ -776,7 +776,8 @@ def read_sflux_binned(
     # Scale the surface flux to the planet's orbit by (R_star / r_orbit)^2.
     geom = (float(cfg.r_star) * r_sun / (au * float(cfg.orbit_radius))) ** 2
     raw_flux = np.asarray(sflux_raw["flux"], dtype=np.float64) * geom
-    # np.interp needs non-decreasing wavelengths; duplicates are allowed (C4).
+    # np.interp needs non-decreasing wavelengths; duplicates are allowed
+    # (sflux-epseri.txt has 20).
     # bin_min comes from wavelength[0], as upstream (op.py:575).
     if (raw_lambda.ndim != 1 or raw_lambda.shape != raw_flux.shape
             or raw_lambda.size < 2
@@ -817,7 +818,7 @@ def read_sflux_binned(
 
     # Upstream (build_atm.py:635) leaves sflux_din12_indx = -1 when the node is
     # absent and compute_J then integrates bins[:-1] at dbin1 (dropping the
-    # last bin); refused here instead (C15).
+    # last bin); refused here instead.
     transition = np.flatnonzero(bins_np == dbin_12)
     if transition.size != 1 or transition[0] == 0 or transition[0] == bins_np.size - 1:
         raise ValueError(
@@ -915,7 +916,7 @@ def read_bc_flux(cfg, species_list: list[str]) -> dict[str, np.ndarray]:
 # Phase breaks in the saturation fits (build_atm.py:829, :840, :856).
 _S_ALLOTROPE_BREAK_K = 413.0  # S2 and S8
 _H2S_ICE_LIQUID_K = 187.6
-# bar per cmHg. Upstream's 0.001333 (build_atm.py:857) is mmHg (C6).
+# bar per cmHg. Upstream's 0.001333 (build_atm.py:857) is mmHg.
 _CMHG_TO_BAR = 0.01333
 # Valid temperature range of the NASA-9 Gibbs fits (build_atm.py:618).
 _GIBBS_T_MIN_K = 200.0
@@ -949,7 +950,7 @@ def sat_p_jax(sp: str, T: jnp.ndarray) -> jnp.ndarray:
         w0, w1, w2, w3 = 6112.1, 18.729, -227.3, 257.87  # liquid constants
         # Ackerman & Marley (2001): ice for T < 0 C, liquid water for T >= 0 C.
         # Upstream's (T<0)*ice + (T>0)*water is 0 at 273 K; one `where` is
-        # continuous (C3).
+        # continuous.
         ice = c0 * jnp.exp((c1 * T_C + T_C**2 / c2) / (T_C + c3))
         liquid = w0 * jnp.exp((w1 * T_C + T_C**2 / w2) / (T_C + w3))
         return jnp.where(T_C < 0, ice, liquid)

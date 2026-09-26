@@ -34,8 +34,7 @@ He_H: 0.09692
 ini_mix: EQ
 # Seed abundances. solar_element_abundances.dat (default): rocky elements at
 # -3.0, for networks with no Mg/Si/Fe species. ..._lodders2009.dat: all solar
-# (upstream's file). Match this file before comparing with VULCAN 2
-# (notes §1.1, §2.9).
+# (upstream's file). Match this file before comparing with VULCAN 2.
 fastchem_solar_abundance_file: thermo/solar_element_abundances.dat
 const_mix:
   CH4: 0.00055522
@@ -137,14 +136,14 @@ slope_cri: 0.0001
 yconv_min: 0.1
 flux_cri: 0.1
 flux_atol: 1.0
-# Certificate term with no VULCAN 2 counterpart (C21): end only if the
-# refreshed geometry moved less than this (value: notes §1.10).
+# Certificate term with no VULCAN 2 counterpart: end only if the
+# refreshed geometry moved less than this.
 geom_conv_tol: 1.0e-3
-# Certificate term (C23): end only if every element's operator-weighted
+# Certificate term: end only if every element's operator-weighted
 # column is within this of its t=0 column; loss_eps bounds only the per-step
-# change (notes §1.13).
+# change.
 element_budget_tol: 1.0e-2
-# The pinned HD189 example's [] (cfg_examples/vulcan_cfg_HD189.py:148); notes §1.2.
+# The pinned HD189 example's [] (cfg_examples/vulcan_cfg_HD189.py:148).
 conver_ignore: []
 rtol: 0.2
 post_conden_rtol: 0.1
@@ -158,7 +157,7 @@ adapt_rtol_dec: 0.5
 adapt_rtol_inc: 1.25
 adapt_rtol_loss_mul: 2.0
 adapt_rtol_inc_loss_thresh: 0.0002
-# 110 so `dt < dt_min` ends a reject chain, as master does (C11).
+# 110 so `dt < dt_min` ends a reject chain, as master does.
 batch_max_retries: 110
 step_size_safety: 0.9
 step_size_zero_delta_frac: 0.01

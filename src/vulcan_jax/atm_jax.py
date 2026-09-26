@@ -9,7 +9,7 @@ and molecular diffusion, composition) all the way to the `AtmStatic` the Ros2
 step consumes.
 
 Usage -- pair it with forward-mode AD (`jax.lax.while_loop` supports `jvp`;
-`OuterLoop.run_jvp` certifies the tangent, C22). With `integ` an `OuterLoop`,
+`OuterLoop.run_jvp` certifies the tangent). With `integ` an `OuterLoop`,
 `init_state, _ = integ.prepare_runstate(rs)` and a caller's `loss_fn(y)`::
 
     phys, spec = make_physical_inputs(cfg, var, atm, species_list)
@@ -178,7 +178,7 @@ def build_atm_static(phys: PhysicalInputs, spec: AtmSpec) -> AtmStatic:
     for field equal to the runner's `AtmStatic` for `atm_type`
     `file`/`analytical`/`isothermal` with `use_moldiff` on
     (`tests/test_atm_jax.py`), with tangents w.r.t. `phys`. It differs for
-    `atm_type='table'`, where production keeps a stale `pico` (P4), and with
+    `atm_type='table'`, where production keeps upstream's stale `pico`, and with
     `use_moldiff` off, where `Ti`/`Hpi` differ but are runtime-inert.
     """
     nz, ni = spec.nz, spec.ni

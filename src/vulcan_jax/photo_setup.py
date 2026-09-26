@@ -84,7 +84,7 @@ def _make_bins(
     The transition must lie strictly inside the modeled interval. Upstream
     (op.py:583-585) falls back to a single dbin1-spaced grid otherwise, with
     `sflux_din12_indx = -1`, which its compute_J then slices as `bins[:-1]`;
-    refused here instead (Parity & bug guide C15).
+    refused here instead.
     """
     values = (bin_min, bin_max, dbin1, dbin2, dbin_12trans)
     if not all(np.isfinite(values)) or dbin1 <= 0.0 or dbin2 <= 0.0:

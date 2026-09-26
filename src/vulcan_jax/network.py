@@ -346,7 +346,7 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
             # M is tracked per side: a row with M on one side only gets
             # different M-factors forward and reverse. The only such row in
             # the shipped networks is the inherited HNCO + M -> H + NCO
-            # typo, kept at parity (notes.md §3.2).
+            # typo, kept at parity.
             has_M_reac = any(sp == "M" for _, sp in reactants)
             has_M_prod = any(sp == "M" for _, sp in products)
             has_M = has_M_reac or has_M_prod

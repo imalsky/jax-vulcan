@@ -265,7 +265,7 @@ def _validate_numerical_bounds(cfg) -> list[str]:
             f"negative-thickness atmosphere that still runs to completion."
         )
 
-    # The certificate tolerances (C21, C23) are required: an undeclared one
+    # The certificate tolerances are required: an undeclared one
     # would reach the runner as an AttributeError instead of this message.
     for key in ("geom_conv_tol", "element_budget_tol"):
         if not hasattr(cfg, key):

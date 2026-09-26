@@ -77,11 +77,10 @@ _FROZEN_ENV = {
 }
 
 # Largest step the Ros2 stage repair (jax_step._repair_stage) can resolve;
-# its correction system is as singular as the stage system by 1e17 s
-# (notes §1.13).
+# its correction system is as singular as the stage system by 1e17 s.
 DT_MAX_S = 1.0e15
 # Smallest stage element defect the repair corrects, as a fraction of the
-# layer number density (times c0); real leaks sit >= 1e-7 (notes §1.13).
+# layer number density (times c0); real leaks sit >= 1e-7.
 REPAIR_ABS_FLOOR = 1.0e-11
 # dt_max = runtime * 1e-5 (vulcan_cfg.py:136); the photo-frequency switch
 # threshold is 10 * yconv_min (op.py:819).

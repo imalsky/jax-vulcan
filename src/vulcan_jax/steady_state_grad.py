@@ -20,8 +20,7 @@ Rules:
 * A reversible row's detailed-balance perturbation is the pair sum
   `g[fwd] + g[rev]`; `info["pair_antisym"]` ~1 is not an error signal.
 
-Accuracy record and failed routes: notes.md §1.5, §2.5. Recipe:
-`examples/grad_reverse_example.py`.
+Recipe: `examples/grad_reverse_example.py`.
 """
 
 from __future__ import annotations
@@ -51,7 +50,7 @@ SOLVER_MAP = "renorm"
 # One-step map the adjoint linearizes (info["solver_map"]):
 # G(y) = M * ros2_step(y, k, dt) / sum_i ros2_step, the hydrostatic-
 # renormalized Ros2 step the runner iterates, so y_star is a tight fixed
-# point of it (notes §1.5).
+# point of it.
 
 PHOTO_RECOMPUTE_AUTO = "auto"
 PhotoRecomputeArg = Callable[[jnp.ndarray], jnp.ndarray] | Literal["auto"]
@@ -81,16 +80,16 @@ _TWIN_PERTURB = 1e-13
 
 _TOP_K = 10
 # Entries in the ranked reports: the ensemble spread and pair sums (top
-# reactions by |mean|, notes §2.5) and the audit's worst cells.
+# reactions by |mean|) and the audit's worst cells.
 
 _SPREAD_WARN = 0.15
 # Warn above this ensemble spread (max over the top reactions by |mean| of
 # (max-min)/|mean|): the twins disagree on the reactions one would report;
-# treat magnitudes as ranking weights (notes §2.5).
+# treat magnitudes as ranking weights.
 
 LGMRES_INNER_M = 60
-# scipy.sparse.linalg.lgmres inner Krylov dimension (untuned; notes §1.5
-# calibrated 250/8).
+# scipy.sparse.linalg.lgmres inner Krylov dimension (untuned; the HD189
+# calibration used 250).
 
 LGMRES_OUTER_K = 40
 # Augmentation vectors carried across restarts; the LGMRES knob that fixes
@@ -101,7 +100,7 @@ LGMRES_MAXITER = 4
 # per-cycle x0 warm-start (the validated configuration).
 
 LGMRES_CYCLES = 10
-# Number of warm-start cycles (untuned; notes §1.5 calibrated 250/8).
+# Number of warm-start cycles (untuned; the HD189 calibration used 8).
 
 LGMRES_RTOL = 1e-12
 # Relative-residual target; tighter buys nothing once finite-tolerance state
@@ -109,12 +108,12 @@ LGMRES_RTOL = 1e-12
 
 _ADJOINT_RESID_WARN = 0.2
 # Warn above this median relative LGMRES residual across the ensemble
-# (median is robust to a single wandering twin; notes §2.5).
+# (median is robust to a single wandering twin).
 
 _FP_ERR_WARN = 1e-2
 # Warn above this body-map fixed-point error: y_star is off the steady-state
 # manifold of the chosen map. pair_antisym is not warning-gated: it reads ~1
-# on accurate pair sums (module docstring; notes §1.5).
+# on accurate pair sums (module docstring).
 
 _NULL_BASIS_RANK_TOL = 1e-10
 # Rank guard for the deflation basis: after column normalization, |R_jj| from
@@ -131,7 +130,7 @@ _AUDIT_DEFECT_ERROR = 0.3
 # Per-cell defect above which the audit finding is an ERROR: an O(1) move
 # under one probe step means the iterated map includes a process (pin, conden
 # clamp, charge balance) the body map lacks. Between _FP_ERR_WARN and this is
-# a WARNING (slow trace cells of a healthy column land here; notes §1.5).
+# a WARNING (slow trace cells of a healthy column land here).
 
 _AUDIT_LOSS_FOOTPRINT_FRAC = 1e-3
 # audit_adjoint_scope's "loss footprint": cells whose log-space cotangent
@@ -855,7 +854,7 @@ def steady_state_reaction_sensitivity(
     # map holds the captured reservoir / saturation tables fixed, so this is
     # dL/d ln k AT the frozen reservoir, excluding how the rate set it. Rates
     # do not move the saturation curve directly, so label it, do not forbid
-    # it. See notes.md (Differentiability, F2).
+    # it.
     _conden_pinned = body_terms is not None and body_terms.fix_mask is not None
     _conden_in_window = body_terms is not None and body_terms.conden_static is not None
     if _conden_pinned or _conden_in_window:
@@ -869,8 +868,7 @@ def steady_state_reaction_sensitivity(
             )
             + "; it does not include how the rate changes what condenses. It is "
             "a valid conditional ranking, not the total rate sensitivity "
-            "(info['conditional_on_fixed_reservoir']). See "
-            "notes.md (Differentiability).",
+            "(info['conditional_on_fixed_reservoir']).",
             stacklevel=2,
         )
 
@@ -1036,9 +1034,9 @@ def steady_state_input_sensitivity(
       that term added separately (`jax.grad` w.r.t. p at fixed `y_star`).
     * Condensation is refused by default: the saturation tables are frozen in
       dG/dp and, post-pin, the captured reservoir is held fixed, so the result
-      is O(1)-unreliable vs FD (notes §2.6). Opt in with
+      is O(1)-unreliable vs FD. Opt in with
       `allow_frozen_condensation_input_grad=True` only for the known
-      leading-order number. See notes.md (Differentiability).
+      leading-order number.
     * Also frozen by design (p-derivative omitted): the photolysis
       T-cross-section interpolation and the atm-refresh geometry cascade
       (dz/Hp/g, second-order; rebuild what you need on-graph in `atm_p`).
@@ -1047,7 +1045,7 @@ def steady_state_input_sensitivity(
       type against a forward-mode `jvp` in one or two directions before
       production use.
     """
-    # Condensation refused by default (notes §2.6, condensation contract F1).
+    # Condensation refused by default.
     _conden_in_window = body_terms is not None and body_terms.conden_static is not None
     _conden_pinned = body_terms is not None and body_terms.fix_mask is not None
     if _conden_in_window or _conden_pinned:

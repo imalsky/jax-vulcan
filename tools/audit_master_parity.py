@@ -65,11 +65,11 @@ INTENTIONAL_JAX_DELTAS = {
     "conver_ignore",
     "top_BC_flux_file",
     "bot_BC_flux_file",
-    "dt_max",  # capped at config.DT_MAX_S = 1e15 s (C19); master derives 1e17
+    "dt_max",  # capped at config.DT_MAX_S = 1e15 s; master derives 1e17
 }
 
 # Network files carrying master's CH2CN + H + M correction (k0 1.00E-29,
-# k_inf 1.00E-10), which master applied to NCHO only (C1); any other
+# k_inf 1.00E-10), which master applied to NCHO only; any other
 # differing line fails.
 KNOWN_THERMO_DIVERGENCES: dict[str, tuple[str, ...]] = {
     # Upstream lists NH3 condensate as 16.023 g/mol; the corrected value is
@@ -89,7 +89,7 @@ KNOWN_THERMO_RENUMBERED: frozenset[str] = frozenset(
     {"SNCHO_photo_network_2025.txt"}
 )
 
-# eps Eri flux (C4): master's builder (atm/make_spectra_in_nm.py) multiplies
+# eps Eri flux: master's builder (atm/make_spectra_in_nm.py) multiplies
 # by R_star where it should divide, so its file is low by R_star^4; JAX ships
 # the corrected file. Wavelengths must match and every flux ratio must sit at
 # this factor within _SFLUX_RATIO_RTOL (the files' 2 significant figures).

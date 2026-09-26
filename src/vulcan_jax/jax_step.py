@@ -166,16 +166,16 @@ def _stage_defect(k, b_tr, c0, diag_d, sup_d, sub_d, with_scale=False):
 
 
 # Stage-defect roundoff floor relative to the size of its terms (~500 float64
-# ulps; notes §1.13).
+# ulps).
 _DEFECT_FLOOR = 1e-13
 
 # Largest repair correction on a carrier cell, as a fraction of max(cell,
 # |raw stage change|); above it the reservoir is a trace there and the
-# correction would damage the cell (notes §1.13).
+# correction would damage the cell.
 _REPAIR_MAX_CELL_FRAC = 1.0
 
 # Layers per scan iteration of the repair sweep: fewest kernels at an
-# acceptable jvp compile time (notes §1.13).
+# acceptable jvp compile time.
 _REPAIR_SWEEP_UNROLL = 8
 
 
@@ -187,7 +187,7 @@ def _tridiagonal_solve(dl, d, du, g):
     elementwise ops, so lanes, reservoirs and tangent directions share
     kernels; pivoted because central-difference drift can zero an unpivoted
     pivot. Replaces `lax.linalg.tridiagonal_solve`, a per-system cuSPARSE
-    call on GPU (notes §1.13, §2.9)."""
+    call on GPU."""
     du = du.at[-1].set(0.0)  # the last swap reads it as the fill-in
 
     def fwd(row, below):
@@ -233,7 +233,7 @@ def _repair_stage(k, b_tr, c0, diag_d, sup_d, sub_d, fix_mask, n_tot, y):
     `(c0 - T_rho) c = g` per reservoir. `n_tot` is the (nz, 1) layer density;
     the reservoir cells of `y` (the step's start state) bound the correction.
 
-    At small c0 = 1/(gamma dt) the pivoted LU leaks elements (notes §1.13).
+    At small c0 = 1/(gamma dt) the pivoted LU leaks elements.
     A defect is corrected only above both `_DEFECT_FLOOR` of its terms and
     `REPAIR_ABS_FLOOR` of the layer density. Pinned layers are skipped. A
     correction over `_REPAIR_MAX_CELL_FRAC` of its carrier is dropped. Not in
@@ -260,7 +260,7 @@ def _repair_stage(k, b_tr, c0, diag_d, sup_d, sub_d, fix_mask, n_tot, y):
     # Per layer and atom: drop a correction the carrier cell cannot carry --
     # one larger than both the cell's own content and the carrier's raw stage
     # change -- and leave the raw solve there. That layer's element budget
-    # stays open, which the certificate's cumulative term (C23) sees.
+    # stays open, which the certificate's cumulative element-budget term sees.
     cap = _REPAIR_MAX_CELL_FRAC * jnp.maximum(y[:, ridx], jnp.abs(k[:, ridx]))
     c = jnp.where(jnp.abs(c) > cap, 0.0, c)
     return k.at[:, ridx].add(c)
@@ -671,7 +671,7 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask,
     # non-empty". The inner `where` mirrors upstream's `y > 0` guard and keeps
     # the division and its derivative finite at y = 0. The entry exceeds the
     # true derivative by dzi[-1] (op.py:2106-2107, vm_branch op.py:2185-2186);
-    # kept for bit-parity, LHS only (notes §2.2).
+    # kept for bit-parity, LHS only.
     y_top_pos = y[-1] > 0.0
     diff_lim = jnp.where(
         atm.diff_esc_mask & y_top_pos,
@@ -706,7 +706,7 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask,
         # The chemistry part is the jvp of the RHS that `chem_J`
         # differentiates analytically (they agree to ~1e-13), so a tangent
         # costs a second-order jvp of the RHS instead of a dense dJ per
-        # direction (notes §2.9). Pinned rows as the dense build pins them.
+        # direction. Pinned rows as the dense build pins them.
         jx = jax.jvp(lambda yy: _chem_rhs(yy, M, k_arr), (y,), (x,))[1]
         out = c0 * x - _project_chem_rhs(jx) - diag_d * x
         if fix_mask is not None:
@@ -716,7 +716,7 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask,
 
     # The reference pair differentiates through the LU and takes no operator.
     # `matrix_free=False` keeps the dense one: reverse-over-forward of the RHS
-    # is slower in reverse mode (notes §2.9), so the adjoint keeps it.
+    # is slower in reverse mode, so the adjoint keeps it.
     solve_kw = {"matvec": matvec} if matrix_free and _SOLVER != "reference" else {}
     factors = factor_block_thomas_diag_offdiag(diag, sup_neg, sub_neg)
     k1 = solve_block_thomas_diag_offdiag(factors, rhs_y, **solve_kw)

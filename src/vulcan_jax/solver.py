@@ -57,7 +57,7 @@ def factor_block_thomas_diag_offdiag(diag, sup_d, sub_d):
 
     Both Ros2 stages share the factors. The per-layer pivoted LU keeps error
     from compounding across the sweep; an explicit-inverse carry is less
-    accurate on real blocks (notes §1.4).
+    accurate on real blocks.
     """
     ni = diag.shape[1]
 

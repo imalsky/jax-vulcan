@@ -6,15 +6,15 @@ Same call shape as `solver.py`: `factor(diag, sup_d, sub_d)` once, then
 
 1. `solve` is a `lax.custom_linear_solve`. Its tangent is `A dx = db - dA x`
    on the primal factors, so both stages and every tangent direction share one
-   factorisation instead of differentiating through the pivoted LU (notes
-   §1.4). The primal is the same code on the same inputs and is
+   factorisation instead of differentiating through the pivoted LU. The
+   primal is the same code on the same inputs and is
    bit-identical. Reverse mode transposes the primal sweep on the same
    factors.
 2. With `VULCAN_JAX_SOLVER=ffi` the raw factor and solve are one C++ call each
    (`csrc/block_thomas_cpu.cc`, built by `python -m vulcan_jax.solver_fast`):
    the CPU reference for the fused GPU kernel. `custom_linear_solve` makes
    these calls, which have no AD rules, differentiable. Reverse mode through
-   `ffi` is unsupported (notes §1.4.1); use `fast` or `reference`.
+   `ffi` is unsupported; use `fast` or `reference`.
 
 On a CUDA device the `ffi` backend runs `csrc/block_thomas_cuda.cu`, the same
 math and layout with one thread block per lane: the `ni x ni` block and the
@@ -97,8 +97,7 @@ def solve(factors: Factors, rhs, matvec=None):
     """`matvec` is the operator as a function of x. The primal never runs it;
     the AD rules do (the tangent's `dA x`, the transpose's cotangent). The
     default is the dense bands in `factors`, whose tangent is the whole dense
-    `dA` per direction; `jax_step._ros2_stages` passes a matrix-free one
-    (notes §2.9)."""
+    `dA` per direction; `jax_step._ros2_stages` passes a matrix-free one."""
     lu, perm, diag, sup_d, sub_d = factors
     sg = jax.lax.stop_gradient
     sup0, sub0 = sg(sup_d), sg(sub_d)
@@ -111,7 +110,7 @@ def solve(factors: Factors, rhs, matvec=None):
 
     def transpose_solve(_vecmat, c):
         # Transpose of the primal sweep on the same factors (no second
-        # factorisation; notes §1.4.1). The FFI call has no transpose rule, so
+        # factorisation). The FFI call has no transpose rule, so
         # this always runs the JAX scan, on whichever backend's factors.
         def sweep(b):
             return _ref.solve_block_thomas_diag_offdiag(

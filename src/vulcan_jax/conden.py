@@ -41,7 +41,7 @@ SUPPORTED_CONDEN_KINETICS: tuple[str, ...] = (
 
 # Molar masses (g/mol) from op.conden (op.py:1109-1290). S2/S8 are 2x/8x
 # atomic S; upstream's 45.019/360.152 (op.py:1203, :1249) is a copy-paste
-# error (C2).
+# error.
 GAS_MASS_G_PER_MOL: dict[str, float] = {
     "H2O": 18.0,
     "NH3": 17.0,

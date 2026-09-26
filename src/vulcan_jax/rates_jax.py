@@ -63,8 +63,8 @@ def _arrhenius(a, n, E, T):
 
 def _troe_OH_CH3(T, M):
     """Hardcoded Troe form for OH + CH3 + M -> CH3OH + M: Visscher & Moses 2011
-    eqs 13-14 (log10 width, notes C20) with the eq 24-26 fits of Jasper et al.
-    2007."""
+    eqs 13-14 (log10 width; upstream op.py:204-205 uses ln) with the eq 24-26
+    fits of Jasper et al. 2007."""
     k0 = 1.932e3 * T**-9.88 * jnp.exp(-7544.0 / T) + 5.109e-11 * T**-6.25 * jnp.exp(
         -1433.0 / T
     )

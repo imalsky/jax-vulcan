@@ -33,8 +33,7 @@ def _warn_stale_reaction_ids(
 ) -> None:
     """Warn when written photo/ion ids differ from parse positions (the file
     was not renumbered upstream). Rates are indexed by position, but a
-    ``cfg.remove_list`` taken from the id column picks the wrong reactions
-    (C14)."""
+    ``cfg.remove_list`` taken from the id column picks the wrong reactions."""
     if not stale:
         return
     shown = ", ".join(

@@ -215,7 +215,7 @@ def chem_jac_analytical_per_layer(
 def _left_to_right_sum(x: jnp.ndarray) -> jnp.ndarray:
     """Sum over the last axis in one fixed order. XLA may reorder a `reduce`
     per program; a fixed chain of adds keeps the batch and queue runners
-    bit-identical (notes §1.3, register 71)."""
+    bit-identical."""
     acc = x[..., 0]
     for j in range(1, x.shape[-1]):
         acc = acc + x[..., j]

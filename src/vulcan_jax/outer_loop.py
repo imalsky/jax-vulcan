@@ -189,10 +189,10 @@ class JaxIntegState(NamedTuple):
     update_photo_frq: jnp.ndarray  # ()                  int32
     is_final_photo_frq: jnp.ndarray  # ()                  bool
     geom_ok: jnp.ndarray  # ()  bool — refreshed geometry agreed at the last certificate candidate
-    budget_ok: jnp.ndarray  # () bool  column element budget held at the last candidate (C23)
-    budget_ref: jnp.ndarray  # (n_atoms,) the t=0 operator-weighted atom column on the t=0 grid (fixed; C23 denominator)
-    budget_err: jnp.ndarray  # (n_atoms,) accumulated per-step column change / budget_ref, each step on its own grid (C23)
-    budget_drift: jnp.ndarray  # (n_atoms,) budget_err relative to H: the certificate's C23 operand
+    budget_ok: jnp.ndarray  # () bool  column element budget held at the last candidate
+    budget_ref: jnp.ndarray  # (n_atoms,) the t=0 operator-weighted atom column on the t=0 grid (fixed; the budget denominator)
+    budget_err: jnp.ndarray  # (n_atoms,) accumulated per-step column change / budget_ref, each step on its own grid
+    budget_drift: jnp.ndarray  # (n_atoms,) budget_err relative to H: the certificate's budget operand
 
     # Post-condensation fixed-species state.
     fix_species_started: jnp.ndarray  # ()                  bool
@@ -669,7 +669,7 @@ _EVO_RING_FIELDS = ("y_evo", "t_evo")
 # (D tangent copies of the conv_step-slot ring per lane), so `runner_queue`
 # zeroes them at its lane step. Every primal and every live tangent stays
 # bitwise. `_make_jvp_step` (run_jvp) is untouched: its certificate reads
-# the ring tangent (C22).
+# the ring tangent.
 _QUEUE_STOP_FIELDS = _CONV_RING_FIELDS + (
     "longdy", "longdydt", "where_varies_most", "prev_aflux",
 )
@@ -717,15 +717,15 @@ def _convergence_ok(s: JaxIntegState, c):
 
     `slope_min` is recomputed from the live Hp (atm refresh moves it). Same
     two-branch predicate as upstream (op.py:1056); shipped configs exit on
-    the loose branch (notes §0).
+    the loose branch.
     """
     tight, loose = _branches(s.longdy, s.longdydt, _slope_min(s), c)
     return (tight | loose) & (s.aflux_change < jnp.float64(c.flux_cri))
 
 
 def _certified(s: JaxIntegState, c):
-    """`_convergence_ok` AND the geometry (C21) and element-budget (C23)
-    terms. `geom_ok` / `budget_ok` are written by the body on the candidate
+    """`_convergence_ok` AND the geometry and element-budget terms.
+    `geom_ok` / `budget_ok` are written by the body on the candidate
     step (see there): the refreshed geometry agreed with the composition,
     and the column kept its elements since t=0."""
     return _convergence_ok(s, c) & s.geom_ok & s.budget_ok
@@ -1186,7 +1186,7 @@ def _make_runner(
             # The pin activates before the relax, so `fix_y` freezes the
             # post-solve reservoir master freezes: op.py:871-873 snapshots
             # `fix_y` (and :882 reads the cold-trap level) from the same y,
-            # then op.py:898-902 relaxes inside the same block (C24). Order is
+            # then op.py:898-902 relaxes inside the same block. Order is
             # free on every other step: `trigger_fix` implies `fire_conden`,
             # and `conden_branch` reads none of the fields the activation sets
             # (it touches k_arr/y/ymix from y, ymix, dt).
@@ -1363,7 +1363,7 @@ def _make_runner(
 
         # Certificate candidate: `_convergence_ok` on this step's longdy. The
         # refresh below is forced on it, and geom_ok records whether
-        # mu/g/Hp/dzi/Hpi moved less than geom_conv_tol (C21). Hp here is the
+        # mu/g/Hp/dzi/Hpi moved less than geom_conv_tol. Hp here is the
         # pre-refresh value; the certificate re-reads the refreshed one next
         # iteration.
         s_cand = s._replace(longdy=longdy_next, longdydt=longdydt_next,
@@ -1382,7 +1382,7 @@ def _make_runner(
         # balance, on accepted steps only. `s.accept_count` is pre-increment,
         # matching master's `count % update_frq == 0` cadence; batched runs
         # key the cadence to the iteration tick instead so every lane
-        # refreshes on the same iteration. The C21 candidate-forced refresh
+        # refreshes on the same iteration. The candidate-forced refresh
         # is unchanged either way.
         if refresh_static is not None:
             cadence_count = s.accept_count if lane_axis is None else it
@@ -1485,7 +1485,7 @@ def _make_runner(
             top_flux_next = s.top_flux
             geom_ok_next = candidate
 
-        # Cumulative element budget (C23): loss_eps misses a slow drain.
+        # Cumulative element budget: loss_eps misses a slow drain.
         # Accumulate each step's change in the operator-weighted atom column
         # of the returned state (after renormalisation and bottom pins) on
         # that step's grid (s.dz), over the fixed t=0 column; a rejected step
