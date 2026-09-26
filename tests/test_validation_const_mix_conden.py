@@ -20,38 +20,26 @@ ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 
 
-def test_const_mix_inert_key_rejected():
+@pytest.mark.parametrize(
+    "overrides, error",
+    [
+        (dict(ini_mix="const_mix", const_mix={"H2": 0.9, "Ar": 0.1}), r"const_mix key 'Ar'"),
+        (dict(ini_mix="const_mix", const_mix={"H2": 0.9, "He": 0.1}), None),
+        (dict(use_condense=True, condense_sp=["Fe"]), r"condense_sp entry 'Fe'"),
+        (dict(use_condense=True, condense_sp=["H2S"]), None),  # sat-only tier
+    ],
+    ids=["inert_const_mix_key", "network_const_mix_keys", "unknown_condensate", "h2s_sat_only"],
+)
+def test_up_front_validation(overrides, error):
     from vulcan_jax import make_config
     from vulcan_jax.runtime_validation import validate_runtime_config
 
-    cfg = make_config(ini_mix="const_mix", const_mix={"H2": 0.9, "Ar": 0.1})
-    with pytest.raises(RuntimeError, match=r"const_mix key 'Ar'"):
+    cfg = make_config(**overrides)
+    if error is None:
         validate_runtime_config(cfg)
-
-
-def test_const_mix_network_keys_accepted():
-    from vulcan_jax import make_config
-    from vulcan_jax.runtime_validation import validate_runtime_config
-
-    cfg = make_config(ini_mix="const_mix", const_mix={"H2": 0.9, "He": 0.1})
-    validate_runtime_config(cfg)  # must not raise
-
-
-def test_condense_sp_unknown_rejected():
-    from vulcan_jax import make_config
-    from vulcan_jax.runtime_validation import validate_runtime_config
-
-    cfg = make_config(use_condense=True, condense_sp=["Fe"])
-    with pytest.raises(RuntimeError, match=r"condense_sp entry 'Fe'"):
-        validate_runtime_config(cfg)
-
-
-def test_condense_sp_h2s_sat_only_accepted():
-    from vulcan_jax import make_config
-    from vulcan_jax.runtime_validation import validate_runtime_config
-
-    cfg = make_config(use_condense=True, condense_sp=["H2S"])
-    validate_runtime_config(cfg)  # sat-only tier is master-legal; must not raise
+    else:
+        with pytest.raises(RuntimeError, match=error):
+            validate_runtime_config(cfg)
 
 
 def test_kinetics_set_matches_sat_set():

@@ -55,26 +55,17 @@ def test_regrid_floors_at_Pmin_when_all_deep_too_hot():
     assert new_pco[0] == pytest.approx(1e6)  # floored at P_min
 
 
-def test_regrid_noop_on_cool_column():
+@pytest.mark.parametrize(
+    "P_b, T", [(1e9, 1500.0), (1e5, 4000.0)], ids=["cool_column", "no_deep_layers"]
+)
+def test_regrid_noop(P_b, T):
+    """No regrid when nothing exceeds T_max, or when P_b < P_min leaves no deep layer."""
     from vulcan_jax.atm_setup import high_temp_cut_regrid
 
     nz = 80
-    pco = make_pco(1e9, 1e-2, nz)
-    Tco = np.full(nz, 1500.0)  # nothing above T_max
-    assert (
-        high_temp_cut_regrid(pco, Tco, T_max=3500.0, P_min=1e6, P_t=1e-2, nz=nz) is None
-    )
-
-
-def test_regrid_noop_when_no_deep_layers():
-    from vulcan_jax.atm_setup import high_temp_cut_regrid
-
-    nz = 80
-    pco = make_pco(1e5, 1e-2, nz)  # P_b below P_min: no eligible deep layers
-    Tco = np.full(nz, 4000.0)
-    assert (
-        high_temp_cut_regrid(pco, Tco, T_max=3500.0, P_min=1e6, P_t=1e-2, nz=nz) is None
-    )
+    pco = make_pco(P_b, 1e-2, nz)
+    Tco = np.full(nz, T)
+    assert high_temp_cut_regrid(pco, Tco, T_max=3500.0, P_min=1e6, P_t=1e-2, nz=nz) is None
 
 
 # End-to-end through load_TPK (file mode) — deep column drops below T_max

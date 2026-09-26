@@ -33,6 +33,8 @@ def _pin_cfg():
         use_moldiff=True,
         nz=40,
     )
+
+
 def _run(vc, *, use_vm, hybrid, count_max):
     import vulcan_jax.outer_loop as outer_loop
     import vulcan_jax.legacy_io as op
@@ -48,19 +50,14 @@ def _run(vc, *, use_vm, hybrid, count_max):
     return integ._runner(init_state, atm_static)
 
 
-def test_central_run_stays_use_vm_zero():
-    """use_vm_mol=False: hybrid_use_vm is pinned to 0.0 (central diff)."""
-    vc = _pin_cfg()
-    final = _run(vc, use_vm=False, hybrid=False, count_max=30)
-    assert float(final.hybrid_use_vm) == 0.0
-    assert np.all(np.isfinite(np.asarray(final.y)))
-
-
-def test_pure_upwind_stays_use_vm_one():
-    """use_vm_mol=True, hybrid=False: hybrid_use_vm stays 1.0 (never flips)."""
-    vc = _pin_cfg()
-    final = _run(vc, use_vm=True, hybrid=False, count_max=30)
-    assert float(final.hybrid_use_vm) == 1.0
+@pytest.mark.parametrize(
+    "use_vm, expected", [(False, 0.0), (True, 1.0)], ids=["central", "pure_upwind"]
+)
+def test_non_hybrid_run_never_flips(use_vm, expected):
+    """Without the hybrid, hybrid_use_vm stays at its scheme's value (0.0
+    central, 1.0 upwind)."""
+    final = _run(_pin_cfg(), use_vm=use_vm, hybrid=False, count_max=30)
+    assert float(final.hybrid_use_vm) == expected
     assert np.all(np.isfinite(np.asarray(final.y)))
 
 

@@ -81,36 +81,42 @@ def test_conserved_null_basis_annihilates_atom_vectors():
         assert np.linalg.norm(proj_c) / np.linalg.norm(c_e) < 1e-12
 
 
-def test_conserved_null_basis_requires_populated_columns():
-    """An all-zero compo (no atoms) is a clear error, not a silent empty solve."""
-    y_star = jnp.ones((3, 2))
-    compo = jnp.zeros((2, 4))
-    dz = jnp.ones((3,))
-    with pytest.raises(ValueError, match="no populated atom columns"):
-        _conserved_null_basis(y_star, compo, dz)
+def _no_atoms():
+    """An all-zero compo."""
+    return jnp.ones((3, 2)), jnp.zeros((2, 4)), jnp.ones((3,))
 
 
-def test_conserved_null_basis_rejects_rank_deficiency():
-    """Linearly dependent atom columns fail fast instead of silently deflating
-    an arbitrary (non-null) direction from the unpivoted QR."""
+def _rank_deficient():
+    """Two identical atom columns: the c_e stack is rank 1."""
     rng = np.random.default_rng(3)
     nz, ni = 4, 3
     y_star = jnp.asarray(rng.uniform(1.0, 5.0, size=(nz, ni)))
     dz = jnp.asarray(rng.uniform(0.5, 2.0, size=nz))
-    # Two identical atom columns -> the c_e stack is rank 1.
     col = np.array([1.0, 2.0, 0.0])
-    compo = jnp.asarray(np.stack([col, col], axis=1))
-    with pytest.raises(ValueError, match="rank-deficient"):
-        _conserved_null_basis(y_star, compo, dz)
+    return y_star, jnp.asarray(np.stack([col, col], axis=1)), dz
 
 
-def test_conserved_null_basis_rejects_zero_column():
-    """An atom whose every carrier has y* == 0 is degenerate -> hard error."""
+def _zero_column():
+    """Atom 1 lives only in species 1, whose y* is 0 everywhere."""
     y_star = jnp.asarray(np.array([[1.0, 0.0], [2.0, 0.0], [1.0, 0.0]]))
-    dz = jnp.ones((3,))
-    compo = jnp.asarray(np.array([[1.0, 0.0], [0.0, 1.0]]))  # atom 1 only in sp 1
-    with pytest.raises(ValueError, match="all-zero"):
-        _conserved_null_basis(y_star, compo, dz)
+    compo = jnp.asarray(np.array([[1.0, 0.0], [0.0, 1.0]]))
+    return y_star, compo, jnp.ones((3,))
+
+
+@pytest.mark.parametrize(
+    "inputs, match",
+    [
+        (_no_atoms, "no populated atom columns"),
+        (_rank_deficient, "rank-deficient"),
+        (_zero_column, "all-zero"),
+    ],
+    ids=["no_atoms", "rank_deficient", "zero_column"],
+)
+def test_conserved_null_basis_refuses_degenerate_columns(inputs, match):
+    """Degenerate atom columns raise instead of deflating an arbitrary
+    (non-null) direction from the unpivoted QR."""
+    with pytest.raises(ValueError, match=match):
+        _conserved_null_basis(*inputs())
 
 
 def test_deflation_projector_idempotent():

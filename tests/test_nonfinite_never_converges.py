@@ -46,47 +46,26 @@ def test_healthy_unconverged_state_is_not_converged():
     assert longdy > 0.01, f"expected a clearly-unconverged score, got {longdy}"
 
 
-def test_single_nan_cell_cannot_improve_the_score():
-    """Poisoning the one cell carrying the signal must not erase it."""
+def _poisoned(case, y, ymix):
+    """`(y, ymix)` with the non-finite cells `case` names."""
+    if case in ("nan_signal_cell", "all_nan"):
+        y = y.at[1, 2].set(jnp.nan) if case == "nan_signal_cell" else jnp.full(y.shape, jnp.nan)
+        return y, y / jnp.sum(y, axis=1, keepdims=True)
+    if case == "nan_ymix_only":
+        return y, ymix.at[0, 0].set(jnp.nan)
+    return y.at[0, 0].set(jnp.inf if case == "pos_inf" else -jnp.inf), ymix
+
+
+@pytest.mark.parametrize(
+    "case", ["nan_signal_cell", "all_nan", "pos_inf", "neg_inf", "nan_ymix_only"]
+)
+def test_nonfinite_state_is_never_converged(case):
+    """Any non-finite y or ymix cell forces longdy = +inf, so neither
+    convergence branch can admit it; a NaN on the one signal-carrying cell
+    must not erase the signal."""
     y, ymix, y_old, n_0 = _mk()
-    before = float(_longdy(y, ymix, y_old, n_0))
-    y_bad = y.at[1, 2].set(jnp.nan)
-    ymix_bad = y_bad / jnp.sum(y_bad, axis=1, keepdims=True)
-    after = float(_longdy(y_bad, ymix_bad, y_old, n_0))
-    assert after == np.inf, (
-        f"a NaN cell must force longdy=inf; got {after} (healthy score was {before})"
-    )
-    assert not (after < before), "NaN must never improve the convergence score"
-
-
-def test_all_nan_state_is_never_converged():
-    """The headline case: an entirely poisoned state must not report success."""
-    y, ymix, y_old, n_0 = _mk()
-    nz, ni = y.shape
-    y_nan = jnp.full((nz, ni), jnp.nan)
-    ymix_nan = y_nan / jnp.sum(y_nan, axis=1, keepdims=True)
-    longdy = float(_longdy(y_nan, ymix_nan, y_old, n_0))
-    assert longdy == np.inf, f"all-NaN state scored longdy={longdy}"
-
-    # Both branches of outer_loop._convergence_ok must stay shut.
-    yconv_cri, yconv_min = 0.01, 0.1
-    assert not (longdy < yconv_cri), "tight convergence branch admitted a NaN state"
-    assert not (longdy < yconv_min), "loose convergence branch admitted a NaN state"
-
-
-def test_inf_state_is_never_converged():
-    """+/-inf must be caught by the same guard, not just NaN."""
-    y, ymix, y_old, n_0 = _mk()
-    for bad in (jnp.inf, -jnp.inf):
-        longdy = float(_longdy(y.at[0, 0].set(bad), ymix, y_old, n_0))
-        assert longdy == np.inf, f"y={bad} gave longdy={longdy}"
-
-
-def test_nonfinite_ymix_alone_is_caught():
-    """A finite y with a poisoned ymix must also be refused."""
-    y, ymix, y_old, n_0 = _mk()
-    longdy = float(_longdy(y, ymix.at[0, 0].set(jnp.nan), y_old, n_0))
-    assert longdy == np.inf, f"NaN in ymix alone gave longdy={longdy}"
+    longdy = float(_longdy(*_poisoned(case, y, ymix), y_old, n_0))
+    assert longdy == np.inf, f"{case}: longdy={longdy}"
 
 
 def _delta(sol, delta_arr, ymix_old, *, atol=1e-2, mtol=1e-22):
