@@ -25,7 +25,6 @@ Recipe: `examples/grad_reverse_example.py`.
 
 from __future__ import annotations
 
-import logging
 import warnings
 from collections.abc import Callable, Sequence
 from typing import Literal, NamedTuple, Optional
@@ -43,8 +42,6 @@ from .conden import (
 )
 from .jax_step import AtmStatic, jax_ros2_step
 from .phy_const import UNDERFLOW_DENOM as _UNDERFLOW_DENOM
-
-logger = logging.getLogger(__name__)
 
 
 # --- Solver-map / LGMRES knobs (adjoint-only constants) ---
@@ -1890,8 +1887,8 @@ def audit_adjoint_scope(
     ok = all(f["severity"] != "error" for f in findings)
 
     if print_report:
-        logger.info("audit_adjoint_scope report")
-        logger.info(
+        print("audit_adjoint_scope report")
+        print(
             f"  ok={ok}  max_rel_defect={max_rel_defect:.3e}  "
             f"fp_err_global={fp_err_global:.3e}"
             + (
@@ -1901,11 +1898,11 @@ def audit_adjoint_scope(
             )
         )
         for f in findings:
-            logger.info(f"  [{f['severity'].upper():7s}] {f['code']}: {f['message']}")
+            print(f"  [{f['severity'].upper():7s}] {f['code']}: {f['message']}")
         if worst_cells:
-            logger.info("  worst fixed-point-defect cells (rel |G(y*)-y*|/y*):")
+            print("  worst fixed-point-defect cells (rel |G(y*)-y*|/y*):")
             for c in worst_cells:
-                logger.info(
+                print(
                     f"    {c['species']:>12s}  layer {c['layer']:3d}  "
                     f"defect {c['rel_defect']:.3e}  ymix {c['ymix']:.3e}"
                 )
