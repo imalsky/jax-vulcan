@@ -16,6 +16,7 @@ from pathlib import Path
 
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from _helpers import relerr
 from vulcan_jax.phy_const import UNDERFLOW_DENOM
 
@@ -38,8 +39,7 @@ def main() -> int:
     vulcan_cfg = default_config()
 
     if not vulcan_cfg.use_photo:
-        print("SKIP: vulcan_cfg.use_photo=False; nothing to validate.")
-        return 0
+        pytest.skip("use_photo=False: no photo branch to validate")
 
     import vulcan_jax.legacy_io as op
     import vulcan_jax.op_jax as op_jax

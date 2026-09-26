@@ -16,6 +16,7 @@ import warnings
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -31,8 +32,7 @@ def main() -> int:
 
     species = list(chem_funs.spec_list)
     if "H2" not in species or "He" not in species:
-        print("SKIP: H2 or He not in network — use_fix_H2He requires both.")
-        return 0
+        pytest.skip("use_fix_H2He needs H2 and He in the network")
 
     vulcan_cfg.use_fix_H2He = True
     vulcan_cfg.count_max = 5

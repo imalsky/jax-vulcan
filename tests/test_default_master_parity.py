@@ -316,41 +316,17 @@ print("JAX_OK")
 """
 
 
-def _master_python() -> str:
-    """Return a Python interpreter that can run master's SymPy codegen."""
-    probe = subprocess.run(
-        [sys.executable, "-c", "import sympy"],
-        capture_output=True,
-        text=True,
-        timeout=15.0,
-    )
-    if probe.returncode == 0:
-        return sys.executable
-    candidate = Path("/opt/homebrew/Caskroom/miniforge/base/bin/python")
-    if candidate.exists():
-        probe = subprocess.run(
-            [str(candidate), "-c", "import sympy"],
-            capture_output=True,
-            text=True,
-            timeout=15.0,
-        )
-        if probe.returncode == 0:
-            return str(candidate)
-    return sys.executable
-
-
 def _run_script(
     script: str,
     args: list[Path | int],
     *,
-    python: str | None = None,
     timeout: float = 600.0,
 ) -> subprocess.CompletedProcess[str]:
     """Run a script string in a subprocess with PYTHONHASHSEED=0: master's
     matched-step trajectory depends on set order and is not reproducible
     without it (notes §2.9)."""
     return subprocess.run(
-        [python or sys.executable, "-c", script, *map(str, args)],
+        [sys.executable, "-c", script, *map(str, args)],
         capture_output=True,
         text=True,
         timeout=timeout,
@@ -430,7 +406,6 @@ def test_default_hd189_preloop_and_matched_steps_match_master(
                 update_frq,
                 ",".join(diff_esc),
             ],
-            python=_master_python(),
             timeout=900.0,
         )
         assert master_res.returncode == 0, (
@@ -743,7 +718,7 @@ def test_conden_fix_species_pin_matches_master() -> None:
 
         master_res = _run_script(
             _CONDEN_MASTER_SCRIPT % fmt, [master_root, master_npz],
-            python=_master_python(), timeout=900.0,
+            timeout=900.0,
         )
         assert master_res.returncode == 0 and "MASTER_OK" in master_res.stdout, (
             f"master subprocess failed {master_res.returncode}\n"
