@@ -64,7 +64,7 @@ from vulcan_jax.phy_const import Navo, kb
 # transcription of op.diffdf (central) / op.diffdf_vm (upwind), validated
 # against VULCAN-master to <1e-5 in tests/test_diffusion_variants.py.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
-import diffusion_numpy_ref as diffref  # noqa: E402
+import diffusion_numpy_ref as diffref
 
 R_GAS = Navo * kb  # ideal-gas constant, erg mol^-1 K^-1 (= 8.314e7)
 

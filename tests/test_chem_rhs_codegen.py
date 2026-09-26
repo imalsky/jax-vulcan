@@ -23,8 +23,8 @@ ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
-from _helpers import atom_count_matrix  # noqa: E402
-from oracle import oracle_dir_or_sentinel  # noqa: E402
+from _helpers import atom_count_matrix
+from oracle import oracle_dir_or_sentinel
 
 # The parent verifies the pin and passes a temporary copy; the per-test
 # is_dir() skips below handle an unset oracle.

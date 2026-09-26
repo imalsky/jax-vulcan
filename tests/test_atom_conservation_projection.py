@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
-from _helpers import atom_count_matrix  # noqa: E402
+from _helpers import atom_count_matrix
 
 _ATOMS = ("H", "O", "C", "N")
 _RESERVOIRS = ("H2", "H2O", "CO", "N2")

@@ -24,8 +24,8 @@ import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
-from _helpers import relerr  # noqa: E402
-from oracle import oracle_dir_or_sentinel  # noqa: E402
+from _helpers import relerr
+from oracle import oracle_dir_or_sentinel
 
 # The parent verifies the pin and passes a temporary copy; the per-test
 # is_dir() skips below handle an unset oracle.

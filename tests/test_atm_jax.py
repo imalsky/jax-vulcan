@@ -24,7 +24,7 @@ import numpy as np
 
 jax.config.update("jax_enable_x64", True)
 
-from vulcan_jax.phy_const import UNDERFLOW_DENOM  # noqa: E402
+from vulcan_jax.phy_const import UNDERFLOW_DENOM
 
 RTOL = 1e-12  # two builds of the same quantity agree to roundoff
 FD_RTOL = 1e-5  # forward-mode tangent vs a central difference

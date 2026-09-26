@@ -35,7 +35,7 @@ def main() -> int:
 
     from vulcan_jax.config import default_config
 
-    vulcan_cfg = default_config()  # noqa
+    vulcan_cfg = default_config()
     import store, op  # noqa
     from vulcan_jax.atm_setup import Atm
 

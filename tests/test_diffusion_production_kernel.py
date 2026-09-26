@@ -11,7 +11,6 @@ Pins, for the default 'gravity' mode (and 'vm' mode below):
 from __future__ import annotations
 
 import os
-import sys
 import warnings
 from pathlib import Path
 
@@ -19,7 +18,6 @@ import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
-sys.path.insert(0, str(Path(__file__).resolve().parent))
 warnings.filterwarnings("ignore")
 
 COEF_RTOL = 1e-11  # C_mol FP-ordering noise reaches ~2e-12; eddy terms ~5e-16
