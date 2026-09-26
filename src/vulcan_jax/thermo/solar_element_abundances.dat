@@ -7,7 +7,7 @@
 # HD209/W39b override network elements other than H (use_solar=false); helium
 # still comes from this file for their shipped atom lists.
 #
-# Keep the rows in FastChem's slot order (mass_action_constant.cpp:379-399):
+# Keep the rows in FastChem's slot order (mass_action_constant.cpp:380-400):
 #   C=0 H=1 He=2 N=3 O=4 P=5 S=6 Si=7 Ti=8 V=9 Cl=10 K=11 Na=12 Mg=13 F=14
 #   Ca=15 Fe=16 e-=17
 # FastChem fills the slots in file row order (init_read_files.cpp:204), so a

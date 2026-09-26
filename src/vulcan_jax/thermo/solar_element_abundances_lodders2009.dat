@@ -11,7 +11,7 @@
 # reorder (no_vm@8970337, build_atm.py:94) does not change this: build_atm.py
 # uses fc_list only as a membership test (:114) and writes rows in file order.
 #
-# Keep the rows in FastChem's slot order (mass_action_constant.cpp:379-399):
+# Keep the rows in FastChem's slot order (mass_action_constant.cpp:380-400):
 #   C=0 H=1 He=2 N=3 O=4 P=5 S=6 Si=7 Ti=8 V=9 Cl=10 K=11 Na=12 Mg=13 F=14
 #   Ca=15 Fe=16 e-=17
 # VULCAN-JAX reads rows by symbol. The order matters when tests/oracle.py stages

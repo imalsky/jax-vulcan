@@ -94,7 +94,7 @@ def test_every_supported_input_exists_with_its_recorded_hash():
             f"{spec['sha256'][:16]}...)")
 
 
-# FastChem's element slots, hard-coded in mass_action_constant.cpp:379-399
+# FastChem's element slots, hard-coded in mass_action_constant.cpp:380-400
 # (exoclime@80f75b9) and filled in file row order (init_read_files.cpp:204).
 FASTCHEM_SLOT_ORDER = ["C", "H", "He", "N", "O", "P", "S", "Si", "Ti", "V",
                        "Cl", "K", "Na", "Mg", "F", "Ca", "Fe", "e-"]

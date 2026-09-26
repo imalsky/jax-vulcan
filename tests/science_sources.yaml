@@ -138,7 +138,7 @@ supported_inputs:
       hash pin above is the whole guard. No shipped config selects it.
 
   thermo/solar_element_abundances.dat:
-    sha256: d593de700363ae7a4a24ee51383ca843fabd673db805469c29210591909e6ea0
+    sha256: 99a1668e8cd9c166910bbc26ed81f4958b82802ce62d88dde9b593ccec2d2e25
     oracle: vulcan2_fastchem_ps_order
     diverges: [fastchem_ps_order, lodders2019_rocky_suppressed]
     note: >-
@@ -151,7 +151,7 @@ supported_inputs:
       elements); the port reads rows by symbol.
 
   thermo/solar_element_abundances_lodders2009.dat:
-    sha256: 8b36e7e80b0e1ad4ab7e1aff549a9da2af2fb2bf1bb249f2b52a88a82a2a2c0c
+    sha256: 03518f1a0a07cad69524bfd11e5b55180f159e6d09b64f4e87b3a7e2c7b5cee1
     oracle: vulcan2_fastchem_ps_order
     diverges: [fastchem_ps_order]
     note: >-
