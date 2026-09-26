@@ -61,9 +61,7 @@ DEFAULT_ABUNDANCE_FILE = "thermo/solar_element_abundances.dat"
 
 def _abundance_path() -> Path:
     """The configured elemental-abundance preset file."""
-    return resolve_data_path(
-        str(getattr(_CFG, "fastchem_solar_abundance_file", DEFAULT_ABUNDANCE_FILE))
-    )
+    return resolve_data_path(str(_CFG.fastchem_solar_abundance_file))
 
 
 def _condensate_species() -> set[str]:
@@ -771,7 +769,7 @@ class InitialAbun:
         """
         atoms_jax = compute_atom_ini(jnp.asarray(data_var.y))
         atoms_np = np.asarray(atoms_jax)
-        loss_ex = list(getattr(_CFG, "loss_ex", []))
+        loss_ex = list(_CFG.loss_ex)
         # cfg.atom_list may reorder/subset composition.atom_list; look up the
         # column for each cfg atom by name in compo_array.
         for atom in self.atom_list:

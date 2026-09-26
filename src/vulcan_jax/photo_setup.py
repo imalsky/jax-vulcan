@@ -422,7 +422,7 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
     # Sorted union (alphabetical) so the dense pytree row order is invariant
     # of network reading order.
     absp_sp_list = sorted(set(photo_sp) | set(ion_sp))
-    use_ion = bool(getattr(_CFG, "use_ion", False))
+    use_ion = bool(_CFG.use_ion)
     T_cross_sp = list(_CFG.T_cross_sp or [])
     scat_sp_list = list(_CFG.scat_sp or [])
     nz = int(atm.Tco.shape[0])

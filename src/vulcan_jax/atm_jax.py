@@ -269,11 +269,11 @@ def make_physical_inputs(
     # variants upstream carries it in); mirrors make_atm_static so the two builders
     # stay field-for-field identical.
     _diff_esc_mask = np.zeros(ni, dtype=bool)
-    for sp in getattr(cfg, "diff_esc", []) or []:
+    for sp in cfg.diff_esc:
         if sp in species_list:
             _diff_esc_mask[species_list.index(sp)] = True
 
-    if bool(getattr(cfg, "use_settling", False)):
+    if bool(cfg.use_settling):
         settle_coeff = settling_coeff_array(
             cfg,
             list(species_list),
@@ -297,12 +297,10 @@ def make_physical_inputs(
         bot_flux=jnp.asarray(atm.bot_flux, dtype=jnp.float64),
         bot_vdep=jnp.asarray(atm.bot_vdep, dtype=jnp.float64),
         diff_esc_mask=jnp.asarray(_diff_esc_mask),
-        # getattr defaults mirror make_atm_static (jax_step.py) so the two
-        # builders agree on a config that omits a toggle.
-        use_moldiff=bool(getattr(cfg, "use_moldiff", True)),
-        use_vm_mol=bool(getattr(cfg, "use_vm_mol", False)),
-        use_settling=bool(getattr(cfg, "use_settling", False)),
-        use_topflux=bool(getattr(cfg, "use_topflux", False)),
-        use_botflux=bool(getattr(cfg, "use_botflux", False)),
+        use_moldiff=bool(cfg.use_moldiff),
+        use_vm_mol=bool(cfg.use_vm_mol),
+        use_settling=bool(cfg.use_settling),
+        use_topflux=bool(cfg.use_topflux),
+        use_botflux=bool(cfg.use_botflux),
     )
     return phys, spec

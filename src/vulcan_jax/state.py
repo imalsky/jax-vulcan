@@ -273,7 +273,7 @@ def load_stellar_flux(cfg) -> StellarFlux:
     Bin range is clamped to [2, 700] nm. Returns an empty payload when
     `cfg.use_photo` is False so callers can call unconditionally.
     """
-    if not bool(getattr(cfg, "use_photo", False)):
+    if not bool(cfg.use_photo):
         return StellarFlux(
             wavelength_nm=np.zeros((0,), dtype=np.float64),
             flux=np.zeros((0,), dtype=np.float64),
@@ -353,7 +353,7 @@ def pytree_from_store(var, atm) -> RunState:
 
 
 def _atom_order_for(cfg) -> tuple:
-    return tuple(a for a in cfg.atom_list if a not in getattr(cfg, "loss_ex", []))
+    return tuple(a for a in cfg.atom_list if a not in cfg.loss_ex)
 
 
 def _atom_dict_to_arr(d, atom_order) -> np.ndarray:
@@ -434,7 +434,7 @@ def runstate_from_store(var, atm, para) -> RunState:
         ),
     )
 
-    if bool(getattr(_cfg, "use_photo", False)) and hasattr(var, "tau"):
+    if bool(_cfg.use_photo) and hasattr(var, "tau"):
         nbin = int(np.asarray(var.tau).shape[1])
         prev_aflux = (
             np.asarray(var.prev_aflux)
@@ -453,7 +453,7 @@ def runstate_from_store(var, atm, para) -> RunState:
     else:
         photo_runtime = None
 
-    fix_species_cfg = list(getattr(_cfg, "fix_species", []) or [])
+    fix_species_cfg = list(_cfg.fix_species)
     if fix_species_cfg:
         fix_y_arr = np.zeros((len(fix_species_cfg), nz), dtype=np.float64)
         coldtrap = np.zeros((len(fix_species_cfg),), dtype=np.int32)
@@ -528,12 +528,9 @@ def _runmetadata_from_legacy(var, atm, para) -> RunMetadata:
     )
 
 
-def _network_path_for(cfg) -> Optional[str]:
-    """Resolved absolute path of cfg's reaction network, or None if unset."""
-    net = getattr(cfg, "network", None)
-    if net is None:
-        return None
-    return str(Path(resolve_data_path(net)).resolve())
+def _network_path_for(cfg) -> str:
+    """Resolved absolute path of cfg's reaction network."""
+    return str(Path(resolve_data_path(cfg.network)).resolve())
 
 
 def _network_topology_signature(net) -> bytes:
@@ -573,8 +570,6 @@ def _assert_network_matches_import(cfg) -> None:
     silently pair the import-time codegen RHS with mis-indexed rates.
     """
     want_path = _network_path_for(cfg)
-    if want_path is None:
-        return
     import_net = chem_funs._NETWORK
     have_path = str(Path(import_net.network_path).resolve())
     if want_path == have_path:
@@ -625,16 +620,10 @@ def _assert_com_file_matches_import(cfg) -> None:
     cannot change it; without this guard a missing or different table is
     silently ignored. A same-content copy at a different path is accepted.
     """
-    cfg_com = getattr(cfg, "com_file", None)
-    if cfg_com is None:
-        return
     from . import composition as _composition
 
-    have = getattr(_composition, "COM_FILE_PATH", None)
-    if have is None:
-        return
-    have_r = str(Path(have).resolve())
-    want_r = str(Path(resolve_data_path(cfg_com)).resolve())
+    have_r = str(Path(_composition.COM_FILE_PATH).resolve())
+    want_r = str(Path(resolve_data_path(cfg.com_file)).resolve())
     if want_r == have_r:
         return
     try:
@@ -675,23 +664,10 @@ def _assert_atom_list_matches_import(cfg) -> None:
     would mix the import-time projection with cfg-time atom accounting; this
     enforces the import-frozen contract instead of running the mix silently.
     """
-    cfg_atoms = getattr(cfg, "atom_list", None)
-    if cfg_atoms is None:
-        return
     from . import jax_step as _jax_step
 
-    have = getattr(_jax_step, "IMPORT_ATOM_LIST", None)
-    if have is None:
-        # Announce the skip (skipped != passed).
-        warnings.warn(
-            "atom_list import-lock guard could not read jax_step.IMPORT_ATOM_LIST; "
-            f"the check was SKIPPED, not passed (cfg.atom_list={list(cfg_atoms)!r}). "
-            "If this run's atom_list differs from the import-time one, the "
-            "reservoir-projection tables and the cfg-time atom accounting disagree.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
-        return
+    cfg_atoms = cfg.atom_list
+    have = _jax_step.IMPORT_ATOM_LIST
     if tuple(cfg_atoms) == tuple(have):
         return
     raise ValueError(
@@ -793,9 +769,9 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
 
     atm = make_atm.f_pico(atm)
     atm = make_atm.load_TPK(atm)
-    if bool(getattr(cfg, "high_temp_cut", False)):
+    if bool(cfg.high_temp_cut):
         atm = make_atm.apply_high_temp_cut(atm)
-    if bool(getattr(cfg, "use_condense", False)):
+    if bool(cfg.use_condense):
         make_atm.sp_sat(atm)
 
     from . import runtime_validation as _rv
@@ -814,7 +790,7 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
     make_atm.BC_flux(atm)
 
     photo_static_pytree = None
-    if bool(getattr(cfg, "use_photo", False)):
+    if bool(cfg.use_photo):
         _photo_setup.populate_photo(var, atm)
         make_atm.read_sflux(var, atm)
         photo_static_pytree = _photo_setup._build_photo_static_dense(var, atm)
@@ -826,7 +802,7 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
         solver.compute_tau(var, atm)
         solver.compute_flux(var, atm)
         solver.compute_J(var, atm)
-        if bool(getattr(cfg, "use_ion", False)):
+        if bool(cfg.use_ion):
             solver.compute_Jion(var, atm)
         _rates_mod.apply_photo_remove(cfg, var, network, atm)
 
@@ -927,9 +903,9 @@ def legacy_view(rs: RunState, cfg=None):
     _cfg = default_config() if cfg is None else cfg
 
     var.var_save = _var_save_list(
-        use_photo=bool(getattr(_cfg, "use_photo", False)),
-        t_cross_sp=getattr(_cfg, "T_cross_sp", []),
-        use_ion=bool(getattr(_cfg, "use_ion", False)),
+        use_photo=bool(_cfg.use_photo),
+        t_cross_sp=_cfg.T_cross_sp,
+        use_ion=bool(_cfg.use_ion),
     )
     var.var_evol_save = ["y_time", "t_time"]
     var.y_time = []

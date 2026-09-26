@@ -278,10 +278,10 @@ def _synthesize_save_dicts(runstate, cfg, photo_static=None):
     `photo_static` defaults to `runstate.photo_static`; pass an explicit
     pytree only when the caller has a different cross-section override.
     """
-    use_photo = bool(getattr(cfg, "use_photo", False))
-    use_ion = bool(getattr(cfg, "use_ion", False))
-    use_save_evo = bool(getattr(cfg, "save_evolution", False))
-    T_cross_sp = list(getattr(cfg, "T_cross_sp", []) or [])
+    use_photo = bool(cfg.use_photo)
+    use_ion = bool(cfg.use_ion)
+    use_save_evo = bool(cfg.save_evolution)
+    T_cross_sp = list(cfg.T_cross_sp)
 
     # 1. Variable dict — mirrors the legacy var.var_save filter.
     var_save = {"species": species, "nr": nr}
@@ -524,7 +524,7 @@ class Output(object):
 
         print("total atom loss:")
         for atom in self._cfg.atom_list:
-            if atom not in getattr(self._cfg, "loss_ex", []):
+            if atom not in self._cfg.loss_ex:
                 print(atom + ": " + f"{var.atom_loss[atom]:.4e}" + " ")
 
         print("negative solution counter:")
@@ -561,7 +561,7 @@ class Output(object):
 
         print("total atom loss:")
         for atom in self._cfg.atom_list:
-            if atom not in getattr(self._cfg, "loss_ex", []):
+            if atom not in self._cfg.loss_ex:
                 print(atom + ": " + f"{var.atom_loss[atom]:.4e}" + " ")
         print("negative solution counter:")
         print(para.nega_count)

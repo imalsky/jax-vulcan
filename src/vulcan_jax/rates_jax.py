@@ -393,8 +393,8 @@ def setup_var_k(cfg, var, atm) -> Network:
             jnp.asarray(np.asarray(atm.Tco, dtype=np.float64)),
             jnp.asarray(np.asarray(atm.M, dtype=np.float64)),
             nasa9_coeffs,
-            remove_list=getattr(cfg, "remove_list", None),
-            use_lowT_caps=bool(getattr(cfg, "use_lowT_limit_rates", False)),
+            remove_list=cfg.remove_list,
+            use_lowT_caps=bool(cfg.use_lowT_limit_rates),
         ),
         dtype=np.float64,
     )

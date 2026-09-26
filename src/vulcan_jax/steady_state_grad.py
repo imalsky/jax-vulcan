@@ -296,15 +296,12 @@ def _clip_dead_mask(G, ymix_old, cfg) -> np.ndarray:
     the safe direction, since an excluded cell is one the audit stops checking.
 
     The clip is outside the body map, so where it fires the cell has no fixed
-    point and its relative defect measures the clip. Returns all-False when
-    `cfg` is None (conservative: those cells stay in the scan).
+    point and its relative defect measures the clip.
     """
     G = np.asarray(G)
-    if cfg is None:
-        return np.zeros(G.shape, dtype=bool)
-    pos_cut = float(getattr(cfg, "pos_cut", 0.0))
-    nega_cut = float(getattr(cfg, "nega_cut", -1.0))
-    mtol = float(getattr(cfg, "mtol", 1.0e-22))
+    pos_cut = float(cfg.pos_cut)
+    nega_cut = float(cfg.nega_cut)
+    mtol = float(cfg.mtol)
     dead = (G < pos_cut) & (G >= nega_cut)
     return dead | ((np.asarray(ymix_old) < mtol) & (G < 0.0))
 
@@ -1443,7 +1440,7 @@ def make_body_terms(integ, converged_state, atm_static):
             # conden no longer fires.
             fix_mask = s.fix_mask
             fix_y = s.fix_y
-        elif float(np.asarray(s.t)) >= float(getattr(cfg, "start_conden_time", 0.0)):
+        elif float(np.asarray(s.t)) >= float(cfg.start_conden_time):
             # In-window: exactly _make_conden_branch's per-lane splice.
             conden_static = cs._replace(
                 Dg_per_re=s.pv.c_Dg_per_re,
@@ -1837,8 +1834,8 @@ def audit_adjoint_scope(
     # (cm^-3) while min_ymix is a MIXING RATIO, so a cold low-density top
     # layer can sit orders inside the clip window at ymix 1e-16. Detect them
     # mechanistically from where the clip WOULD fire.
-    _pos_cut = float(getattr(cfg, "pos_cut", 0.0)) if cfg is not None else 0.0
-    _nega_cut = float(getattr(cfg, "nega_cut", -1.0)) if cfg is not None else 0.0
+    _pos_cut = float(cfg.pos_cut)
+    _nega_cut = float(cfg.nega_cut)
     clip_dead = _clip_dead_mask(G_np, ymix, cfg)
 
     mask = (y_np > 0.0) & (ymix >= min_ymix) & ~clip_dead

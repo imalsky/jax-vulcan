@@ -747,7 +747,7 @@ def compute_mol_diff(
         jnp.asarray(ms_arr, dtype=jnp.float64),
         jnp.asarray(alpha_arr, dtype=jnp.float64),
         jnp.asarray(nongas),
-        use_vm_mol=bool(getattr(cfg, "use_vm_mol", False)),
+        use_vm_mol=bool(cfg.use_vm_mol),
     )
     return {
         "Dzz": np.asarray(Dzz),
@@ -912,7 +912,7 @@ def read_bc_flux(cfg, species_list: list[str]) -> dict[str, np.ndarray]:
     # Master treats `use_fix_sp_bot` as a truthy-dict; only a literal `True`
     # (not a dict) reaches this branch, preserved verbatim. Production feeds a
     # dict, whose entries the OuterLoop pin handles.
-    if getattr(cfg, "use_fix_sp_bot", False) is True:
+    if cfg.use_fix_sp_bot is True:
         print("Using the prescribed fixed bottom mixing ratios.")
         for tokens in _parse_bc_file(cfg.bot_BC_flux_file):
             sp = tokens[0]
@@ -1059,8 +1059,8 @@ class Atm:
         T/Kzz on the re-gridded column. No-op when the deep column is already
         below ``T_max``.
         """
-        T_max = float(getattr(_CFG, "high_temp_cut_K", 3500.0))
-        P_min = float(getattr(_CFG, "high_temp_cut_P", 1e6))
+        T_max = float(_CFG.high_temp_cut_K)
+        P_min = float(_CFG.high_temp_cut_P)
         nz = int(_CFG.nz)
 
         new_pco = high_temp_cut_regrid(

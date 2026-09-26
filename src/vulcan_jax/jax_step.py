@@ -62,7 +62,7 @@ def _build_chem_projection_tables() -> tuple[
     so the solve always reduces to the invertible H/O block.
     """
     compo_names = _composition.compo.dtype.names
-    cfg_atoms = getattr(_CFG, "atom_list", ())
+    cfg_atoms = _CFG.atom_list
     pairs = tuple(
         (atom, reservoir)
         for atom, reservoir in _ATOM_RESERVOIRS
@@ -111,7 +111,7 @@ def _build_chem_projection_tables() -> tuple[
 # atom_list baked into the projection tables above; import-frozen (the tables
 # are module constants). state._assert_atom_list_matches_import fails fast if
 # a later make_config passes a different atom_list.
-IMPORT_ATOM_LIST = tuple(getattr(_CFG, "atom_list", ()))
+IMPORT_ATOM_LIST = tuple(_CFG.atom_list)
 
 
 def _project_chem_rhs(rhs: jnp.ndarray) -> jnp.ndarray:
@@ -830,14 +830,10 @@ def make_atm_static(atm, ni: int, nz: int, cfg=None) -> AtmStatic:
     """
     if cfg is None:
         cfg = default_config()
-    use_vm = bool(
-        getattr(cfg, "use_vm_mol", False) and getattr(cfg, "use_moldiff", True)
-    )
-    use_set = bool(
-        getattr(cfg, "use_settling", False) and getattr(cfg, "use_moldiff", True)
-    )
-    use_topflux = bool(getattr(cfg, "use_topflux", False))
-    use_botflux = bool(getattr(cfg, "use_botflux", False))
+    use_vm = bool(cfg.use_vm_mol and cfg.use_moldiff)
+    use_set = bool(cfg.use_settling and cfg.use_moldiff)
+    use_topflux = bool(cfg.use_topflux)
+    use_botflux = bool(cfg.use_botflux)
     gas_mask = jnp.zeros((ni,), dtype=jnp.bool_)
     gas_mask = gas_mask.at[jnp.asarray(atm.gas_indx, dtype=jnp.int32)].set(True)
     # Independent of the toggles above (see the diff_esc note at the Jacobian
@@ -848,11 +844,7 @@ def make_atm_static(atm, ni: int, nz: int, cfg=None) -> AtmStatic:
         diff_esc_np[_SPEC_LIST.index(_sp)] = True
     vm = atm.vm if use_vm else jnp.zeros((nz - 1, ni), dtype=jnp.float64)
     vs = atm.vs if use_set else jnp.zeros((nz - 1, ni), dtype=jnp.float64)
-    Dzz = (
-        atm.Dzz
-        if getattr(cfg, "use_moldiff", True)
-        else jnp.zeros((nz - 1, ni), dtype=jnp.float64)
-    )
+    Dzz = atm.Dzz if cfg.use_moldiff else jnp.zeros((nz - 1, ni), dtype=jnp.float64)
     return AtmStatic(
         Kzz=jnp.asarray(atm.Kzz),
         Dzz=jnp.asarray(Dzz),

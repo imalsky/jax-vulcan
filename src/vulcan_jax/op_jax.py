@@ -131,6 +131,6 @@ class Ros2JAX:
             print("Include molecular diffusion.")
         else:
             print("No molecular diffusion.")
-        if getattr(_CFG, "use_fix_all_bot", False):
+        if _CFG.use_fix_all_bot:
             print("Use fixed bottom BC.")
         para.solver_str = "solver"

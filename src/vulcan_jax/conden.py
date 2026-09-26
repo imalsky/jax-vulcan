@@ -125,7 +125,7 @@ def make_conden_spec(cfg, var, atm, species_idx) -> CondenSpec:
     populated when the species is in `cfg.use_relax` (their kinetics rows
     then get coeff 0.0). Host-side, cheap, no JAX arrays.
     """
-    relax_set = set(getattr(cfg, "use_relax", []) or [])
+    relax_set = set(cfg.use_relax)
     gas_names: list[str] = []
     re_idx: list[int] = []
     sp_idx: list[int] = []
@@ -174,13 +174,13 @@ def make_conden_spec(cfg, var, atm, species_idx) -> CondenSpec:
         nh3_idx = nh3_l_s_idx = 0
         nh3_m_over_rho_r2 = 0.0
 
-    fix_names = tuple(getattr(cfg, "fix_species", []) or [])
+    fix_names = tuple(cfg.fix_species)
     return CondenSpec(
         gas_names=tuple(gas_names),
         conden_re_idx=tuple(re_idx),
         conden_sp_idx=tuple(sp_idx),
         coeff_per_re=tuple(coeffs),
-        humidity=float(getattr(cfg, "humidity", 1.0)),
+        humidity=float(cfg.humidity),
         h2o_active=h2o_active,
         h2o_idx=h2o_idx,
         h2o_l_s_idx=h2o_l_s_idx,
