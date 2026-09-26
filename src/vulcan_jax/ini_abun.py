@@ -99,18 +99,6 @@ def _make_hvector(coeffs: np.ndarray):
     return hvector
 
 
-def _thermo_dir() -> Path:
-    """`thermo/` beside the network file, else the packaged one.
-
-    The same resolution `rates_jax.setup_var_k` uses for the rate build, so
-    the seed and the reverse rates read one table from one place.
-    """
-    beside = resolve_data_path(_CFG.network).parent
-    if (beside / "NASA9").exists():
-        return beside
-    return Path(__file__).resolve().parent / "thermo"
-
-
 def _build_seed_setup() -> tuple[ChemicalSetup, np.ndarray, tuple[str, ...]]:
     """Build the ExoGibbs setup for the loaded network's gas species.
 
@@ -126,7 +114,9 @@ def _build_seed_setup() -> tuple[ChemicalSetup, np.ndarray, tuple[str, ...]]:
     seed_idx = np.array(
         [i for i, sp in enumerate(species) if sp not in excluded], dtype=np.int64
     )
-    coeffs, present = gibbs.load_nasa9(tuple(species), _thermo_dir())
+    coeffs, present = gibbs.load_nasa9(
+        tuple(species), rates_jax._thermo_dir(_CFG.network)
+    )
     missing = [species[i] for i in seed_idx if not present[i]]
     if missing:
         raise RuntimeError(

@@ -28,8 +28,6 @@ from ._paths import resolve_data_path
 from .gibbs import _NASA9_BRANCH_T, CORR, load_nasa9
 from .network import Network, parse_network
 
-_RATES_ROOT = Path(__file__).resolve().parent
-
 _SPECIAL_OH_CH3 = "OH + CH3 + M -> CH3OH + M"
 
 # Upper bound on the Gibbs exponent (reac - prod) before exp() in K_eq_array.
@@ -52,6 +50,15 @@ _LOWT_CAP_CONST = (  # (rxn, T_max, k_cap)
     ("H + C2H4 + M -> C2H5 + M", 300.0, 3.7e-30),
     ("H + C2H5 + M -> C2H6 + M", 200.0, 2.49e-27),
 )
+
+
+def _thermo_dir(network_file) -> Path:
+    """`thermo/` beside the network file, else the packaged one: the rate
+    build and the equilibrium seed read one NASA-9 table from one place."""
+    beside = resolve_data_path(network_file).parent
+    if (beside / "NASA9").exists():
+        return beside
+    return Path(__file__).resolve().parent / "thermo"
 
 
 def _arrhenius(a, n, E, T):
@@ -382,10 +389,7 @@ def setup_var_k(cfg, var, atm) -> Network:
     and a view of a JAX buffer is read-only.
     """
     network = parse_network(str(resolve_data_path(cfg.network)))
-    thermo_dir = resolve_data_path(cfg.network).parent
-    if not (thermo_dir / "NASA9").exists():
-        thermo_dir = _RATES_ROOT / "thermo"
-    nasa9_coeffs, present = load_nasa9(network.species, thermo_dir)
+    nasa9_coeffs, present = load_nasa9(network.species, _thermo_dir(cfg.network))
     _assert_reversible_thermo_present(network, present)
     var.k_arr = np.array(
         build_rate_array(
