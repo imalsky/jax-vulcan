@@ -45,6 +45,7 @@ from .composition import (
     species,
     atom_list as _COMPO_ATOMS,
 )
+from .phy_const import BAR_CGS
 from .state import IniAbunOutputs
 from ._paths import resolve_data_path
 
@@ -498,7 +499,7 @@ def eq_column(pco, Tco, M) -> np.ndarray:
         )
     b = _element_vector()
     Tco = np.asarray(Tco, dtype=np.float64)
-    p_bar = np.asarray(pco, dtype=np.float64) / 1.0e6
+    p_bar = np.asarray(pco, dtype=np.float64) / BAR_CGS
     print(
         f"Equilibrium seed from {_abundance_path()}: "
         + ", ".join(

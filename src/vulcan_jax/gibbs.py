@@ -12,12 +12,11 @@ from pathlib import Path
 
 import numpy as np
 
-from .phy_const import kb
+from .phy_const import BAR_CGS, kb
 
-# Standard-state pressure, 1 bar in cgs (dyne/cm^2). `CORR * T` is the
-# (kB T / P0) factor K_eq carries per unit change in mole number.
-_P0 = 1.0e6
-CORR = kb / _P0
+# `CORR * T` is the (kB T / P0) factor K_eq carries per unit change in mole
+# number, P0 = 1 bar the standard-state pressure.
+CORR = kb / BAR_CGS
 
 # NASA-9 polynomials are fit in two temperature segments; the low-T coefficient
 # set applies below this breakpoint and the high-T set above it (NASA/TP-2002-211556).

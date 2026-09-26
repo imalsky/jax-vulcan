@@ -16,7 +16,7 @@ import jax.scipy.special as jsp_special
 import numpy as np
 
 from .config import default_config
-from .phy_const import G_grav, Navo, au, kb, r_sun
+from .phy_const import ATM_BAR, ATM_CGS, BAR_CGS, G_grav, Navo, au, kb, r_sun
 from ._paths import resolve_data_path
 from .atm_refresh import hydrostatic_step, recompute_vm_jax
 
@@ -149,9 +149,11 @@ def kzz_profile_jax(
     if kzz_prof == "const":
         return jnp.zeros_like(pico_int) + const_Kzz
     if kzz_prof == "JM16":
+        # Moses+2016 fit, build_atm.py:414 (1e-3 converts dyne/cm^2 to mbar).
         return jnp.maximum(K_deep, 1e5 * (300.0 / (pico_int * 1e-3)) ** 0.5)
     if kzz_prof == "Pfunc":
-        return jnp.maximum(K_max, K_max * (K_p_lev * 1e6 / pico_int) ** 0.4)
+        # Tsai+2020 fit, build_atm.py:417.
+        return jnp.maximum(K_max, K_max * (K_p_lev * BAR_CGS / pico_int) ** 0.4)
     raise IOError(
         f'\n"Kzz_prof"={kzz_prof!r} cannot be recongized.\n'
         f'Assign it as "file", "const", "JM16" or "Pfunc" in the config.'
@@ -497,11 +499,12 @@ def compute_mu_dz_g(
     gs = surface_gravity(cfg)
 
     # `pref_indx` anchors g(z)=gs: gas giants with P_b >= 1 bar anchor at the
-    # layer nearest 1 bar (log10 pico = 6 cgs); rocky planets at index 0.
+    # layer nearest 1 bar; rocky planets at index 0 (build_atm.py:533-535).
     pico_host = np.asarray(pico_j)
-    if (not bool(cfg.rocky)) and float(cfg.P_b) >= 1e6:
+    if (not bool(cfg.rocky)) and float(cfg.P_b) >= BAR_CGS:
         pref_indx = int(
-            min(range(nz + 1), key=lambda i: abs(np.log10(pico_host[i]) - 6.0))
+            min(range(nz + 1),
+                key=lambda i: abs(np.log10(pico_host[i]) - np.log10(BAR_CGS)))
         )
     else:
         pref_indx = 0
@@ -527,8 +530,8 @@ def compute_mu_dz_g(
     return out
 
 
-# Cloutman dynamic-viscosity polynomial (na, a, b) per atm_base.
-# CO2 is not tabulated; falls back to N2.
+# Cloutman dynamic-viscosity polynomial (na, a, b) per atm_base
+# (build_atm.py:589-597). CO2 is not tabulated; falls back to N2.
 _VISCOSITY_TABLE: Mapping[str, tuple[float, float, float]] = {
     "N2": (1.52, 1.186e-5, 86.54),
     "H2": (1.67, 1.936e-6, 2.187),
@@ -918,6 +921,15 @@ def read_bc_flux(cfg, species_list: list[str]) -> dict[str, np.ndarray]:
     return out
 
 
+# Phase breaks in the saturation fits (build_atm.py:829, :840, :856).
+_S_ALLOTROPE_BREAK_K = 413.0  # S2 and S8
+_H2S_ICE_LIQUID_K = 187.6
+# bar per cmHg. Upstream's 0.001333 (build_atm.py:857) is mmHg (C6).
+_CMHG_TO_BAR = 0.01333
+# Valid temperature range of the NASA-9 Gibbs fits (build_atm.py:618).
+_GIBBS_T_MIN_K = 200.0
+_GIBBS_T_MAX_K = 6000.0
+
 _SUPPORTED_CONDENSABLES: tuple[str, ...] = (
     "H2O",
     "NH3",
@@ -936,14 +948,15 @@ def sat_p_jax(sp: str, T: jnp.ndarray) -> jnp.ndarray:
     Single source of truth for :func:`compute_sat_p`, expressed in ``jnp`` so
     the saturation curve is differentiable w.r.t. temperature. The only
     non-smooth points are the phase-boundary kinks (ice/liquid for H2O, the
-    413 K break for S2/S8, the 187.6 K break for H2S).
+    413 K break for S2/S8, the 187.6 K break for H2S). Fits and coefficients
+    from build_atm.py:804-857.
     """
     T = jnp.asarray(T, dtype=jnp.float64)
     if sp == "H2O":
         T_C = T - 273.0
         c0, c1, c2, c3 = 6111.5, 23.036, -333.7, 279.82  # ice constants
         w0, w1, w2, w3 = 6112.1, 18.729, -227.3, 257.87  # liquid constants
-        # Murray formulae: ice for T < 0 C, liquid water for T >= 0 C.
+        # Ackerman & Marley (2001): ice for T < 0 C, liquid water for T >= 0 C.
         # CORRECTION vs upstream: op.sp_sat's `(T<0)*ice + (T>0)*water` is
         # exactly 0 at T = 273.0 K (artificial cold trap); the single `where`
         # is continuous through 0 C. See notes.md, Parity & bug guide C3.
@@ -952,22 +965,22 @@ def sat_p_jax(sp: str, T: jnp.ndarray) -> jnp.ndarray:
         return jnp.where(T_C < 0, ice, liquid)
     if sp == "NH3":
         c0, c1, c2 = 10.53, -2161.0, -86596.0
-        return jnp.exp(c0 + c1 / T + c2 / T**2) * 1e6
+        return jnp.exp(c0 + c1 / T + c2 / T**2) * BAR_CGS
     if sp == "H2SO4":
-        return jnp.exp(-10156.0 / T + 16.259) * 1.01325 * 1e6
+        return jnp.exp(-10156.0 / T + 16.259) * ATM_BAR * BAR_CGS
     if sp == "S2":
         return jnp.where(
-            T < 413,
-            jnp.exp(27.0 - 18500.0 / T) * 1e6,
-            jnp.exp(16.1 - 14000.0 / T) * 1e6,
+            T < _S_ALLOTROPE_BREAK_K,
+            jnp.exp(27.0 - 18500.0 / T) * BAR_CGS,
+            jnp.exp(16.1 - 14000.0 / T) * BAR_CGS,
         )
     if sp == "S4":
-        return 10 ** (6.0028 - 6047.5 / T) * 1.01325e6
+        return 10 ** (6.0028 - 6047.5 / T) * ATM_CGS
     if sp == "S8":
         return jnp.where(
-            T < 413,
-            jnp.exp(20.0 - 11800.0 / T) * 1e6,
-            jnp.exp(9.6 - 7510.0 / T) * 1e6,
+            T < _S_ALLOTROPE_BREAK_K,
+            jnp.exp(20.0 - 11800.0 / T) * BAR_CGS,
+            jnp.exp(9.6 - 7510.0 / T) * BAR_CGS,
         )
     if sp == "C":
         a, b, c = 3.27860e1, -8.65139e4, 4.80395e-1
@@ -976,10 +989,9 @@ def sat_p_jax(sp: str, T: jnp.ndarray) -> jnp.ndarray:
         # Giauque & Blue (1936) Antoine fits; output is in cmHg.
         ice_log10 = -1329.0 / T + 9.28588 - 0.0051263 * T
         l_log10 = -1145.0 / T + 7.94746 - 0.00322 * T
-        sat_p = 10 ** jnp.where(T <= 187.6, ice_log10, l_log10)
-        # 0.01333 = cmHg -> bar factor; * 1e6 -> dyne/cm^2. Anchored by the
-        # H2S boiling point (212.8 K -> 76.1 cmHg = 1.015 bar ~ 1 atm).
-        return sat_p * 0.01333 * 1e6
+        sat_p = 10 ** jnp.where(T <= _H2S_ICE_LIQUID_K, ice_log10, l_log10)
+        # Check: the H2S boiling point, 212.8 K -> 76.1 cmHg = 1.015 bar.
+        return sat_p * _CMHG_TO_BAR * BAR_CGS
     raise IOError(
         f"No saturation vapor data for {sp}. Check `sat_p_jax` in atm_setup.py"
     )
@@ -1061,11 +1073,11 @@ class Atm:
         self.P_b = float(new_pco[0])
         print(
             "high_temp_cut: capping deep T at {:.0f} K (P >= {:.2e} bar) for "
-            "numerical stability.".format(T_max, P_min / 1e6)
+            "numerical stability.".format(T_max, P_min / BAR_CGS)
         )
         print(
             "  effective P_b {:.2e} -> {:.2e} bar (nz = {})".format(
-                old_P_b / 1e6, self.P_b / 1e6, nz
+                old_P_b / BAR_CGS, self.P_b / BAR_CGS, nz
             )
         )
 
@@ -1145,7 +1157,8 @@ class Atm:
                 rho_p=getattr(data_atm, "rho_p", {}),
                 r_p=getattr(data_atm, "r_p", {}),
             )
-        if np.any(np.logical_or(data_atm.Tco < 200, data_atm.Tco > 6000)):
+        if np.any(np.logical_or(data_atm.Tco < _GIBBS_T_MIN_K,
+                                data_atm.Tco > _GIBBS_T_MAX_K)):
             print("Temperatures exceed the valid range of Gibbs free energy.\n")
         return data_atm
 

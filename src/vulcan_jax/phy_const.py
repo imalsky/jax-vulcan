@@ -1,5 +1,5 @@
-"""Physical constants in CGS (from astropy), plus the radiative-transfer
-asymmetry factor `ag0` and one numerical floor."""
+"""Physical constants in CGS (from astropy), pressure units, the
+radiative-transfer asymmetry factor `ag0` and one numerical floor."""
 
 kb = 1.38064852e-16  # Boltzmann constant (erg/K)
 Navo = 6.02214086e23  # Avogadro's number
@@ -8,6 +8,10 @@ au = 1.49597871e13  # Astronomical unit (cm)
 r_sun = 6.957e10  # solar radius (cm)
 G_grav = 6.67430e-8  # gravitational constant (cm^3 g^-1 s^-2), astropy G.cgs
 ag0 = 0  # asymmetry factor in RT (0 = isotropic scattering)
+
+BAR_CGS = 1.0e6  # dyne/cm^2 per bar
+ATM_BAR = 1.01325  # bar per standard atmosphere
+ATM_CGS = ATM_BAR * BAR_CGS  # dyne/cm^2 per standard atmosphere (1.01325e6)
 
 # Underflow floor for `x / max(|denom|, .)` normalizations. Not a tuning
 # knob: 1e-300 is well above the float64 denormal tail (~5e-324) and below
