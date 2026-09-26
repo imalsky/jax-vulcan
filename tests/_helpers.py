@@ -43,6 +43,35 @@ def fast_cfg(**overrides):
     return cfg
 
 
+def relerr(got, ref, floor=1e-30, mask=None) -> float:
+    """Max of |got - ref| / max(|ref|, floor), over `mask` cells if given."""
+    got = np.asarray(got, dtype=np.float64)
+    ref = np.asarray(ref, dtype=np.float64)
+    rel = np.abs(got - ref) / np.maximum(np.abs(ref), floor)
+    return float(np.max(rel if mask is None else rel[mask]))
+
+
+def atom_count_matrix(net, atoms) -> np.ndarray:
+    """Species-by-atom stoichiometry of the config's com_file, shape (ni, n_atoms).
+
+    Read with an explicit encoding so species names come back as str.
+    """
+    from vulcan_jax._paths import resolve_data_path
+    from vulcan_jax.config import default_config
+
+    compo = np.genfromtxt(
+        resolve_data_path(default_config().com_file),
+        names=True,
+        dtype=None,
+        encoding=None,
+    )
+    row_by_species = {str(row["species"]): row for row in compo}
+    return np.asarray(
+        [[float(row_by_species[sp][a]) for a in atoms] for sp in net.species],
+        dtype=np.float64,
+    )
+
+
 def mass_for_gravity(g, rp):
     """Planet mass (g) that gives surface gravity `g` (cm/s^2) at radius `rp` (cm)."""
     from vulcan_jax.phy_const import G_grav

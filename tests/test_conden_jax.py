@@ -24,6 +24,8 @@ import jax
 # loosens to ~1e-7.
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
+from _helpers import relerr  # noqa: E402
+from vulcan_jax.phy_const import UNDERFLOW_DENOM  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -96,13 +98,6 @@ def _make_static(
     )
 
 
-def _relerr(ref, ours):
-    ref = np.asarray(ref)
-    ours = np.asarray(ours)
-    denom = np.maximum(np.abs(ref), 1e-300)
-    return float(np.max(np.abs(ours - ref) / denom))
-
-
 def test_update_conden_rates():
     """Scatter, sign split, and the use_relax short-circuit (coeff=0 gives
     an all-zero rate) over two condensation reactions.
@@ -141,13 +136,13 @@ def test_update_conden_rates():
         k_ref[re_idx] = np.maximum(rate, 0.0)
         k_ref[re_idx + 1] = np.maximum(-rate, 0.0)
 
-    err = _relerr(k_ref, k_jax)
+    err = relerr(k_jax, k_ref, floor=UNDERFLOW_DENOM)
 
     # Sanity: reaction 2 (coeff=0) should produce zeros at rows 4 and 5.
     zero_check = np.max(np.abs(k_jax[4])) + np.max(np.abs(k_jax[5]))
 
     # Sanity: untouched rows (0, 3, 6, 7) should equal the input.
-    untouched_err = max(_relerr(k_arr[r], k_jax[r]) for r in (0, 3, 6, 7))
+    untouched_err = max(relerr(k_jax[r], k_arr[r], floor=UNDERFLOW_DENOM) for r in (0, 3, 6, 7))
 
     assert err <= KERNEL_RTOL
     assert zero_check < 1e-30
@@ -219,8 +214,8 @@ def test_apply_h2o_relax_jax():
     ysum = np.sum(y, axis=1, keepdims=True)
     y_ref = ymix_ref * ysum
 
-    ymix_err = _relerr(ymix_ref, ymix_jax)
-    y_err = _relerr(y_ref, y_jax)
+    ymix_err = relerr(ymix_jax, ymix_ref, floor=UNDERFLOW_DENOM)
+    y_err = relerr(y_jax, y_ref, floor=UNDERFLOW_DENOM)
 
     assert ymix_err <= KERNEL_RTOL
     assert y_err <= KERNEL_RTOL
@@ -297,8 +292,8 @@ def test_apply_nh3_relax_jax():
     ysum = np.sum(y, axis=1, keepdims=True)
     y_ref = ymix_ref * ysum
 
-    ymix_err = _relerr(ymix_ref, ymix_jax)
-    y_err = _relerr(y_ref, y_jax)
+    ymix_err = relerr(ymix_jax, ymix_ref, floor=UNDERFLOW_DENOM)
+    y_err = relerr(y_jax, y_ref, floor=UNDERFLOW_DENOM)
 
     assert ymix_err <= KERNEL_RTOL
     assert y_err <= KERNEL_RTOL
@@ -453,10 +448,10 @@ def test_no_op_when_inactive():
         jnp.asarray(y), jnp.asarray(ymix), jnp.asarray(dt), st
     )
 
-    err_h2o_y = _relerr(y, np.asarray(y_h2o))
-    err_h2o_ymix = _relerr(ymix, np.asarray(ymix_h2o))
-    err_nh3_y = _relerr(y, np.asarray(y_nh3))
-    err_nh3_ymix = _relerr(ymix, np.asarray(ymix_nh3))
+    err_h2o_y = relerr(y_h2o, y, floor=UNDERFLOW_DENOM)
+    err_h2o_ymix = relerr(ymix_h2o, ymix, floor=UNDERFLOW_DENOM)
+    err_nh3_y = relerr(y_nh3, y, floor=UNDERFLOW_DENOM)
+    err_nh3_ymix = relerr(ymix_nh3, ymix, floor=UNDERFLOW_DENOM)
 
     errs = (err_h2o_y, err_h2o_ymix, err_nh3_y, err_nh3_ymix)
     assert all(e <= KERNEL_RTOL for e in errs), errs

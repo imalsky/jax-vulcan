@@ -18,6 +18,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 from _helpers import fast_cfg
+from test_vmap_while_loop import _build_integ, _max_rel_diff
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -30,7 +31,6 @@ COUNT_MAX = 30
 # their own peak, at RTOL. The chemistry agrees at the convergence scale and
 # the vacuity checks below catch a closure leak.
 RTOL = 5e-2
-YMIX_FLOOR = 1e-15
 # ymix is judged by scale, |lane - own solo| / |soloA - soloB|: a
 # closure-baked photo field makes lane 1 equal soloA (ratio ~1). Bit
 # identity depends on the XLA version (notes §1.8).
@@ -58,23 +58,6 @@ def _build_rs(vulcan_cfg, *, Tiso):
 
     vulcan_cfg.Tiso = float(Tiso)
     return RunState.with_pre_loop_setup(vulcan_cfg)
-
-
-def _build_integ():
-    import vulcan_jax.outer_loop as outer_loop
-    import vulcan_jax.legacy_io as op
-    import vulcan_jax.op_jax as op_jax
-
-    return outer_loop.OuterLoop(op_jax.Ros2JAX(), op.Output())
-
-
-def _max_rel_diff(b, r, floor=YMIX_FLOOR):
-    b = np.asarray(b, dtype=np.float64)
-    r = np.asarray(r, dtype=np.float64)
-    mask = np.abs(r) > floor
-    if not np.any(mask):
-        return 0.0
-    return float(np.max(np.abs(b[mask] - r[mask]) / np.abs(r[mask])))
 
 
 def _peak_ratio(bat, sol):

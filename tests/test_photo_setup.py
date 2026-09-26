@@ -17,6 +17,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from _gen_photo_baseline import build_state_through_read_rate
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -31,27 +32,6 @@ _REGEN_HINT = (
 )
 BIN_ATOL = 2e-14
 CROSS_ATOL = 1e-30
-
-
-def _build_state_through_read_rate():
-    """Run the pre-photo VULCAN setup and return (var, atm).
-
-    `state._Variables` / `_AtmData` are the private legacy mutable
-    containers. `photo_setup._build_photo_static_dense` reads dict attrs
-    that `legacy_io.ReadRate.read_rate` writes onto `var`, so we need the
-    legacy containers here rather than a `legacy_view(rs)` shim.
-    """
-    import vulcan_jax.legacy_io as op
-    from vulcan_jax.atm_setup import Atm
-    from vulcan_jax.state import _Variables, _AtmData
-
-    data_var = _Variables()
-    data_atm = _AtmData()
-    make_atm = Atm()
-    data_atm = make_atm.f_pico(data_atm)
-    data_atm = make_atm.load_TPK(data_atm)
-    data_var = op.ReadRate().read_rate(data_var, data_atm)
-    return data_var, data_atm
 
 
 def _check_static_against_fixture(
@@ -163,7 +143,7 @@ def test_photo_setup_matches_baseline_fixture():
 
         pytest.skip("use_photo=False; nothing to compare.")
 
-    var, atm = _build_state_through_read_rate()
+    var, atm = build_state_through_read_rate()
     static = photo_setup._build_photo_static_dense(var, atm)
     _check_static_against_fixture(
         static,
@@ -181,7 +161,7 @@ def test_photo_setup_matches_T_dep_fixture(monkeypatch):
     vulcan_cfg = default_config()
 
     monkeypatch.setattr(vulcan_cfg, "T_cross_sp", ["CO2", "H2O", "NH3"])
-    var, atm = _build_state_through_read_rate()
+    var, atm = build_state_through_read_rate()
     static = photo_setup._build_photo_static_dense(var, atm)
     _check_static_against_fixture(
         static,
@@ -201,7 +181,7 @@ def test_branch_key_order_is_deterministic():
     """
     import vulcan_jax.photo_setup as photo_setup
 
-    var, atm = _build_state_through_read_rate()
+    var, atm = build_state_through_read_rate()
     static = photo_setup._build_photo_static_dense(var, atm)
 
     for name in ("branch_keys", "branch_T_keys", "ion_branch_keys"):

@@ -23,8 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
-from vulcan_jax._paths import resolve_data_path
-
+from _helpers import atom_count_matrix  # noqa: E402
 from oracle import oracle_dir_or_sentinel  # noqa: E402
 
 # The parent verifies the pin and passes a temporary copy; the per-test
@@ -36,25 +35,6 @@ PROJECT_ROOT = ROOT.parent
 # magnitude of the terms it cancels: a few thousand ulps over hundreds of
 # terms (notes §1.8).
 _ATOM_RESIDUAL_EPS = 1.0e-12
-
-
-def _atom_count_matrix(net: object, atoms: tuple[str, ...]) -> np.ndarray:
-    """Return species-by-atom stoichiometry for `atoms`. shape: (ni, n_atoms)."""
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-
-    compo = np.genfromtxt(
-        resolve_data_path(vulcan_cfg.com_file),
-        names=True,
-        dtype=None,
-        encoding=None,
-    )
-    row_by_species = {str(row["species"]): row for row in compo}
-    return np.asarray(
-        [[float(row_by_species[sp][atom]) for atom in atoms] for sp in net.species],
-        dtype=np.float64,
-    )
 
 
 def _toy_network_for_codegen(tmp_path: Path):
@@ -186,22 +166,6 @@ def test_codegen_cache_key_changes_with_consumed_network_fields(tmp_path):
     assert key_m != key0
 
 
-def _capture_state():
-    """Return (y, M, k_arr, net) from a fresh pre-loop pipeline run."""
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-    import vulcan_jax.network as net_mod
-    from vulcan_jax.state import RunState
-
-    rs = RunState.with_pre_loop_setup(vulcan_cfg)
-    net = net_mod.parse_network(vulcan_cfg.network)
-    y = np.asarray(rs.step.y, dtype=np.float64)
-    M = np.asarray(rs.atm.M, dtype=np.float64)
-    k_arr = np.asarray(rs.rate.k, dtype=np.float64)
-    return y, M, k_arr, net
-
-
 def _hd209_repeated_final_layer_fixture() -> tuple[
     np.ndarray, np.ndarray, np.ndarray, object, tuple[str, ...], np.ndarray
 ]:
@@ -251,7 +215,7 @@ def _hd209_repeated_final_layer_fixture() -> tuple[
         if 1 <= int(i) <= net.nr:
             k_arr[int(i)] = np.asarray(vec, dtype=np.float64)[layer]
     atoms = ("H", "O", "C", "N")
-    atom_counts = _atom_count_matrix(net, atoms)
+    atom_counts = atom_count_matrix(net, atoms)
     return y, M, k_arr, net, atoms, atom_counts
 
 
@@ -324,13 +288,19 @@ def test_hd209_jacobian_projection_uses_same_reservoir_rows() -> None:
     assert float(np.max(np.abs(non_reservoir_delta))) == 0.0
 
 
-def test_codegen_matches_numpy_oracle():
+def test_codegen_matches_numpy_oracle(hd189_state):
     """Codegen RHS matches chem_rhs_numpy at 1e-5 with a per-species floor. The
     floor (1e-12 of each species' peak |dydt|) absorbs cancellation on trace
     species; 1e-5 absorbs XLA FMA fusion. The column is scaled by exp(U(-1,1))
     off equilibrium: at the EQ seed the net RHS is a small difference of large
     terms, where a per-cell relative comparison is ill-posed (notes §1.8)."""
-    y, M, k_arr, net = _capture_state()
+    import vulcan_jax.network as net_mod
+    from vulcan_jax.config import default_config
+
+    net = net_mod.parse_network(default_config().network)
+    M = np.asarray(hd189_state.atm.M, dtype=np.float64)
+    k_arr = np.asarray(hd189_state.var.k_arr, dtype=np.float64)
+    y = np.asarray(hd189_state.var.y, dtype=np.float64)
     y = y * np.exp(np.random.default_rng(0).uniform(-1.0, 1.0, y.shape))
 
     import jax.numpy as jnp

@@ -16,6 +16,8 @@ from pathlib import Path
 
 import jax.numpy as jnp
 import numpy as np
+from _helpers import relerr
+from vulcan_jax.phy_const import UNDERFLOW_DENOM
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -131,10 +133,6 @@ def main() -> int:
 
     ok = True
 
-    def _relerr(ref, ours):
-        denom = np.maximum(np.abs(ref), 1e-300)
-        return float(np.max(np.abs(ours - ref) / denom))
-
     # Regression: the in-runner photo branch must use the dynamic dz carried
     # by JaxIntegState, not the initial photo_static.dz closed over at trace
     # time. update_mu_dz changes dz during long runs, and op.compute_tau reads
@@ -147,7 +145,7 @@ def main() -> int:
         dynamic_state.dz,
         integ._photo_static.photo_data,
     )
-    dyn_dz_err = _relerr(np.asarray(tau_dynamic_ref), np.asarray(dynamic_final.tau))
+    dyn_dz_err = relerr(dynamic_final.tau, tau_dynamic_ref, floor=UNDERFLOW_DENOM)
     print(f"dynamic-dz tau relerr: {dyn_dz_err:.3e}")
     if dyn_dz_err > PHOTO_RTOL:
         print("FAIL: photo branch did not use dynamic state.dz")
@@ -161,7 +159,7 @@ def main() -> int:
         ("dflux_u", dflux_u_A, dflux_u_B),
         ("prev_aflux", prev_aflux_A, prev_aflux_B),
     ):
-        err = _relerr(A, B)
+        err = relerr(B, A, floor=UNDERFLOW_DENOM)
         print(f"{label:11s} relerr: {err:.3e}")
         if err > PHOTO_RTOL:
             print(f"FAIL: {label} mismatch")

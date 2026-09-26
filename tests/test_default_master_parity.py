@@ -24,6 +24,7 @@ import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
+from _helpers import relerr  # noqa: E402
 from oracle import oracle_dir_or_sentinel  # noqa: E402
 
 # The parent verifies the pin and passes a temporary copy; the per-test
@@ -357,16 +358,6 @@ def _run_script(
     )
 
 
-def _safe_relerr(
-    a: np.ndarray, b: np.ndarray, floor: float = 1.0e-30, mask=None
-) -> float:
-    """Return max relative error with a denominator floor, over `mask` cells."""
-    a = np.asarray(a, dtype=np.float64)
-    b = np.asarray(b, dtype=np.float64)
-    rel = np.abs(a - b) / np.maximum(np.abs(b), floor)
-    return float(np.max(rel if mask is None else rel[mask]))
-
-
 def _atom_dict(data: np.lib.npyio.NpzFile) -> dict[str, float]:
     """Return atom-loss arrays from the npz as a dict."""
     return {
@@ -481,8 +472,8 @@ def test_default_hd189_preloop_and_matched_steps_match_master(
         np.testing.assert_allclose(jax["Kzz"], master["Kzz"], rtol=1e-14, atol=0.0)
 
         sig = np.asarray(master["ymix"]) > ymix_min
-        y_relerr = _safe_relerr(jax["y"], master["y"], mask=sig)
-        ymix_relerr = _safe_relerr(jax["ymix"], master["ymix"], mask=sig)
+        y_relerr = relerr(jax["y"], master["y"], mask=sig)
+        ymix_relerr = relerr(jax["ymix"], master["ymix"], mask=sig)
         t_relerr = abs(float(jax["t"]) - float(master["t"])) / abs(float(master["t"]))
         dt_relerr = abs(float(jax["dt"]) - float(master["dt"])) / abs(
             float(master["dt"])
@@ -795,8 +786,8 @@ def test_conden_fix_species_pin_matches_master() -> None:
     col_master = np.asarray(master["y"])[:, cond]
     col_jax = y_jax[:, cond]
     scores = {
-        "y": _safe_relerr(y_jax, master["y"], mask=sig),
-        "ymix": _safe_relerr(ymix_jax, master["ymix"], mask=sig),
+        "y": relerr(y_jax, master["y"], mask=sig),
+        "ymix": relerr(ymix_jax, master["ymix"], mask=sig),
         "H2O_l_s column": abs(col_jax.sum() - col_master.sum()) / col_master.sum(),
         "t": abs(float(jax["t"]) - float(master["t"])) / float(master["t"]),
         "dt": abs(float(jax["dt"]) - float(master["dt"])) / float(master["dt"]),

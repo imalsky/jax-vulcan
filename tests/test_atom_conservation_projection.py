@@ -26,30 +26,10 @@ ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
-from vulcan_jax._paths import resolve_data_path
+from _helpers import atom_count_matrix  # noqa: E402
 
 _ATOMS = ("H", "O", "C", "N")
 _RESERVOIRS = ("H2", "H2O", "CO", "N2")
-
-
-def _atom_count_matrix(net, atoms):
-    """Species-by-atom stoichiometry, shape (ni, n_atoms). Reads with an
-    explicit encoding so species names come back as str (not numpy.bytes_)."""
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-
-    compo = np.genfromtxt(
-        resolve_data_path(vulcan_cfg.com_file),
-        names=True,
-        dtype=None,
-        encoding=None,
-    )
-    row_by_species = {str(row["species"]): row for row in compo}
-    return np.asarray(
-        [[float(row_by_species[sp][a]) for a in atoms] for sp in net.species],
-        dtype=np.float64,
-    )
 
 
 def _capture_hd189_state():
@@ -82,7 +62,7 @@ def main() -> int:
         "expected it active for HD189 (atoms H/O/C/N, reservoirs H2/H2O/CO/N2)"
     )
 
-    atom_counts = _atom_count_matrix(net, _ATOMS)
+    atom_counts = atom_count_matrix(net, _ATOMS)
     reservoir_idx = [net.species_idx[sp] for sp in _RESERVOIRS]
 
     fn = mcf.build_chem_rhs(net)  # production JIT'd codegen RHS
@@ -155,27 +135,21 @@ def test_main():
     assert main() == 0
 
 
-if __name__ == "__main__":
-    raise SystemExit(main())
-
-
-def _hd189_step_inputs():
-    """(y, k_arr, atm_static, net_jax) from the HD189 pre-loop state."""
+def _hd189_step_inputs(state):
+    """(y, k_arr, atm_static, net_jax) from the HD189 pre-loop fixture state."""
     from vulcan_jax.config import default_config
     import vulcan_jax.chem_funs as chem_funs
     import vulcan_jax.jax_step as jax_step
-    from vulcan_jax.state import RunState, legacy_view
 
     cfg = default_config()
-    rs = RunState.with_pre_loop_setup(cfg)
-    data_var, data_atm, _ = legacy_view(rs)
+    data_var, data_atm = state.var, state.atm
     y = np.asarray(data_var.y, dtype=np.float64)
     nz, ni = y.shape
     atm_static = jax_step.make_atm_static(data_atm, ni, nz, cfg=cfg)
     return y, np.asarray(data_var.k_arr, dtype=np.float64), atm_static, chem_funs._NET_JAX
 
 
-def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch):
+def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch, hd189_state):
     """Both Ros2 stage vectors satisfy `c0 a^T k - a^T T k = a^T b_tr` in every
     layer at every dt, and with transport off a step changes no layer's element
     content by more than REPAIR_ABS_FLOOR of its density (notes §1.13). The
@@ -186,7 +160,7 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch):
     import vulcan_jax.jax_step as jax_step
     from _oracles import stage_defects
 
-    y, k_arr, atm, net = _hd189_step_inputs()
+    y, k_arr, atm, net = _hd189_step_inputs(hd189_state)
     y, k_arr = jnp.asarray(y), jnp.asarray(k_arr)
     ac = jax_step._CHEM_ATOM_COUNTS
     zero = atm._replace(
@@ -217,7 +191,7 @@ def test_stage_vectors_satisfy_the_per_layer_element_identity(monkeypatch):
         assert worst < 10.0 * REPAIR_ABS_FLOOR, (dt, worst)
 
 
-def test_repair_tridiagonal_solve_is_lapack_gtsv_with_its_tangent():
+def test_repair_tridiagonal_solve_is_lapack_gtsv_with_its_tangent(hd189_state):
     """`jax_step._tridiagonal_solve`, the repair's partial-pivoting sweep, is
     LAPACK dgtsv: backward stable on the HD189 repair matrices from dt 1e4 s to
     the 1e15 s cap, within 1e-12 of `lax.linalg.tridiagonal_solve` on
@@ -231,7 +205,7 @@ def test_repair_tridiagonal_solve_is_lapack_gtsv_with_its_tangent():
     def lapack(dl, d, du, g):
         return tridiagonal_solve(dl.T, d.T, du.T, g.T[:, :, None])[:, :, 0].T
 
-    y, _, atm, _ = _hd189_step_inputs()
+    y, _, atm, _ = _hd189_step_inputs(hd189_state)
     y = jnp.asarray(y)
     ridx = js._CHEM_RESERVOIR_IDX
     A_e, B_e, C_e, A_m, B_m, C_m, _ = js._build_diff_coeffs_jax(y, atm, js.compute_diff_grav(atm))
@@ -286,3 +260,7 @@ def test_repair_tridiagonal_solve_is_lapack_gtsv_with_its_tangent():
     dl3, d3, du3 = (jnp.array(v)[:, None] for v in ((0.0, -1.0, 2.0), (2.0, 1.0, 4.0), (-2.0, -3.0, 0.0)))
     x3 = js._tridiagonal_solve(dl3, d3, du3, jnp.ones((3, 1)))
     assert bool(jnp.allclose(x3[:, 0], jnp.array([2.0, 1.5, -0.5]), rtol=0, atol=1e-15)), x3
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

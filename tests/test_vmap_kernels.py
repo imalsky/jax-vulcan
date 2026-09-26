@@ -19,6 +19,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from _helpers import relerr
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -27,12 +28,6 @@ warnings.filterwarnings("ignore")
 
 
 VMAP_RTOL = 1e-12
-
-
-def _max_relerr(a: np.ndarray, b: np.ndarray, floor: float = 1e-30) -> float:
-    a = np.asarray(a)
-    b = np.asarray(b)
-    return float(np.max(np.abs(a - b) / np.maximum(np.abs(b), floor)))
 
 
 @pytest.mark.parametrize(
@@ -72,7 +67,7 @@ def test_hd189_kernel_vmap_matches_single_calls(hd189_state, kernel) -> None:
     single = [fn(y_batch[b], *args) for b in range(batch)]
     batched = jax.vmap(fn, in_axes=(0,) + (None,) * len(args))(y_batch, *args)
     for b in range(batch):
-        rel = _max_relerr(batched[b], single[b])
+        rel = relerr(batched[b], single[b])
         assert rel < VMAP_RTOL, f"{kernel} vmap drift at batch {b}: relerr={rel:.3e}"
 
 
@@ -115,7 +110,7 @@ def test_block_thomas_diag_offdiag_vmap_consistency() -> None:
     )
 
     for b in range(BATCH):
-        rel = _max_relerr(batched[b], single[b])
+        rel = relerr(batched[b], single[b])
         assert rel < 1e-10, (
             f"block_thomas_diag_offdiag vmap drift at batch {b}: relerr={rel:.3e}"
         )

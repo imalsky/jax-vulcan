@@ -27,11 +27,10 @@ os.chdir(ROOT)
 FIXTURE_DIR = ROOT / "tests" / "data"
 
 
-def _build_state_through_read_rate():
+def build_state_through_read_rate():
     """Run the pre-photo VULCAN setup and return (var, atm).
 
-    Mirrors tests/test_photo_setup.py::_build_state_through_read_rate --
-    the legacy mutable containers are needed because
+    The legacy mutable containers are needed because
     `photo_setup._build_photo_static_dense` reads dict attrs that
     `legacy_io.ReadRate.read_rate` writes onto `var`.
     """
@@ -84,7 +83,7 @@ def main(out_dir: Path = FIXTURE_DIR) -> int:
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    var, atm = _build_state_through_read_rate()
+    var, atm = build_state_through_read_rate()
     static = photo_setup._build_photo_static_dense(var, atm)
     path = out_dir / "photo_setup_hd189_baseline.npz"
     np.savez(path, **_static_to_npz_dict(static))
@@ -93,7 +92,7 @@ def main(out_dir: Path = FIXTURE_DIR) -> int:
     old_T_cross_sp = vulcan_cfg.T_cross_sp
     try:
         vulcan_cfg.T_cross_sp = ["CO2", "H2O", "NH3"]
-        var, atm = _build_state_through_read_rate()
+        var, atm = build_state_through_read_rate()
         static = photo_setup._build_photo_static_dense(var, atm)
         path = out_dir / "photo_setup_hd189_T_dep.npz"
         np.savez(path, **_static_to_npz_dict(static))
