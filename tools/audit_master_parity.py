@@ -26,53 +26,40 @@ from typing import Any
 _GRAVITY_RTOL = 1e-9
 
 
-JAX_ONLY_DEFAULTS: dict[str, Any] = {
-    "fastchem_solar_abundance_file": "thermo/solar_element_abundances.dat",
-    "use_ini_cold_trap": False,
-    "use_sat_surfaceH2O": False,
-    "rtol_min": 0.0,
-    "rtol_max": 1.0,
-    # These must match the shipped PARITY YAMLs (default/HD189/HD209/W39b),
-    # NOT the code fallbacks (1000 / 0.75), which no config uses. The parity
-    # configs leave the adapt-rtol controller OFF but now carry vm_branch's
-    # schedule (op.py:845-848) rather than a schedule of their own, so a user
-    # who switches it on gets upstream's behaviour.
-    "adapt_rtol_dec_period": 10,
-    "adapt_rtol_inc_period": 1000,
-    "adapt_rtol_dec": 0.5,
-    "adapt_rtol_inc": 1.25,
-    "adapt_rtol_loss_mul": 2.0,
-    "adapt_rtol_inc_loss_thresh": 2e-4,
-    "batch_max_retries": 110,
-    "step_size_safety": 0.9,
-    "step_size_zero_delta_frac": 0.01,
-    "photo_switch_longdy_thresh": 1.0,
-    "photo_switch_longdydt_thresh": 1e-6,
-    "hycean_pin_time": 1e6,
-    "loss_ex": [],
-    "fastchem_newton_tol": 1e-12,
-    "fastchem_newton_max_iter": 450,
-    "use_fix_all_bot": False,
-    "use_fix_H2He": False,
-}
+# JAX-only knobs (values in default.yaml); the adapt-rtol schedule is
+# vm_branch's (op.py:845-848), with the controller off in every parity config.
+JAX_ONLY_KEYS: frozenset[str] = frozenset({
+    "fastchem_solar_abundance_file",
+    "use_ini_cold_trap",
+    "use_sat_surfaceH2O",
+    "rtol_min",
+    "rtol_max",
+    "adapt_rtol_dec_period",
+    "adapt_rtol_inc_period",
+    "adapt_rtol_dec",
+    "adapt_rtol_inc",
+    "adapt_rtol_loss_mul",
+    "adapt_rtol_inc_loss_thresh",
+    "batch_max_retries",
+    "step_size_safety",
+    "step_size_zero_delta_frac",
+    "photo_switch_longdy_thresh",
+    "photo_switch_longdydt_thresh",
+    "hycean_pin_time",
+    "loss_ex",
+    "fastchem_newton_tol",
+    "fastchem_newton_max_iter",
+    "use_fix_all_bot",
+    "use_fix_H2He",
+})
 
-# Shared config keys where VULCAN-JAX deliberately differs from master. These are
-# intentional solver/physics choices, not drift, so the audit ignores them:
-#   use_vm_mol   -- vm_branch upwind molecular diffusion; on in the VULCAN 3
-#                   preset, off in the VULCAN 2 parity configs (which match
-#                   fetched exoclime master).
-#   conver_ignore-- the parity configs ship the pinned HD189 example's `[]`
-#                   (exoclime's root vulcan_cfg.py ships ['HC3N']); the VULCAN 3
-#                   preset ships vm_branch's `['HC3N']`. Measured behaviourally
-#                   identical on HD189/HD209 (same step count, same longdy,
-#                   same controlling cell).
-#   top_BC_flux_file / bot_BC_flux_file
-#                -- master names atm/BC_top.txt and atm/BC_bot.txt, which exist
-#                   in neither tree (only the Earth/Jupiter/mars variants ship).
-#                   The parity configs leave use_topflux/use_botflux OFF, so the
-#                   keys are inert; JAX carries `null` instead of a path to a
-#                   file that is not there, and runtime_validation refuses an
-#                   unset path if the flag is ever turned on.
+# Shared keys where VULCAN-JAX intentionally differs from master:
+#   use_vm_mol    -- on in the VULCAN 3 preset, off in the VULCAN 2 parity configs.
+#   conver_ignore -- parity configs ship the pinned HD189 example's []; the V3
+#                    preset ships vm_branch's ['HC3N'] (same step count and
+#                    longdy on HD189/HD209).
+#   top/bot_BC_flux_file -- master's atm/BC_top.txt / BC_bot.txt ship in
+#                    neither tree; the flags are off, so JAX carries null.
 INTENTIONAL_JAX_DELTAS = {
     "use_vm_mol",
     "conver_ignore",
@@ -81,13 +68,9 @@ INTENTIONAL_JAX_DELTAS = {
     "dt_max",  # capped at config.DT_MAX_S = 1e15 s (C19); master derives 1e17
 }
 
-# Vendored network files where JAX intentionally diverges from master by a known,
-# documented set of reactions. The sulfur networks carry master's own CH2CN
-# typo fix (correct k0 = 1.00E-29, k_inf = 1.00E-10) that master applied to
-# NCHO but left unapplied to its sulfur files: the oracle's base SNCHO and C3
-# files ship k0 = 1.00E-20 and its DMS Tsai2024 file ships k0/k_inf swapped.
-# JAX corrects all three (notes.md, Parity & bug guide). Any OTHER differing
-# line is real drift and fails.
+# Network files carrying master's CH2CN + H + M correction (k0 1.00E-29,
+# k_inf 1.00E-10), which master applied to NCHO only (C1); any other
+# differing line fails.
 KNOWN_THERMO_DIVERGENCES: dict[str, tuple[str, ...]] = {
     # Upstream lists NH3 condensate as 16.023 g/mol; the corrected value is
     # 17.031 g/mol. Only that species row may differ in all_compose.txt.
@@ -97,8 +80,8 @@ KNOWN_THERMO_DIVERGENCES: dict[str, tuple[str, ...]] = {
     "SNCHO_DMS_photo_network_Tsai2024.txt": ("CH2CN + H + M -> CH3CN + M",),
 }
 
-# Vendored network files where the ONLY allowed drift is the leading reaction
-# INDEX. Upstream's 2025 SNCHO file numbers one row 1039, breaking the
+# Vendored network files where the only allowed drift is the leading reaction
+# index. Upstream's 2025 SNCHO file numbers one row 1039, breaking the
 # otherwise increasing odd-numbered forward sequence, and then continues at
 # 861; JAX renumbers the run so the indices stay monotonic. Every field after
 # the index must still match, so a rate change is still real drift.
@@ -106,25 +89,20 @@ KNOWN_THERMO_RENUMBERED: frozenset[str] = frozenset(
     {"SNCHO_photo_network_2025.txt"}
 )
 
-# Vendored stellar-flux files where JAX intentionally diverges from master by a
-# uniform flux rescale. Master's builder (atm/make_spectra_in_nm.py; copy in
-# tools/data_prep/) multiplied by R_star where the surface-flux conversion
-# divides, so the shipped eps Eri spectrum is low by exactly
-# R_star^4 = 0.735^4; JAX ships the corrected file
-# (notes.md, Parity & bug guide). Wavelength columns must stay identical and
-# every flux ratio must sit at the documented factor (2-sig-fig tolerance); any
-# other difference is real drift and fails.
+# eps Eri flux (C4): master's builder (atm/make_spectra_in_nm.py) multiplies
+# by R_star where it should divide, so its file is low by R_star^4; JAX ships
+# the corrected file. Wavelengths must match and every flux ratio must sit at
+# this factor within _SFLUX_RATIO_RTOL (the files' 2 significant figures).
+EPS_ERI_RSTAR_RSUN = 0.735  # upstream atm/make_spectra_in_nm.py:7
+_SFLUX_RATIO_RTOL = 1e-2
 KNOWN_SFLUX_RESCALES: dict[str, float] = {
-    "sflux-epseri.txt": 0.735**-4,
+    "sflux-epseri.txt": EPS_ERI_RSTAR_RSUN**-4,
 }
 
 UI_OUTPUT_KEYS = {"output_dir", "out_name", "save_evolution", "save_evo_frq"}
 
 IGNORED_RUNTIME_FILENAMES = {".DS_Store"}
-# `.md` is documentation, not runtime data: master's vendored trees carry
-# `thermo/README.md` + `thermo/photo_cross/README.md`, which this repo does not.
-# Without this the whole-tree symmetric fallback below would report those two
-# as `only master=` drift, which is a doc-layout difference, not a data one.
+# .md files are docs, not runtime data (master carries two thermo READMEs).
 IGNORED_RUNTIME_SUFFIXES = {".py", ".pyc", ".md"}
 
 
@@ -188,7 +166,7 @@ def _compare_cfgs(master_cfg: Path) -> list[str]:
         for key, value in vars(jax_cfg).items()
         if not key.startswith("_") and _is_data_value(value)
     }
-    ignored = UI_OUTPUT_KEYS | set(JAX_ONLY_DEFAULTS) | INTENTIONAL_JAX_DELTAS
+    ignored = UI_OUTPUT_KEYS | JAX_ONLY_KEYS | INTENTIONAL_JAX_DELTAS
 
     # Shared keys (physics + numerics) must match, except UI, JAX-only knobs, and
     # the documented intentional deltas.
@@ -214,11 +192,8 @@ def _compare_cfgs(master_cfg: Path) -> list[str]:
                     f"jax G*Mp/Rp^2={jax_gs!r}"
                 )
 
-    # Real gaps: master physics keys absent in JAX. `gs` is the intended Mp/Rp
-    # swap; `fastchem_solar_abundance_file` is a JAX-only addition; keys in
-    # config._REMOVED_KEYS were deliberately retired with a loud migration
-    # message (e.g. fix_species_time -> stop_conden_time, use_print_delta not
-    # ported), so their absence is the documented design, not drift.
+    # Master keys absent in JAX are drift, except gs (derived from Mp/Rp),
+    # the JAX-only abundance file and config._REMOVED_KEYS.
     from vulcan_jax.config import _REMOVED_KEYS
 
     missing_in_jax = sorted(
@@ -286,7 +261,7 @@ def _known_sflux_rescale_only(
 
     Wavelength fields must be byte-identical; every flux ratio jax/master must
     match ``factor`` within the 2-significant-figure rounding of the file format
-    (rtol 1e-2). Anything else is real drift and is reported.
+    (``_SFLUX_RATIO_RTOL``). Anything else is real drift and is reported.
     """
     master_lines = master_path.read_text().splitlines()
     jax_lines = jax_path.read_text().splitlines()
@@ -305,7 +280,7 @@ def _known_sflux_rescale_only(
             errors.append(f"wavelength/format drift at line {lineno}")
             continue
         m_flux, j_flux = float(m_parts[1]), float(j_parts[1])
-        if m_flux <= 0 or abs(j_flux / m_flux - factor) > 1e-2 * factor:
+        if m_flux <= 0 or abs(j_flux / m_flux - factor) > _SFLUX_RATIO_RTOL * factor:
             errors.append(
                 f"flux drift at line {lineno}: ratio {j_flux / m_flux:.6g} "
                 f"vs documented rescale {factor:.6g}"
@@ -327,12 +302,7 @@ def _load_supported_inputs() -> dict:
 
 
 def _check_supported_inputs(jax_root: Path) -> list[str]:
-    """Every manifest-listed vendored input must exist with its recorded hash.
-
-    This is the positive half of the audit: it states what the port PROMISES to
-    carry. A silent edit to a vendored network or abundance file changes results
-    everywhere and is otherwise invisible.
-    """
+    """Every manifest-listed vendored input must exist with its recorded hash."""
     errors: list[str] = []
     for rel, spec in sorted(_load_supported_inputs().items()):
         p = jax_root / rel
@@ -355,21 +325,12 @@ def _compare_runtime_data(
     jax_root: Path,
     oracle_family: str = "vulcan2_ncho",
 ) -> list[str]:
-    """Compare the SUPPORTED vendored runtime files against the oracle.
+    """Compare the vendored files in `supported_inputs` for this oracle family.
 
-    Scope is the curated `supported_inputs` list in
-    ``tests/science_sources.yaml`` -- the files this port promises to carry --
-    NOT whole-tree equality. Do not revert to whole-tree equality: no real
-    upstream can satisfy it (upstream ships network files this release
-    deliberately does not carry), so the audit would fail on file-set noise
-    before comparing anything meaningful.
-
-    Files in ``KNOWN_THERMO_DIVERGENCES`` may differ on their documented
-    reaction lines only; files in ``KNOWN_SFLUX_RESCALES`` must differ by
-    exactly their documented flux rescale; any other difference still fails.
-    A supported file the ORACLE lacks is reported (parity cannot be confirmed
-    without it), but a file present only in the oracle is NOT an error --
-    that is upstream being newer or broader than this release.
+    KNOWN_THERMO_DIVERGENCES files may differ on their listed reactions,
+    KNOWN_THERMO_RENUMBERED files on the leading index, KNOWN_SFLUX_RESCALES
+    files by their factor; anything else fails. A supported file the oracle
+    lacks is an error; a file only the oracle has is not.
     """
     errors: list[str] = []
     supported = {
@@ -403,7 +364,7 @@ def _compare_runtime_data(
                     "port claims to carry them faithfully, so parity cannot be "
                     "confirmed against this revision")
         else:
-            # No manifest: fall back to the old whole-tree symmetric check.
+            # No manifest: whole-tree symmetric check.
             only_master = master_keys - jax_keys
             only_jax = jax_keys - master_keys
             if only_master or only_jax:
@@ -443,14 +404,8 @@ def _compare_runtime_data(
     return errors
 
 
-# VULCAN-JAX-only identifiers. If any of these appear in the checkout being used
-# as the oracle, that checkout is NOT pristine upstream VULCAN: someone has
-# back-ported VULCAN-JAX code into it, and every comparison below becomes
-# circular (the audit would be checking VULCAN-JAX against itself). This has
-# happened: the sibling `../VULCAN-master/` copy was found carrying VULCAN-JAX's
-# stall detector, `conv_stall_window` knob, `wall_clock_max` exit, and
-# 13-species `conver_ignore` list, and was cited as "master parity" evidence.
-# Keep this guard.
+# VULCAN-JAX-only identifiers: an oracle containing any of them is not
+# pristine upstream, and comparing against it is circular.
 _JAX_ONLY_MARKERS = (
     "conv_stall_window",
     "longdy_seen_min",
@@ -484,9 +439,8 @@ def _check_oracle_is_pristine(master_root: Path) -> list[str]:
             errors.append(
                 f"{rel}: contains VULCAN-JAX-only identifier(s) {', '.join(hits)} "
                 "-- this checkout is not pristine upstream VULCAN, so a parity "
-                "result from it would be circular. Fetch upstream instead: "
-                "raw.githubusercontent.com/exoclime/VULCAN/master/<path> "
-                "(or shami-EEG/VULCAN vm_branch for VULCAN 3 features)."
+                "result from it would be circular. Use a clean clone at the "
+                "commit pinned in tests/science_sources.yaml."
             )
     if not (master_root / ".git").exists():
         errors.append(
@@ -503,17 +457,13 @@ def audit(
 ) -> list[str]:
     """Return all HD189 parity errors for one pinned oracle family.
 
-    The manifest deliberately assigns different inputs to different upstream
-    commits. Comparing every supported file with one checkout would mix
-    incompatible oracles and report valid files as missing.
+    The manifest pins inputs to different upstream commits, so only this
+    family's inputs are compared.
     """
-    # Our OWN vendored inputs must match the manifest first. This half needs no
-    # oracle and is always meaningful: it states what the port promises to
-    # carry, so a silent edit to a network or abundance file is caught even
-    # when no upstream checkout is available.
+    # Vendored inputs must match the manifest; this needs no oracle.
     errors: list[str] = list(_check_supported_inputs(jax_root))
 
-    # Establish that the oracle is actually upstream BEFORE comparing anything.
+    # Refuse a contaminated oracle before comparing anything.
     provenance = _check_oracle_is_pristine(master_root)
     if provenance:
         return errors + provenance
@@ -540,8 +490,7 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=None,
         help="Path to the VULCAN checkout to audit against; falls back to "
-        "$VULCAN_MASTER_DIR. There is deliberately no ../VULCAN-master "
-        "default: that tree is unversioned and carries VULCAN-JAX-only code.",
+        "$VULCAN_MASTER_DIR (a clean pinned clone).",
     )
     parser.add_argument(
         "--oracle-family",
