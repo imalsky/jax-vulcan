@@ -76,13 +76,19 @@ print(f"{wall:.2f} {ru.ru_utime:.2f} {ru.ru_stime:.2f}")
 TIMEEOF
 }
 
+# A clean clone ships FastChem as source only: build upstream's own once (tests/oracle.py).
+FASTCHEM_BIN="$OUT/fastchem"
+PYTHONPATH="$JAX_REPO/tests" "$PY" -c 'import sys, shutil, pathlib, oracle; shutil.copy2(oracle._oracle_fastchem_binary("vulcan2_ncho", pathlib.Path(sys.argv[1])), sys.argv[2])' "$MASTER" "$FASTCHEM_BIN"
+
 printf '%-8s %-12s %8s %8s %8s %9s %7s\n' PLANET CODE REAL USER SYS CPU/WALL STEPS | tee "$OUT/summary.txt"
 
 for P in "${PLANETS[@]}"; do
-  # ---------------- VULCAN 2.0, in an isolated copy so the oracle tree is never written to
+  # ---------------- VULCAN 2.0 in a disposable copy: upstream setup writes into thermo/ and
+  # fastchem_vulcan/, so nothing is linked back to the pinned clone.
   W="$OUT/master_$P"; mkdir -p "$W/output" "$W/plot"
-  for d in atm thermo fastchem_vulcan; do ln -sfn "$MASTER/$d" "$W/$d"; done
-  cp "$MASTER"/*.py "$W/" 2>/dev/null || true
+  for d in atm thermo fastchem_vulcan; do cp -R "$MASTER/$d" "$W/$d"; done
+  cp "$MASTER"/*.py "$W/"
+  [ -e "$W/fastchem_vulcan/fastchem" ] || cp "$FASTCHEM_BIN" "$W/fastchem_vulcan/fastchem"
   # declared upstream correction(s) on this scratch copy only (tests/oracle.py ORACLE_CODE_DELTAS)
   PYTHONPATH="$JAX_REPO/tests" "$PY" -c 'import sys, pathlib, oracle; print("oracle deltas:", oracle.apply_code_deltas(pathlib.Path(sys.argv[1])), file=sys.stderr)' "$W"
   "$PY" - "$W/vulcan_cfg.py" "$(net_for "$P")" <<'PYEOF'
