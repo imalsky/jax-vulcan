@@ -1,43 +1,40 @@
-// GPU twin of block_thomas_cpu.cc: the fused block-Thomas factor / solve for
-// VULCAN_JAX_SOLVER=ffi on a CUDA device. Same math, same [..., nz, ni, ni]
-// layout, same perm convention (perm[i] = source row of permuted row i, so
-// x = b[perm]), which is what lets solver_fast's transpose_solve keep running
-// the JAX sweep on these factors. One thread block per lane (a batch element):
-// the ni x ni block and inv(A'_{j-1}) live in dynamic shared memory, pivoting
-// happens in-block, and the whole nz loop runs inside the kernel, so a Ros2
-// step is one factor launch and two solve launches. The solve takes a stack of
-// right-hand sides on shared factors: one block per rhs element, the factors'
-// leading dimensions broadcasting against the rhs's (equal, or 1). A zero pivot
-// gives inf/nan like lax.linalg.lu, not an error.
-// Both kernels are latency-bound, not throughput-bound: at these shared-memory
-// sizes an SM holds one block, so the structure is built around short barrier
-// and dependency chains. The LU's pivot search reduces inside each warp with
-// __shfl_down_sync and publishes one candidate per warp, which leaves three
-// barriers per matrix column; its rank-1 update and the Schur assembly stride
-// threads over the ELEMENTS of a block, so their FMAs are independent; the
-// inverse gives each column a lane pair that splits its dot products; and the
-// solve's triangular substitutions run inside warp 0 with no block barrier at
-// all, while the other warps prefetch the next layer's LU into the second
-// shared buffer. A block is 2 ni threads rounded up to a warp (bt_threads),
-// which is what the lane pairs and the element loops spend.
-// Build: python -m vulcan_jax.solver_fast --cuda (nvcc, on the GPU host); the
-// library registers under platform="CUDA".
+// CUDA twin of block_thomas_cpu.cc (VULCAN_JAX_SOLVER=ffi on a GPU): the same
+// block-Thomas factor and solve on [..., nz, ni, ni] blocks, with the same perm
+// convention (perm[i] = source row of permuted row i). Launch: one thread block
+// per batch element, 2 ni threads rounded up to a warp, the whole nz sweep inside
+// the kernel. Shared memory: two ni x ni double blocks plus O(ni) (about 125 KB
+// at ni = 89), opted in to the device maximum. A zero pivot gives inf/nan like
+// lax.linalg.lu, not an error. Build: python -m vulcan_jax.solver_fast --cuda.
 #include <cmath>
 #include <cstdint>
 #include <initializer_list>
+#include <limits>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 
 #include <cuda_runtime.h>
 
+#include "block_thomas_common.h"
 #include "xla/ffi/api/ffi.h"
 
 namespace ffi = xla::ffi;
 
-// sum over q0 <= q < q1 of arow[q] * mcol[q * ms], in four independent
-// accumulators so the dependent shared loads overlap instead of queueing behind
-// one fp chain. The reassociation is the only accuracy change against the CPU
-// reference's left-to-right sum.
+namespace {
+
+using namespace vulcan_bt;
+
+constexpr int kWarpSize = 32;
+constexpr int kLaneMask = kWarpSize - 1;
+constexpr unsigned kFullMask = 0xffffffffu;  // every lane of a warp
+constexpr int kMaxThreads = 1024;            // CUDA limit per thread block
+constexpr int kMaxWarps = kMaxThreads / kWarpSize;
+constexpr int64_t kMaxGridX = std::numeric_limits<int32_t>::max();  // CUDA gridDim.x limit
+
+// Sum over q0 <= q < q1 of arow[q] * mcol[q * ms], in four independent
+// accumulators so the dependent shared-memory loads overlap. It differs from
+// the CPU reference's left-to-right sum by reassociation and by FMA
+// contraction (nvcc's default -fmad=true).
 __device__ inline double bt_dot4(const double* arow, const double* mcol, int ms,
                                  int q0, int q1) {
   double a0 = 0.0, a1 = 0.0, a2 = 0.0, a3 = 0.0;
@@ -52,102 +49,94 @@ __device__ inline double bt_dot4(const double* arow, const double* mcol, int ms,
   return (a0 + a1) + (a2 + a3);
 }
 
-// x <- A^{-1} b from one block's LU, by WARP 0 alone. Lane l owns the rows
-// r with r % 32 == l, so every read and write of the running vector `tmp` is
-// thread-local and the only cross-lane traffic is the broadcast of the finished
-// x_i (__shfl_sync, all 32 lanes, uniform loop bounds, no early return). No
-// block barrier inside: that is what lets the other warps prefetch the next
-// layer while this runs. `tmp` must be shared and must already hold b[perm]
-// (the caller loads it block-parallel, which is also what makes b safe to alias
-// x: b is consumed before x is written); x may be shared or global.
-// Column-oriented: once x_i is final its owner broadcasts it and every lane
-// updates its own rows. Each element takes exactly the subtractions the
-// row-oriented lu_solve in block_thomas_cpu.cc gives it, in the same order
-// forward (increasing i) and in reverse backward (decreasing i), so only the
-// back substitution differs from the CPU reference, by that reassociation.
+// x <- A^{-1} b from one block's LU, run by all lanes of warp 0 and no other
+// warp. On entry the shared vector tmp holds b[perm], visible to warp 0; x
+// (shared or global) must not overlap tmp. Lane l owns the rows r with
+// r % kWarpSize == l, so tmp is thread-local and the only cross-lane traffic is
+// the __shfl_sync broadcast of each finished x_i (uniform outer loops, no early
+// return). No block barrier: the other warps prefetch meanwhile. The forward
+// substitution applies the CPU lu_solve's subtractions in its order, the back
+// substitution in reverse order.
 __device__ void bt_lu_solve_warp0(const double* lu, int ni, double* tmp, double* x,
                                   int lane) {
   for (int i = 0; i < ni; ++i) {  // unit-lower L: tmp[i] is final
     double xi = 0.0;
-    if (lane == (i & 31)) xi = tmp[i];  // its own writes: no sync needed
-    xi = __shfl_sync(0xffffffffu, xi, i & 31);
-    for (int r = i + 1 + ((lane - i - 1) & 31); r < ni; r += 32)
+    if (lane == (i & kLaneMask)) xi = tmp[i];  // the lane's own writes
+    xi = __shfl_sync(kFullMask, xi, i & kLaneMask);
+    for (int r = i + 1 + ((lane - i - 1) & kLaneMask); r < ni; r += kWarpSize)
       tmp[r] -= lu[r * ni + i] * xi;
   }
   for (int i = ni - 1; i >= 0; --i) {  // upper U
     double xi = 0.0;
-    if (lane == (i & 31)) {
+    if (lane == (i & kLaneMask)) {
       xi = tmp[i] / lu[i * ni + i];
       x[i] = xi;
     }
-    xi = __shfl_sync(0xffffffffu, xi, i & 31);
-    for (int r = i - 1 - ((i - 1 - lane) & 31); r >= 0; r -= 32)
+    xi = __shfl_sync(kFullMask, xi, i & kLaneMask);
+    for (int r = i - 1 - ((i - 1 - lane) & kLaneMask); r >= 0; r -= kWarpSize)
       tmp[r] -= lu[r * ni + i] * xi;
   }
 }
 
-// In-place partial-pivot LU of the ni x ni shared-memory block A, by the whole
-// thread block; sperm gets lu_inplace's permutation. The pivot is the CPU
-// kernel's: rows k+1.. beat |A[k][k]| only on a strict >, so the smallest index
-// wins a tie, and a NaN candidate below row k loses (masked to -1) exactly as
-// the CPU scan's `v > best` skips it. Three barriers per column: each thread
-// scans its strided rows, the warps reduce with __shfl_down_sync and lane 0
-// publishes their candidates (barrier 1); every thread repeats the <= 32 warp
-// candidates, so the row swap and the column scale can run in one phase
-// (barrier 2) -- the signed pivot rides the reduction, and column k belongs to
-// the scale, so nothing has to re-read A after a write; then the rank-1 update
-// strides threads over the trailing block's elements (barrier 3). nt is a
-// multiple of 32 and no thread returns early, so every barrier and every
-// full-warp shuffle is reached by all threads. wval/wsv/widx hold 32 entries.
-__device__ void bt_lu_block(double* A, int32_t* sperm, double* wval, double* wsv,
-                            int32_t* widx, int ni, int tid, int nt) {
-  const int lane = tid & 31, warp = tid >> 5, nw = nt >> 5;
+// In-place partial-pivot LU of the ni x ni shared block A by the whole thread
+// block (nt a multiple of kWarpSize, at most kMaxThreads); sperm gets the CPU
+// lu_inplace permutation. Pivot rule as the CPU kernel's: a row below k wins
+// only on a strict |a| > |A[k][k]|, the smallest row wins a tie, and a NaN
+// candidate never wins. cand_abs, cand_val and cand_row hold kMaxWarps entries.
+// Entry: A visible to every thread. Barriers: one after sperm is initialised,
+// then per column (1) each warp's candidate published, (2) the row swap and the
+// multipliers written, (3) the trailing update written. Every thread reaches
+// every barrier and every full-warp shuffle. Exit: A and sperm visible.
+__device__ void bt_lu_block(double* A, int32_t* sperm, double* cand_abs, double* cand_val,
+                            int32_t* cand_row, int ni, int tid, int nt) {
+  const int lane = tid & kLaneMask, warp = tid / kWarpSize, nwarps = nt / kWarpSize;
   for (int i = tid; i < ni; i += nt) sperm[i] = i;
   __syncthreads();
   for (int k = 0; k < ni; ++k) {
     const double akk = A[k * ni + k];  // read before this column is written
-    double bv = -1.0, bs = akk;
-    int bi = ni;  // sentinel: loses every tie against a real row
+    double best_abs = -1.0, best_val = akk;
+    int best_row = ni;  // loses every tie against a real row
     for (int i = tid; i < ni; i += nt) {
       const double a = A[i * ni + k];
       const double av = fabs(a);
       double v = -1.0;
       if (i > k && av == av) v = av;  // NaN never wins
-      if (v > bv || (v == bv && i < bi)) {
-        bv = v;
-        bs = a;
-        bi = i;
+      if (v > best_abs || (v == best_abs && i < best_row)) {
+        best_abs = v;
+        best_val = a;
+        best_row = i;
       }
     }
-    for (int off = 16; off > 0; off >>= 1) {
-      const double ov = __shfl_down_sync(0xffffffffu, bv, off);
-      const double os = __shfl_down_sync(0xffffffffu, bs, off);
-      const int oi = __shfl_down_sync(0xffffffffu, bi, off);
-      if (ov > bv || (ov == bv && oi < bi)) {
-        bv = ov;
-        bs = os;
-        bi = oi;
+    for (int off = kWarpSize / 2; off > 0; off /= 2) {
+      const double other_abs = __shfl_down_sync(kFullMask, best_abs, off);
+      const double other_val = __shfl_down_sync(kFullMask, best_val, off);
+      const int other_row = __shfl_down_sync(kFullMask, best_row, off);
+      if (other_abs > best_abs || (other_abs == best_abs && other_row < best_row)) {
+        best_abs = other_abs;
+        best_val = other_val;
+        best_row = other_row;
       }
     }
     if (lane == 0) {
-      wval[warp] = bv;
-      wsv[warp] = bs;
-      widx[warp] = bi;
+      cand_abs[warp] = best_abs;
+      cand_val[warp] = best_val;
+      cand_row[warp] = best_row;
     }
-    __syncthreads();  // 1: the warp candidates are published
-    double pv = wval[0], ps = wsv[0];
-    int pi = widx[0];
-    for (int q = 1; q < nw; ++q) {
-      const double ov = wval[q], os = wsv[q];
-      const int oi = widx[q];
-      if (ov > pv || (ov == pv && oi < pi)) {
-        pv = ov;
-        ps = os;
-        pi = oi;
+    __syncthreads();  // (1)
+    // Every thread reduces the warp candidates itself, so the swap and the
+    // scale share one phase: the signed pivot rides the reduction, and column
+    // k belongs to the scale, so no thread re-reads A after a write.
+    double win_abs = cand_abs[0], win_val = cand_val[0];
+    int win_row = cand_row[0];
+    for (int q = 1; q < nwarps; ++q) {
+      if (cand_abs[q] > win_abs || (cand_abs[q] == win_abs && cand_row[q] < win_row)) {
+        win_abs = cand_abs[q];
+        win_val = cand_val[q];
+        win_row = cand_row[q];
       }
     }
-    const int p = (pv > fabs(akk)) ? pi : k;  // -1 never beats |akk|, nor does NaN
-    const double piv = (p != k) ? ps : akk;
+    const int p = (win_abs > fabs(akk)) ? win_row : k;  // -1 and NaN never beat |akk|
+    const double piv = (p != k) ? win_val : akk;
     if (p != k) {
       for (int j = tid; j < ni; j += nt) {  // full rows, L columns included
         if (j == k) continue;               // column k is the scale's below
@@ -166,223 +155,196 @@ __device__ void bt_lu_block(double* A, int32_t* sperm, double* wval, double* wsv
       const double num = (i == p) ? akk : A[i * ni + k];  // post-swap column k
       A[i * ni + k] = num / piv;
     }
-    __syncthreads();  // 2: the swap and the multipliers are visible
-    const int w = ni - k - 1;  // rank-1 update, threads over the block's elements
+    __syncthreads();  // (2)
+    const int w = ni - k - 1;  // rank-1 update, threads strided over the elements
     if (w > 0) {
-      const int dr = nt / w, dc = nt % w;
+      const int row_step = nt / w, col_step = nt % w;
       int r = tid / w, c = tid % w;
       for (int e = tid; e < w * w; e += nt) {
         A[(k + 1 + r) * ni + k + 1 + c] -=
             A[(k + 1 + r) * ni + k] * A[k * ni + k + 1 + c];
-        r += dr;
-        c += dc;
-        if (c >= w) {  // dc < w and c < w, so one correction is enough
+        r += row_step;
+        c += col_step;
+        if (c >= w) {  // col_step < w and c < w, so one correction is enough
           c -= w;
           ++r;
         }
       }
     }
-    __syncthreads();  // 3: the trailing block is updated
+    __syncthreads();  // (3)
   }
 }
 
-__global__ void bt_factor_kernel(const double* diag, const double* sup, const double* sub,
-                                 double* lu, int32_t* perm, int nz, int ni) {
+// Factors one batch element: A'_0 = D_0, A'_j = D_j - (c_j b_{j-1}^T) .*
+// inv(A'_{j-1}) with b = sup, c = sub, each A'_j LU-factored in shared memory
+// and written to lu and perm. Shared: A'_j and inv(A'_{j-1}) (ni^2 doubles
+// each), the pivot candidates (2 kMaxWarps doubles, kMaxWarps ints) and sperm
+// (ni ints). Per layer j >= 1 the barriers are: before the inverse (A'_{j-1}
+// and sperm visible), after it (inv complete), after the Schur assembly (A'_j
+// complete), then bt_lu_block's.
+__global__ void bt_factor_kernel(const double* __restrict__ diag,
+                                 const double* __restrict__ sup,
+                                 const double* __restrict__ sub, double* __restrict__ lu,
+                                 int32_t* __restrict__ perm, int nz, int ni) {
   extern __shared__ double bt_smem[];
-  const int64_t blk = static_cast<int64_t>(ni) * ni;
-  double* A = bt_smem;          // A'_j, factored in place
-  double* Minv = A + blk;       // inv(A'_{j-1})
-  double* wval = Minv + blk;    // one pivot candidate per warp: |value|,
-  double* wsv = wval + 32;      // the signed value,
-  int32_t* widx = reinterpret_cast<int32_t*>(wsv + 32);  // and the row
-  int32_t* sperm = widx + 32;
+  const int blk = ni * ni;  // fits an int: the block lives in shared memory
+  double* A = bt_smem;
+  double* Minv = A + blk;
+  double* cand_abs = Minv + blk;
+  double* cand_val = cand_abs + kMaxWarps;
+  int32_t* cand_row = reinterpret_cast<int32_t*>(cand_val + kMaxWarps);
+  int32_t* sperm = cand_row + kMaxWarps;
 
   const int tid = threadIdx.x, nt = blockDim.x;
   const int64_t b = blockIdx.x;
   const double* D = diag + b * nz * blk;
-  const double* S = sup + b * static_cast<int64_t>(nz - 1) * ni;
-  const double* C = sub + b * static_cast<int64_t>(nz - 1) * ni;
+  const double* S = sup + b * (nz - 1) * ni;
+  const double* C = sub + b * (nz - 1) * ni;
   double* L = lu + b * nz * blk;
-  int32_t* P = perm + b * static_cast<int64_t>(nz) * ni;
+  int32_t* P = perm + b * nz * ni;
 
-  for (int64_t i = tid; i < blk; i += nt) A[i] = D[i];
+  for (int i = tid; i < blk; i += nt) A[i] = D[i];
   __syncthreads();
-  bt_lu_block(A, sperm, wval, wsv, widx, ni, tid, nt);
-  for (int64_t i = tid; i < blk; i += nt) L[i] = A[i];
+  bt_lu_block(A, sperm, cand_abs, cand_val, cand_row, ni, tid, nt);
+  for (int i = tid; i < blk; i += nt) L[i] = A[i];
   for (int i = tid; i < ni; i += nt) P[i] = sperm[i];
 
-  const int lane = tid & 31;
-  const int hlf = tid & 1;    // which half of a column's dot products
-  const int npair = nt >> 1;  // columns in flight
-  const int nrd = (ni + npair - 1) / npair;
+  const int lane = tid & kLaneMask;
+  const int half = tid & 1;    // which half of a column's dot products
+  const int npair = nt / 2;    // columns in flight
+  const int num_rounds = (ni + npair - 1) / npair;
   for (int j = 1; j < nz; ++j) {
     __syncthreads();
-    // inv(A'_{j-1}) column by column, a LANE PAIR per column: lanes 2m and
-    // 2m+1 split every dot product and combine it with one __shfl_xor_sync, so
-    // the chain per row is half as long as one thread per column. Column s is
-    // the solve of A'_{j-1} x = e_s, with the rhs permuted (e_s[perm]) like
-    // lu_solve's, and the column doubling as lu_solve's tmp before it holds x
-    // (the CPU kernel's b-aliases-x case). The even lane owns the column's
+    // inv(A'_{j-1}) column by column, a lane pair per column: lanes 2m and
+    // 2m+1 split every dot product and combine it with one __shfl_xor_sync.
+    // Column s solves A'_{j-1} x = e_s with the rhs permuted (e_s[perm]) and
+    // the column itself as lu_solve's tmp. The even lane owns the column's
     // shared slot and __syncwarp publishes it to its partner. Whole pairs drop
-    // out together when s >= ni, so the mask names exactly the lanes that run.
-    for (int rd = 0; rd < nrd; ++rd) {
-      const int s = (tid >> 1) + rd * npair;
+    // out together when s >= ni, and pair_mask names the lanes that remain.
+    for (int round = 0; round < num_rounds; ++round) {
+      const int s = tid / 2 + round * npair;
       if (s >= ni) continue;
-      const int nact = ni - (s - (lane >> 1));  // active pairs in this warp
-      const unsigned msk = (nact >= 16) ? 0xffffffffu : ((1u << (2 * nact)) - 1u);
-      double* col = Minv + s;
-      if (hlf == 0)
-        for (int i = 0; i < ni; ++i) col[i * ni] = (sperm[i] == s) ? 1.0 : 0.0;
+      const int active_pairs = ni - (s - lane / 2);  // pairs of this warp with a column
+      const unsigned pair_mask =
+          (active_pairs >= kWarpSize / 2) ? kFullMask : ((1u << (2 * active_pairs)) - 1u);
+      double* inv_col = Minv + s;
+      if (half == 0)
+        for (int i = 0; i < ni; ++i) inv_col[i * ni] = (sperm[i] == s) ? 1.0 : 0.0;
       for (int i = 0; i < ni; ++i) {  // unit-lower L
-        const int mid = i >> 1;
-        double part = bt_dot4(A + i * ni, col, ni, hlf ? mid : 0, hlf ? i : mid);
-        part += __shfl_xor_sync(msk, part, 1);
-        if (hlf == 0) col[i * ni] -= part;
-        __syncwarp(msk);
+        const int mid = i / 2;
+        double part = bt_dot4(A + i * ni, inv_col, ni, half ? mid : 0, half ? i : mid);
+        part += __shfl_xor_sync(pair_mask, part, 1);
+        if (half == 0) inv_col[i * ni] -= part;
+        __syncwarp(pair_mask);
       }
       for (int i = ni - 1; i >= 0; --i) {  // upper U
-        const int mid = i + 1 + ((ni - i - 1) >> 1);
-        double part = bt_dot4(A + i * ni, col, ni, hlf ? mid : i + 1, hlf ? ni : mid);
-        part += __shfl_xor_sync(msk, part, 1);
-        if (hlf == 0) col[i * ni] = (col[i * ni] - part) / A[i * ni + i];
-        __syncwarp(msk);
+        const int mid = i + 1 + (ni - i - 1) / 2;
+        double part = bt_dot4(A + i * ni, inv_col, ni, half ? mid : i + 1, half ? ni : mid);
+        part += __shfl_xor_sync(pair_mask, part, 1);
+        if (half == 0) inv_col[i * ni] = (inv_col[i * ni] - part) / A[i * ni + i];
+        __syncwarp(pair_mask);
       }
     }
     __syncthreads();
-    // A'_j = D_j - (c b^T) .* inv(A'_{j-1}), threads over the elements: the
-    // reads of D_j and of Minv are coalesced and each thread's are independent.
+    // A'_j = D_j - (c b^T) .* inv(A'_{j-1}), threads strided over the elements
+    // so the reads of D_j and inv are coalesced and independent.
     const double* Dj = D + static_cast<int64_t>(j) * blk;
     const double* c = C + static_cast<int64_t>(j - 1) * ni;
     const double* bb = S + static_cast<int64_t>(j - 1) * ni;
-    const int dr = nt / ni, ds = nt % ni;
-    int r = tid / ni, sc = tid % ni;
-    for (int64_t e = tid; e < blk; e += nt) {
-      A[e] = Dj[e] - (c[r] * bb[sc]) * Minv[e];
-      r += dr;
-      sc += ds;
-      if (sc >= ni) {
-        sc -= ni;
+    const int row_step = nt / ni, col_step = nt % ni;
+    int r = tid / ni, col = tid % ni;
+    for (int e = tid; e < blk; e += nt) {
+      A[e] = Dj[e] - (c[r] * bb[col]) * Minv[e];
+      r += row_step;
+      col += col_step;
+      if (col >= ni) {
+        col -= ni;
         ++r;
       }
     }
     __syncthreads();
-    bt_lu_block(A, sperm, wval, wsv, widx, ni, tid, nt);
+    bt_lu_block(A, sperm, cand_abs, cand_val, cand_row, ni, tid, nt);
     double* Lj = L + static_cast<int64_t>(j) * blk;
-    for (int64_t i = tid; i < blk; i += nt) Lj[i] = A[i];
+    for (int i = tid; i < blk; i += nt) Lj[i] = A[i];
     for (int i = tid; i < ni; i += nt) P[static_cast<int64_t>(j) * ni + i] = sperm[i];
   }
 }
 
-// The solve's batch is the product of the rhs leading dimensions; each factor
-// operand's leading dimensions broadcast against them numpy-style (equal, or 1
-// -> stride 0), which is what vmap_method="expand_dims" hands the handler when
-// only the rhs is batched at a vmap level.
-static constexpr int kBtMaxBatch = 4;
-
-struct BtBcast {
-  int nd;                             // number of leading dimensions
-  int64_t dim[kBtMaxBatch];           // the rhs leading dimensions
-  int64_t stride[4][kBtMaxBatch];     // per factor operand: lu, perm, sup, sub
-};
-
-// Strides of one factor operand into `s`; `trail` is its per-element count.
-static ffi::Error bt_leading(BtBcast* s, int op, ffi::AnyBuffer::Dimensions dims,
-                             int ntrail, int64_t trail, int64_t count, const char* name) {
-  const int nb = static_cast<int>(dims.size()) - ntrail;
-  if (nb != s->nd) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument,
-                      std::string(name) + " must have the rhs's number of leading dimensions");
-  }
-  int64_t stride = 1;
-  for (int k = nb - 1; k >= 0; --k) {
-    if (dims[k] != s->dim[k] && dims[k] != 1) {
-      return ffi::Error(ffi::ErrorCode::kInvalidArgument,
-                        std::string(name) + " leading dimensions must equal the rhs's or be 1");
-    }
-    s->stride[op][k] = (dims[k] == 1) ? 0 : stride;
-    stride *= dims[k];
-  }
-  if (count != stride * trail) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument,
-                      std::string(name) + " has the wrong trailing shape");
-  }
-  return ffi::Error::Success();
+// Copies one layer's LU block into shared memory with threads t0, t0 + n0, ...
+// The caller barriers. While warp 0 substitutes, the other warps call this as
+// the prefetch, so the global latency hides behind the solve.
+__device__ inline void bt_load_block(double* A, const double* L, int blk, int t0, int n0) {
+  for (int i = t0; i < blk; i += n0) A[i] = L[i];
 }
 
-// Element of factor operand `op` that rhs batch element `b` reads.
-__device__ static int64_t bt_index(int64_t b, const BtBcast& s, int op) {
-  int64_t idx = 0;
-  for (int k = s.nd - 1; k >= 0; --k) {
-    idx += (b % s.dim[k]) * s.stride[op][k];
-    b /= s.dim[k];
-  }
-  return idx;
+__device__ inline void bt_swap(double*& a, double*& b) {
+  double* t = a;
+  a = b;
+  b = t;
 }
 
-// Stage one layer's LU block in shared memory. The caller barriers; when a
-// substitution is running this is the prefetch, issued by the warps that are
-// not in it, so the global latency hides behind the solve.
-__device__ inline void bt_load_block(double* A, const double* L, int64_t blk,
-                                     int t0, int n0) {
-  for (int64_t i = t0; i < blk; i += n0) A[i] = L[i];
-}
-
-__global__ void bt_solve_kernel(const double* lu, const int32_t* perm, const double* sup,
-                                const double* sub, const double* rhs, double* x,
+// Solves one rhs batch element on the factors bt_index maps it to: the forward
+// sweep r'_j = r_j - c_j .* (A'_{j-1}^{-1} r'_{j-1}), then k_last = A'^{-1}
+// r'_last and k_j = A'_j^{-1} (r'_j - b_j .* k_{j+1}); x holds r' until k
+// overwrites it. Warp 0 runs every substitution while the other warps prefetch
+// the next layer's LU into the second shared buffer (a one-warp block does both
+// in turn). Shared: the current and the prefetched LU (ni^2 doubles each), t
+// and u (ni each). Per layer the barriers are: u filled and the spare buffer
+// free; the substitution done and the prefetch staged; in the forward sweep
+// also r'_j complete before its permuted read.
+__global__ void bt_solve_kernel(const double* __restrict__ lu,
+                                const int32_t* __restrict__ perm,
+                                const double* __restrict__ sup,
+                                const double* __restrict__ sub,
+                                const double* __restrict__ rhs, double* __restrict__ x,
                                 int nz, int ni, BtBcast s) {
   extern __shared__ double bt_smem[];
-  const int64_t blk = static_cast<int64_t>(ni) * ni;
-  double* Ac = bt_smem;        // the layer being solved
-  double* An = Ac + blk;       // the layer being prefetched
-  double* t = An + blk;        // one layer's solution, and
-  double* u = t + ni;          // the permuted rhs the substitution consumes
+  const int blk = ni * ni;  // fits an int: the block lives in shared memory
+  double* Ac = bt_smem;     // the layer being solved
+  double* An = Ac + blk;    // the layer being prefetched
+  double* t = An + blk;     // one layer's solution, and
+  double* u = t + ni;       // the permuted rhs the substitution consumes
 
   const int tid = threadIdx.x, nt = blockDim.x;
-  const int warp = tid >> 5, lane = tid & 31;
-  const int64_t b = blockIdx.x;  // one block per rhs element; its factors are mapped
-  const int64_t bnd = static_cast<int64_t>(nz - 1) * ni;
-  const double* L = lu + bt_index(b, s, 0) * nz * blk;
-  const int32_t* P = perm + bt_index(b, s, 1) * static_cast<int64_t>(nz) * ni;
-  const double* S = sup + bt_index(b, s, 2) * bnd;
-  const double* C = sub + bt_index(b, s, 3) * bnd;
-  const double* R = rhs + b * static_cast<int64_t>(nz) * ni;
-  double* X = x + b * static_cast<int64_t>(nz) * ni;
-  // warp 0 substitutes, the rest prefetch; with a single warp it does both
-  const bool pfme = (nt == 32) || (warp != 0);
-  const int pft = (nt > 32) ? tid - 32 : tid;
-  const int pfn = (nt > 32) ? nt - 32 : nt;
+  const int warp = tid / kWarpSize, lane = tid & kLaneMask;
+  const int64_t b = blockIdx.x;
+  const int64_t band = static_cast<int64_t>(nz - 1) * ni;
+  const double* L = lu + bt_index(b, s, kBtLu) * nz * blk;
+  const int32_t* P = perm + bt_index(b, s, kBtPerm) * nz * ni;
+  const double* S = sup + bt_index(b, s, kBtSup) * band;
+  const double* C = sub + bt_index(b, s, kBtSub) * band;
+  const double* R = rhs + b * nz * ni;
+  double* X = x + b * nz * ni;
+  const bool prefetches = (nt == kWarpSize) || (warp != 0);
+  const int prefetch_tid = (nt > kWarpSize) ? tid - kWarpSize : tid;
+  const int prefetch_nt = (nt > kWarpSize) ? nt - kWarpSize : nt;
 
-  for (int i = tid; i < ni; i += nt) X[i] = R[i];  // X holds r' while sweeping
+  for (int i = tid; i < ni; i += nt) X[i] = R[i];
   bt_load_block(Ac, L, blk, tid, nt);
   __syncthreads();
   for (int i = tid; i < ni; i += nt) u[i] = X[P[i]];  // r'_0, permuted
   for (int j = 1; j < nz; ++j) {
-    __syncthreads();  // u is filled, An is free
-    if (pfme) bt_load_block(An, L + static_cast<int64_t>(j) * blk, blk, pft, pfn);
+    __syncthreads();  // u filled, An free
+    if (prefetches)
+      bt_load_block(An, L + static_cast<int64_t>(j) * blk, blk, prefetch_tid, prefetch_nt);
     if (warp == 0) bt_lu_solve_warp0(Ac, ni, u, t, lane);
-    __syncthreads();  // t holds A'_{j-1}^{-1} r'_{j-1}, An is staged
+    __syncthreads();  // t = A'_{j-1}^{-1} r'_{j-1}, An staged
     for (int i = tid; i < ni; i += nt) {
       const int64_t o = static_cast<int64_t>(j) * ni + i;
       X[o] = R[o] - C[static_cast<int64_t>(j - 1) * ni + i] * t[i];
     }
-    __syncthreads();  // r'_j is complete, so it can be read permuted
+    __syncthreads();  // r'_j complete
     const int32_t* Pj = P + static_cast<int64_t>(j) * ni;
     for (int i = tid; i < ni; i += nt) u[i] = X[static_cast<int64_t>(j) * ni + Pj[i]];
-    double* sw = Ac;
-    Ac = An;
-    An = sw;
+    bt_swap(Ac, An);
   }
-  __syncthreads();  // u is filled, An is free
-  if (pfme && nz > 1)
-    bt_load_block(An, L + static_cast<int64_t>(nz - 2) * blk, blk, pft, pfn);
-  if (warp == 0)  // b aliases x, as in the CPU sweep: u already holds it
+  __syncthreads();  // u filled, An free
+  if (prefetches && nz > 1)
+    bt_load_block(An, L + static_cast<int64_t>(nz - 2) * blk, blk, prefetch_tid, prefetch_nt);
+  if (warp == 0)  // u already holds r'_last, so x may overwrite it
     bt_lu_solve_warp0(Ac, ni, u, X + static_cast<int64_t>(nz - 1) * ni, lane);
   __syncthreads();
-  {
-    double* sw = Ac;
-    Ac = An;
-    An = sw;
-  }
+  bt_swap(Ac, An);
   for (int j = nz - 2; j >= 0; --j) {
     // r'_j - b_j .* k_{j+1}, gathered straight into permuted order
     const int32_t* Pj = P + static_cast<int64_t>(j) * ni;
@@ -390,159 +352,131 @@ __global__ void bt_solve_kernel(const double* lu, const int32_t* perm, const dou
       const int64_t o = static_cast<int64_t>(j) * ni + Pj[i];
       u[i] = X[o] - S[o] * X[o + ni];
     }
-    __syncthreads();  // u is filled, An is free
-    if (pfme && j > 0)
-      bt_load_block(An, L + static_cast<int64_t>(j - 1) * blk, blk, pft, pfn);
+    __syncthreads();  // u filled, An free
+    if (prefetches && j > 0)
+      bt_load_block(An, L + static_cast<int64_t>(j - 1) * blk, blk, prefetch_tid, prefetch_nt);
     if (warp == 0) bt_lu_solve_warp0(Ac, ni, u, X + static_cast<int64_t>(j) * ni, lane);
-    __syncthreads();  // k_j is written, An is staged
-    double* sw = Ac;
-    Ac = An;
-    An = sw;
+    __syncthreads();  // k_j written, An staged
+    bt_swap(Ac, An);
   }
 }
 
-// One warp per 16 matrix columns: the factor kernel's inverse gives every column
-// a lane pair, and both kernels' element loops and prefetches spend the threads,
-// so a block is 2 ni rounded up to a warp (192 at ni = 89).
-static int bt_threads(int ni) {
-  const int t = ((2 * ni + 31) / 32) * 32;
-  return t > 1024 ? 1024 : (t < 32 ? 32 : t);
+// Threads per block: 2 ni rounded up to a warp, so the factor's inverse gives
+// every column a lane pair in one round (192 at ni = 89).
+int bt_threads(int ni) {
+  const int t = (2 * ni + kWarpSize - 1) / kWarpSize * kWarpSize;
+  return t > kMaxThreads ? kMaxThreads : (t < kWarpSize ? kWarpSize : t);
 }
 
-// Dynamic shared memory above the 48 KB default needs an opt-in per kernel and
-// device: the factor kernel needs 2 ni^2 doubles and the solve the same for its
-// double-buffered LU, 125 KB at ni = 89 (a GH200 allows 227 KB). Both kernels
-// are opted in ONCE per device, to the device's maximum, so every launch shape
-// fits and a call runs nothing but its launch: no shape-dependent attribute two
-// differently sized calls could race on, and nothing extra while XLA records a
-// command buffer (the handlers below declare themselves compatible). A block
-// too large for the device fails here, not silently.
-static constexpr int kBtMaxDevices = 64;
+// Dynamic shared memory of each kernel; the layouts are in the kernels.
+size_t bt_factor_shmem(int ni) {
+  return (2 * static_cast<size_t>(ni) * ni + 2 * kMaxWarps) * sizeof(double) +
+         (kMaxWarps + static_cast<size_t>(ni)) * sizeof(int32_t);
+}
 
-static ffi::Error bt_shared_fits(size_t bytes) {
-  static std::once_flag once[kBtMaxDevices];
-  static int limit[kBtMaxDevices];
-  static cudaError_t status[kBtMaxDevices];
-  int dev = 0;
-  cudaError_t e = cudaGetDevice(&dev);
-  if (e == cudaSuccess && (dev < 0 || dev >= kBtMaxDevices)) e = cudaErrorInvalidDevice;
-  if (e != cudaSuccess) return ffi::Error(ffi::ErrorCode::kInternal, cudaGetErrorString(e));
-  std::call_once(once[dev], [dev] {
-    int optin = 0;
-    cudaError_t r = cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, dev);
-    limit[dev] = optin;
-    for (const void* k : {reinterpret_cast<const void*>(bt_factor_kernel),
-                          reinterpret_cast<const void*>(bt_solve_kernel)}) {
-      cudaFuncAttributes a = {};
-      if (r == cudaSuccess) r = cudaFuncGetAttributes(&a, k);
-      // the opt-in bounds static + dynamic shared memory together
-      const int dyn = optin - static_cast<int>(a.sharedSizeBytes);
-      if (r == cudaSuccess && dyn < limit[dev]) limit[dev] = dyn;
-      if (r == cudaSuccess) r = cudaFuncSetAttribute(k, cudaFuncAttributeMaxDynamicSharedMemorySize, dyn);
-    }
-    status[dev] = r;
-  });
-  if (status[dev] != cudaSuccess) {
-    return ffi::Error(ffi::ErrorCode::kInternal,
-                      std::string("block-Thomas shared-memory opt-in failed: ") +
-                          cudaGetErrorString(status[dev]));
+size_t bt_solve_shmem(int ni) {
+  return (2 * static_cast<size_t>(ni) * ni + 2 * static_cast<size_t>(ni)) * sizeof(double);
+}
+
+// Per device: the most dynamic shared memory both kernels may use, or the CUDA
+// error that stopped the opt-in.
+struct BtOptIn {
+  cudaError_t status;
+  int limit;
+};
+
+// Dynamic shared memory above the 48 KB default needs a per-kernel opt-in.
+// Both kernels are opted in once per device, to the device's maximum, so a
+// call changes no attribute: two differently sized calls cannot race on one,
+// and only the launch happens while XLA records a command buffer. XLA makes
+// the device's context current before calling a handler, so
+// cudaFuncSetAttribute acts on `device`.
+BtOptIn bt_opt_in(int device) {
+  static std::mutex mu;
+  static std::unordered_map<int, BtOptIn> done;
+  std::lock_guard<std::mutex> lock(mu);
+  const auto it = done.find(device);
+  if (it != done.end()) return it->second;
+  int optin = 0;
+  cudaError_t r = cudaDeviceGetAttribute(&optin, cudaDevAttrMaxSharedMemoryPerBlockOptin, device);
+  int limit = optin;
+  for (const void* k : {reinterpret_cast<const void*>(bt_factor_kernel),
+                        reinterpret_cast<const void*>(bt_solve_kernel)}) {
+    cudaFuncAttributes a = {};
+    if (r == cudaSuccess) r = cudaFuncGetAttributes(&a, k);
+    // the opt-in maximum bounds static plus dynamic shared memory
+    const int dyn = optin - static_cast<int>(a.sharedSizeBytes);
+    if (r == cudaSuccess && dyn < limit) limit = dyn;
+    if (r == cudaSuccess) r = cudaFuncSetAttribute(k, cudaFuncAttributeMaxDynamicSharedMemorySize, dyn);
   }
-  if (bytes > static_cast<size_t>(limit[dev])) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument,
-                      "block-Thomas needs " + std::to_string(bytes) +
-                          " B of shared memory per block; this device allows " +
-                          std::to_string(limit[dev]));
+  done[device] = BtOptIn{r, limit};
+  return done[device];
+}
+
+// An error unless `bytes` of dynamic shared memory fit the opted-in limit.
+ffi::Error bt_shared_fits(size_t bytes, const BtOptIn& opt) {
+  if (opt.status != cudaSuccess) {
+    return ffi::Error::Internal(std::string("block-Thomas shared-memory opt-in failed: ") +
+                                cudaGetErrorString(opt.status));
+  }
+  if (bytes > static_cast<size_t>(opt.limit)) {
+    return ffi::Error::InvalidArgument("block-Thomas needs " + std::to_string(bytes) +
+                                       " B of shared memory per block; this device allows " +
+                                       std::to_string(opt.limit));
   }
   return ffi::Error::Success();
 }
 
-static ffi::Error bt_launched() {
+// The launch's own error, if any; execution errors surface on the stream.
+ffi::Error bt_launch_status() {
   const cudaError_t e = cudaGetLastError();
-  if (e != cudaSuccess) return ffi::Error(ffi::ErrorCode::kInternal, cudaGetErrorString(e));
+  if (e != cudaSuccess) return ffi::Error::Internal(cudaGetErrorString(e));
   return ffi::Error::Success();
 }
 
-static ffi::Error FactorImplCuda(cudaStream_t stream, ffi::Buffer<ffi::F64> diag,
-                                 ffi::Buffer<ffi::F64> sup, ffi::Buffer<ffi::F64> sub,
-                                 ffi::ResultBuffer<ffi::F64> lu,
-                                 ffi::ResultBuffer<ffi::S32> perm) {
-  auto dims = diag.dimensions();
-  const int nd = static_cast<int>(dims.size());
-  if (nd < 3 || dims[nd - 1] != dims[nd - 2]) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "diag must be [..., nz, ni, ni]");
-  }
-  const int nz = static_cast<int>(dims[nd - 3]);
-  const int ni = static_cast<int>(dims[nd - 1]);
-  int64_t batch = 1;
-  for (int i = 0; i < nd - 3; ++i) batch *= dims[i];
-  if (sup.element_count() != batch * (nz - 1) * ni || sub.element_count() != sup.element_count()) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "sup/sub must be [..., nz-1, ni]");
-  }
-  if (batch == 0) return ffi::Error::Success();
-  const size_t shmem = (2 * static_cast<size_t>(ni) * ni + 64) * sizeof(double) +
-                       (32 + static_cast<size_t>(ni)) * sizeof(int32_t);
-  ffi::Error err = bt_shared_fits(shmem);
+ffi::Error FactorImplCuda(cudaStream_t stream, int32_t device, ffi::Buffer<ffi::F64> diag,
+                          ffi::Buffer<ffi::F64> sup, ffi::Buffer<ffi::F64> sub,
+                          ffi::ResultBuffer<ffi::F64> lu, ffi::ResultBuffer<ffi::S32> perm) {
+  BtShape shape;
+  ffi::Error err = bt_check_factor(diag, sup, sub, *lu, *perm, &shape);
   if (err.failure()) return err;
-  bt_factor_kernel<<<static_cast<unsigned int>(batch), bt_threads(ni), shmem, stream>>>(
+  if (shape.batch == 0 || shape.ni == 0) return ffi::Error::Success();
+  if (shape.batch > kMaxGridX) return ffi::Error::InvalidArgument("batch exceeds the CUDA grid limit");
+  const size_t shmem = bt_factor_shmem(shape.ni);
+  err = bt_shared_fits(shmem, bt_opt_in(device));
+  if (err.failure()) return err;
+  bt_factor_kernel<<<static_cast<unsigned int>(shape.batch), bt_threads(shape.ni), shmem, stream>>>(
       diag.typed_data(), sup.typed_data(), sub.typed_data(), lu->typed_data(),
-      perm->typed_data(), nz, ni);
-  return bt_launched();
+      perm->typed_data(), shape.nz, shape.ni);
+  return bt_launch_status();
 }
 
-static ffi::Error SolveImplCuda(cudaStream_t stream, ffi::Buffer<ffi::F64> lu,
-                                ffi::Buffer<ffi::S32> perm, ffi::Buffer<ffi::F64> sup,
-                                ffi::Buffer<ffi::F64> sub, ffi::Buffer<ffi::F64> rhs,
-                                ffi::ResultBuffer<ffi::F64> x) {
-  auto dims = lu.dimensions();
-  const int nd = static_cast<int>(dims.size());
-  if (nd < 3 || dims[nd - 1] != dims[nd - 2]) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "lu must be [..., nz, ni, ni]");
-  }
-  const int nz = static_cast<int>(dims[nd - 3]);
-  const int ni = static_cast<int>(dims[nd - 1]);
-  const int64_t blk = static_cast<int64_t>(ni) * ni;
-  auto rd = rhs.dimensions();
-  const int rnd = static_cast<int>(rd.size());
-  if (rnd < 2 || rd[rnd - 1] != ni || rd[rnd - 2] != nz) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "rhs must be [..., nz, ni]");
-  }
-  BtBcast s = {};
-  s.nd = rnd - 2;
-  if (s.nd > kBtMaxBatch) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "rhs has more than 4 leading dimensions");
-  }
-  int64_t batch = 1;
-  for (int k = 0; k < s.nd; ++k) {
-    s.dim[k] = rd[k];
-    batch *= rd[k];
-  }
-  if (x->element_count() != batch * nz * ni) {
-    return ffi::Error(ffi::ErrorCode::kInvalidArgument, "the result must have the rhs's shape");
-  }
-  const int64_t bnd = static_cast<int64_t>(nz - 1) * ni;
-  ffi::Error err = bt_leading(&s, 0, dims, 3, nz * blk, lu.element_count(), "lu");
+ffi::Error SolveImplCuda(cudaStream_t stream, int32_t device, ffi::Buffer<ffi::F64> lu,
+                         ffi::Buffer<ffi::S32> perm, ffi::Buffer<ffi::F64> sup,
+                         ffi::Buffer<ffi::F64> sub, ffi::Buffer<ffi::F64> rhs,
+                         ffi::ResultBuffer<ffi::F64> x) {
+  BtShape shape;
+  BtBcast s;
+  ffi::Error err = bt_check_solve(lu, perm, sup, sub, rhs, *x, &shape, &s);
   if (err.failure()) return err;
-  err = bt_leading(&s, 1, perm.dimensions(), 2, static_cast<int64_t>(nz) * ni,
-                   perm.element_count(), "perm");
+  if (shape.batch == 0 || shape.ni == 0) return ffi::Error::Success();
+  if (shape.batch > kMaxGridX) return ffi::Error::InvalidArgument("batch exceeds the CUDA grid limit");
+  const size_t shmem = bt_solve_shmem(shape.ni);
+  err = bt_shared_fits(shmem, bt_opt_in(device));
   if (err.failure()) return err;
-  err = bt_leading(&s, 2, sup.dimensions(), 2, bnd, sup.element_count(), "sup");
-  if (err.failure()) return err;
-  err = bt_leading(&s, 3, sub.dimensions(), 2, bnd, sub.element_count(), "sub");
-  if (err.failure()) return err;
-  if (batch == 0) return ffi::Error::Success();
-  const size_t shmem = (2 * static_cast<size_t>(ni) * ni + 2 * ni) * sizeof(double);
-  err = bt_shared_fits(shmem);
-  if (err.failure()) return err;
-  bt_solve_kernel<<<static_cast<unsigned int>(batch), bt_threads(ni), shmem, stream>>>(
+  bt_solve_kernel<<<static_cast<unsigned int>(shape.batch), bt_threads(shape.ni), shmem, stream>>>(
       lu.typed_data(), perm.typed_data(), sup.typed_data(), sub.typed_data(),
-      rhs.typed_data(), x->typed_data(), nz, ni, s);
-  return bt_launched();
+      rhs.typed_data(), x->typed_data(), shape.nz, shape.ni, s);
+  return bt_launch_status();
 }
+
+}  // namespace
 
 XLA_FFI_DEFINE_HANDLER_SYMBOL(
     VulcanBtFactorCuda, FactorImplCuda,
     ffi::Ffi::Bind()
         .Ctx<ffi::PlatformStream<cudaStream_t>>()
+        .Ctx<ffi::DeviceOrdinal>()
         .Arg<ffi::Buffer<ffi::F64>>()
         .Arg<ffi::Buffer<ffi::F64>>()
         .Arg<ffi::Buffer<ffi::F64>>()
@@ -554,6 +488,7 @@ XLA_FFI_DEFINE_HANDLER_SYMBOL(
     VulcanBtSolveCuda, SolveImplCuda,
     ffi::Ffi::Bind()
         .Ctx<ffi::PlatformStream<cudaStream_t>>()
+        .Ctx<ffi::DeviceOrdinal>()
         .Arg<ffi::Buffer<ffi::F64>>()
         .Arg<ffi::Buffer<ffi::S32>>()
         .Arg<ffi::Buffer<ffi::F64>>()

@@ -123,8 +123,8 @@ inline ffi::Error bt_leading(BtBcast* s, BtOperand op, Dims dims,
 // Checks every solve operand: lu [..., nz, ni, ni], perm [..., nz, ni], sup and
 // sub [..., nz-1, ni], rhs and x [..., nz, ni]. The batch is the product of the
 // rhs leading dimensions; the factors' leading dimensions broadcast against
-// them (equal, or 1), which is what vmap_method="expand_dims" produces when
-// only the rhs is batched at a vmap level.
+// them (equal, or 1), as vmap_method="expand_dims" passes them when only the
+// rhs is batched at a vmap level.
 inline ffi::Error bt_check_solve(const ffi::Buffer<ffi::F64>& lu,
                                  const ffi::Buffer<ffi::S32>& perm,
                                  const ffi::Buffer<ffi::F64>& sup,
