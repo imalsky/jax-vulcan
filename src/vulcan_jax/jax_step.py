@@ -780,7 +780,7 @@ def make_atm_static(atm, ni: int, nz: int, cfg=None) -> AtmStatic:
     # assembly). Species not in the network are caught by runtime_validation,
     # so the index lookup is safe here.
     diff_esc_np = np.zeros((ni,), dtype=bool)
-    for _sp in getattr(cfg, "diff_esc", []) or []:
+    for _sp in cfg.diff_esc:
         diff_esc_np[_SPEC_LIST.index(_sp)] = True
     vm = atm.vm if use_vm else jnp.zeros((nz - 1, ni), dtype=jnp.float64)
     vs = atm.vs if use_set else jnp.zeros((nz - 1, ni), dtype=jnp.float64)
