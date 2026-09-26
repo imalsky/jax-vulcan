@@ -34,29 +34,16 @@ CONTINUE_STEPS = 1000
 
 def _build(case, kzz_scale=1.0):
     from vulcan_jax.config import load_config
-    from vulcan_jax.jax_step import make_atm_static
     from vulcan_jax.legacy_io import Output
-    from vulcan_jax.network import parse_network
     from vulcan_jax.op_jax import Ros2JAX
     from vulcan_jax.outer_loop import OuterLoop
-    from vulcan_jax.state import RunState, legacy_view
+    from vulcan_jax.state import RunState
 
     name, use_photo = CASES[case][:2]
     cfg = load_config(name, use_photo=use_photo, use_print_prog=False,
                       count_max=6000)
-    rs = RunState.with_pre_loop_setup(cfg)
-    var, atm, para = legacy_view(rs, cfg=cfg)
-    solver = Ros2JAX()
-    solver.naming_solver(para)
-    if rs.photo_static is not None:
-        # the pre-loop's cross sections; the legacy_view shim carries no
-        # var.cross* surface to rebuild them from (outer_loop.py does the same)
-        solver._photo_static = rs.photo_static
-    integ = OuterLoop(solver, Output(cfg=cfg), cfg=cfg)
-    integ._ensure_runner(var, atm)
-    static = make_atm_static(atm, parse_network(cfg.network).ni, len(atm.Tco),
-                             cfg=integ._cfg)
-    state = integ._pack_state_from_runstate(rs)
+    integ = OuterLoop(Ros2JAX(), Output(cfg=cfg), cfg=cfg)
+    state, static = integ.prepare_runstate(RunState.with_pre_loop_setup(cfg))
     if kzz_scale != 1.0:
         static = static._replace(Kzz=static.Kzz * kzz_scale)
         state = state._replace(pv=state.pv._replace(Kzz=state.pv.Kzz * kzz_scale))

@@ -19,24 +19,15 @@ def _run(update_frq):
     import numpy as np
     from vulcan_jax import atm_refresh
     from vulcan_jax.config import load_config
-    from vulcan_jax.jax_step import make_atm_static
     from vulcan_jax.legacy_io import Output
-    from vulcan_jax.network import parse_network
     from vulcan_jax.op_jax import Ros2JAX
     from vulcan_jax.outer_loop import OuterLoop
-    from vulcan_jax.state import RunState, legacy_view
+    from vulcan_jax.state import RunState
 
     cfg = load_config("HD209", use_photo=False, use_print_prog=False,
                       count_max=6000, update_frq=update_frq)
-    rs = RunState.with_pre_loop_setup(cfg)
-    var, atm, para = legacy_view(rs)
-    solver = Ros2JAX()
-    solver.naming_solver(para)
-    integ = OuterLoop(solver, Output(cfg=cfg), cfg=cfg)
-    integ._ensure_runner(var, atm)
-    static = make_atm_static(atm, parse_network(cfg.network).ni, len(atm.Tco),
-                             cfg=integ._cfg)
-    final = integ._runner(integ._pack_state_from_runstate(rs), static)
+    integ = OuterLoop(Ros2JAX(), Output(cfg=cfg), cfg=cfg)
+    final = integ._runner(*integ.prepare_runstate(RunState.with_pre_loop_setup(cfg)))
     assert int(final.termination_reason) == 1, int(final.termination_reason)
     fresh = atm_refresh.update_mu_dz_jax(final.ymix, integ._refresh_static)
     for name, new in zip(("mu", "g", "Hp", "dz", "zco", "dzi", "Hpi"), fresh):
