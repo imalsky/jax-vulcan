@@ -5,18 +5,16 @@ Same call shape as `solver.py`: `factor(diag, sup_d, sub_d)` once, then
 `solver.py` pair:
 
 1. `solve` is a `lax.custom_linear_solve`. Its tangent is `A dx = db - dA x`
-   on the PRIMAL factors, so both stages and every tangent direction share one
-   factorisation, instead of differentiating through the pivoted LU (`lu`'s
-   tangent rule was ~85% of the jvp linear algebra, notes §1.4). The primal is
-   the same code on the same inputs and is bit-identical. Reverse mode
-   transposes the primal sweep on the same factors, on either backend.
+   on the primal factors, so both stages and every tangent direction share one
+   factorisation instead of differentiating through the pivoted LU (notes
+   §1.4). The primal is the same code on the same inputs and is
+   bit-identical. Reverse mode transposes the primal sweep on the same
+   factors.
 2. With `VULCAN_JAX_SOLVER=ffi` the raw factor and solve are one C++ call each
    (`csrc/block_thomas_cpu.cc`, built by `python -m vulcan_jax.solver_fast`):
-   the CPU reference for the fused GPU kernel. `custom_linear_solve` is what
-   makes a non-differentiable FFI call differentiable here. Reverse mode
-   through `ffi` is not a supported route: the steady-state sensitivity's
-   LGMRES is roundoff-marginal and the C++ factors' roundoff moves its HD189
-   null_quality over the test's bar (notes §1.4.1); use `fast` or `reference`.
+   the CPU reference for the fused GPU kernel. `custom_linear_solve` makes
+   these calls, which have no AD rules, differentiable. Reverse mode through
+   `ffi` is unsupported (notes §1.4.1); use `fast` or `reference`.
 
 On a CUDA device the `ffi` backend runs `csrc/block_thomas_cuda.cu`, the same
 math and layout with one thread block per lane: the `ni x ni` block and the
@@ -24,13 +22,10 @@ previous layer's inverse sit in dynamic shared memory, pivoting is in-block and
 the whole `nz` loop stays in the kernel, so a Ros2 step costs one factor launch
 and two solve launches. It is built only by `python -m vulcan_jax.solver_fast
 --cuda` on a host with nvcc; without the library nothing changes here and a
-device call under `ffi` fails loudly at dispatch. Reverse mode is unaffected:
-`transpose_solve` runs the JAX sweep on whichever backend produced the factors.
+device call under `ffi` fails loudly at dispatch.
 
 `jax_step` imports this module by default; `VULCAN_JAX_SOLVER=reference`
 restores the plain `solver.py` pair for A/B, and `ffi` selects the C++ kernel.
-Removal: delete this file, `csrc/`, `tests/test_solver_fast.py` and the switch
-in `jax_step.py`.
 """
 
 from __future__ import annotations
@@ -115,14 +110,9 @@ def solve(factors: Factors, rhs, matvec=None):
         return _raw_solve(lu, perm, sup0, sub0, b)
 
     def transpose_solve(_vecmat, c):
-        # The exact transpose of the primal sweep on the SAME factors: this is
-        # what differentiating through the LU gives today for the rhs cotangent
-        # (bit-identical for `fast`; componentwise backward error ~1e-14 on real
-        # blocks, notes §1.4.1) and it costs no second factorisation. The FFI
-        # call has no transpose rule, so the sweep is always the reference JAX
-        # scan here, run on whichever factors the backend produced (same LU and
-        # permutation layout). A fresh factorisation of A^T instead (eta ~1e-5)
-        # made the W39b steady-state sensitivity LGMRES stagnate (§1.4.1).
+        # Transpose of the primal sweep on the same factors (no second
+        # factorisation; notes §1.4.1). The FFI call has no transpose rule, so
+        # this always runs the JAX scan, on whichever backend's factors.
         def sweep(b):
             return _ref.solve_block_thomas_diag_offdiag(
                 _ref.BlockThomasDiagFactors(lu, perm, sup0, sub0), b
@@ -259,10 +249,9 @@ def _ffi_factor(diag, sup_d, sub_d):
 
 def _ffi_solve(lu, perm, sup_d, sub_d, rhs):
     # expand_dims, not broadcast_all: at a vmap level where only `rhs` is
-    # batched (the six tangent directions share one factorisation) the factors
-    # get a size-1 axis instead of one copy per direction, and the handler
-    # broadcasts their leading dimensions against the rhs's. On the GPU that is
-    # 3.9 MB of `lu` per lane not copied six times per step.
+    # batched (the tangent directions share one factorisation) the factors get
+    # a size-1 axis instead of one copy per direction, and the handler
+    # broadcasts their leading dimensions against the rhs's.
     _register()
     return jax.ffi.ffi_call(
         "vulcan_bt_solve",

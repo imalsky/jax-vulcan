@@ -6,11 +6,11 @@ via an LU factorization and solve per block. Cost is O(nz * ni^3);
 differentiable, JIT-friendly, GPU-ready.
 
 The factorization materializes `inv(A'_{j-1})` explicitly by solving against
-`eye_ni`: with diagonal off-blocks the update becomes the ELEMENTWISE product
+`eye_ni`: with diagonal off-blocks the update becomes the elementwise product
 `A_j - (c[:, None] * b[None, :]) * inv(A'_{j-1})`, which reads every one of
-the ni^2 entries. What the diagonal structure buys is replacing an O(ni^3)
-matmul with an O(ni^2) elementwise scaling; it does NOT avoid the inversion,
-and forming the inverse keeps the sweep O(nz * ni^3) either way.
+the ni^2 entries. The diagonal structure replaces an O(ni^3) matmul with an
+O(ni^2) elementwise scaling; it does not avoid the inversion, so the sweep
+stays O(nz * ni^3).
 
 It factors with `lax.linalg.lu` and keeps the row permutation in the factors,
 so the two Ros2 stages share one factorization (`factor_...` once, `solve_...`
@@ -55,14 +55,9 @@ class BlockThomasDiagFactors(NamedTuple):
 def factor_block_thomas_diag_offdiag(diag, sup_d, sub_d):
     """Factor a diagonal-offdiag block-tridiagonal system once for reuse.
 
-    DO NOT replace the LU carry with an explicit inverse carry (rejected on
-    accuracy). It is 2.0x faster under jvp, but on real ``I/(gamma*dt) - J``
-    blocks (cond ~6.7e23 at dt_max=1e11) its residual is 569x worse; the
-    per-layer re-factorization WITH PARTIAL PIVOTING is what stops error
-    compounding across the sweep. Benchmark this solver on real blocks only
-    (synthetic ones top out ~21 orders of conditioning short). If attacking
-    the jvp cost (~85% of jvp linear algebra), write a custom JVP rule that
-    keeps pivoted LU in the primal. Full record: notes.md §1.4.1.
+    Both Ros2 stages share the factors. The per-layer pivoted LU keeps error
+    from compounding across the sweep; an explicit-inverse carry is less
+    accurate on real blocks (notes §1.4).
     """
     ni = diag.shape[1]
 
@@ -122,8 +117,6 @@ def solve_block_thomas_diag_offdiag(factors: BlockThomasDiagFactors, rhs):
         rhs_mod_full[-1],
     )
 
-    # The back sweep is a reverse scan: the `[::-1]` idiom it replaces copied
-    # the whole LU stack twice per solve.
     def bwd_step(k_next, inputs):
         A_lu, A_perm, rhs_mod, b_j = inputs
         rhs_local = rhs_mod - b_j * k_next
