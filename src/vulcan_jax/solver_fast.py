@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import ctypes
 import functools
+import hashlib
 import os
 import platform
 import shutil
@@ -142,24 +143,61 @@ _LIB = _CSRC / (
     "libblock_thomas_cpu" + (".dylib" if platform.system() == "Darwin" else ".so")
 )
 _CUDA_LIB = _CSRC / "libblock_thomas_cuda.so"
+_HASH_TAG = b"vulcan-bt-source-sha256:"  # VulcanBtSourceHash, block_thomas_common.h
+
+
+def _source_hash(src: Path) -> str:
+    """sha256 of a kernel source and the header it includes."""
+    h = hashlib.sha256(src.read_bytes())
+    h.update((_CSRC / "block_thomas_common.h").read_bytes())
+    return h.hexdigest()
+
+
+def _is_current(lib: Path, src: Path) -> bool:
+    """True if `lib` embeds the hash of the present sources. The file is read,
+    not loaded: dlopen would keep a stale library cached under its path."""
+    return lib.exists() and _HASH_TAG + _source_hash(src).encode() in lib.read_bytes()
+
+
+def _nvcc_arch() -> str:
+    """$NVCC_ARCH, else sm_XY of JAX's first CUDA device, else of the host's
+    first GPU per nvidia-smi (a build shell may hide the GPU from JAX, e.g.
+    with JAX_PLATFORMS=cpu)."""
+    if arch := os.environ.get("NVCC_ARCH"):
+        return arch
+    try:
+        cc = jax.devices("cuda")[0].compute_capability
+    except RuntimeError:
+        try:
+            cc = subprocess.run(
+                ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+                check=True, capture_output=True, text=True,
+            ).stdout.split()[0]
+        except (OSError, subprocess.CalledProcessError, IndexError) as e:
+            raise RuntimeError(
+                "no CUDA device to build the kernel for; set NVCC_ARCH (sm_90 on a GH200)"
+            ) from e
+    return "sm_" + cc.replace(".", "")
 
 
 def build(force: bool = False, cuda: bool = False) -> Path:
     """Compile the CPU kernel with the system C++ compiler ($CXX or c++), or
-    with `cuda=True` the GPU twin with nvcc ($NVCC, $NVCC_ARCH; needs a CUDA
-    toolkit, hence an explicit `--cuda` build on the GPU host)."""
+    with `cuda=True` the GPU twin with nvcc ($NVCC, arch from `_nvcc_arch`).
+    Returns the library at once if it embeds the hash of the present sources,
+    unless `force`."""
     src = _CSRC / ("block_thomas_cuda.cu" if cuda else "block_thomas_cpu.cc")
     lib = _CUDA_LIB if cuda else _LIB
-    if lib.exists() and not force and lib.stat().st_mtime >= src.stat().st_mtime:
+    if not force and _is_current(lib, src):
         return lib
+    # -isystem: the XLA headers' own warnings are not reported. No -Werror: the
+    # CPU build runs at import, where a newer compiler's warning must not fail.
+    flags = ["-O2", "-std=c++17", "-shared", f"-DVULCAN_BT_SOURCE_HASH={_source_hash(src)}",
+             "-isystem", jax.ffi.include_dir()]
     if cuda:
-        cmd = [os.environ.get("NVCC", "nvcc"), "-O2", "-std=c++17", "-shared",
-               "-Xcompiler", "-fPIC",
-               f"-arch={os.environ.get('NVCC_ARCH', 'sm_90')}",
-               f"-I{jax.ffi.include_dir()}"]
+        cmd = [os.environ.get("NVCC", "nvcc"), *flags, f"-arch={_nvcc_arch()}", "-lineinfo",
+               "-Xcompiler", "-fPIC,-Wall,-Wextra"]
     else:
-        cmd = [os.environ.get("CXX", "c++"), "-O2", "-std=c++17", "-shared", "-fPIC",
-               f"-I{jax.ffi.include_dir()}"]
+        cmd = [os.environ.get("CXX", "c++"), *flags, "-fPIC", "-Wall", "-Wextra"]
         if platform.system() == "Darwin":
             cmd += ["-undefined", "dynamic_lookup"]
     # Compile in a private directory beside the library and rename it into
@@ -181,14 +219,14 @@ def _register():
     global _REGISTERED
     if _REGISTERED:
         return
-    # The CUDA twin is built separately by `--cuda` and never here, so a stale
-    # one is refused, not loaded (the CPU kernel is rebuilt by `build`).
+    # The CUDA twin is built only by `--cuda`, never here, so a stale one is
+    # refused rather than loaded (`build` rebuilds the CPU kernel).
     cu_src = _CSRC / "block_thomas_cuda.cu"
-    if _CUDA_LIB.exists() and _CUDA_LIB.stat().st_mtime < cu_src.stat().st_mtime:
+    if _CUDA_LIB.exists() and not _is_current(_CUDA_LIB, cu_src):
         raise RuntimeError(
-            f"{_CUDA_LIB} is older than {cu_src.name}; rebuild it on the GPU "
-            "host with `python -m vulcan_jax.solver_fast --cuda`, or delete it "
-            "to run the CPU kernel only."
+            f"{_CUDA_LIB} was not built from the present {cu_src.name} and "
+            "block_thomas_common.h; rebuild it on the GPU host with `python -m "
+            "vulcan_jax.solver_fast --cuda`, or delete it to run the CPU kernel only."
         )
     lib = ctypes.CDLL(str(build()))
     jax.ffi.register_ffi_target(

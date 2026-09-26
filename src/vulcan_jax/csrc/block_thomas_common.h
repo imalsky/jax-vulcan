@@ -18,6 +18,16 @@
 #define BT_HOST_DEVICE
 #endif
 
+// sha256 of the sources, set by solver_fast.build. The loader finds it in the
+// library file to tell a stale build from a current one.
+#ifndef VULCAN_BT_SOURCE_HASH
+#error "build with python -m vulcan_jax.solver_fast, which defines VULCAN_BT_SOURCE_HASH"
+#endif
+#define BT_STRINGIFY_(x) #x
+#define BT_STRINGIFY(x) BT_STRINGIFY_(x)
+extern "C" const char VulcanBtSourceHash[] =
+    "vulcan-bt-source-sha256:" BT_STRINGIFY(VULCAN_BT_SOURCE_HASH);
+
 namespace vulcan_bt {
 
 namespace ffi = xla::ffi;
