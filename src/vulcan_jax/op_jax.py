@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import jax.numpy as jnp
 
@@ -9,6 +11,8 @@ from .config import default_config
 from . import chem_funs
 from . import photo as _photo_mod
 from . import phy_const as _phy_const
+
+logger = logging.getLogger(__name__)
 
 _CFG = default_config()
 _NETWORK = chem_funs._NETWORK   # the one parse per process
@@ -126,11 +130,11 @@ class Ros2JAX:
                 var.k_arr[ridx, :] = var.Jion_sp[(sp, nbr)] * _CFG.f_diurnal
 
     def naming_solver(self, para):
-        """Print transport / BC summary lines and stamp `para.solver_str`."""
+        """Log transport / BC summary lines and stamp `para.solver_str`."""
         if _CFG.use_moldiff:
-            print("Include molecular diffusion.")
+            logger.info("Include molecular diffusion.")
         else:
-            print("No molecular diffusion.")
+            logger.info("No molecular diffusion.")
         if _CFG.use_fix_all_bot:
-            print("Use fixed bottom BC.")
+            logger.info("Use fixed bottom BC.")
         para.solver_str = "solver"

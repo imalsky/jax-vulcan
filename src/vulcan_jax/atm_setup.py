@@ -7,6 +7,7 @@ read attributes directly (rate parser, .vul writer, atm_refresh).
 
 from __future__ import annotations
 
+import logging
 import warnings
 from typing import Any, Mapping
 
@@ -19,6 +20,8 @@ from .config import default_config
 from .phy_const import ATM_BAR, ATM_CGS, BAR_CGS, G_grav, Navo, au, kb, r_sun
 from ._paths import resolve_data_path
 from .atm_refresh import hydrostatic_step, recompute_vm_jax
+
+logger = logging.getLogger(__name__)
 
 _CFG = default_config()
 
@@ -260,9 +263,10 @@ def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray
         p_file = table["Pressure"]
         T_file = table["Temp"]
         if max(p_file) < pco[0] or min(p_file) > pco[-1]:
-            print(
-                "Warning: P_b and P_t assigned in the config are out of range "
-                "of the input.\nConstant extension is used."
+            warnings.warn(
+                "P_b and P_t assigned in the config are out of range "
+                "of the input.\nConstant extension is used.",
+                stacklevel=2,
             )
         Tco = _interp_descending_or_ascending(
             pco,
@@ -283,12 +287,12 @@ def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray
     elif atm_type == "vulcan_ini":
         import pickle
 
-        print(f"Initializing PT from the previous run {cfg.vul_ini}")
+        logger.info(f"Initializing PT from the previous run {cfg.vul_ini}")
         with open(resolve_data_path(cfg.vul_ini), "rb") as handle:
             vul_data = pickle.load(handle)
         Tco = np.asarray(vul_data["atm"]["Tco"], dtype=np.float64)
     elif atm_type == "table":
-        print(f"Initializing PT from the previous run {cfg.vul_ini}")
+        logger.info(f"Initializing PT from the previous run {cfg.vul_ini}")
         table = np.genfromtxt(
             resolve_data_path(cfg.vul_ini), names=True, dtype=None, skip_header=1
         )
@@ -580,7 +584,7 @@ def compute_settling_velocity(
         return np.zeros((nz - 1, ni), dtype=np.float64)
     atm_base = cfg.atm_base
     if atm_base == "CO2":
-        print("NO CO2 viscosity yet! (using N2 instead)")
+        warnings.warn("NO CO2 viscosity yet! (using N2 instead)", stacklevel=2)
     if atm_base not in _VISCOSITY_TABLE:
         raise IOError(f"No viscosity polynomial for atm_base={atm_base!r}")
     na, a, b = _VISCOSITY_TABLE[atm_base]
@@ -853,7 +857,7 @@ def read_sflux_binned(
     sum_bin += dbin2 * np.sum(sflux_top[sflux_din12_indx:])
     sum_bin -= dbin2 * 0.5 * (sflux_top[sflux_din12_indx] + sflux_top[-1])
 
-    print(
+    logger.info(
         "The stellar flux is interpolated onto uniform grid of "
         f"{dbin1} (<{dbin_12} nm) and {dbin2} (>={dbin_12} nm)"
         f" and conserving {100 * sum_bin / sum_orgin:.2f} % energy."
@@ -889,13 +893,13 @@ def read_bc_flux(cfg, species_list: list[str]) -> dict[str, np.ndarray]:
         "bot_fix_sp": np.zeros(ni, dtype=np.float64),
     }
     if bool(cfg.use_topflux):
-        print("Using the prescribed constant top flux.")
+        logger.info("Using the prescribed constant top flux.")
         for tokens in _parse_bc_file(cfg.top_BC_flux_file):
             sp = tokens[0]
             if sp in species_list:
                 out["top_flux"][species_list.index(sp)] = float(tokens[1])
     if bool(cfg.use_botflux):
-        print("Using the prescribed constant bottom flux.")
+        logger.info("Using the prescribed constant bottom flux.")
         for tokens in _parse_bc_file(cfg.bot_BC_flux_file):
             sp = tokens[0]
             if sp in species_list:
@@ -905,7 +909,7 @@ def read_bc_flux(cfg, species_list: list[str]) -> dict[str, np.ndarray]:
     # (not a dict) reaches this branch, preserved verbatim. Production feeds a
     # dict, whose entries the OuterLoop pin handles.
     if cfg.use_fix_sp_bot is True:
-        print("Using the prescribed fixed bottom mixing ratios.")
+        logger.info("Using the prescribed fixed bottom mixing ratios.")
         for tokens in _parse_bc_file(cfg.bot_BC_flux_file):
             sp = tokens[0]
             if sp in species_list and len(tokens) >= 4:
@@ -1062,11 +1066,11 @@ class Atm:
 
         old_P_b = self.P_b
         self.P_b = float(new_pco[0])
-        print(
+        logger.info(
             "high_temp_cut: capping deep T at {:.0f} K (P >= {:.2e} bar) for "
             "numerical stability.".format(T_max, P_min / BAR_CGS)
         )
-        print(
+        logger.info(
             "  effective P_b {:.2e} -> {:.2e} bar (nz = {})".format(
                 old_P_b / BAR_CGS, self.P_b / BAR_CGS, nz
             )
@@ -1077,9 +1081,10 @@ class Atm:
         data_atm = self.load_TPK(data_atm)
 
         if np.any(np.asarray(data_atm.Tco) > T_max):
-            print(
-                "Warning (after high_temp_cut): max Tco = {:.1f} K still > "
-                "{:.0f} K.".format(float(np.max(np.asarray(data_atm.Tco))), T_max)
+            warnings.warn(
+                "After high_temp_cut: max Tco = {:.1f} K still > "
+                "{:.0f} K.".format(float(np.max(np.asarray(data_atm.Tco))), T_max),
+                stacklevel=2,
             )
         return data_atm
 
@@ -1150,7 +1155,9 @@ class Atm:
             )
         if np.any(np.logical_or(data_atm.Tco < _GIBBS_T_MIN_K,
                                 data_atm.Tco > _GIBBS_T_MAX_K)):
-            print("Temperatures exceed the valid range of Gibbs free energy.\n")
+            warnings.warn(
+                "Temperatures exceed the valid range of Gibbs free energy.", stacklevel=2
+            )
         return data_atm
 
     def mol_diff(self, atm):

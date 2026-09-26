@@ -13,6 +13,7 @@ The accept/reject decision and dt formula match VULCAN-master's `op.Ros2`
 from __future__ import annotations
 
 import functools
+import logging
 from typing import NamedTuple, Optional
 
 import numpy as np
@@ -39,6 +40,7 @@ from .ini_abun import column_atoms
 from .jax_step import AtmStatic, jax_ros2_step, make_atm_static
 from .runtime_validation import validate_runtime_config
 
+logger = logging.getLogger(__name__)
 
 # The network chem_funs parsed at import: one parse per process. After editing
 # the config `network`, restart Python to pick it up.
@@ -3264,11 +3266,11 @@ class OuterLoop:
 
     def _report_end(self, end_case, count, longdy, longdydt, aflux_change,
                     var, para) -> None:
-        """End-of-run printing (op.py:1069-1085 and op.stop): print_prog,
+        """End-of-run report (op.py:1069-1085 and op.stop): print_prog,
         then print_end_msg (end_case 1) or print_unconverged_msg, which
         states the reason (2 / 3 / 5)."""
         if end_case == TERM_CONVERGED:
-            print(
+            logger.info(
                 f"Integration successful with {count} steps and "
                 f"long dy, long dydt = {longdy}, {longdydt}\n"
                 f"Actinic flux change: {aflux_change:.2E}"

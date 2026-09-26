@@ -12,6 +12,7 @@ dict, and parameter fields are synthesised at pickle time from the typed
 `RunState`.
 """
 
+import logging
 import numpy as np
 import os
 import pickle
@@ -23,6 +24,8 @@ from . import chem_funs
 from .chem_funs import ni, nr
 from .live_ui import master_tableau20
 from .state import TERM_NONFINITE, TERM_RUNTIME, TERM_STEP_COUNT
+
+logger = logging.getLogger(__name__)
 
 _CFG = default_config()
 species = chem_funs.spec_list
@@ -447,15 +450,17 @@ class Output(object):
         os.makedirs(output_dir, exist_ok=True)
 
         if os.path.isfile(output_dir + out_name):
-            print("Warning... the output file: " + str(out_name) + " already exists.\n")
+            warnings.warn(
+                "The output file: " + str(out_name) + " already exists.", stacklevel=2
+            )
 
     def print_prog(self, var, para):
-        """Print one progress block: elapsed model time, step count vs
+        """Log one progress block: elapsed model time, step count vs
         `count_max`, longdy / longdy_dt / dt, and the most-varying
         (level, species).
         """
         indx_max = np.nanargmax(para.where_varies_most)
-        print(
+        logger.info(
             "Elapsed time: "
             + "{:.2e}".format(var.t)
             + " || Step number: "
@@ -463,7 +468,7 @@ class Output(object):
             + "/"
             + str(self._cfg.count_max)
         )
-        print(
+        logger.info(
             "longdy = "
             + "{:.2e}".format(var.longdy)
             + "      || longdy/dt = "
@@ -471,21 +476,21 @@ class Output(object):
             + "  || dt = "
             + "{:.2e}".format(var.dt)
         )
-        print("from nz = " + str(int(indx_max / ni)) + " and " + species[indx_max % ni])
-        print(
+        logger.info("from nz = " + str(int(indx_max / ni)) + " and " + species[indx_max % ni])
+        logger.info(
             "------------------------------------------------------------------------"
         )
 
     def print_end_msg(self, var, para):
-        """Print the steady-state success summary: CPU wall time, step count,
+        """Log the steady-state success summary: CPU wall time, step count,
         final model time, long dy / dy_dt, per-atom loss (skipping
         `cfg.loss_ex`), and the negative/loss/delta rejection counters.
         """
-        print(
+        logger.info(
             "After ------- %s seconds -------" % (time.time() - para.start_time)
             + " s CPU time"
         )
-        print(
+        logger.info(
             self._cfg.out_name[:-4]
             + " has successfully run to steady-state with "
             + str(para.count)
@@ -493,30 +498,30 @@ class Output(object):
             + str("{:.2e}".format(var.t))
             + " s"
         )
-        print(
+        logger.info(
             "long dy = "
             + f"{var.longdy:.6e}"
             + " and long dy/dt = "
             + f"{var.longdydt:.6e}"
         )
 
-        print("total atom loss:")
+        logger.info("total atom loss:")
         for atom in self._cfg.atom_list:
             if atom not in self._cfg.loss_ex:
-                print(atom + ": " + f"{var.atom_loss[atom]:.4e}" + " ")
+                logger.info(atom + ": " + f"{var.atom_loss[atom]:.4e}" + " ")
 
-        print("negative solution counter:")
-        print(para.nega_count)
-        print("loss rejected counter:")
-        print(para.loss_count)
-        print("delta rejected counter:")
-        print(para.delta_count)
-        print("------ Live long and prosper \\V/ ------")
+        logger.info("negative solution counter:")
+        logger.info(str(para.nega_count))
+        logger.info("loss rejected counter:")
+        logger.info(str(para.loss_count))
+        logger.info("delta rejected counter:")
+        logger.info(str(para.delta_count))
+        logger.info("------ Live long and prosper \\V/ ------")
 
     def print_unconverged_msg(self, var, para, case):
-        """Print the non-converged summary for termination `case` (2 = runtime
+        """Log the non-converged summary for termination `case` (2 = runtime
         budget, 3 = max steps, 5 = stopped without converging and without
-        hitting a cap); any other case raises RuntimeError. Also prints
+        hitting a cap); any other case raises RuntimeError. Also logs
         per-atom loss and rejection counters.
         """
         why = {
@@ -529,24 +534,24 @@ class Output(object):
         if why is None:
             raise RuntimeError(f"Unconverged case undefined (case={case})")
 
-        print(
+        logger.info(
             "After ------- %s seconds -------" % (time.time() - para.start_time)
             + " s CPU time"
         )
-        print(self._cfg.out_name[:-4] + " did not reach steady-state:")
-        print("long dy = " + str(var.longdy) + " and long dy/dt = " + str(var.longdydt))
-        print("Integration stopped before converged...\n" + why)
+        logger.warning(self._cfg.out_name[:-4] + " did not reach steady-state:")
+        logger.info("long dy = " + str(var.longdy) + " and long dy/dt = " + str(var.longdydt))
+        logger.warning("Integration stopped before converged...\n" + why)
 
-        print("total atom loss:")
+        logger.info("total atom loss:")
         for atom in self._cfg.atom_list:
             if atom not in self._cfg.loss_ex:
-                print(atom + ": " + f"{var.atom_loss[atom]:.4e}" + " ")
-        print("negative solution counter:")
-        print(para.nega_count)
-        print("loss rejected counter:")
-        print(para.loss_count)
-        print("delta rejected counter:")
-        print(para.delta_count)
+                logger.info(atom + ": " + f"{var.atom_loss[atom]:.4e}" + " ")
+        logger.info("negative solution counter:")
+        logger.info(str(para.nega_count))
+        logger.info("loss rejected counter:")
+        logger.info(str(para.loss_count))
+        logger.info("delta rejected counter:")
+        logger.info(str(para.delta_count))
 
     def save_cfg(self, dname):
         """Write a repr snapshot of the active cfg (including make_config

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import numpy as np
 
 from . import chem_funs
 
+logger = logging.getLogger(__name__)
 
 # Checks only declared knobs and never supplies a default;
 # test_runtime_validation_knobs.py pins that shipped configs declare them.
@@ -564,7 +566,7 @@ def rate_temp_range_exposure(net, Tco) -> dict:
 
 
 def report_rate_temp_ranges(net, Tco) -> None:
-    """Print a one-time advisory on rate-law T-range exposure for this run.
+    """Log a one-time advisory on rate-law T-range exposure for this run.
 
     The network files carry per-row documented temperature ranges (the free-
     text `Temp` column) that neither VULCAN implementation enforces, so hot
@@ -591,7 +593,7 @@ def report_rate_temp_ranges(net, Tco) -> None:
     if key in _TEMP_RANGE_REPORTED:
         return
     _TEMP_RANGE_REPORTED.add(key)
-    print(
+    logger.warning(
         f"rate T-range advisory ({Path(net.network_path).name}): model grid "
         f"spans {T.min():.0f}-{T.max():.0f} K over {T.size} layers; of "
         f"{ex['thermal_rows']} thermal rows, {ex['any_outside']} are evaluated "

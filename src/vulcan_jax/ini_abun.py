@@ -21,6 +21,7 @@ seed is an initial condition.
 
 from __future__ import annotations
 
+import logging
 import pickle
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -47,6 +48,8 @@ from .composition import (
 from .phy_const import BAR_CGS
 from .state import IniAbunOutputs
 from ._paths import resolve_data_path
+
+logger = logging.getLogger(__name__)
 
 _CFG = default_config()
 
@@ -481,7 +484,7 @@ def eq_column(pco, Tco, M) -> np.ndarray:
     b = _element_vector()
     Tco = np.asarray(Tco, dtype=np.float64)
     p_bar = np.asarray(pco, dtype=np.float64) / BAR_CGS
-    print(
+    logger.info(
         f"Equilibrium seed from {_abundance_path()}: "
         + ", ".join(
             f"{sp}/H={b[seed_elements().index(sp)]:.8g}"
@@ -515,7 +518,7 @@ def _load_eq_y(data_atm) -> tuple[np.ndarray, list[str]]:
 
 def _load_vulcan_ini_y(data_atm) -> tuple[np.ndarray, list[str]]:
     """Load `y` from a previous `.vul` file via pickle."""
-    print("Initializing with compositions from the previous run " + _CFG.vul_ini)
+    logger.info("Initializing with compositions from the previous run " + _CFG.vul_ini)
     with open(resolve_data_path(_CFG.vul_ini), "rb") as handle:
         vul_data = pickle.load(handle)
     nz_ = len(data_atm.pco)
@@ -526,7 +529,7 @@ def _load_vulcan_ini_y(data_atm) -> tuple[np.ndarray, list[str]]:
         if sp in prev_species:
             y[:, species.index(sp)] = prev_y[:, prev_species.index(sp)]
         else:
-            print(sp + " not included in the previous run.")
+            logger.warning(sp + " not included in the previous run.")
     charge_list: list[str] = []
     if _CFG.use_ion is True:
         _build_charge_list_if_ion(charge_list)
@@ -539,10 +542,10 @@ def _load_table_y(data_atm) -> tuple[np.ndarray, list[str]]:
         resolve_data_path(_CFG.vul_ini), names=True, dtype=None, skip_header=1
     )
     if not len(data_atm.pco) == len(table["Pressure"]):
-        print(
-            "Warning! The initial profile has different layers than the current setting..."
+        raise IOError(
+            "Initial profile / cfg layer mismatch: the initial profile has "
+            "different layers than the current setting"
         )
-        raise IOError("Initial profile / cfg layer mismatch")
     nz_ = len(data_atm.pco)
     y = np.zeros((nz_, chem_funs.ni), dtype=np.float64)
     n_0 = np.asarray(data_atm.n_0)
@@ -553,7 +556,7 @@ def _load_table_y(data_atm) -> tuple[np.ndarray, list[str]]:
 
 def _load_const_mix_y(data_atm) -> tuple[np.ndarray, list[str]]:
     """Load `y` from `_CFG.const_mix` (a per-species mixing dict)."""
-    print("Initializing with constant (well-mixed): " + str(_CFG.const_mix))
+    logger.info("Initializing with constant (well-mixed): " + str(_CFG.const_mix))
     nz_ = len(data_atm.pco)
     y = np.zeros((nz_, chem_funs.ni), dtype=np.float64)
     gas_tot = np.asarray(data_atm.M)
@@ -633,7 +636,7 @@ def _apply_condense(y: np.ndarray, data_atm) -> np.ndarray:
             data_atm.sat_mix[sp] *= _CFG.humidity
             if _CFG.use_sat_surfaceH2O is True:
                 _CFG.use_fix_sp_bot[sp] = data_atm.sat_mix[sp][0]
-                print(
+                logger.info(
                     "\nThe fixed surface water is now reset by condensation and humidity to "
                     + str(_CFG.use_fix_sp_bot[sp])
                 )
@@ -659,7 +662,7 @@ def _apply_condense(y: np.ndarray, data_atm) -> np.ndarray:
                     min_sat = np.amin(data_atm.sat_mix[sp][conden_status])
                     conden_min_lev = np.where(data_atm.sat_mix[sp] == min_sat)[0][0]
                     data_atm.conden_min_lev[sp] = conden_min_lev
-                    print(
+                    logger.info(
                         sp
                         + " condensed from nz = "
                         + str(conden_bot)

@@ -28,6 +28,7 @@ _jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
 print("Using JAX-native chem_funs with SymPy-faithful chem_rhs codegen")
 
 import argparse
+import logging
 import sys
 
 from . import legacy_io as op
@@ -127,6 +128,7 @@ def cli_main(argv=None):
     A config selecting a non-default network re-execs once with the matching
     ``$VULCAN_JAX_*`` variables set (see `_relaunch_for_frozen_knobs`).
     """
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     parser = argparse.ArgumentParser(prog="vulcan-jax")
     parser.add_argument(
         "--config",

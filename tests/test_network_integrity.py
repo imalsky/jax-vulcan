@@ -128,7 +128,7 @@ _EXPOSURE = {
 }
 
 
-def test_advisory_fires_per_profile_not_per_network(capsys, monkeypatch):
+def test_advisory_fires_per_profile_not_per_network(caplog, monkeypatch):
     """A second profile on the same network must report; the same one must not.
 
     The exposure depends on Tco, so the report is cached per profile, not per network.
@@ -142,7 +142,7 @@ def test_advisory_fires_per_profile_not_per_network(capsys, monkeypatch):
     rv.report_rate_temp_ranges(net, hot)
     rv.report_rate_temp_ranges(net, hot)  # identical case: stays quiet
     rv.report_rate_temp_ranges(net, cold)  # new profile, same network: reports
-    assert capsys.readouterr().out.count("rate T-range advisory") == 2
+    assert sum("rate T-range advisory" in r.getMessage() for r in caplog.records) == 2
 
 
 @pytest.mark.parametrize("cfg_name", sorted(_EXPOSURE), ids=str)

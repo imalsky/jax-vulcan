@@ -10,6 +10,7 @@ bounds_error=False, fill_value=...)` bit for bit.
 
 from __future__ import annotations
 
+import logging
 import os
 
 import jax.numpy as jnp
@@ -18,6 +19,8 @@ import numpy as np
 from .config import default_config
 from .state import PhotoStaticInputs
 from ._paths import resolve_data_path
+
+logger = logging.getLogger(__name__)
 
 _CFG = default_config()
 
@@ -403,14 +406,14 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
 
     bin_min = max(bin_min, var.def_bin_min)
     bin_max = min(bin_max, var.def_bin_max, diss_max)
-    print(
+    logger.info(
         "Input stellar spectrum from "
         + "{:.1f}".format(var.def_bin_min)
         + " to "
         + "{:.1f}".format(var.def_bin_max)
     )
-    print("Photodissociation threshold: " + "{:.1f}".format(diss_max))
-    print(
+    logger.info("Photodissociation threshold: " + "{:.1f}".format(diss_max))
+    logger.info(
         "Using wavelength bins from " + "{:.1f}".format(bin_min) + " to " + str(bin_max)
     )
 
