@@ -58,6 +58,14 @@ _SLOPE_MIN_FLOOR = 1e-10
 # reads the counter.
 _PLATEAU_NEW_MIN_FRAC = 0.95
 
+# Hybrid vm_mol phase-flip budget, vm_branch@84d010d stop(): count_min =
+# count + 100 on every flip (op.py:1107, 1128, 1152); count_max = count + 2000
+# after convergence (op.py:1108), count + 1000 after the runtime or
+# step-count limit (op.py:1129, 1153).
+_HYBRID_FLIP_COUNT_MIN_EXTRA = 100
+_HYBRID_FLIP_COUNT_MAX_EXTRA_CONV = 2000
+_HYBRID_FLIP_COUNT_MAX_EXTRA_BUDGET = 1000
+
 
 class ProfileVars(NamedTuple):
     """Per-profile constants (T-P, abundances, Kzz, gravity, radius,
@@ -1550,9 +1558,13 @@ def _make_runner(
             )
             do_flip = conv_flip | runtime_flip | count_flip
 
-            new_count_min = accept_count_next + jnp.int32(100)
-            count_max_conv = accept_count_next + jnp.int32(2000)
-            count_max_budget = accept_count_next + jnp.int32(1000)
+            new_count_min = accept_count_next + jnp.int32(_HYBRID_FLIP_COUNT_MIN_EXTRA)
+            count_max_conv = accept_count_next + jnp.int32(
+                _HYBRID_FLIP_COUNT_MAX_EXTRA_CONV
+            )
+            count_max_budget = accept_count_next + jnp.int32(
+                _HYBRID_FLIP_COUNT_MAX_EXTRA_BUDGET
+            )
 
             hybrid_use_vm_next = jnp.where(do_flip, jnp.float64(0.0), s.hybrid_use_vm)
             count_min_dyn_next = jnp.where(do_flip, new_count_min, s.count_min_dyn)

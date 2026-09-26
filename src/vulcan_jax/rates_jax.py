@@ -174,6 +174,8 @@ def apply_lowT_caps(
     i = rows.get(_LOWT_CAP_RXN_CH3)
     if i is not None:
         # Moses+2005 cap: k0=6e-29, kinf=2.06e-10*T^-0.4 (Lindemann form).
+        # Master's lim_lowT_rates (exoclime@80f75b9 op.py:320-340): this cap
+        # op.py:322-328, the C2H4 one :330-334, the C2H5 one :336-340.
         kinf = 2.06e-10 * Tz**-0.4
         cap = 6.0e-29 / (1.0 + 6.0e-29 * Mz / kinf)
         k = k.at[i].set(jnp.where(Tz <= 277.5, cap, k[i]))
