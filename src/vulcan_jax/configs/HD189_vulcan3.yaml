@@ -1,6 +1,6 @@
 # VULCAN-JAX configuration -- HD 189733 b, VULCAN 3 preset.
 #
-# This is the EXPLICIT VULCAN 3 configuration. It is HD189.yaml's physics with
+# The VULCAN 3 configuration: HD189.yaml's physics with
 # the numerics of shami-EEG/VULCAN `vm_branch` (the commit tests/science_sources.yaml
 # pins), the branch VULCAN 3 is being built from. Use HD189.yaml for a VULCAN 2 parity
 # run against exoclime/VULCAN `master`; use this one to exercise the VULCAN 3
@@ -41,24 +41,10 @@ S_H: 1.3183e-05
 # EQ ignores He_H for the shipped atom_list; const_lowT reads it.
 He_H: 0.09692
 ini_mix: EQ
-# Elemental abundances the equilibrium seed starts from. Two files ship:
-#   solar_element_abundances.dat            rocky elements suppressed to -3.0,
-#                                           hybrid C/N/O (2009), He/S (2019).
-#                                           The default, intended
-#                                           for the C-H-N-O and S-C-H-N-O
-#                                           networks, which have no Mg/Si/Fe
-#                                           species to hold the oxygen.
-#   solar_element_abundances_lodders2009.dat every element at solar, Lodders
-#                                           2009. What upstream VULCAN ships.
-#                                           Its C/N/O rows equal the default's,
-#                                           so the seed sees only a different
-#                                           helium: it does NOT reproduce
-#                                           upstream's rocky-oxide oxygen sink
-#                                           (0.166 dex on H2O/CH4/CO2 --
-#                                           no NCHO/SNCHO species can hold
-#                                           that oxygen). See notes.md 2.9.
-# The two disagree by ~20% median on HD 189733 b, so MATCH THIS FILE before
-# quoting any VULCAN-JAX vs VULCAN 2.0 number.
+# Seed abundances. solar_element_abundances.dat (default): rocky elements at
+# -3.0, for networks with no Mg/Si/Fe species. ..._lodders2009.dat: all solar
+# (upstream's file). Match this file before comparing with VULCAN 2
+# (notes §1.1, §2.9).
 fastchem_solar_abundance_file: thermo/solar_element_abundances.dat
 const_mix:
   CH4: 0.00055522
@@ -100,8 +86,8 @@ use_hybrid_vm_mol: true
 use_vz: false
 # vm_branch vulcan_cfg.py:149-151. Not a temperature clip: it raises P_b to
 # the shallowest deep level cooler than high_temp_cut_K and re-grids.
-# Inert on this planet (HD 189733 b never reaches 3500 K); it is set here to
-# match vm_branch, NOT because this config validates the feature.
+# Inert on this planet (HD 189733 b never reaches 3500 K); set to match
+# vm_branch, not to validate the feature.
 high_temp_cut: true
 high_temp_cut_K: 3500.0
 high_temp_cut_P: 1000000.0
@@ -180,9 +166,9 @@ conver_ignore:
 # vm_branch vulcan_cfg.py:161
 rtol: 0.25
 post_conden_rtol: 0.1
-# vm_branch vulcan_cfg.py:160 + op.py:836-851. Note the ONLY adaptive-rtol
+# vm_branch vulcan_cfg.py:160 + op.py:836-851. The only adaptive-rtol
 # difference between master and vm_branch is the decrease factor (0.75 ->
-# 0.5); the periods and the increase factor are identical in both.
+# 0.5); the periods and the increase factor are the same.
 use_adapt_rtol: true
 rtol_min: 0.01
 rtol_max: 2.5
@@ -193,8 +179,7 @@ adapt_rtol_dec: 0.5
 adapt_rtol_inc: 1.25
 adapt_rtol_loss_mul: 2.0
 adapt_rtol_inc_loss_thresh: 0.0002
-# 110 (not 64) so `dt < dt_min` ends a reject chain, as master does — see C11 in
-# notes.md (Parity & bug guide). Do not round down.
+# 110 so `dt < dt_min` ends a reject chain, as master does (C11).
 batch_max_retries: 110
 step_size_safety: 0.9
 step_size_zero_delta_frac: 0.01

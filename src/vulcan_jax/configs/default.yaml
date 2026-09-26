@@ -32,24 +32,10 @@ S_H: 1.3183e-05
 # EQ ignores He_H for the shipped atom_list; const_lowT reads it.
 He_H: 0.09692
 ini_mix: EQ
-# Elemental abundances the equilibrium seed starts from. Two files ship:
-#   solar_element_abundances.dat            rocky elements suppressed to -3.0,
-#                                           hybrid C/N/O (2009), He/S (2019).
-#                                           The default, intended
-#                                           for the C-H-N-O and S-C-H-N-O
-#                                           networks, which have no Mg/Si/Fe
-#                                           species to hold the oxygen.
-#   solar_element_abundances_lodders2009.dat every element at solar, Lodders
-#                                           2009. What upstream VULCAN ships.
-#                                           Its C/N/O rows equal the default's,
-#                                           so the seed sees only a different
-#                                           helium: it does NOT reproduce
-#                                           upstream's rocky-oxide oxygen sink
-#                                           (0.166 dex on H2O/CH4/CO2 --
-#                                           no NCHO/SNCHO species can hold
-#                                           that oxygen). See notes.md 2.9.
-# The two disagree by ~20% median on HD 189733 b, so MATCH THIS FILE before
-# quoting any VULCAN-JAX vs VULCAN 2.0 number.
+# Seed abundances. solar_element_abundances.dat (default): rocky elements at
+# -3.0, for networks with no Mg/Si/Fe species. ..._lodders2009.dat: all solar
+# (upstream's file). Match this file before comparing with VULCAN 2
+# (notes §1.1, §2.9).
 fastchem_solar_abundance_file: thermo/solar_element_abundances.dat
 const_mix:
   CH4: 0.00055522
@@ -60,10 +46,8 @@ const_mix:
 use_photo: true
 r_star: 0.805
 Rp: 8135789599.999999
-# Mp chosen so G*Mp/Rp^2 reproduces the adopted HD189 gs = 2140 cm/s^2 to
-# sub-ULP (same value as HD189.yaml). The raw literature mass 2.1220758e30
-# gives 2139.77 (-1.07e-4 rel), which measurably shifts photolysis rates
-# (up to ~7% per-layer J) and upper-layer radicals (~2.6e-3 in 20 steps).
+# Back-solved so G*Mp/Rp^2 = 2140 cm/s^2, VULCAN 2's adopted gs (Tsai+2017
+# sec 3.1).
 Mp: 2.1223033871582308e+30
 orbit_radius: 0.03142
 sl_angle: 0.8377573333333332
@@ -153,26 +137,12 @@ slope_cri: 0.0001
 yconv_min: 0.1
 flux_cri: 0.1
 flux_atol: 1.0
-# Certificate term with no VULCAN 2 counterpart (notes §3.1 C21): on the
-# accepted step where the chemistry certificate holds, the geometry is
-# refreshed from the current composition and the run may end only if
-# mu/g/Hp/dzi/Hpi moved by less than this relative amount. 1e-3 measured
-# (notes §1.10): HD209 photo-off ends 3e-3 in log VMR from its cadence-1
-# reference (1.56 without the term, 2e-2 at 1e-2); 1e-4 never certifies
-# HD189_vulcan3, whose top drifts 0.03-0.3% between candidates.
+# Certificate term with no VULCAN 2 counterpart (C21): end only if the
+# refreshed geometry moved less than this (value: notes §1.10).
 geom_conv_tol: 1.0e-3
-# Certificate term with no VULCAN 2 counterpart (notes §3.1 C23): the run may
-# end only if the operator-weighted column of every element is within this
-# relative distance of the column it started from: the change of that column
-# accumulated per step on the grid in force during the step, normalised by the
-# t=0 column, so a geometry refresh (which changes the discrete integral
-# without moving an atom) neither adds to the term nor rescales it, and what
-# is left is what the solver failed to conserve.
-# `loss_eps` bounds the PER-STEP change of the unweighted atom sum,
-# so a slow drain passes it (§1.12: a column certified having lost 21% of its
-# sulfur). 1e-2 measured (§1.13):
-# HD189 2.7e-5, HD209 2.4e-5, W39b 2.9e-7, HD189_vulcan3 2.7e-5, W39b
-# photo-off 2.2e-3; the drained columns it must reject are 2.2e-1 and 9.8e-1.
+# Certificate term (C23): end only if every element's operator-weighted
+# column is within this of its t=0 column; loss_eps bounds only the per-step
+# change (notes §1.13).
 element_budget_tol: 1.0e-2
 # The pinned HD189 example's [] (cfg_examples/vulcan_cfg_HD189.py:148); notes §1.2.
 conver_ignore: []
@@ -188,8 +158,7 @@ adapt_rtol_dec: 0.5
 adapt_rtol_inc: 1.25
 adapt_rtol_loss_mul: 2.0
 adapt_rtol_inc_loss_thresh: 0.0002
-# 110 (not 64) so `dt < dt_min` ends a reject chain, as master does — see C11 in
-# notes.md (Parity & bug guide). Do not round down.
+# 110 so `dt < dt_min` ends a reject chain, as master does (C11).
 batch_max_retries: 110
 step_size_safety: 0.9
 step_size_zero_delta_frac: 0.01
