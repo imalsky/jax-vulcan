@@ -35,7 +35,8 @@ class _StrictLoader(yaml.SafeLoader):
     Two departures from ``yaml.safe_load``, both to fail loudly instead of
     silently doing the wrong thing:
 
-    1. Unsigned-exponent scientific notation (``1e22``, ``5.0e21``, ``1e-14``)
+    1. Scientific notation with no dot or no exponent sign (``1e22``,
+       ``5.0e21``, ``1e-14``)
        parses as a float. Stock PyYAML (YAML 1.1 core schema) treats these as
        *strings*, which would silently poison numeric knobs a user hand-authors
        in a ``./configs`` override.

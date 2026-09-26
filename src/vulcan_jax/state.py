@@ -49,13 +49,13 @@ class AtmInputs(NamedTuple):
     top_flux: jnp.ndarray  # (ni,) top BC flux (#/cm^2/s)
     bot_flux: jnp.ndarray  # (ni,) bottom BC flux
     bot_vdep: jnp.ndarray  # (ni,) bottom deposition velocity
-    bot_fix_sp: jnp.ndarray  # (ni,) bottom fixed-mixing-ratio mask
+    bot_fix_sp: jnp.ndarray  # (ni,) bottom fixed mixing ratio
 
 
 class RateInputs(NamedTuple):
     """Rate constants. `k[0]` is unused: reactions are 1-based throughout VULCAN."""
 
-    k: jnp.ndarray  # (nr+1, nz) forward rate constants
+    k: jnp.ndarray  # (nr+1, nz) rate constants of every reaction
 
 
 class IniAbunOutputs(NamedTuple):
@@ -182,7 +182,7 @@ class PhotoRuntimeInputs(NamedTuple):
 
 
 class FixSpeciesInputs(NamedTuple):
-    """Fixed-species snapshot. `conden_min_lev` is zero when fix_species_from_coldtrap_lev=False."""
+    """Fixed-species snapshot. `conden_min_lev` is read only when fix_species_from_coldtrap_lev=True."""
 
     fix_species: tuple  # static ordering of species names
     fix_y: jnp.ndarray  # (n_fix_sp, nz)
@@ -203,7 +203,7 @@ class RunMetadata(NamedTuple):
     charge_list: tuple  # ion species (with non-zero charge)
     conden_re_list: tuple  # 1-based reaction ids that condense
     start_time: float  # wall-clock start (for the end-of-run report)
-    Ti: jnp.ndarray  # (nz-1,) interface temperature, 0.5*(Tco[:-1]+Tco[1:])
+    Ti: jnp.ndarray  # (nz-1,) interface temperature, 0.5*(Tco[:-1]+Tco[1:]); Tco (nz,) when use_moldiff=False
     gas_indx: tuple  # gas-only species indices
     pref_indx: int  # reference-layer index (height integ)
     gs: float  # surface gravity (cm/s^2)
@@ -229,7 +229,7 @@ class RunState(NamedTuple):
     photo_runtime: Optional[PhotoRuntimeInputs] = None
     fix_species: Optional[FixSpeciesInputs] = None
     # Host-side static metadata + photo cross-section pytree. Both default
-    # to None for partial RunStates; `with_pre_loop_setup(cfg)` fills both
+    # to None for partial RunStates; `with_pre_loop_setup(cfg)` fills `metadata`, and `photo_static` when use_photo
     # (`runstate_from_store` fills `metadata` only).
     metadata: Optional[RunMetadata] = None
     photo_static: Optional[PhotoStaticInputs] = None
@@ -816,11 +816,10 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
 
 
 def _var_save_list(*, use_photo, t_cross_sp, use_ion) -> list[str]:
-    """The legacy `var_save` key list, mirroring `VULCAN-master/store.py:83-90`.
+    """The legacy `var_save` key list, mirroring upstream `store.py:83-88`.
 
-    Returns a fresh list per call: `VULCAN-master/op.py:3286` iterates this
-    attribute and both producers extend it in place, so they must not share
-    one object. Takes resolved values because the two callers hold different
+    Returns a fresh list per call, so the two callers never share one
+    object (upstream `op.py:3240` iterates this attribute). Takes resolved values because the two callers hold different
     configs (`legacy_view` the run's, `_Variables` the process default).
     """
     keys = [
@@ -852,7 +851,7 @@ def legacy_view(rs: RunState, cfg=None):
     integration time, after `_cfg_overlay` has restored the process default,
     so falling back to `default_config()` silently reads default
     `use_photo`/`use_ion`/`T_cross_sp` and builds the wrong `var_save` list.
-    Callers that hold a cfg (`OuterLoop`, the CLI) pass `self._cfg`.
+    `OuterLoop`, which holds a cfg, passes `self._cfg`.
     """
     import types
 

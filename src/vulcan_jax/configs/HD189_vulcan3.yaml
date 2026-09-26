@@ -11,7 +11,7 @@
 #
 # Authored surface: edit values here (or a CWD ./configs/HD189_vulcan3.yaml).
 # Derived at load time (see config._DERIVED), do NOT add here:
-#   dt_max = runtime*1e-5, photo_switch_longdy_thresh = yconv_min*10,
+#   dt_max = min(runtime*1e-5, 1e15), photo_switch_longdy_thresh = yconv_min*10,
 #   para_anaTP = para_warm.
 # Gravity is derived as gs = G*Mp/Rp^2 (set Mp + Rp, not gs).
 atom_list:
@@ -83,9 +83,10 @@ use_moldiff: true
 use_vm_mol: true
 use_hybrid_vm_mol: true
 use_vz: false
-# vm_branch vulcan_cfg.py:149-151. Not a temperature clip: it raises P_b to
-# the shallowest deep level cooler than high_temp_cut_K and re-grids.
-# Inert on this planet (HD 189733 b never reaches 3500 K); set to match
+# vm_branch vulcan_cfg.py:149-151. Not a temperature clip: it lifts the bottom to
+# the deepest level at P >= high_temp_cut_P cooler than high_temp_cut_K and
+# re-grids. Inert on this planet (the profile peaks at 2600 K at P >= 1 bar;
+# its hot rows are at the top, which the cut ignores); set to match
 # vm_branch, not to validate the feature.
 high_temp_cut: true
 high_temp_cut_K: 3500.0
@@ -165,9 +166,10 @@ conver_ignore:
 # vm_branch vulcan_cfg.py:161
 rtol: 0.25
 post_conden_rtol: 0.1
-# vm_branch vulcan_cfg.py:160 + op.py:836-851. The only adaptive-rtol
-# difference between master and vm_branch is the decrease factor (0.75 ->
-# 0.5); the periods and the increase factor are the same.
+# vm_branch vulcan_cfg.py:160 + op.py:836-851. The adaptive-rtol
+# differences between master and vm_branch are the decrease factor (0.75 ->
+# 0.5) and rtol_min (0.02 -> 0.01); the periods and the increase factor are
+# the same.
 use_adapt_rtol: true
 rtol_min: 0.01
 rtol_max: 2.5

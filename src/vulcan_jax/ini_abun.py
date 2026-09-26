@@ -55,7 +55,7 @@ _CFG = default_config()
 
 # --- the equilibrium seed ---------------------------------------------------
 # Network-frozen inputs (species, elements, NASA-9 coefficients) are resolved
-# once at import; everything the config owns is read at call time, because
+# once, on first use (`_seed`); everything the config owns is read at call time, because
 # `state._cfg_overlay` rewrites `_CFG` per run.
 
 DEFAULT_ABUNDANCE_FILE = "thermo/solar_element_abundances.dat"
@@ -215,7 +215,7 @@ def eq_seed(Tco, p_bar, b):
 
     `b` is the elemental abundance vector in `seed_elements()` order; only its
     ratios matter. Species outside the seed (condensates, ions) are exactly
-    zero. A column with a layer that did not converge comes back all-NaN, so
+    zero. A column with an unconverged layer is NaN in every seed species, so
     no caller can use half a solution.
 
     The inputs are cast to float64: a float32 caller would otherwise give the
@@ -402,11 +402,11 @@ def _abun_lowT_residual(x, O_H, C_H, He_H, N_H):
 def _jax_newton(residual_fn, m0, args, max_iter=50, tol=1e-12):
     """Small dense Newton via `lax.while_loop` on residual norm.
 
-    Solves the 5-element `_abun_lowT` system. The Jacobian is built with
+    Solves the 5-element `_abun_lowT_residual` system. The Jacobian is built with
     `jax.jacrev`; the linear solve is `jnp.linalg.solve` (5x5 dense). Production callers pass
     `max_iter` / `tol` from `_CFG.fastchem_newton_max_iter` and
-    `_CFG.fastchem_newton_tol`; the defaults here are kept for
-    direct test callers.
+    `_CFG.fastchem_newton_tol`; the one test caller passes both too, so no
+    caller uses the defaults.
     """
     jac_fn = jax.jacrev(residual_fn)
 
@@ -441,7 +441,7 @@ def operator_column_weights(dz):
     """Cell weights (nz,) that the flux-form transport operator conserves.
 
     The diffusion divergence divides by the interface-centered spacing
-    `dz_ave = 0.5*(dz[j-1]+dz[j])` (`jax_step`, mirroring master op.py), so
+    `dz_ave = 0.5*(dzi[j-1]+dzi[j])` (`jax_step`, mirroring master op.py), so
     with zero-flux boundaries the discrete transport invariant is
     `Σ_j n_j * w_j` with `w_0 = dzi[0]`, `w_j = 0.5*(dzi[j-1]+dzi[j])`,
     `w_{nz-1} = dzi[-1]` (not `Σ_j n_j * dz_j`). On a uniform grid w == dz.
@@ -695,7 +695,8 @@ def compute_initial_abundance(data_atm) -> IniAbunOutputs:
 
     Side effect: when `use_condense=True`, the legacy `data_atm` container
     is mutated (saturation profiles, cold-trap min level, optional surface
-    H2O override). The pytree carries the gas-phase composition only.
+    H2O override, which goes to `_CFG.use_fix_sp_bot`). The pytree carries
+    the gas-phase composition only.
     """
     mix = _CFG.ini_mix
     if mix not in _MODE_DISPATCH:

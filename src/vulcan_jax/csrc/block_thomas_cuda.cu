@@ -455,7 +455,7 @@ struct BtOptIn {
 };
 
 // Dynamic shared memory above the 48 KB default needs a per-kernel opt-in.
-// All four kernels are opted in once per device, to the device's maximum, so a
+// Every factor and solve kernel is opted in once per device, to the device's maximum, so a
 // call changes no attribute: two differently sized calls cannot race on one,
 // and only the launch happens while XLA records a command buffer. XLA makes
 // the device's context current before calling a handler, so

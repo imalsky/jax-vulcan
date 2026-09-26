@@ -268,7 +268,7 @@ def _repair_stage(k, b_tr, c0, diag_d, sup_d, sub_d, fix_mask, n_tot, y):
 
 class AtmStatic(NamedTuple):
     """Atmosphere parameters held constant within a Ros2 step. nz from
-    Tco's leading axis, ni from Dzz's trailing axis."""
+    Tco's leading axis, ni from ms's leading axis."""
 
     Kzz: jnp.ndarray  # (nz-1,)
     Dzz: jnp.ndarray  # (nz-1, ni)
@@ -462,7 +462,7 @@ def _build_diff_coeffs_jax(y, atm: AtmStatic, grav: DiffGrav):
     ysum = jnp.sum(jnp.where(atm.gas_indx_mask[None, :], y, 0.0), axis=1)
     ysum = jnp.maximum(ysum, UNDERFLOW_DENOM)
 
-    # Build full nz arrays of interior values, then overwrite the boundaries.
+    # Interior rows (nz-2) first, then concatenate the boundary rows.
     j_int = jnp.arange(1, nz - 1)
     dz_ave = grav.dz_ave  # (nz-2,)
 
@@ -665,7 +665,7 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask,
     )
     diag_d = diag_d.at[0].add(bot_vdep_term)
     # Diffusion-limited escape at TOA (`top_flux / y[-1]` on the top-layer
-    # diagonal). Upstream carries it only in the upwind Jacobians
+    # diagonal). Of upstream's live Jacobians, only the upwind ones carry it
     # (exoclime@80f75b9 op.py:2044-2121, 2366+; vm_branch@84d010d
     # op.py:2123-2200, 2445+), so the gate is `use_vm_mol`, not "diff_esc
     # non-empty". The inner `where` mirrors upstream's `y > 0` guard and keeps
@@ -750,7 +750,7 @@ def jax_ros2_step(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask=Non
 
     Returns (sol, delta_arr), both (nz, ni). `fix_mask` (nz, ni) optionally
     pins selected (layer, species) entries by zeroing the corresponding
-    rows/cols of the LHS and RHS. `matrix_free` picks the stage operator the
+    LHS rows off the diagonal (c0 on it) and RHS entries. `matrix_free` picks the stage operator the
     solve's AD rules use (the primal is the same either way): True for
     forward mode, False for reverse mode (`_ros2_stages`).
     """
@@ -777,8 +777,8 @@ def make_atm_static(atm, ni: int, nz: int, cfg=None) -> AtmStatic:
     gas_mask = jnp.zeros((ni,), dtype=jnp.bool_)
     gas_mask = gas_mask.at[jnp.asarray(atm.gas_indx, dtype=jnp.int32)].set(True)
     # Independent of the toggles above (see the diff_esc note at the Jacobian
-    # assembly). Species not in the network are caught by runtime_validation,
-    # so the index lookup is safe here.
+    # assembly). Nothing checks these names against the network
+    # first, so a species not in the network raises ValueError here.
     diff_esc_np = np.zeros((ni,), dtype=bool)
     for _sp in cfg.diff_esc:
         diff_esc_np[_SPEC_LIST.index(_sp)] = True

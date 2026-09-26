@@ -49,8 +49,8 @@ _NET_JAX = _chem_funs._NET_JAX
 
 # run_queue's refill defaults: refill once this many lanes are free (or every
 # lane still holding a job is), and at least every _QUEUE_REFILL_EVERY loop
-# iterations. Untuned defaults, picked by hand; vulcan-forward passes its own
-# values.
+# iterations. Untuned defaults, picked by hand; a caller may pass its own
+# `chunk` (vulcan-retrieval does, through vulcan-forward).
 _QUEUE_REFILL_CHUNK = 8
 _QUEUE_REFILL_EVERY = 100
 
@@ -123,8 +123,8 @@ class JaxIntegState(NamedTuple):
     """Carry state for the JIT'd accept/reject loop.
 
     Shapes for the HD189 reference config: nz=150, ni=69, n_atoms=4,
-    nbin~2000, n_br~30. Scalars are float64 unless noted; counts are
-    int32. Photo fields use placeholder shape (1, 1) when use_photo=False.
+    nbin=2588, n_br=48. Scalars are float64 unless noted; counts are
+    int32. When use_photo=False, tau/aflux/sflux/dflux_*/prev_aflux use placeholder shape (1, 1) and J_br/J_br_T/Jion_br shape (0, nz).
     """
 
     y: jnp.ndarray  # (nz, ni)        current proposed state
@@ -133,18 +133,18 @@ class JaxIntegState(NamedTuple):
     dt: jnp.ndarray  # ()              step size to use for the next attempt
     t: jnp.ndarray  # ()              elapsed integration time
     delta: jnp.ndarray  # ()              truncation-error proxy of last attempt
-    accept_count: jnp.ndarray  # ()  int32       accepted steps in this batch
+    accept_count: jnp.ndarray  # ()  int32       accepted steps
     retry_count: jnp.ndarray  # ()  int32       retries on the in-flight step
     atom_loss: jnp.ndarray  # (n_atoms,)
     atom_loss_prev: jnp.ndarray  # (n_atoms,)
-    nega_count: jnp.ndarray  # ()  int32       cumulative this batch
+    nega_count: jnp.ndarray  # ()  int32       cumulative over the run
     loss_count: jnp.ndarray  # ()  int32
     delta_count: jnp.ndarray  # ()  int32
     small_y: jnp.ndarray  # ()              cumulative |y| of clipped-small cells
     nega_y: jnp.ndarray  # ()              cumulative |y| of clipped-negative cells
 
-    # Photo state (lives in device memory between batches).
-    # All zeros / unused when use_photo=False.
+    # Photo state. All zeros / unused when use_photo=False, except `k_arr`
+    # (the full rate table, read every step).
     k_arr: jnp.ndarray  # (nr+1, nz)     reaction-rate table
     tau: jnp.ndarray  # (nz+1, nbin)   optical depth
     aflux: jnp.ndarray  # (nz, nbin)     actinic flux
@@ -190,8 +190,8 @@ class JaxIntegState(NamedTuple):
     loss_criteria: jnp.ndarray  # ()                  float64
     update_photo_frq: jnp.ndarray  # ()                  int32
     is_final_photo_frq: jnp.ndarray  # ()                  bool
-    geom_ok: jnp.ndarray  # ()  bool, refreshed geometry agreed at the last certificate candidate
-    budget_ok: jnp.ndarray  # () bool  column element budget held at the last candidate
+    geom_ok: jnp.ndarray  # ()  bool, True only on a certificate-candidate step whose refreshed geometry agreed
+    budget_ok: jnp.ndarray  # () bool  True only on a candidate step whose column element budget held
     budget_ref: jnp.ndarray  # (n_atoms,) the t=0 operator-weighted atom column on the t=0 grid (fixed; the budget denominator)
     budget_err: jnp.ndarray  # (n_atoms,) accumulated per-step column change / budget_ref, each step on its own grid
     budget_drift: jnp.ndarray  # (n_atoms,) budget_err relative to H: the certificate's budget operand
@@ -214,7 +214,8 @@ class JaxIntegState(NamedTuple):
     t_evo: jnp.ndarray  # (save_evo_n_max,)        float64
     evo_idx: jnp.ndarray  # ()  int32  next slot to fill
 
-    # Batched-runner termination state (unused by the single-profile path).
+    # Termination state. `is_done` is batched-runner only; every runner sets
+    # `termination_reason` on its exit state.
     # `is_done` freezes a finished lane while stragglers finish.
     # `termination_reason`: one of the TERM_* codes.
     is_done: jnp.ndarray  # ()  bool
@@ -223,7 +224,7 @@ class JaxIntegState(NamedTuple):
     # Hybrid vm_mol phase blend for jax_ros2_step: 1.0 = upwind (phase 0),
     # 0.0 = central difference (phase 1). Hybrid runs flip 1.0 -> 0.0 the
     # first time phase 0 ends (convergence, runtime, OR step-count), so a run
-    # stopping via `_real_terminate` is in phase 1 -- a fixed point only if
+    # stopping on convergence or a cap is in phase 1 -- a fixed point only if
     # phase 1 also converged. Non-hybrid runs never flip (bit-identical trace).
     hybrid_use_vm: jnp.ndarray  # ()  float64
 
@@ -296,7 +297,7 @@ def _step_size(
 ) -> jnp.ndarray:
     """Adaptive Ros2 dt update. Returns the next dt (scalar, seconds).
 
-    I-control (default, master-faithful):
+    I-control (master-faithful, the only dt control):
     `h_factor = clip(safety * (rtol/delta)^0.5, dt_var_min, dt_var_max)`,
     `h_new = clip(dt * h_factor, dt_min, dt_max)`; `delta == 0` substitutes
     `zero_delta_frac * rtol` (cfg.step_size_safety /
@@ -440,7 +441,7 @@ def _make_photo_branch(photo_static: _PhotoStatic):
         tau_new = _photo_mod.compute_tau_jax(s.y, s.dz, pd)
 
         # Two-stream RT. `s.dflux_u` is the prior call's value (matches
-        # op.py:2694's dflux_u-as-it-stood-before-the-up-sweep).
+        # op.py:2692, which reads dflux_u before the up-sweep at op.py:2693-2694).
         aflux_new, sflux_new, dflux_d_new, dflux_u_new = _photo_mod.compute_flux_jax(
             tau_new,
             sflux_top,
@@ -495,7 +496,7 @@ def _make_photo_branch(photo_static: _PhotoStatic):
         else:
             Jion_br_new = s.Jion_br
 
-        # aflux_change: mirrors op.py:2737 / op_jax.py:94-101.
+        # aflux_change: mirrors op.py:2737 / op_jax.py:79-88.
         # `s.aflux` here is the old aflux, used as `prev_aflux` in the ratio.
         # After this branch, prev_aflux <- old aflux, aflux <- new.
         mask = aflux_new > flux_atol
@@ -631,9 +632,9 @@ class _Statics(NamedTuple):
     use_fix_sp_bot: bool
     fix_sp_bot_idx: jnp.ndarray  # (n_fix_sp_bot,) int32
     fix_sp_bot_mix: jnp.ndarray  # (n_fix_sp_bot,)
-    # Hycean H2/He bottom-pin: snapshots ymix[0,H2]/ymix[0,He] at t>1e6
-    # and pins them via the fix_sp_bot path. Indices are -1 sentinels
-    # when the species are absent (use_fix_H2He must then be False).
+    # Hycean H2/He bottom-pin: snapshots ymix[0,H2]/ymix[0,He] once
+    # t > hycean_pin_time and pins them in the bottom layer, with fix_sp_bot's
+    # `delta[0] = 0`. Indices are -1 sentinels when use_fix_H2He is False.
     use_fix_H2He: bool
     h2_idx: int
     he_idx: int
@@ -718,7 +719,7 @@ def _convergence_ok(s: JaxIntegState, c):
     candidate and the hybrid phase-flip.
 
     `slope_min` is recomputed from the live Hp (atm refresh moves it). Same
-    two-branch predicate as upstream (op.py:1056); shipped configs exit on
+    two-branch predicate as upstream (op.py:1060); shipped configs exit on
     the loose branch.
     """
     tight, loose = _branches(s.longdy, s.longdydt, _slope_min(s), c)
@@ -767,7 +768,8 @@ def _make_runner(
     refresh_static: Optional[_atm_refresh_mod.AtmRefreshStatic] = None,
     conden_static: Optional[_conden_mod.CondenStatic] = None,
 ):
-    """Build a JIT'd `runner(state, atm_static) -> state` that runs to
+    """Build `(runner, runner_batch, runner_queue, _make_runner_jvp)`; the
+    JIT'd `runner(state, atm_static) -> state` runs to
     convergence, `count_max`, or `runtime`.
 
     Body order per iteration (matches `op.Integration.__call__`):
@@ -776,7 +778,8 @@ def _make_runner(
       3. conden      (on accept, when t >= start_conden_time and the
                       fix_species freeze has not fired; stop_conden_time only
                       arms that freeze -- with fix_species=[] conden runs forever)
-      4. atm_refresh (on accept, when accept_count % update_frq == 0;
+      4. atm_refresh (on accept, when accept_count % update_frq == 0 or
+                      on a certificate candidate;
                       reads post-conden ymix, geometry feeds next iter)
       (batched runs key both cadences to the loop's iteration tick instead,
        so all lanes take those branches together)
@@ -786,8 +789,8 @@ def _make_runner(
       8. adaptive rtol
       9. photo-frequency ini->final switch
 
-    `cond_fn` then checks `(t > runtime) | (count > count_max) |
-    (ready & converged)`.
+    `cond_fn` then checks `(t > runtime_dyn) | (count > count_max_dyn) |
+    (ready & certified)` (phase 1 only on hybrid runs), or a non-finite `y`.
     """
     clip_fn = _make_clip_fn(
         non_gas_present, gas_indx_mask, statics.pos_cut, statics.nega_cut
@@ -943,7 +946,7 @@ def _make_runner(
         return tight | loose
 
     def _real_terminate(s: JaxIntegState, tangent_ok=True):
-        """Real (non-chunk) termination predicate + reason code.
+        """Termination predicate + reason code.
 
         Reason priority matches master's stop() (op.py:1065-1085): converged
         over runtime over step-count, so a step that is both converged and at
@@ -967,8 +970,8 @@ def _make_runner(
             # (central difference) and extends the budget instead (vm_branch
             # stop()). A run stopping through this predicate is in phase 1 --
             # a central-difference fixed point only if phase 1 converged
-            # (reason 1). Bypass exits (host wall-clock bail-out, the
-            # non-finite exit below) can still return in phase 0.
+            # (reason 1). The non-finite exit
+            # below is a bypass and can still return in phase 0.
             real_term = real_term & (s.hybrid_use_vm < jnp.float64(0.5))
         # A non-finite state can never recover, so stop at once with the
         # batched path's reason 5 (`body_fn_batch`) instead of burning the
@@ -1049,7 +1052,7 @@ def _make_runner(
         # runs never flip it, so this equals atm_static_.use_vm_mol bit-for-bit.
         atm_step = atm_step._replace(use_vm_mol=s.hybrid_use_vm)
         # vm depends on mu (via Hpi) and g, so it must be refreshed in-loop
-        # with the geometry (op.update_mu_dz); freezing it at setup biases a
+        # with the geometry (vm_branch@84d010d op.py:992, update_mu_dz); freezing it at setup biases a
         # mol-diff-dominated upper atmosphere. Its inputs change only at
         # refresh cadence, so per-step recompute reproduces upstream's cadence.
         if use_vm_mol_static and refresh_static is not None:
@@ -1895,8 +1898,8 @@ def _make_runner(
         # vmap applies the body to every lane each iteration until the slowest
         # finishes, so finished lanes must be frozen: advance all lanes, then
         # keep the pre-step carry `s` for lanes that are done / terminate now /
-        # went non-finite. Freezing on `s` makes each lane bit-identical to
-        # its solo run.
+        # went non-finite. Freezing on `s` keeps a finished lane's carry
+        # unchanged while the slowest lane runs.
         real_term, reason = _real_terminate(s)
         s_adv = body_fn(s, atm_static_, lane_axis=lane_axis, it=it)
         nan_now = jnp.logical_not(jnp.all(jnp.isfinite(s_adv.y)))
@@ -2262,8 +2265,9 @@ def _longdy_reduce(
     longdy = jnp.max(ratio)
     # NaN guard: the masks above are all False for NaN, so an all-NaN state
     # would read longdy == 0.0 ("converged"). Force +inf so a poisoned run can
-    # never converge and exits via the count/runtime ladder, matching master's
-    # raise on an empty amax (op.py:1055).
+    # never converge, matching master's raise on an empty amax (op.py:1055).
+    # `_real_terminate` stops a non-finite `y` at once (reason 5); a
+    # non-finite tangent runs to the count/runtime cap.
     state_is_bad = ~jnp.all(jnp.isfinite(y)) | ~jnp.all(jnp.isfinite(ymix))
     if diff is not None:
         state_is_bad = state_is_bad | ~jnp.all(jnp.isfinite(diff))
@@ -2279,8 +2283,8 @@ class OuterLoop:
         # cfg defaults to the process default (the CLI);
         # load_config() users pass their own namespace so every runtime knob
         # reads from the cfg the RunState was built with (setup counterpart:
-        # state._cfg_overlay). The import-locked network is the one knob cfg
-        # cannot change here.
+        # state._cfg_overlay). The import-locked knobs (network, com_file,
+        # atom_list) are the ones cfg cannot change here.
         self._cfg = cfg if cfg is not None else default_config()
         if float(self._cfg.dt_max) > DT_MAX_S:
             raise ValueError(
@@ -2586,8 +2590,9 @@ class OuterLoop:
 
         `dstate` / `datm` mirror `state` / `atm_static` leaf for leaf, as
         `jax.jvp` hands them back: a leaf with a float tangent is
-        differentiated, every other leaf (float0, ints, flags) is held
-        constant. Returns `(final, dfinal, tangent_longdy, tangent_ok)`:
+        differentiated, a non-float leaf (ints, flags; float0 tangent) is
+        held constant, and a float leaf without a float tangent raises
+        TypeError. Returns `(final, dfinal, tangent_longdy, tangent_ok)`:
         `dfinal` mirrors `final` the same way (float0 on constant leaves),
         so downstream maps continue with `jax.jvp(g, (final.y,), (dfinal.y,))`.
 
@@ -2663,10 +2668,9 @@ class OuterLoop:
         """Pack photo cross sections + scalar configs into a `_PhotoStatic`.
 
         Returns None if `use_photo=False` (the runner skips the photo branch
-        entirely in that case). Reuses the photo data caches from the
-        odesolver when available (populated by the pre-loop
-        `op_jax.Ros2JAX.compute_tau` call in
-        `state._build_pre_loop_runstate_impl`).
+        entirely in that case). Reuses the photo data caches on the
+        odesolver when set; otherwise builds them from its `_photo_static`
+        and caches them there.
         """
         if not self._cfg.use_photo:
             return None
@@ -2715,8 +2719,8 @@ class OuterLoop:
         dbin2 = float(photo_static.dbin2)
 
         ag0 = float(_phy_const.ag0)
-        # Record the baked star's TOA flux here (not only in prepare_runstate)
-        # so a pre-built runner still rejects a later different-star batch.
+        # Record the baked star's TOA flux here, so `prepare_runstate` also
+        # rejects a later different-star batch on a pre-built runner.
         if self._sflux_top_ref is None:
             self._sflux_top_ref = np.asarray(var.sflux_top, dtype=np.float64)
         return _PhotoStatic(
@@ -2750,8 +2754,10 @@ class OuterLoop:
         """Pack the static inputs to `atm_refresh.update_mu_dz_jax`.
 
         Captures the T-P profile, planetary constants, species masses, and
-        the reference layer / boundary z-value once at OuterLoop init.
-        Reads `atm` only; the refresh statics are fixed for the run.
+        the reference layer / boundary z-value from `atm`, cfg and the
+        composition table (no `var`). Built with the runner and again per
+        profile by `_profile_vars_from_runstate`; the refresh statics are
+        fixed for the run.
         """
         from . import composition as _ba
 
@@ -3064,11 +3070,12 @@ class OuterLoop:
             fix_mask=jnp.asarray(fix_mask_init, dtype=jnp.bool_),
             fix_pfix_idx=jnp.asarray(fix_pfix_idx_init, dtype=jnp.int32),
             # Hycean: seed pinned=False, mix=[0, 0]; the body snapshots the
-            # live ymix when (use_fix_H2He=True) & (~pinned) & (t > 1e6).
+            # live ymix when (use_fix_H2He=True) & (~pinned) & (t > hycean_pin_time).
             h2he_pinned=jnp.bool_(False),
             h2he_mix=jnp.zeros((2,), dtype=jnp.float64),
-            # save_evolution buffers. Allocated to the cfg's
-            # `save_evo_n_max` when on; length-1 placeholder when off.
+            # save_evolution buffers. Allocated to `save_evo_n_max`
+            # (ceil(count_max / save_evo_frq) + 1) when on; length-1
+            # placeholder when off.
             y_evo=jnp.zeros(
                 (int(self._statics.save_evo_n_max), nz, ni),
                 dtype=jnp.float64,
@@ -3078,7 +3085,8 @@ class OuterLoop:
                 dtype=jnp.float64,
             ),
             evo_idx=jnp.int32(0),
-            # Batched-runner flags; the single-profile path never reads them.
+            # Batched-runner flags; the single-profile loop never reads them (its
+            # runner sets `termination_reason` once at exit).
             is_done=jnp.bool_(False),
             termination_reason=jnp.int32(TERM_RUNNING),
             # Phase seed: upwind (1.0) when use_vm_mol, else central (0.0);
@@ -3101,8 +3109,8 @@ class OuterLoop:
         preserved verbatim from `rs_entry.atm`; only the dynamic refresh
         slots (g, mu, Hp, dz, dzi, zco, zmco, Hpi, top_flux, vs, and vm
         under use_vm_mol) come from the carry. Step / params / atoms /
-        photo_runtime / fix_species are rebuilt from the carry against
-        the entry-time ordering captured in `rs_entry`.
+        photo_runtime / fix_species are rebuilt from the carry, in the
+        OuterLoop's atom order and cfg `fix_species` order.
         """
         g = jnp.asarray(state.g, dtype=jnp.float64)
         zco = jnp.asarray(state.zco, dtype=jnp.float64)
@@ -3254,7 +3262,7 @@ class OuterLoop:
 
         end_case=5 is a VULCAN-JAX addition with no upstream counterpart: the
         run stopped without meeting the convergence criterion and without
-        hitting either cap -- a lane frozen on non-finite state
+        hitting either cap -- a run stopped on a non-finite state
         (termination_reason 5) or a "converged" state that is not finite.
         """
         reason = int(state.termination_reason)
@@ -3336,8 +3344,8 @@ class OuterLoop:
         return rs_out
 
     def prepare_runstate(self, rs):
-        """Build `(init_state, atm_static)` for one RunState and ensure the
-        runner closure is built for this rs's (nz, toggle-combo).
+        """Build `(init_state, atm_static)` for one RunState, and build the
+        runner closure on the first call (later calls reuse it; nz is not checked).
 
         The batched GPU driver calls this per profile, then stacks the
         results (`stack_integ_states` / `stack_atm_statics`) into one batch
@@ -3469,8 +3477,8 @@ class OuterLoop:
         """Build a minimal legacy-shape stand-in for the post-run report.
 
         `print_end_msg` / `print_unconverged_msg` / `print_prog` read only
-        counters, start_time, termination_reason and atom_loss, plus var.t /
-        var.dt / var.longdy / var.longdydt.
+        counters, start_time, termination_reason, atom_loss and
+        where_varies_most, plus var.t / var.dt / var.longdy / var.longdydt.
         """
         import types
 

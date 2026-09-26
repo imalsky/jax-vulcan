@@ -2,7 +2,8 @@
 """One-off data-prep: splice VPL solar + Epsilon Eridani UV into one nm spectrum.
 
 Reads `VPL_solar.txt` (using < 115 nm and >= 283 nm) and `h_epseri_uvsum_spc.txt`
-(Angstrom -> nm, scaled by distance/radius to the stellar surface),
+(Angstrom -> nm, scaled by (d * 0.735 / r_sun)^2, upstream's formula: it
+multiplies by R_star where (d / R_star)^2 divides, so the flux is low by 0.735^4),
 concatenates them, and writes `flux-HD189_Moses11.txt`.
 """
 
@@ -35,7 +36,7 @@ with open("h_epseri_uvsum_spc.txt") as f:  # wavelength in Angstrom
             wl = float(li[0]) * 0.1
             flux = (
                 float(li[1]) * 10.0 * (10.475 * 63241 * au / r_sun * 0.735) ** 2
-            )  # eps Eridani is 10.475 light years away (distance/radius scaling to the stellar surface)
+            )  # eps Eridani is 10.475 light years away; this multiplies by R_star (0.735) where the surface scaling divides
 
             if flux > 0:
                 new_str += "{:<12}".format(wl) + "{:>12.2E}".format(flux) + "\n"

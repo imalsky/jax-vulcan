@@ -2,7 +2,7 @@
 
 Pure-function kernels (cfg + arrays in, arrays out) plus a thin `Atm`
 facade that mutates a legacy `data_atm` container for callers that still
-read attributes directly (rate parser, .vul writer, atm_refresh).
+read attributes directly (rate setup, initial abundances, photolysis setup, the RunState snapshot).
 """
 
 from __future__ import annotations
@@ -68,7 +68,7 @@ def high_temp_cut_regrid(
     """Re-gridded pressure column for the high-temperature bottom cut.
 
     ``pco[0]`` is the deepest (highest-pressure) level. If any layer at
-    ``P >= P_min`` is hotter than ``T_max``, the bottom pressure is raised to
+    ``P >= P_min`` is hotter than ``T_max``, the bottom pressure is lowered to
     the first deep level that is cool enough (floored at ``P_min``) and the
     column is re-gridded onto ``nz`` logspaced levels down to ``P_t``.
     Returns ``None`` when no cut is needed. NumPy port of vm_branch
@@ -231,8 +231,8 @@ def _read_atm_table(atm_file: str) -> dict[str, np.ndarray]:
 def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray]:
     """Build (Tco, Kzz, vz, M, n_0) for the configured atm/Kzz/vz modes.
 
-    `pco` and `pico` are inputs because some modes (`vulcan_ini`, `table`)
-    overwrite `pco` from a saved file.
+    `pco` and `pico` are inputs because the `table` mode
+    overwrites `pco` from a saved file.
     """
     nz = int(pco.shape[0])
     atm_type = cfg.atm_type
@@ -253,7 +253,7 @@ def load_TPK(cfg, pco: np.ndarray, *, pico: np.ndarray) -> dict[str, jnp.ndarray
                 cfg.para_anaTP,
                 gs=surface_gravity(cfg),
                 # pco[0] (deepest level) keeps the profile self-consistent
-                # after a high_temp_cut re-grid raises the bottom pressure.
+                # after a high_temp_cut re-grid lowers the bottom pressure.
                 Pb=float(np.asarray(pco)[0]),
             )
         )
@@ -533,7 +533,7 @@ def compute_mu_dz_g(
 
 
 # Cloutman dynamic-viscosity polynomial (na, a, b) per atm_base
-# (build_atm.py:589-597). CO2 is not tabulated; falls back to N2.
+# (build_atm.py:589-599). CO2 is not tabulated; falls back to N2.
 _VISCOSITY_TABLE: Mapping[str, tuple[float, float, float]] = {
     "N2": (1.52, 1.186e-5, 86.54),
     "H2": (1.67, 1.936e-6, 2.187),
@@ -819,7 +819,7 @@ def read_sflux_binned(
         dtype=np.float64,
     )
 
-    # Upstream (build_atm.py:635) leaves sflux_din12_indx = -1 when the node is
+    # Upstream (build_atm.py:635, :652) leaves sflux_din12_indx = -1 when the node is
     # absent and compute_J then integrates bins[:-1] at dbin1 (dropping the
     # last bin); refused here instead.
     transition = np.flatnonzero(bins_np == dbin_12)
@@ -942,7 +942,7 @@ def sat_p_jax(sp: str, T: jnp.ndarray) -> jnp.ndarray:
 
     Single source of truth for :func:`compute_sat_p`, expressed in ``jnp`` so
     the saturation curve is differentiable w.r.t. temperature. The only
-    non-smooth points are the phase-boundary kinks (ice/liquid for H2O, the
+    non-smooth points are the phase-boundary jumps (ice/liquid for H2O, the
     413 K break for S2/S8, the 187.6 K break for H2S). Fits and coefficients
     from build_atm.py:804-857.
     """
@@ -952,8 +952,8 @@ def sat_p_jax(sp: str, T: jnp.ndarray) -> jnp.ndarray:
         c0, c1, c2, c3 = 6111.5, 23.036, -333.7, 279.82  # ice constants
         w0, w1, w2, w3 = 6112.1, 18.729, -227.3, 257.87  # liquid constants
         # Ackerman & Marley (2001): ice for T < 0 C, liquid water for T >= 0 C.
-        # Upstream's (T<0)*ice + (T>0)*water is 0 at 273 K; one `where` is
-        # continuous.
+        # Upstream's (T<0)*ice + (T>0)*water is 0 at 273 K; one `where` has
+        # no zero there (the two fits still differ by 0.6 dyne/cm^2 at 0 C).
         ice = c0 * jnp.exp((c1 * T_C + T_C**2 / c2) / (T_C + c3))
         liquid = w0 * jnp.exp((w1 * T_C + T_C**2 / w2) / (T_C + w3))
         return jnp.where(T_C < 0, ice, liquid)
@@ -1046,7 +1046,7 @@ class Atm:
         return data_atm
 
     def apply_high_temp_cut(self, data_atm):
-        """Raise the bottom pressure so deep T does not exceed
+        """Lower the bottom pressure so deep T does not exceed
         ``high_temp_cut_K`` (vm_branch ``build_atm.apply_high_temp_cut``).
 
         Delegates grid selection to :func:`high_temp_cut_regrid`, then reloads

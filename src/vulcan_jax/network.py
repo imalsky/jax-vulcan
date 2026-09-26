@@ -2,8 +2,10 @@
 
 Forward reactions sit at odd parser-indices (1, 3, 5, ...) with a reverse
 slot at i+1; reverse rates are filled in later from NASA-9 Gibbs energies.
-Reverse computation stops at `stop_rev_indx`, so condensation, photo,
-ion, and radiative-recombination reactions never get a reverse slot.
+Thermal reverse rates fill only slots below `stop_rev_indx` and skip
+condensation, photo and ion rows: photo and ion reverse slots stay zero,
+and a condensation reverse slot holds the evaporation rate set at runtime.
+Radiative-recombination networks are refused.
 
 Sections in file order: two-body, 3-body w/ k_inf (Lindemann), 3-body
 w/o k_inf, special (hardcoded), condensation, radiative recombination,
@@ -57,7 +59,7 @@ class Network:
     nr: int  # number of reaction slots (forward + reverse)
 
     # Stoichiometry, padded with `ni` (no-op slot pointing to y[ni]=1.0).
-    # Shape [nr+1, max_reac/max_prod]. Row 0 is unused (1-based indexing).
+    # Shape [nr+1, max(max_reac, max_prod)]. Row 0 is unused (1-based indexing).
     reactant_idx: np.ndarray  # int64
     product_idx: np.ndarray  # int64
     reactant_stoich: np.ndarray  # float64
@@ -452,7 +454,7 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
     max_reac = max(max_reac, 1)
     max_prod = max(max_prod, 1)
 
-    PAD = ni  # pad -> y[ni]=1; no-op multiplier and segment_sum drops the slot.
+    PAD = ni  # pad -> y[ni]=1, a no-op multiplier; RHS codegen and Jacobian tables skip it.
 
     # Reverse reactions store the forward's products in their reactant slot,
     # so both directions need to fit in the same `max_terms` width.

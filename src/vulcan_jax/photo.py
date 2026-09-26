@@ -279,8 +279,8 @@ class PhotoJData(NamedTuple):
       din12_indx:    int                 wavelength index where dbin transitions
       dbin1:         float               bin spacing for wavelengths < dbin_12trans
       dbin2:         float               bin spacing for wavelengths >= dbin_12trans
-      branch_keys:   list[(species, branch)]  ordering for non-T branches
-      branch_T_keys: list[(species, branch)]  ordering for T-dep branches
+      branch_keys:   tuple[(species, branch)] ordering for non-T branches
+      branch_T_keys: tuple[(species, branch)] ordering for T-dep branches
     """
 
     cross_J: jnp.ndarray
@@ -442,7 +442,7 @@ def _pack_branch_to_k_index_map(branch_keys, rate_index, remove_list):
 def pack_J_to_k_index_map(photo_J, var, cfg):
     """Build static index arrays mapping each branch to its `var.k` reaction index.
 
-    Returns four (n_br,) arrays plus their T-branch counterparts:
+    Returns two (n_br,) arrays and their two (n_br_T,) T-branch counterparts:
         branch_re_idx     int64: reaction index in k_arr (1..nr); 0 if inactive
         branch_active     bool: True if this branch should write into k_arr
         branch_T_re_idx   int64: same, for T-dep branches

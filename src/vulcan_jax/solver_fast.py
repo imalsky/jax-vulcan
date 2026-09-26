@@ -181,7 +181,7 @@ def build(force: bool = False, cuda: bool = False) -> Path:
     if not force and _is_current(lib, src):
         return lib
     # -isystem: the XLA headers' own warnings are not reported. No -Werror: the
-    # CPU build runs at import, where a newer compiler's warning must not fail.
+    # CPU build runs on the first `ffi` call, where a newer compiler's warning must not fail.
     flags = ["-O2", "-std=c++17", "-shared", f"-DVULCAN_BT_SOURCE_HASH={_source_hash(src)}",
              "-isystem", jax.ffi.include_dir()]
     if cuda:

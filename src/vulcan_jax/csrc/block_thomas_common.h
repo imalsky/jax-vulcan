@@ -40,7 +40,8 @@ inline constexpr int kBtMaxBatch = 4;
 enum BtOperand { kBtLu, kBtPerm, kBtSup, kBtSub, kBtNumOperands };
 
 // The rhs leading dimensions and, per factor operand, the stride of each one
-// in operand elements (0 where the operand has size 1 and broadcasts).
+// in units of that operand's per-system size (0 where the operand has size 1
+// and broadcasts).
 struct BtBcast {
   int nd;
   int64_t dim[kBtMaxBatch];

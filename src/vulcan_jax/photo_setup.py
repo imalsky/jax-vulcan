@@ -85,7 +85,7 @@ def _make_bins(
     """Two-resolution wavelength bin grid (nm).
 
     The transition must lie strictly inside the modeled interval. Upstream
-    (op.py:583-585) falls back to a single dbin1-spaced grid otherwise, with
+    (op.py:583-585) accepts the endpoints and falls back to a single dbin1-spaced grid outside them, with
     `sflux_din12_indx = -1`, which its compute_J then slices as `bins[:-1]`;
     refused here instead.
     """
@@ -302,7 +302,7 @@ def _bin_T_dependent(
                             )
 
         else:
-            # Tz above the highest tabulated T sample.
+            # Tz at or above the highest tabulated T sample.
             if max_T_sp == _ROOM_T_SAMPLE_K:
                 cross_T[lev] = cross_at_bins
                 for i in range(1, n_branch + 1):

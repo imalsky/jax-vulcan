@@ -97,7 +97,7 @@ class ReadRate(object):
 def _synthesize_cross_dicts(static) -> dict:
     """Build the legacy `var.cross*` dict views from a `PhotoStaticInputs`.
 
-    The .vul writer publishes the same six photo dict keys the upstream
+    The .vul writer publishes up to five of these six dicts (never `cross_J_T`), the keys the upstream
     `plot_py/` scripts index (`d['variable']['cross'][sp]`,
     `d['variable']['cross_J'][(sp,i)]`, etc.); the dicts are rebuilt from
     the dense pytree at pickle time. Every value is wrapped in
@@ -201,7 +201,7 @@ def _synthesize_J_sp_dict(
 
     Args:
         runstate:       populated RunState; needs `photo_runtime.aflux`
-                        and `photo_static.{bins, dbin1, dbin2, din12_indx}`.
+                        and `photo_static.{dbin1, dbin2, din12_indx}`.
         branch_count:   `{sp: n_branch}` mapping (max branch number per sp).
         species_iter:   iterable of species names (photo_sp / ion_sp).
         branch_keys:    tuple of `(sp, br)` for non-T cross_J rows.
@@ -555,7 +555,7 @@ class Output(object):
 
     def save_cfg(self, dname):
         """Write a repr snapshot of the active cfg (including make_config
-        overrides) to `cfg_<out_name>.txt` under `dname/output_dir`, skipping
+        overrides) to `cfg_<out_name stem>.txt` under `dname/output_dir`, skipping
         private, callable, type, and module attributes so it re-reads as Python.
         """
         # Create the directory where the file is written, not under the cwd.

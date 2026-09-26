@@ -3,8 +3,9 @@
 
 import os
 
-# One OpenMP thread, set before NumPy/JAX load: the hot path is one XLA
-# program and BLAS threads only oversubscribe.
+# One OpenMP thread. The package `__init__` has already loaded NumPy and
+# JAX, so this takes effect only in the `_relaunch_for_frozen_knobs` re-exec:
+# the hot path is one XLA program and BLAS threads only oversubscribe.
 os.environ["OMP_NUM_THREADS"] = "1"
 
 import time
@@ -13,8 +14,8 @@ import jax as _jax
 
 # Persistent XLA compile cache: the codegen RHS and the whole-loop while_loop
 # take seconds to compile cold and are reused verbatim across runs. The two
-# thresholds below disable JAX's default "only cache big, slow compiles" gate so
-# every step kernel lands in the cache, not just the runner.
+# thresholds below equal JAX's defaults (cache a compile of >= 1 s; entry-size
+# floor left to JAX), so compiles faster than 1 s are not cached.
 _jax.config.update(
     "jax_compilation_cache_dir",
     os.environ.get(

@@ -5,7 +5,7 @@ Dzz, vm, vs, ...) at pre-loop setup and freezes it to NumPy before the runner.
 This module re-expresses the same cascade as one differentiable
 function, :func:`build_atm_static`, so gradients flow from the physical inputs
 (T(P) profile / T_irr, surface gravity, planet radius, the pressure grid, eddy
-and molecular diffusion, composition) all the way to the `AtmStatic` the Ros2
+diffusion, vertical advection, composition) all the way to the `AtmStatic` the Ros2
 step consumes.
 
 Usage -- pair it with forward-mode AD (`jax.lax.while_loop` supports `jvp`;
@@ -23,7 +23,7 @@ Usage -- pair it with forward-mode AD (`jax.lax.while_loop` supports `jvp`;
 
     dL_dTirr = jax.jvp(loss_of_Tirr, (tp[1],), (1.0,))[1]
 
-`spec` is static configuration (species list, atm_base, toggles, the
+`spec` is static configuration (per-species arrays, atm_base, toggles, the
 discrete reference layer ``pref_indx``); differentiate w.r.t. the
 :class:`PhysicalInputs` pytree only, closing over `spec`.
 

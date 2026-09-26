@@ -21,13 +21,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-# Gravity is authored as Mp/Rp on the JAX side and reproduced to sub-ULP; compare
+# Gravity is authored as Mp/Rp on the JAX side and lands 1 ULP from master's gs; compare
 # it to master's explicit `gs` with a relative tolerance, not exact equality.
 _GRAVITY_RTOL = 1e-9
 
 
-# JAX-only knobs (values in default.yaml); the adapt-rtol schedule is
-# vm_branch's (op.py:845-848), with the controller off in every parity config.
+# Knobs master's HD189 example does not set (values in default.yaml or
+# config._DERIVED); the adapt-rtol schedule is vm_branch's (op.py:836-851),
+# with the controller off in every parity config.
 JAX_ONLY_KEYS: frozenset[str] = frozenset({
     "fastchem_solar_abundance_file",
     "use_ini_cold_trap",
@@ -89,10 +90,10 @@ KNOWN_THERMO_RENUMBERED: frozenset[str] = frozenset(
     {"SNCHO_photo_network_2025.txt"}
 )
 
-# eps Eri flux: master's builder (atm/make_spectra_in_nm.py) multiplies
-# by R_star where it should divide, so its file is low by R_star^4; JAX ships
-# the corrected file. Wavelengths must match and every flux ratio must sit at
-# this factor within _SFLUX_RATIO_RTOL (the files' 2 significant figures).
+# eps Eri flux: master's sflux-epseri.txt is low by R_star^4 because the formula
+# at atm/make_spectra_in_nm.py:25 multiplies by R_star where it should divide; JAX
+# ships the corrected file. Wavelengths must match and every flux ratio must sit at
+# this factor within _SFLUX_RATIO_RTOL (the files' 3-significant-figure rounding).
 EPS_ERI_RSTAR_RSUN = 0.735  # upstream atm/make_spectra_in_nm.py:7
 _SFLUX_RATIO_RTOL = 1e-2
 KNOWN_SFLUX_RESCALES: dict[str, float] = {
@@ -179,7 +180,7 @@ def _compare_cfgs(master_cfg: Path) -> list[str]:
             )
 
     # JAX derives gs from Mp/Rp; verify it reproduces master's explicit gs
-    # (authored to sub-ULP, hence a relative tolerance).
+    # (it lands 1 ULP from 2140, hence a relative tolerance).
     if "gs" in master:
         try:
             jax_gs = surface_gravity(jax_cfg)
@@ -260,7 +261,7 @@ def _known_sflux_rescale_only(
     """Return errors unless jax differs from master by exactly the flux rescale.
 
     Wavelength fields must be byte-identical; every flux ratio jax/master must
-    match ``factor`` within the 2-significant-figure rounding of the file format
+    match ``factor`` within the 3-significant-figure rounding of the file format
     (``_SFLUX_RATIO_RTOL``). Anything else is real drift and is reported.
     """
     master_lines = master_path.read_text().splitlines()

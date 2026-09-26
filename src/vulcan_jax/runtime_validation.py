@@ -12,7 +12,7 @@ from . import chem_funs
 
 logger = logging.getLogger(__name__)
 
-# Checks only declared knobs and never supplies a default;
+# Skips undeclared optional knobs and never supplies a numeric default;
 # test_runtime_validation_knobs.py pins that shipped configs declare them.
 _ABSENT = object()
 
@@ -66,7 +66,7 @@ def _validate_network_assets(cfg, root: Path) -> list[str]:
 
     Checks three things that produce cryptic downstream errors if wrong:
     1. Every network species appears in the composition table (all_compose.txt).
-    2. Every photodissociation species has a cross-section directory.
+    2. Every photodissociation species has a cross-section file (`<cross_folder><sp>/<sp>_cross.csv`).
     3. cfg.atom_list entries are recognised column headers in all_compose.txt.
     """
     errors: list[str] = []
@@ -79,7 +79,7 @@ def _validate_network_assets(cfg, root: Path) -> list[str]:
     with open(com_path) as f:
         header = f.readline().split()
         compose_species = {line.split()[0] for line in f if line.strip()}
-    compose_atoms = set(header[1:])  # all element column names (excluding 'species')
+    compose_atoms = set(header[1:])  # every column after 'species' (elements, 'e', 'mass')
 
     # 1. Every network species must be in the composition table.
     net_name = getattr(cfg, "network", "")
@@ -90,7 +90,7 @@ def _validate_network_assets(cfg, root: Path) -> list[str]:
                 f"{cfg.com_file}. Add a row for {sp!r} to the composition table."
             )
 
-    # 2. Photo species need a cross-section directory.
+    # 2. Photo species need a cross-section file.
     if bool(getattr(cfg, "use_photo", False)):
         cross_folder = root / getattr(cfg, "cross_folder", "")
         for sp in chem_funs._NETWORK.photo_sp:
@@ -118,7 +118,7 @@ def _validate_numerical_bounds(cfg) -> list[str]:
     """Return a list of human-readable errors for out-of-range numerical knobs.
 
     Catches typos like `adapt_rtol_dec=1.25` (would diverge) or
-    `batch_max_retries=0` (would deadlock the JIT'd loop) at validation
+    `batch_max_retries=0` (would force-accept every rejected step) at validation
     time instead of letting the runner silently misbehave.
     """
     errors: list[str] = []
@@ -276,7 +276,7 @@ def _validate_numerical_bounds(cfg) -> list[str]:
                 "(see configs/default.yaml)."
             )
 
-    # Strictly-positive scalars. Each would produce NaN/garbage rather than an
+    # Positive scalars (pos_cut may be 0). Each would produce NaN/garbage rather than an
     # error if left unchecked.
     for key, unit in (
         ("atol", "absolute tolerance floor"),
@@ -336,7 +336,7 @@ def _validate_numerical_bounds(cfg) -> list[str]:
         if v < 1:
             errors.append(f"{key}={v} must be >= 1.")
     # No count_min <= count_max check: count_min = count_max + 1 runs
-    # count_max steps (the parity harness and benchmarks use it).
+    # count_max + 1 steps with no convergence exit (the parity harness uses it).
 
     # The refresh counter is int32 and used as a modulo divisor in the runner.
     for key in ("ini_update_photo_frq", "final_update_photo_frq"):

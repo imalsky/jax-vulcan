@@ -96,7 +96,7 @@ LGMRES_OUTER_K = 40
 # restarted-GMRES oscillation on this indefinite operator.
 
 LGMRES_MAXITER = 4
-# Inner iterations per warm-start cycle; the solve is chunked into cycles with
+# Outer LGMRES iterations (scipy `maxiter`, each up to `inner_m` inner steps) per warm-start cycle; the solve is chunked into cycles with
 # per-cycle x0 warm-start (the validated configuration).
 
 LGMRES_CYCLES = 8
@@ -235,7 +235,7 @@ def _check_body_dt(body_dt: float) -> None:
 class BodyTerms(NamedTuple):
     """Optional per-step runner processes for the adjoint body map, beyond
     `ros2_step (+ renorm) (+ photo)`. Built by `make_body_terms` from a
-    finished runner; all fields default-inactive (None).
+    finished runner; all fields default-inactive (None, or False for `hydro_partial`).
 
     `conden_static` enables the in-window condensation composite (conden/evap
     k-rows recomputed from y each application -- the dk/dy feedback -- plus
@@ -243,7 +243,9 @@ class BodyTerms(NamedTuple):
     switch the hydrostatic rebalance to the runner's gas-only-denominator,
     non-gas-passthrough form. `fix_mask`/`fix_y` reproduce the fix_species
     regime (pinned rows become constants of the map). `bot_idx`/`bot_val` are
-    the layer-0 Dirichlet pins, applied after the balance as the runner does.
+    the layer-0 Dirichlet pins, all applied after the balance. The runner
+    applies only `use_fix_all_bot` there; it sets `use_fix_sp_bot` and the
+    H2/He pin on the step output, before the clip and the balance.
     """
 
     conden_static: Optional[CondenStatic] = None
@@ -312,7 +314,8 @@ def _make_body_map(y_star, k_arr, atm, net, body_dt, photo_recompute_k, body_ter
             return M_c * sol / jnp.sum(sol, axis=1, keepdims=True)
         # Runner composite (body_fn, clip omitted as identity-a.e.): gas-only
         # ymix denominator, relax kernels on the post-step state, partial
-        # balance (non-gas species bypass the rebalance), layer-0 pins.
+        # balance (non-gas species bypass the rebalance), layer-0 pins (body_fn
+        # sets the fix_sp_bot and H2/He pins before the clip).
         gas = t.gas_mask
         if gas is None:
             ymix = sol / jnp.sum(sol, axis=1, keepdims=True)
@@ -333,7 +336,7 @@ def _make_body_map(y_star, k_arr, atm, net, body_dt, photo_recompute_k, body_ter
     def step_fn(y, k_use, atm_use):
         # Reverse mode through the step: the dense stage operator
         # (`matrix_free=False`, jax_step._ros2_stages).
-        # fix_species regime: pin inside the step (row/col zeroing) then
+        # fix_species regime: pin inside the step (pinned rows zeroed off the diagonal, RHS zeroed) then
         # overwrite with the pinned values, so pinned rows are constants of
         # the map (identity rows of I - dG/dy), not singular pass-throughs.
         if t is not None and t.fix_mask is not None:
@@ -500,8 +503,8 @@ def _topk_ensemble_spread(g_stack: np.ndarray) -> float:
 
 
 def _host_network(net):
-    """The import-locked parsed network, after checking that `net` is its
-    arrays: the body map's Ros2 step runs the import-time codegen RHS."""
+    """The import-locked parsed network, after checking that `net` has its
+    reaction count: the body map's Ros2 step runs the import-time codegen RHS."""
     from . import chem_funs
 
     host = chem_funs._NETWORK
@@ -604,8 +607,8 @@ def _guard_unmodeled_processes(y_star, k_arr, net, body_terms):
     condensate_active = False
     y_np = np.asarray(y_star)
     for i, sp in enumerate(chem_funs.spec_list):
-        # Condensed-phase suffixes across shipped networks: `_l_s`
-        # (H2O/NH3/S2/S8), `_l` (H2SO4), `_s` (C_s); testing only
+        # Condensate names in `conden.GAS_TO_CONDENSATE`: `_l_s`
+        # (H2O/NH3/S2/S4/S8), `_l` (H2SO4), `_s` (C_s); testing only
         # `_l_s` would silently miss H2SO4_l and C_s.
         if sp.endswith(("_l_s", "_l", "_s")) and float(y_np[:, i].max()) > 0.0:
             condensate_active = True
@@ -782,8 +785,9 @@ def steady_state_reaction_sensitivity(
         body map (`info["fp_err"]`; ~1e-9). Do not iterate the map to tighten
         `fp_err`: it trades the deflation basis for the fixed point and
         degrades `info["null_quality"]`.
-        Clip, charge balance, condensation, fix-species and bottom pins are in
-        neither map: run `audit_adjoint_scope(...)` first (its per-cell defect
+        Clip and charge balance are outside the body map; condensation,
+        fix-species and bottom pins enter it only through `body_terms`: run
+        `audit_adjoint_scope(...)` first (its per-cell defect
         scan also catches what the global max-norm `fp_err` masks).
     k_arr : (nr+1, nz)
         Converged rate-constant table.
@@ -1212,8 +1216,8 @@ def make_photo_recompute_k(runner_photo_static, converged_state):
 
     Reuses the runner's own in-loop photo branch so the recompute is
     bit-identical to the forward model's photolysis (optical depth ->
-    two-stream RT -> J-rates -> photolysis rows of `k_arr`). The RT is
-    `lax.scan`-based, hence reverse-mode differentiable, so passing the result
+    two-stream RT -> J-rates -> photolysis rows of `k_arr`). The RT sweeps
+    are `lax.associative_scan`s, hence reverse-mode differentiable, so passing the result
     as `photo_recompute_k` makes the state operator carry `dJ/dy`.
 
     Parameters
@@ -1359,7 +1363,8 @@ def make_body_terms(integ, converged_state, atm_static):
     if gas_mask is not None and bool(jnp.all(gas_mask)):
         gas_mask = None  # all-gas network: plain renorm denominator
 
-    # --- layer-0 Dirichlet pins, in the runner's application order ---
+    # --- layer-0 Dirichlet pins (all set after the balance here; the runner
+    # sets fix_sp_bot and H2/He before the clip, fix_all_bot after it) ---
     ni = s.y.shape[1]
     n0_bot = s.pv.n_0[0]
     idx_parts = []
@@ -1640,7 +1645,7 @@ def audit_adjoint_scope(
 ):
     """Scan a run for physics the adjoint's body map drops, before trusting it.
 
-    The adjoint linearizes `G = ros2_step (+ renorm) (+ photo)` at `y_star`;
+    The adjoint linearizes `G = ros2_step (+ renorm) (+ photo) (+ body_terms)` at `y_star`;
     every other per-step runner process is outside that map. Dropping a
     process is exact when it is inactive/identity at the fixed point and
     physically wrong when it still shapes it. Four checks:

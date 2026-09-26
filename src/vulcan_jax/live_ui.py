@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 # VULCAN-master's Tableau 20 palette, 0-1 normalized. Published in the .vul
-# `parameter` dict (`para.tableau20`), which upstream plot_py/ scripts read,
+# `parameter` dict (`para.tableau20`) as master publishes it (store.py:203-209),
 # so the values are a compatibility contract.
 _TABLEAU20_RGB255 = [
     (31, 119, 180),

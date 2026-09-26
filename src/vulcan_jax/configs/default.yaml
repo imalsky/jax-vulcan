@@ -1,7 +1,7 @@
 # VULCAN-JAX configuration (default).
 # Authored surface: edit values here (or a CWD ./configs/default.yaml override).
 # Derived at load time (see config._DERIVED), do NOT add here:
-#   dt_max = runtime*1e-5, photo_switch_longdy_thresh = yconv_min*10,
+#   dt_max = min(runtime*1e-5, 1e15), photo_switch_longdy_thresh = yconv_min*10,
 #   para_anaTP = para_warm.
 # Gravity is derived as gs = G*Mp/Rp^2 (set Mp + Rp, not gs).
 

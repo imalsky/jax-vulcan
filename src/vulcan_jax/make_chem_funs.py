@@ -75,7 +75,7 @@ def emit_chem_rhs_source(net: Network) -> str:
     # Per-species accumulators: walk forward reactions in i=1, 3, 5, ...
     # order. For each reaction, attribute its v_i to participating species:
     # products first (sign +), then reactants (sign -), each repeated by
-    # stoich. This matches master line 1300's `+1*v_5 +1*v_5` for OH on
+    # stoich. This matches master chem_funs.py:1004's `+1*v_5 +1*v_5` for OH on
     # the product side of `O + H2O -> OH + OH` (stoich 2, two adds).
     species_terms: list[list[str]] = [[] for _ in range(ni)]
     for i in range(1, nr + 1, 2):
@@ -115,8 +115,8 @@ def chem_rhs_cache_key(net: Network) -> str:
     Covers every input the emitted source depends on: the stoichiometry
     tables, reaction-type masks, ni, nr -- and the emitter's own source, so a
     codegen fix re-keys instead of being masked by a stale cache file. The
-    resolved path is included for readability of the cache filename only; it
-    is the arrays, not the path or mtime, that pin the content.
+    resolved path is hashed too, so the same network at another path gets its
+    own cache file; the arrays, not the path or mtime, pin the content.
     """
     h = hashlib.sha256()
     try:

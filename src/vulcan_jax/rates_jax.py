@@ -3,7 +3,7 @@
 The single rate build: setup and gradients run the same code. Covers the forward
 forms (modified Arrhenius, Lindemann falloff with k_inf, bare 3-body, and the
 one hardcoded Troe expression for `OH + CH3 + M -> CH3OH + M`), the Moses+2005
-low-T caps, and the NASA-9 Gibbs reverse-rate path. Photo / conden / radiative
+low-T caps, and the NASA-9 Gibbs reverse-rate path. Photo / conden
 / ion slots are zero here and filled at runtime; the 3-body [M] factor is
 applied in the chemistry RHS (it depends on the time-evolving sum(y)).
 
@@ -99,8 +99,8 @@ def compute_forward_k(
     """Vectorized forward rates. T, M are (nz,) arrays -> (nr+1, nz).
 
     Reverse slots (even indices) are zero here and filled by
-    :func:`fill_reverse_k`; photo / ion / conden / radiative-recombination
-    slots are zero and filled at runtime.
+    :func:`fill_reverse_k`; photo / ion / conden slots are
+    zero and filled at runtime.
 
     The six Arrhenius/Lindemann coefficient arrays default to the network's
     static values; pass any as a (nr+1,) JAX array to differentiate the rates
