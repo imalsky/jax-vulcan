@@ -75,7 +75,7 @@ def _git_head() -> str | None:
              "--untracked-files=no"],
             capture_output=True, text=True, timeout=10).stdout.strip()
         return head + ("-dirty" if dirty else "")
-    except Exception:
+    except Exception:  # best-effort provenance: record None, never block generation
         return None
 
 
@@ -84,7 +84,7 @@ def _versions() -> dict:
     for mod in ("jax", "jaxlib", "numpy", "scipy"):
         try:
             out[mod] = __import__(mod).__version__
-        except Exception:
+        except Exception:  # best-effort provenance: record None
             out[mod] = None
     try:
         # Read the source of truth, not the installed dist metadata: under an
@@ -93,7 +93,7 @@ def _versions() -> dict:
         src = (ROOT / "src" / "vulcan_jax" / "_version.py").read_text()
         out["vulcan_jax"] = re.search(
             r"__version__\s*=\s*[\"']([^\"']+)", src).group(1)
-    except Exception:
+    except Exception:  # best-effort provenance: record None
         out["vulcan_jax"] = None
     return out
 

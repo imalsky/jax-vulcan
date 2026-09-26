@@ -263,7 +263,7 @@ def print_backend_banner():
         import vulcan_jax
 
         print(f"vulcan-jax version : {vulcan_jax.__version__}")
-    except Exception:
+    except (ImportError, AttributeError):
         pass
     print(f"jax version        : {jax.__version__}")
     print(f"jax backend        : {backend}")

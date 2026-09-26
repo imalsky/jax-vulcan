@@ -73,8 +73,8 @@ def _snapshot_cfg_attrs(cfg_module) -> dict:
             continue
         try:
             snap[name] = copy.deepcopy(val)
-        except Exception:
-            pass
+        except (TypeError, copy.Error):
+            pass  # an uncopyable attribute is not snapshotted
     return snap
 
 
@@ -99,14 +99,14 @@ def _restore_cfg(snap: dict) -> None:
     for name, val in snap_attrs.items():
         try:
             setattr(canonical, name, copy.deepcopy(val))
-        except Exception:
+        except (TypeError, copy.Error):
             setattr(canonical, name, val)
     for name in list(vars(canonical).keys()):
         if name.startswith("_") or name in snap_attrs:
             continue
         try:
             delattr(canonical, name)
-        except Exception:
+        except AttributeError:
             pass
 
 
