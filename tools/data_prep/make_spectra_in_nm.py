@@ -9,6 +9,7 @@ concatenates them, and writes `flux-HD189_Moses11.txt`.
 import numpy as np
 import scipy
 
+# au is upstream's value (not phy_const's): it reproduces upstream's files.
 au = 1.4959787e13  # cm
 r_sun = 6.957e10  # cm
 
@@ -28,7 +29,7 @@ with open("VPL_solar.txt") as f:
             else:
                 break
 
-with open("h_epseri_uvsum_spc.txt") as f:  # wl was in Angstroms in the file
+with open("h_epseri_uvsum_spc.txt") as f:  # wavelength in Angstrom
     for line in f.readlines():
         if not line.startswith("#") and line.split():
             li = line.split()

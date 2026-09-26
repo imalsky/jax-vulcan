@@ -22,11 +22,7 @@ with open(com_file) as f:
             col = line.split()
             indx = compo_row.index(col[0])
 
-            # Mass from per-element atom counts looked up by COLUMN NAME, so the
-            # result is independent of the column order in nomass_all_compose.txt.
-            # (Positional compo[indx][1..10] silently produced wrong masses if the
-            # header was reordered -- same bug class as the FastChem element-order
-            # regression.)
+            # Atom counts by column name, so the mass does not depend on column order.
             mass = (
                 compo[indx]["H"] * 1.008
                 + compo[indx]["O"] * 16.0

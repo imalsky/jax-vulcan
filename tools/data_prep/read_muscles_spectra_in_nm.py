@@ -12,6 +12,7 @@ import numpy as np
 import scipy
 from astropy.io import fits
 
+# au is upstream's value (not phy_const's): it reproduces upstream's files.
 au = 1.4959787e13  # cm
 r_sun = 6.957e10  # cm
 
@@ -25,7 +26,6 @@ r_sun = 6.957e10  # cm
 hdulist = fits.open(
     "hlsp_muscles_multi_multi_gj1214_broadband_v22_adapt-const-res-sed.fits"
 )
-print(hdulist.info())
 spec = fits.getdata(
     "hlsp_muscles_multi_multi_gj1214_broadband_v22_adapt-const-res-sed.fits", 1
 )

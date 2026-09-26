@@ -11,6 +11,7 @@ import scipy
 
 ### PHYS CONSTANTS
 # Planck constant times the light speed
+# hc and au are upstream's values (not phy_const's): they reproduce upstream's files.
 hc = 1.98644568e-9  # erg.nm
 au = 1.4959787e13  # cm
 r_sun = 6.957e10  # cm
