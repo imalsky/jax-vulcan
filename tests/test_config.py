@@ -234,10 +234,6 @@ def test_getattr_fallback_literals_match_default_yaml():
     assert not mismatches, "\n".join(mismatches)
 
 
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-q"]))
-
-
 def test_dt_max_is_capped_where_the_stage_repair_is_resolvable():
     """Derived dt_max saturates at DT_MAX_S; an explicit larger value is refused
     at OuterLoop construction (the Ros2 stage repair is unresolvable there)."""
@@ -247,3 +243,7 @@ def test_dt_max_is_capped_where_the_stage_repair_is_resolvable():
     assert load_config("default", runtime=1e18).dt_max == 1.0e13
     with pytest.raises(ValueError, match="DT_MAX_S"):
         OuterLoop(None, None, cfg=load_config("default", dt_max=1e17))
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))
