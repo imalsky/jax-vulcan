@@ -435,7 +435,7 @@ def _synthesize_save_dicts(runstate, cfg, photo_static=None):
 
 
 class Output(object):
-    """Per-run output: cfg copy, .vul writer, progress prints."""
+    """Per-run output: cfg copy, .vul writer, progress report."""
 
     def __init__(self, cfg=None):
         """Set up the `.vul` writer for one run: create the output dir and

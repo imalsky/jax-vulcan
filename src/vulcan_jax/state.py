@@ -202,7 +202,7 @@ class RunMetadata(NamedTuple):
     ion_br_ratio: dict  # (sp, br) -> branching ratio
     charge_list: tuple  # ion species (with non-zero charge)
     conden_re_list: tuple  # 1-based reaction ids that condense
-    start_time: float  # wall-clock start (for end-of-run print)
+    start_time: float  # wall-clock start (for the end-of-run report)
     Ti: jnp.ndarray  # (nz-1,) interface temperature, 0.5*(Tco[:-1]+Tco[1:])
     gas_indx: tuple  # gas-only species indices
     pref_indx: int  # reference-layer index (height integ)

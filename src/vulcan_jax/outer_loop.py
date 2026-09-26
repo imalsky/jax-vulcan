@@ -3466,7 +3466,7 @@ class OuterLoop:
         return fn(jobs)
 
     def _summary_shim(self, rs):
-        """Build a minimal legacy-shape stand-in for the post-run prints.
+        """Build a minimal legacy-shape stand-in for the post-run report.
 
         `print_end_msg` / `print_unconverged_msg` / `print_prog` read only
         counters, start_time, termination_reason and atom_loss, plus var.t /
