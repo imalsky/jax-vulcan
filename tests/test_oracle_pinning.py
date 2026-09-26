@@ -94,6 +94,24 @@ def test_every_supported_input_exists_with_its_recorded_hash():
             f"{spec['sha256'][:16]}...)")
 
 
+# FastChem's element slots, hard-coded in mass_action_constant.cpp:379-399
+# (exoclime@80f75b9) and filled in file row order (init_read_files.cpp:204).
+FASTCHEM_SLOT_ORDER = ["C", "H", "He", "N", "O", "P", "S", "Si", "Ti", "V",
+                       "Cl", "K", "Na", "Mg", "F", "Ca", "Fe", "e-"]
+
+
+@pytest.mark.parametrize("preset", sorted(
+    (ROOT / "src" / "vulcan_jax" / "thermo").glob("solar_element_abundances*.dat")),
+    ids=lambda p: p.name)
+def test_abundance_presets_keep_fastchem_slot_order(preset):
+    """tests/oracle.py stages these presets into upstream FastChem, which reads
+    elements by row position: a reordered row gives an element another's
+    reference polynomial."""
+    rows = [line.split()[0] for line in preset.read_text().splitlines()
+            if line.strip() and not line.startswith("#")]
+    assert rows == FASTCHEM_SLOT_ORDER, preset.name
+
+
 # --- revision + cleanliness enforcement -------------------------------------
 
 def test_missing_oracle_dir_skips_locally_but_fails_in_release_ci(monkeypatch):

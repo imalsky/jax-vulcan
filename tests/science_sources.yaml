@@ -138,26 +138,26 @@ supported_inputs:
       hash pin above is the whole guard. No shipped config selects it.
 
   thermo/solar_element_abundances.dat:
-    sha256: 7c38fceaa0e358e62cde61ebdb416a08e248957c56cb2d301c270be2a45c2126
+    sha256: d593de700363ae7a4a24ee51383ca843fabd673db805469c29210591909e6ea0
     oracle: vulcan2_fastchem_ps_order
     diverges: [fastchem_ps_order, lodders2019_rocky_suppressed]
     note: >-
       Default hybrid preset: rocky elements at -3.0, S and He approximately
       Lodders 2019 Table 8, C/N/O upstream's Lodders 2009 values.
       default/HD189/HD189_vulcan3 use it unchanged; HD209/W39b override network
-      elements other than H in custom mode. Row order and header stay
-      byte-identical so the file can be staged into an upstream checkout
-      (FastChem reads slots positionally and skips line 1); the port reads rows
-      by symbol.
+      elements other than H in custom mode. The rows stay in FastChem's slot
+      order so the file can be staged into an upstream checkout (FastChem
+      reads slots by row position and neglects the comment lines as unknown
+      elements); the port reads rows by symbol.
 
   thermo/solar_element_abundances_lodders2009.dat:
-    sha256: 9a83f9b8cc51380b5adcc3c764cec54f0b2f2bfbc0b8b34313d6da2873af95fd
+    sha256: 8b36e7e80b0e1ad4ab7e1aff549a9da2af2fb2bf1bb249f2b52a88a82a2a2c0c
     oracle: vulcan2_fastchem_ps_order
     diverges: [fastchem_ps_order]
     note: >-
-      The upstream composition (Lodders 2009 at solar), with only the P/S ROW
+      The upstream composition (Lodders 2009 at solar), with only the P/S row
       order corrected. It matches upstream's elemental C/N/O/S/He for a
-      cross-code comparison, but it does NOT reproduce upstream's initial
+      cross-code comparison, but it does not reproduce upstream's initial
       state: at full solar, upstream's FastChem locks 0.166 dex of oxygen into
       rocky oxides that an NCHO/SNCHO network has no species for.
 

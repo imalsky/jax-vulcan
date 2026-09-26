@@ -1,25 +1,26 @@
-# Lodders (2009) solar abundances, ALL elements at solar. This is what upstream
-# VULCAN ships. Select it with `fastchem_solar_abundance_file` when you want a
-# cross-code comparison against an unmodified VULCAN checkout; the shipped
-# default is the rocky-suppressed Lodders 2019 file next to this one.
+# Lodders (2009) solar abundances, every element at solar: the values of
+# upstream VULCAN's fastchem_vulcan/input/solar_element_abundances.dat
+# (exoclime@80f75b9). Select this file with `fastchem_solar_abundance_file` to
+# compare against an unmodified upstream checkout; the shipped default is the
+# rocky-suppressed file next to this one.
 #
-# ONE DELIBERATE CHANGE FROM UPSTREAM: P and S are swapped back into the order
-# FastChem actually expects. Upstream lists S on row 6 and P on row 7, but its
-# own mass_action_constant.cpp hard-codes index_P=5 and index_S=6, so upstream's
-# order gives phosphorus sulfur's reference polynomial and vice versa. Values
-# are otherwise byte-for-byte upstream's. See correction C12.
+# One change from upstream: P comes before S. FastChem fills its element slots
+# in file row order (init_read_files.cpp:204) but hard-codes index_P = 5 and
+# index_S = 6 (mass_action_constant.cpp:388-389), so upstream's S-then-P rows
+# give each element the other's reference polynomial. Upstream's fc_list
+# reorder (no_vm@8970337, build_atm.py:94) does not change this: build_atm.py
+# uses fc_list only as a membership test (:114) and writes rows in file order.
 #
-# DO NOT REORDER ROWS. FastChem's mass_action_constant.cpp hard-codes slots
+# Keep the rows in FastChem's slot order (mass_action_constant.cpp:379-399):
 #   C=0 H=1 He=2 N=3 O=4 P=5 S=6 Si=7 Ti=8 V=9 Cl=10 K=11 Na=12 Mg=13 F=14
 #   Ca=15 Fe=16 e-=17
-# and builds the element vector in the order these rows appear. Guarded by
-# runtime_validation.py and tests/test_fastchem_element_order.py.
+# VULCAN-JAX reads rows by symbol. The order matters when tests/oracle.py stages
+# this file into upstream FastChem; tests/test_oracle_pinning.py checks it.
 #
-# WHAT THIS COSTS: the shipped NCHO/SNCHO networks have no Mg, Si or Fe species,
-# so at solar dex FastChem locks oxygen into MgO/SiO2/FeO that the kinetics can
-# never release. On HD 189733 b this lowers deep H2O by ~25% and CO2 by ~42%
-# relative to the rocky-suppressed default. Use this file to match upstream, not
-# because it is the better initial condition for a C-H-N-O network.
+# The shipped NCHO/SNCHO networks have no Mg, Si or Fe species, so at solar
+# FastChem locks oxygen into MgO/SiO2/FeO that the kinetics can never release.
+# On HD 189733 b this lowers deep H2O by ~25% and CO2 by ~42% relative to the
+# rocky-suppressed default.
 C   8.4434
 H   12.00
 He  10.9864
