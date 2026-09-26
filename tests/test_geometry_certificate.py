@@ -23,7 +23,8 @@ def _run(update_frq):
     cfg = load_config("HD209", use_photo=False, use_print_prog=False,
                       count_max=6000, update_frq=update_frq)
     integ = OuterLoop(Ros2JAX(), Output(cfg=cfg), cfg=cfg)
-    final = integ._runner(*integ.prepare_runstate(RunState.with_pre_loop_setup(cfg)))
+    state, atm_static = integ.prepare_runstate(RunState.with_pre_loop_setup(cfg))
+    final = integ._runner(state, atm_static)
     assert int(final.termination_reason) == 1, int(final.termination_reason)
     fresh = atm_refresh.update_mu_dz_jax(final.ymix, integ._refresh_static)
     for name, new in zip(("mu", "g", "Hp", "dz", "zco", "dzi", "Hpi"), fresh):
