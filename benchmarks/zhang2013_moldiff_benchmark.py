@@ -17,32 +17,19 @@ upward. Eq. (1) is the zero-total-flux steady state of
 
     d/dz [ (D+K) df_i/dz + D f_i (1/H_i - 1/H_atm) ] = 0.
 
-WHY THIS BENCHMARK. VULCAN-JAX carries two discretizations of the molecular
-drift term D f (1/H_i - 1/H_atm), and each has one failure mode:
-  * central "gravity" scheme (use_vm_mol=False) -- 2nd-order ACCURATE (matches
-    Eq. 1), but UNSTABLE: as the cell Peclet number |vm| dz / D approaches the
-    classical threshold of 2 it develops a spurious sign-alternating mode and
-    the steady state goes negative (measured onset on panel B's sweep: between
-    Pe = 1.55 and Pe = 1.88);
-  * 1st-order upwind "vm" scheme (use_vm_mol=True) -- unconditionally STABLE but
-    dissipative (numerical diffusion ~ |vm| dz / 2, so it under-separates).
-Both target the same continuous flux (vm = -D (1/H_i - 1/H_atm)), so they are
-the same PDE. VULCAN's production scheme is the HYBRID: converge under upwind
-(stable), then finish in central (accurate). A completed hybrid run ends in
-the central phase, so its converged state is the accurate central curve.
+VULCAN-JAX carries two discretizations of the drift term D f (1/H_i - 1/H_atm):
+central (use_vm_mol=False; second order, but goes negative as the cell
+Peclet number |vm| dz / D nears 2) and first-order upwind (use_vm_mol=True;
+stable, dissipative). The production hybrid converges under upwind and
+finishes in central, so a completed run ends on the central curve.
 
-This script drives the production VULCAN-JAX diffusion kernels
-(`jax_step.compute_diff_grav` + `_build_diff_coeffs_jax`) on a synthetic
-isothermal, constant-gravity column, solving the discrete steady state directly
-(bottom mole fraction pinned, zero-flux top). Two panels:
-  A. Accuracy (well-resolved grid): the central/hybrid steady state matches
-     Eq. (1); pure upwind is dissipative. Overlaid with the upstream VULCAN 2.0
-     operator (op.diffdf / op.diffdf_vm, via the validated transcription in
-     tests/diffusion_numpy_ref.py) to show VULCAN-JAX-vs-upstream port fidelity.
-  B. Stability (pure molecular, K=0, grid resolution swept): most-negative mole
-     fraction vs cell Peclet. Central goes negative from Pe ~ 1.9 upward (the
-     dotted guide marks the classical Pe = 2); upwind stays positive at every
-     Pe -- which is exactly why the hybrid needs it.
+This script solves the discrete steady state of the production kernels
+(`jax_step.compute_diff_grav` + `_build_diff_coeffs_jax`) on an isothermal,
+constant-gravity column (bottom mole fraction pinned, zero-flux top):
+  A. Accuracy: central/hybrid vs Eq. (1) and vs the upstream operator
+     (tests/diffusion_numpy_ref.py); upwind is dissipative.
+  B. Stability (K=0, grid resolution swept): most-negative mole fraction
+     vs cell Peclet number.
 
 Run (in the root uv env, `uv run` from this repo):
     python benchmarks/zhang2013_moldiff_benchmark.py
@@ -331,7 +318,7 @@ def stability_sweep(nz_values, n_scale_heights):
 
     The undamped drift gives cell Peclet number Pe = |vm| dz / D = kappa*dz.
     Central differencing develops a spurious sign-alternating mode near the
-    classical Pe = 2 threshold (measured onset here between Pe = 1.55 and 1.88),
+    classical Pe = 2 threshold,
     so its steady state goes negative (unphysical); upwind stays positive at any
     Pe. Returns (peclet, central_min, upwind_min), the minima normalised by the
     base mole fraction.
@@ -410,8 +397,7 @@ def main(argv=None) -> int:
         print(f"  Pe={p:5.2f}:  central {c:+.2e}   upwind {u:+.2e}{flag}")
 
     # ---- Figure -------------------------------------------------------------
-    # Match the jax_paper figure style (see jax_paper/scripts/_common.py):
-    # serif family, dejavuserif mathtext, FS-based sizing, 14.0 x 7.4 canvas.
+    # jax_paper figure style (jax_paper/scripts/_common.py).
     FS = 19
     plt.rcParams.update(
         {
@@ -489,7 +475,7 @@ def main(argv=None) -> int:
     axB.axhline(0.0, color="0.4", lw=0.9)
     axB.axvline(2.0, color="0.6", ls=":", lw=1.0)
     axB.plot(
-        peclet, cmin, color=blue, lw=1.8, marker="o", ms=4, label="central (original)"
+        peclet, cmin, color=blue, lw=1.8, marker="o", ms=4, label="central"
     )
     axB.plot(
         peclet, umin, color=red, lw=1.8, marker="s", ms=4, label="upwind (stabilizer)"
