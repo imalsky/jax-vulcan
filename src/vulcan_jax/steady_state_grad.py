@@ -87,9 +87,9 @@ _SPREAD_WARN = 0.15
 # (max-min)/|mean|): the twins disagree on the reactions one would report;
 # treat magnitudes as ranking weights.
 
-LGMRES_INNER_M = 60
-# scipy.sparse.linalg.lgmres inner Krylov dimension (untuned; the HD189
-# calibration used 250).
+LGMRES_INNER_M = 250
+# scipy.sparse.linalg.lgmres inner Krylov dimension (the HD189 calibration in
+# tests/test_steady_state_reaction_sensitivity.py).
 
 LGMRES_OUTER_K = 40
 # Augmentation vectors carried across restarts; the LGMRES knob that fixes
@@ -99,8 +99,8 @@ LGMRES_MAXITER = 4
 # Inner iterations per warm-start cycle; the solve is chunked into cycles with
 # per-cycle x0 warm-start (the validated configuration).
 
-LGMRES_CYCLES = 10
-# Number of warm-start cycles (untuned; the HD189 calibration used 8).
+LGMRES_CYCLES = 8
+# Number of warm-start cycles (the HD189 calibration).
 
 LGMRES_RTOL = 1e-12
 # Relative-residual target; tighter buys nothing once finite-tolerance state
