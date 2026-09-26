@@ -545,7 +545,7 @@ class Output(object):
             TERM_RUNTIME: f"Maximal allowed runtime exceeded ({self._cfg.runtime:.1e} sec)",
             TERM_STEP_COUNT: f"Maximal allowed steps exceeded ({self._cfg.count_max} steps)",
             TERM_NONFINITE: "Stopped without converging and without hitting a cap "
-            f"(termination_reason {getattr(para, 'termination_reason', 0)}); "
+            f"(termination_reason {para.termination_reason}); "
             "the state may be non-finite",
         }.get(case)
         if why is None:

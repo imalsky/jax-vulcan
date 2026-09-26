@@ -3306,29 +3306,12 @@ class OuterLoop:
             return TERM_CONVERGED
         return TERM_NONFINITE
 
-    def _report_end(self, end_case, reason, count, longdy, longdydt,
-                    aflux_change, var, para) -> None:
-        """End-of-run printing (op.py:1069-1085 and op.stop): the end-case
-        message, print_prog and the summary. Master only calls
-        print_end_msg (end_case 1); this also calls print_unconverged_msg
-        for 2 / 3 / 5."""
-        if end_case == 3:
-            print(
-                "Integration not completed...\nMaximal allowed steps "
-                f"exceeded ({self._cfg.count_max})!"
-            )
-        elif end_case == 2:
-            print(
-                "Integration not completed...\nMaximal allowed runtime "
-                f"exceeded ({self._cfg.runtime} sec)!"
-            )
-        elif end_case == 5:
-            print(
-                "Integration not completed...\nStopped without converging and "
-                f"without hitting a cap (termination_reason {reason}); the "
-                "state may be non-finite."
-            )
-        else:
+    def _report_end(self, end_case, count, longdy, longdydt, aflux_change,
+                    var, para) -> None:
+        """End-of-run printing (op.py:1069-1085 and op.stop): print_prog,
+        then print_end_msg (end_case 1) or print_unconverged_msg, which
+        states the reason (2 / 3 / 5)."""
+        if end_case == TERM_CONVERGED:
             print(
                 f"Integration successful with {count} steps and "
                 f"long dy, long dydt = {longdy}, {longdydt}\n"
@@ -3336,9 +3319,9 @@ class OuterLoop:
             )
         if self._cfg.use_print_prog:
             self.output.print_prog(var, para)
-        if end_case == 1:
+        if end_case == TERM_CONVERGED:
             self.output.print_end_msg(var, para)
-        elif end_case in (2, 3, 5):
+        else:
             self.output.print_unconverged_msg(var, para, end_case)
 
     def __call__(self, rs):
@@ -3385,22 +3368,13 @@ class OuterLoop:
 
         rs_out = self._unpack_state_to_runstate(final_state, rs)
 
-        count = int(rs_out.params.count)
-        end_case = self._classify_end_case(final_state)
-        reason = int(final_state.termination_reason)
-        rs_out = rs_out._replace(
-            params=rs_out.params._replace(
-                end_case=end_case, termination_reason=reason
-            )
-        )
         # The summary printers expect a legacy (var, para) pair.
         var_shim, para_shim = self._summary_shim(rs_out)
-        para_shim.start_time = float(rs.metadata.start_time)
-        para_shim.end_case = end_case
         aflux = (rs_out.photo_runtime.aflux_change
                  if rs_out.photo_runtime is not None else 0.0)
-        self._report_end(end_case, reason, count, rs_out.step.longdy,
-                         rs_out.step.longdydt, aflux, var_shim, para_shim)
+        self._report_end(int(rs_out.params.end_case), int(rs_out.params.count),
+                         rs_out.step.longdy, rs_out.step.longdydt, aflux,
+                         var_shim, para_shim)
         return rs_out
 
     def prepare_runstate(self, rs):
@@ -3540,10 +3514,9 @@ class OuterLoop:
     def _summary_shim(self, rs):
         """Build a minimal legacy-shape stand-in for the post-run prints.
 
-        `print_end_msg` / `print_unconverged_msg` / `print_prog` only
-        read counters and atom_loss, plus var.t / var.dt / var.longdy /
-        var.longdydt. Compose a SimpleNamespace-style shim from the
-        RunState slot rather than synthesising a full `state._Variables`.
+        `print_end_msg` / `print_unconverged_msg` / `print_prog` read only
+        counters, start_time, termination_reason and atom_loss, plus var.t /
+        var.dt / var.longdy / var.longdydt.
         """
         import types
 
@@ -3564,9 +3537,7 @@ class OuterLoop:
             loss_count=int(rs.params.loss_count),
             delta_count=int(rs.params.delta_count),
             where_varies_most=np.asarray(rs.params.where_varies_most),
-            end_case=int(rs.params.end_case),
-            switch_final_photo_frq=bool(rs.params.switch_final_photo_frq),
-            pic_count=int(rs.params.pic_count),
-            solver_str="solver",
+            termination_reason=int(rs.params.termination_reason),
+            start_time=float(rs.metadata.start_time),
         )
         return var, para
