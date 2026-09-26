@@ -338,8 +338,8 @@ def _bin_T_dependent(
 def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
     """Pure builder of the dense `PhotoStaticInputs` pytree.
 
-    `din12_indx` initializes to `-1`; the caller must `_replace(din12_indx=...)`
-    after `read_sflux` runs.
+    `din12_indx` initializes to `-1`; the caller sets it with
+    `.with_din12_indx(var.sflux_din12_indx)` after `read_sflux` runs.
     """
     photo_sp = list(var.photo_sp)
     ion_sp = list(var.ion_sp)
