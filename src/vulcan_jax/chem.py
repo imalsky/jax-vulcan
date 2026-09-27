@@ -20,6 +20,8 @@ NumPy RHS in master's term order) live in `tests/_oracles.py`.
 
 from __future__ import annotations
 
+import dataclasses
+
 import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
@@ -28,18 +30,29 @@ import numpy as np
 from .network import Network
 
 
+@dataclasses.dataclass(frozen=True, eq=False)
 class NetworkArrays:
     """Network stoichiometry packed for JAX.
 
-    Registered as a custom pytree with `ni`/`nr` as static aux_data so
-    jit/vmap don't retrace per network and `num_segments` stays concrete.
-    `jac_terms` / `jac_place` are the analytical Jacobian's static gather
-    tables (`_jac_gather_tables`).
+    A pytree with `ni`/`nr` as static meta fields so jit/vmap don't retrace
+    per network and `num_segments` stays concrete. `jac_terms` / `jac_place`
+    are the analytical Jacobian's static gather tables (`_jac_gather_tables`).
     """
 
-    __slots__ = (
-        "ni",
-        "nr",
+    ni: int
+    nr: int
+    reactant_idx: jnp.ndarray
+    product_idx: jnp.ndarray
+    reactant_stoich: jnp.ndarray
+    product_stoich: jnp.ndarray
+    is_three_body: jnp.ndarray
+    jac_terms: tuple
+    jac_place: jnp.ndarray
+
+
+jtu.register_dataclass(
+    NetworkArrays,
+    data_fields=[
         "reactant_idx",
         "product_idx",
         "reactant_stoich",
@@ -47,52 +60,8 @@ class NetworkArrays:
         "is_three_body",
         "jac_terms",
         "jac_place",
-    )
-
-    def __init__(
-        self,
-        ni,
-        nr,
-        reactant_idx,
-        product_idx,
-        reactant_stoich,
-        product_stoich,
-        is_three_body,
-        jac_terms,
-        jac_place,
-    ):
-        self.ni = int(ni)
-        self.nr = int(nr)
-        self.reactant_idx = reactant_idx
-        self.product_idx = product_idx
-        self.reactant_stoich = reactant_stoich
-        self.product_stoich = product_stoich
-        self.is_three_body = is_three_body
-        self.jac_terms = jac_terms
-        self.jac_place = jac_place
-
-
-def _network_arrays_flatten(net):
-    children = (
-        net.reactant_idx,
-        net.product_idx,
-        net.reactant_stoich,
-        net.product_stoich,
-        net.is_three_body,
-        net.jac_terms,
-        net.jac_place,
-    )
-    aux = (net.ni, net.nr)
-    return children, aux
-
-
-def _network_arrays_unflatten(aux, children):
-    ni, nr = aux
-    return NetworkArrays(ni, nr, *children)
-
-
-jtu.register_pytree_node(
-    NetworkArrays, _network_arrays_flatten, _network_arrays_unflatten
+    ],
+    meta_fields=["ni", "nr"],
 )
 
 
@@ -153,8 +122,8 @@ def to_jax(net: Network) -> NetworkArrays:
     """Pack a Network's relevant arrays into jnp form for the chemistry RHS."""
     jac_terms, jac_place = _jac_gather_tables(net)
     return NetworkArrays(
-        ni=net.ni,
-        nr=net.nr,
+        ni=int(net.ni),
+        nr=int(net.nr),
         reactant_idx=jnp.asarray(net.reactant_idx, dtype=jnp.int64),
         product_idx=jnp.asarray(net.product_idx, dtype=jnp.int64),
         reactant_stoich=jnp.asarray(net.reactant_stoich, dtype=jnp.float64),

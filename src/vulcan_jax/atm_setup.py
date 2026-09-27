@@ -761,8 +761,8 @@ def read_sflux_binned(
 ) -> dict[str, Any]:
     """Interpolate the stellar flux onto VULCAN's uniform photo bins grid.
 
-    Returns sflux_top, the dbin1 -> dbin2 transition index, and the raw
-    read for diagnostics. `sflux_raw` may be supplied for tests.
+    Returns sflux_top and the dbin1 -> dbin2 transition index. `sflux_raw`
+    may be supplied for tests.
     """
     if sflux_raw is None:
         sflux_raw = np.genfromtxt(
@@ -864,7 +864,6 @@ def read_sflux_binned(
     return {
         "sflux_top": sflux_top,
         "sflux_din12_indx": sflux_din12_indx,
-        "sflux_raw": sflux_raw,
     }
 
 
@@ -881,8 +880,8 @@ def _parse_bc_file(path: str) -> list[list[str]]:
 def read_bc_flux(cfg, species_list: list[str]) -> dict[str, np.ndarray]:
     """Build (top_flux, bot_flux, bot_vdep, bot_fix_sp).
 
-    Each flag (use_topflux / use_botflux / use_fix_sp_bot) drives one
-    section; default is zeros.
+    use_topflux and use_botflux each fill their section from a file. bot_fix_sp
+    stays zero: OuterLoop pins the `use_fix_sp_bot` dict entries itself.
     """
     ni = len(species_list)
     out = {
@@ -904,15 +903,6 @@ def read_bc_flux(cfg, species_list: list[str]) -> dict[str, np.ndarray]:
             if sp in species_list:
                 out["bot_flux"][species_list.index(sp)] = float(tokens[1])
                 out["bot_vdep"][species_list.index(sp)] = float(tokens[2])
-    # Master treats `use_fix_sp_bot` as a truthy-dict; only a literal `True`
-    # (not a dict) reaches this branch, preserved verbatim. Production feeds a
-    # dict, whose entries the OuterLoop pin handles.
-    if cfg.use_fix_sp_bot is True:
-        logger.info("Using the prescribed fixed bottom mixing ratios.")
-        for tokens in _parse_bc_file(cfg.bot_BC_flux_file):
-            sp = tokens[0]
-            if sp in species_list and len(tokens) >= 4:
-                out["bot_fix_sp"][species_list.index(sp)] = float(tokens[3])
     return out
 
 
@@ -992,19 +982,10 @@ def sat_p_jax(sp: str, T: jnp.ndarray) -> jnp.ndarray:
 
 
 def compute_sat_p(condense_sp: list[str], Tco: np.ndarray) -> dict[str, np.ndarray]:
-    """Saturation vapour pressure (dyne/cm^2) per condensable species.
-
-    Each supported species uses a hand-coded explicit formula; anything
-    in `condense_sp` outside `_SUPPORTED_CONDENSABLES` raises.
-    """
+    """Saturation vapour pressure (dyne/cm^2) per condensable species."""
     Tco_j = jnp.asarray(Tco, dtype=jnp.float64)
     out: dict[str, np.ndarray] = {}
     for sp in condense_sp:
-        if sp not in _SUPPORTED_CONDENSABLES:
-            raise IOError(
-                f"No saturation vapor data for {sp}. "
-                f"Check `compute_sat_p` in atm_setup.py"
-            )
         out[sp] = np.asarray(sat_p_jax(sp, Tco_j), dtype=np.float64)
     return out
 
@@ -1014,20 +995,6 @@ class Atm:
     JAX-native pure functions above and writes results back to the legacy
     `data_atm` / `data_var` containers.
     """
-
-    def __init__(self):
-        self.gs = surface_gravity(_CFG)
-        self.P_b = _CFG.P_b
-        self.P_t = _CFG.P_t
-        self.type = _CFG.atm_type
-        self.use_Kzz = _CFG.use_Kzz
-        self.Kzz_prof = _CFG.Kzz_prof
-        self.const_Kzz = _CFG.const_Kzz
-        self.use_vz = _CFG.use_vz
-        self.vz_prof = _CFG.vz_prof
-        self.const_vz = _CFG.const_vz
-        self.use_settling = _CFG.use_settling
-        self.non_gas_sp = _CFG.non_gas_sp
 
     def f_pico(self, data_atm):
         """Stagger pressure to interfaces and write to `data_atm.pico`."""
@@ -1058,20 +1025,18 @@ class Atm:
         nz = int(_CFG.nz)
 
         new_pco = high_temp_cut_regrid(
-            data_atm.pco, data_atm.Tco, T_max=T_max, P_min=P_min, P_t=self.P_t, nz=nz
+            data_atm.pco, data_atm.Tco, T_max=T_max, P_min=P_min, P_t=_CFG.P_t, nz=nz
         )
         if new_pco is None:
             return data_atm
 
-        old_P_b = self.P_b
-        self.P_b = float(new_pco[0])
         logger.warning(
             "high_temp_cut: capping deep T at {:.0f} K (P >= {:.2e} bar) for "
             "numerical stability.".format(T_max, P_min / BAR_CGS)
         )
         logger.warning(
             "  effective P_b {:.2e} -> {:.2e} bar (nz = {})".format(
-                old_P_b / BAR_CGS, self.P_b / BAR_CGS, nz
+                float(_CFG.P_b) / BAR_CGS, float(new_pco[0]) / BAR_CGS, nz
             )
         )
 
@@ -1100,16 +1065,12 @@ class Atm:
         `op.Integration.update_mu_dz` (op.py:951) duck-types this method on
         our `Atm` (tests/test_outer_loop_atm_refresh.py). Do not delete.
         """
-        from .composition import species
+        from .composition import species_mass
 
-        ms_arr = np.array(
-            [self.mol_mass(species[i]) for i in range(ni)],
-            dtype=np.float64,
-        )
         atm.mu = np.asarray(
             compute_mean_mass(
                 jnp.asarray(var.ymix),
-                jnp.asarray(ms_arr),
+                jnp.asarray(species_mass[:ni]),
             )
         )
         return atm
@@ -1117,17 +1078,12 @@ class Atm:
     def f_mu_dz(self, data_var, data_atm, output):
         """Hydrostatic-balance refresh: rebuild `mu, g, Hp, dz, zco, vs` and friends."""
         del output  # build_atm.py:527 signature; master uses it only for plot_TP (:616)
-        from .composition import species
+        from .composition import species, species_mass
 
-        ni = len(species)
-        ms_arr = np.array(
-            [self.mol_mass(species[i]) for i in range(ni)],
-            dtype=np.float64,
-        )
         out = compute_mu_dz_g(
             _CFG,
             np.asarray(data_var.ymix),
-            ms_arr,
+            species_mass,
             np.asarray(data_atm.pico),
             np.asarray(data_atm.Tco),
         )
@@ -1161,13 +1117,9 @@ class Atm:
 
     def mol_diff(self, atm):
         """Compute molecular-diffusion coefficients and write `atm.Dzz / Dzz_cen / vm`."""
-        from .composition import compo, compo_row, species
+        from .composition import species, species_mass
 
-        ni = len(species)
-        ms_arr = np.array(
-            [compo[compo_row.index(species[i])][-1] for i in range(ni)],
-            dtype=np.float64,
-        )
+        ms_arr = species_mass.copy()
         atm.ms = ms_arr
         alpha_arr = _alpha_array_for_base(
             _CFG.atm_base,
@@ -1209,6 +1161,5 @@ class Atm:
     def read_sflux(self, var, atm):
         """Read the stellar flux file, rebin onto `var.bins`, and write to var/atm."""
         out = read_sflux_binned(_CFG, np.asarray(var.bins))
-        atm.sflux_raw = out["sflux_raw"]
         var.sflux_top = out["sflux_top"]
         var.sflux_din12_indx = out["sflux_din12_indx"]

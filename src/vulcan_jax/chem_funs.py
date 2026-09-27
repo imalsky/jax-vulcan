@@ -16,14 +16,11 @@ _CFG = default_config()
 _NETWORK = _network.parse_network(str(resolve_data_path(_CFG.network)))
 _NET_JAX = _chem.to_jax(_NETWORK)
 
-# Build (or reload from cache) the SymPy-faithful per-reaction RHS.
+# The production RHS (the integrator binds it), built or reloaded from cache.
 # Memoised in `_make_chem_funs._BUILD_CACHE`, so the warmup call in
 # `state._build_pre_loop_runstate` returns the same `Callable`.
-_CHEM_RHS_CODEGEN = _make_chem_funs.build_chem_rhs(_NETWORK)
+chem_rhs_codegen = _make_chem_funs.build_chem_rhs(_NETWORK)
 
 ni: int = _NETWORK.ni
 nr: int = _NETWORK.nr
 spec_list: list[str] = list(_NETWORK.species)
-
-# The production RHS (the integrator binds it).
-chem_rhs_codegen = _CHEM_RHS_CODEGEN

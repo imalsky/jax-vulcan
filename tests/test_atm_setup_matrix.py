@@ -343,13 +343,6 @@ def test_compute_sat_p_each_species(sp, T_K):
     assert np.all(arr > 0.0)
 
 
-def test_compute_sat_p_unknown_species_raises():
-    from vulcan_jax.atm_setup import compute_sat_p
-
-    with pytest.raises(IOError, match="No saturation vapor data"):
-        compute_sat_p(["XYZ"], np.array([300.0]))
-
-
 # f_pico bit-exact + edge cases
 
 

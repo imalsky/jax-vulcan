@@ -65,3 +65,7 @@ for _i, _sp in enumerate(species):
     for _j, _atom in enumerate(atom_list):
         _compo_array_np[_i, _j] = float(_row[_atom])
 compo_array = jnp.asarray(_compo_array_np)
+# Molar mass (g/mol) per network species, first table row (`list.index`).
+species_mass = np.array(
+    [float(compo["mass"][compo_row.index(sp)]) for sp in species], dtype=np.float64
+)
