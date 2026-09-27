@@ -9,18 +9,9 @@ end-to-end against the `k_arr` the pre-loop froze on the HD189 fixture
 
 from __future__ import annotations
 
-import os
-import warnings
-from pathlib import Path
-
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
-ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
-
-warnings.filterwarnings("ignore")
 
 
 # Helpers

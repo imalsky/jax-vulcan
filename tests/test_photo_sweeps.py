@@ -8,17 +8,9 @@ no while loop.
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
-
-ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
-
 import vulcan_jax.photo as photo_mod
 
 # Roundoff bars, relative to the largest entry of the sequential result.
@@ -101,8 +93,6 @@ def test_associative_sweeps_on_hd189_state(hd189_state):
     from vulcan_jax.config import default_config
 
     cfg = default_config()
-    if not cfg.use_photo:
-        pytest.skip("use_photo=False; no two-stream state to compare")
 
     var, atm, solver = hd189_state.var, hd189_state.atm, hd189_state.solver
     solver.compute_tau(var, atm)  # populates var.tau and the PhotoData cache

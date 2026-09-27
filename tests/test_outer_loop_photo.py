@@ -9,20 +9,11 @@ recomputes cross x aflux on the host, so it is held to WRITER_RTOL.
 
 from __future__ import annotations
 
-import os
-import warnings
-from pathlib import Path
+import copy
 
 import jax.numpy as jnp
-import numpy as np
-import pytest
 from _helpers import relerr
 from vulcan_jax.phy_const import UNDERFLOW_DENOM
-
-ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
-
-warnings.filterwarnings("ignore")
 
 
 PHOTO_RTOL = 1e-13
@@ -32,13 +23,10 @@ PHOTO_RTOL = 1e-13
 WRITER_RTOL = 1e-7
 
 
-def main() -> int:
+def test_photo_branch_matches_python_photo_path():
     from vulcan_jax.config import default_config
 
     vulcan_cfg = default_config()
-
-    if not vulcan_cfg.use_photo:
-        pytest.skip("use_photo=False: no photo branch to validate")
 
     import vulcan_jax.legacy_io as op
     import vulcan_jax.op_jax as op_jax
@@ -58,19 +46,9 @@ def main() -> int:
 
     _network = _rates_mod.setup_var_k(vulcan_cfg, data_var, data_atm)
 
-    # Snapshot the pre-photo state so Path B starts where Path A did --
-    # otherwise Path B computes the 2nd photo update, not the 1st.
-    pre_photo = dict(
-        y=data_var.y.copy(),
-        ymix=data_var.ymix.copy(),
-        tau=data_var.tau.copy(),
-        aflux=data_var.aflux.copy(),
-        sflux=data_var.sflux.copy(),
-        dflux_d=data_var.dflux_d.copy(),
-        dflux_u=data_var.dflux_u.copy(),
-        aflux_change=float(data_var.aflux_change),
-        k_arr=data_var.k_arr.copy(),
-    )
+    # Path B starts from a copy of the pre-photo state; otherwise it computes
+    # the 2nd photo update, not the 1st.
+    var_B = copy.deepcopy(data_var)
 
     # --- Path A: Python-side compute_tau / compute_flux / compute_J ---
     solver = op_jax.Ros2JAX()
@@ -81,54 +59,15 @@ def main() -> int:
     solver.compute_J(data_var, data_atm)
     _rates_mod.apply_photo_remove(vulcan_cfg, data_var, _network)
 
-    # Snapshot Path A outputs for comparison.
-    tau_A = data_var.tau.copy()
-    aflux_A = data_var.aflux.copy()
-    sflux_A = data_var.sflux.copy()
-    dflux_d_A = data_var.dflux_d.copy()
-    dflux_u_A = data_var.dflux_u.copy()
-    prev_aflux_A = data_var.prev_aflux.copy()
-    aflux_change_A = float(data_var.aflux_change)
-    k_arr_A = data_var.k_arr.copy()
-    J_sp_A = {k: np.copy(v) for k, v in data_var.J_sp.items()}
-
-    # Restore pre-photo state so Path B sees what Path A saw.
-    data_var.y = pre_photo["y"].copy()
-    data_var.ymix = pre_photo["ymix"].copy()
-    data_var.tau = pre_photo["tau"].copy()
-    data_var.aflux = pre_photo["aflux"].copy()
-    data_var.sflux = pre_photo["sflux"].copy()
-    data_var.dflux_d = pre_photo["dflux_d"].copy()
-    data_var.dflux_u = pre_photo["dflux_u"].copy()
-    data_var.aflux_change = pre_photo["aflux_change"]
-    data_var.k_arr = pre_photo["k_arr"].copy()
-
     # --- Path B: photo branch inside the JAX runner ---
     integ = outer_loop.OuterLoop(solver, output)
-    integ._ensure_runner(data_var, data_atm)
-    rs_entry = runstate_from_store(data_var, data_atm, data_para)._replace(
+    integ._ensure_runner(var_B, data_atm)
+    rs_entry = runstate_from_store(var_B, data_atm, data_para)._replace(
         photo_static=rs.photo_static
     )
     init_state = integ._pack_state_from_runstate(rs_entry)
     photo_branch = outer_loop._make_photo_branch(integ._photo_static)
     final_state = photo_branch(init_state)
-
-    tau_B = np.asarray(final_state.tau)
-    aflux_B = np.asarray(final_state.aflux)
-    sflux_B = np.asarray(final_state.sflux)
-    dflux_d_B = np.asarray(final_state.dflux_d)
-    dflux_u_B = np.asarray(final_state.dflux_u)
-    prev_aflux_B = np.asarray(final_state.prev_aflux)
-    aflux_change_B = float(final_state.aflux_change)
-    k_arr_B = np.asarray(final_state.k_arr)
-    # J_sp through the production .vul writer (cross x aflux per branch plus
-    # the (sp, 0) totals, op.py:2764, 2783), not a copy of it here.
-    import vulcan_jax.legacy_io as _legacy_io
-
-    rs_B = integ._unpack_state_to_runstate(final_state, rs_entry)
-    J_sp_B = _legacy_io._synthesize_save_dicts(rs_B, vulcan_cfg)[0]["J_sp"]
-
-    ok = True
 
     # Regression: the in-runner photo branch must use the dynamic dz carried
     # by JaxIntegState, not the initial photo_static.dz closed over at trace
@@ -143,82 +82,26 @@ def main() -> int:
         integ._photo_static.photo_data,
     )
     dyn_dz_err = relerr(dynamic_final.tau, tau_dynamic_ref, floor=UNDERFLOW_DENOM)
-    print(f"dynamic-dz tau relerr: {dyn_dz_err:.3e}")
-    if dyn_dz_err > PHOTO_RTOL:
-        print("FAIL: photo branch did not use dynamic state.dz")
-        ok = False
+    assert dyn_dz_err <= PHOTO_RTOL, "photo branch did not use dynamic state.dz"
 
-    for label, A, B in (
-        ("tau", tau_A, tau_B),
-        ("aflux", aflux_A, aflux_B),
-        ("sflux", sflux_A, sflux_B),
-        ("dflux_d", dflux_d_A, dflux_d_B),
-        ("dflux_u", dflux_u_A, dflux_u_B),
-        ("prev_aflux", prev_aflux_A, prev_aflux_B),
-    ):
-        err = relerr(B, A, floor=UNDERFLOW_DENOM)
-        print(f"{label:11s} relerr: {err:.3e}")
-        if err > PHOTO_RTOL:
-            print(f"FAIL: {label} mismatch")
-            ok = False
+    for name in ("tau", "aflux", "sflux", "dflux_d", "dflux_u", "prev_aflux"):
+        err = relerr(getattr(final_state, name), getattr(data_var, name),
+                     floor=UNDERFLOW_DENOM)
+        assert err <= PHOTO_RTOL, f"{name} relerr {err:.3e}"
 
-    err_change = abs(aflux_change_A - aflux_change_B) / max(abs(aflux_change_A), 1e-300)
-    print(
-        f"aflux_change relerr: {err_change:.3e}  "
-        f"(A={aflux_change_A:.3e}, B={aflux_change_B:.3e})"
-    )
-    if err_change > PHOTO_RTOL:
-        print("FAIL: aflux_change mismatch")
-        ok = False
+    err_change = relerr(float(final_state.aflux_change), data_var.aflux_change,
+                        floor=1e-300)
+    assert err_change <= PHOTO_RTOL, f"aflux_change relerr {err_change:.3e}"
 
-    # var.k_arr: only photo-driven reactions should change between batches;
-    # anything outside that set should be bit-identical. Both paths write
-    # the same J*.
-    pho_re_set = {
-        idx
-        for (sp, nbr), idx in data_var.pho_rate_index.items()
-        if idx not in vulcan_cfg.remove_list
-    }
-    max_k_relerr = 0.0
-    n_changed = 0
-    nr_plus_one = k_arr_A.shape[0]
-    for ridx in range(1, nr_plus_one):
-        diff = np.abs(k_arr_A[ridx] - k_arr_B[ridx])
-        denom = np.maximum(np.abs(k_arr_A[ridx]), 1e-300)
-        re = float(np.max(diff / denom))
-        if ridx in pho_re_set:
-            n_changed += 1
-            max_k_relerr = max(max_k_relerr, re)
-        if re > PHOTO_RTOL:
-            print(
-                f"FAIL: var.k_arr[{ridx}] relerr {re:.3e} (in pho={ridx in pho_re_set})"
-            )
-            ok = False
-    print(
-        f"var.k_arr photo entries:   {n_changed} reactions, max relerr {max_k_relerr:.3e}"
-    )
+    # Every k_arr row, photo-driven or not: both paths write the same J*.
+    err_k = relerr(final_state.k_arr[1:], data_var.k_arr[1:], floor=1e-300)
+    assert err_k <= PHOTO_RTOL, f"k_arr relerr {err_k:.3e}"
 
-    # J_sp: every (sp, nbr) entry in A should appear in B with same values,
-    # including the (sp, 0) totals.
-    max_J_relerr = 0.0
-    for key, ref in J_sp_A.items():
-        if key not in J_sp_B:
-            print(f"FAIL: J_sp[{key}] missing in B")
-            ok = False
-            continue
-        diff = np.abs(J_sp_B[key] - ref)
-        denom = np.maximum(np.abs(ref), 1e-300)
-        re = float(np.max(diff / denom))
-        max_J_relerr = max(max_J_relerr, re)
-        if re > WRITER_RTOL:
-            print(f"FAIL: J_sp[{key}] relerr {re:.3e}")
-            ok = False
-    print(f"var.J_sp entries: {len(J_sp_A)} keys, max relerr {max_J_relerr:.3e}")
-
-    print("PASS" if ok else "FAIL")
-    return 0 if ok else 1
-
-
-def test_main():
-    """Pytest wrapper around main()."""
-    assert main() == 0
+    # J_sp through the production .vul writer (cross x aflux per branch plus
+    # the (sp, 0) totals, op.py:2764, 2783), not a copy of it here.
+    rs_B = integ._unpack_state_to_runstate(final_state, rs_entry)
+    J_sp_B = op._synthesize_save_dicts(rs_B, vulcan_cfg)[0]["J_sp"]
+    for key, ref in data_var.J_sp.items():
+        assert key in J_sp_B, f"J_sp[{key}] missing from the writer"
+        err = relerr(J_sp_B[key], ref, floor=1e-300)
+        assert err <= WRITER_RTOL, f"J_sp[{key}] relerr {err:.3e}"

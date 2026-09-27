@@ -5,24 +5,24 @@ A count_max=50 HD189 run must:
     (accept_count - L) % conv_step; the first is a post-step state (as
     op.save_step) and the last is the final t;
 (2) leave longdy and longdydt finite and positive;
-(3) end with count == count_max + 1 and end_case 3.
+(3) end with count == count_max + 1 and end_case 3;
+(4) keep every atom_loss under MAX_ATOM_LOSS and end with finite, positive
+    dt and t.
 """
 
 from __future__ import annotations
 
-import os
-import warnings
-from pathlib import Path
+import math
 
 import numpy as np
+import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
-
-warnings.filterwarnings("ignore")
+# Roundoff the conservation projection leaves over 50 HD189 steps (~3.5e-10); a 10x regression still trips 1e-8.
+MAX_ATOM_LOSS = 1.0e-8
 
 
-def main() -> int:
+@pytest.mark.strict_isolation
+def test_count_capped_run_conv_ring_and_termination():
     import vulcan_jax.outer_loop as outer_loop
     import vulcan_jax.legacy_io as op
 
@@ -46,10 +46,7 @@ def main() -> int:
     # The same run on the raw runner, for the ring the RunState does not carry.
     final = integ._runner(*integ.prepare_runstate(rs))
 
-    ok = True
-    if float(final.t) != float(rs_out.step.t):
-        print(f"FAIL: runner t {float(final.t):.6e} != integ(rs) t {rs_out.step.t:.6e}")
-        ok = False
+    assert float(final.t) == float(rs_out.step.t), "runner t != integ(rs) t"
 
     # ---- 1. Ring buffer + chronological reconstruction ----
     count = int(final.accept_count)
@@ -58,43 +55,21 @@ def main() -> int:
     start = (count - n_kept) % conv_step
     order = [(start + i) % conv_step for i in range(n_kept)]
     t_arr = np.asarray(final.t_time_ring)[order]
-
-    # Chronology: t should be strictly increasing.
-    if not np.all(np.diff(t_arr) > 0):
-        print(
-            "FAIL: ring times not strictly increasing; ring "
-            "reconstruction is in the wrong order"
-        )
-        ok = False
-
-    # Last entry == final t (most recent ring slot).
-    if t_arr[-1] != float(final.t):
-        print(f"FAIL: last ring t ({t_arr[-1]:.3e}) != t ({float(final.t):.3e})")
-        ok = False
+    assert np.all(np.diff(t_arr) > 0), "ring reconstruction is in the wrong order"
+    assert t_arr[-1] == float(final.t), "last ring t != final t"
 
     # ---- 2. longdy / longdydt populated ----
     longdy, longdydt = rs_out.step.longdy, rs_out.step.longdydt
-    if not (np.isfinite(longdy) and longdy > 0):
-        print(f"FAIL: longdy = {longdy} is not finite/positive")
-        ok = False
-    if not (np.isfinite(longdydt) and longdydt > 0):
-        print(f"FAIL: longdydt = {longdydt} is not finite/positive")
-        ok = False
+    assert np.isfinite(longdy) and longdy > 0, longdy
+    assert np.isfinite(longdydt) and longdydt > 0, longdydt
 
     # ---- 3. Single-shot termination via count_max ----
-    count_out = int(rs_out.params.count)
-    end_case = int(rs_out.params.end_case)
-    if count_out != vulcan_cfg.count_max + 1:
-        print(f"FAIL: count={count_out}, expected {vulcan_cfg.count_max + 1}")
-        ok = False
-    if end_case != 3:
-        print(f"FAIL: end_case={end_case}, expected 3 (count_max exceeded)")
-        ok = False
+    assert int(rs_out.params.count) == vulcan_cfg.count_max + 1
+    assert int(rs_out.params.end_case) == 3, "expected end_case 3 (count_max exceeded)"
 
-    print("PASS" if ok else "FAIL")
-    return 0 if ok else 1
-
-
-def test_main():
-    """Pytest wrapper around main()."""
-    assert main() == 0
+    # ---- 4. Conservation and a finite clock ----
+    for atom, loss in zip(rs_out.atoms.atom_order, np.asarray(rs_out.atoms.atom_loss)):
+        assert abs(loss) <= MAX_ATOM_LOSS, f"atom_loss[{atom}] = {loss:.3e}"
+    t, dt = float(rs_out.step.t), float(rs_out.step.dt)
+    assert dt > 0 and math.isfinite(dt), dt
+    assert t > 0 and math.isfinite(t), t

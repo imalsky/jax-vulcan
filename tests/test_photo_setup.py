@@ -11,8 +11,6 @@ from those bins.
 
 from __future__ import annotations
 
-import os
-import warnings
 from pathlib import Path
 
 import numpy as np
@@ -20,10 +18,6 @@ import pytest
 from _gen_photo_baseline import build_state_through_read_rate
 
 ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
-
-warnings.filterwarnings("ignore")
-
 FIXTURE_DIR = ROOT / "tests" / "data"
 _BASELINE_FIXTURE = FIXTURE_DIR / "photo_setup_hd189_baseline.npz"
 _T_DEP_FIXTURE = FIXTURE_DIR / "photo_setup_hd189_T_dep.npz"
@@ -32,6 +26,15 @@ _REGEN_HINT = (
 )
 BIN_ATOL = 2e-14
 CROSS_ATOL = 1e-30
+# (dense array, its key list, fixture prefix); no prefix is a prefix of another.
+_CROSS_TABLES = (
+    ("absp_cross", "absp_sp", "cross__"),
+    ("absp_T_cross", "absp_T_sp", "cross_T__"),
+    ("cross_J", "branch_keys", "cross_J__"),
+    ("cross_J_T", "branch_T_keys", "cross_J_T__"),
+    ("scat_cross", "scat_sp", "cross_scat__"),
+    ("cross_Jion", "ion_branch_keys", "cross_Jion__"),
+)
 
 
 def _check_static_against_fixture(
@@ -56,99 +59,30 @@ def _check_static_against_fixture(
     assert tuple(static.absp_T_sp) == tuple(
         sp for sp in static.absp_sp if sp in expected_T_sp
     )
-    assert {f"cross__{sp}" for sp in static.absp_sp} == {
-        key for key in fx.files if key.startswith("cross__")
-    }
-    assert {f"cross_T__{sp}" for sp in static.absp_T_sp} == {
-        key for key in fx.files if key.startswith("cross_T__")
-    }
-    assert {f"cross_J__{sp}__{br}" for sp, br in static.branch_keys} == {
-        key for key in fx.files if key.startswith("cross_J__")
-    }
-    assert {f"cross_J_T__{sp}__{br}" for sp, br in static.branch_T_keys} == {
-        key for key in fx.files if key.startswith("cross_J_T__")
-    }
-    assert {f"cross_scat__{sp}" for sp in static.scat_sp} == {
-        key for key in fx.files if key.startswith("cross_scat__")
-    }
-    assert {f"cross_Jion__{sp}__{br}" for sp, br in static.ion_branch_keys} == {
-        key for key in fx.files if key.startswith("cross_Jion__")
-    }
-
-    for i, sp in enumerate(static.absp_sp):
-        np.testing.assert_allclose(
-            np.asarray(static.absp_cross[i]),
-            fx[f"cross__{sp}"],
-            rtol=0.0,
-            atol=CROSS_ATOL,
-            err_msg=f"absp_cross[{i}] (sp={sp}) mismatch",
-        )
-
-    for i, sp in enumerate(static.absp_T_sp):
-        np.testing.assert_allclose(
-            np.asarray(static.absp_T_cross[i]),
-            fx[f"cross_T__{sp}"],
-            rtol=0.0,
-            atol=CROSS_ATOL,
-            err_msg=f"absp_T_cross[{i}] (sp={sp}) mismatch",
-        )
-
-    for i, (sp, br) in enumerate(static.branch_keys):
-        np.testing.assert_allclose(
-            np.asarray(static.cross_J[i]),
-            fx[f"cross_J__{sp}__{br}"],
-            rtol=0.0,
-            atol=CROSS_ATOL,
-            err_msg=f"cross_J[{i}] (sp={sp}, br={br}) mismatch",
-        )
-
-    for i, (sp, br) in enumerate(static.branch_T_keys):
-        np.testing.assert_allclose(
-            np.asarray(static.cross_J_T[i]),
-            fx[f"cross_J_T__{sp}__{br}"],
-            rtol=0.0,
-            atol=CROSS_ATOL,
-            err_msg=f"cross_J_T[{i}] (sp={sp}, br={br}) mismatch",
-        )
-
-    for i, sp in enumerate(static.scat_sp):
-        np.testing.assert_allclose(
-            np.asarray(static.scat_cross[i]),
-            fx[f"cross_scat__{sp}"],
-            rtol=0.0,
-            atol=CROSS_ATOL,
-            err_msg=f"scat_cross[{i}] (sp={sp}) mismatch",
-        )
-
-    for i, (sp, br) in enumerate(static.ion_branch_keys):
-        np.testing.assert_allclose(
-            np.asarray(static.cross_Jion[i]),
-            fx[f"cross_Jion__{sp}__{br}"],
-            rtol=0.0,
-            atol=CROSS_ATOL,
-            err_msg=f"cross_Jion[{i}] (sp={sp}, br={br}) mismatch",
-        )
+    for arr, keys, prefix in _CROSS_TABLES:
+        names = [
+            prefix + ("__".join(map(str, k)) if isinstance(k, tuple) else k)
+            for k in getattr(static, keys)
+        ]
+        assert set(names) == {f for f in fx.files if f.startswith(prefix)}
+        for i, name in enumerate(names):
+            np.testing.assert_allclose(
+                np.asarray(getattr(static, arr)[i]),
+                fx[name],
+                rtol=0.0,
+                atol=CROSS_ATOL,
+                err_msg=name,
+            )
 
 
 @pytest.mark.skipif(not _BASELINE_FIXTURE.exists(), reason=_REGEN_HINT)
 def test_photo_setup_matches_baseline_fixture():
     """HD189 default: T_cross_sp=[], use_ion=False."""
     import vulcan_jax.photo_setup as photo_setup
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-
-    if not bool(getattr(vulcan_cfg, "use_photo", False)):
-        import pytest
-
-        pytest.skip("use_photo=False; nothing to compare.")
 
     var, atm = build_state_through_read_rate()
     static = photo_setup._build_photo_static_dense(var, atm)
-    _check_static_against_fixture(
-        static,
-        FIXTURE_DIR / "photo_setup_hd189_baseline.npz",
-    )
+    _check_static_against_fixture(static, _BASELINE_FIXTURE)
 
 
 @pytest.mark.strict_isolation
@@ -165,7 +99,7 @@ def test_photo_setup_matches_T_dep_fixture(monkeypatch):
     static = photo_setup._build_photo_static_dense(var, atm)
     _check_static_against_fixture(
         static,
-        FIXTURE_DIR / "photo_setup_hd189_T_dep.npz",
+        _T_DEP_FIXTURE,
         expected_T_sp=("CO2", "H2O", "NH3"),
     )
 

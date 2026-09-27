@@ -2,15 +2,9 @@
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
-
-ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
-
 import vulcan_jax.op_jax as op_jax
 from vulcan_jax.config import default_config
 

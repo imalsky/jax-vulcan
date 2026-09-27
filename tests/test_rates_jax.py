@@ -14,23 +14,18 @@ import pytest
 import jax
 import jax.numpy as jnp
 
-jax.config.update("jax_enable_x64", True)
-
 RTOL = 1e-12  # the same rate expression evaluated two ways
 
 
-def main() -> int:
+def test_rate_build_tangents_are_finite(hd189_state):
     from vulcan_jax.config import default_config
 
     vulcan_cfg = default_config()
-    from vulcan_jax.state import RunState, legacy_view
     from vulcan_jax import network as net_mod, rates_jax
     from vulcan_jax.gibbs import load_nasa9
     from vulcan_jax._paths import resolve_data_path
 
-    vulcan_cfg.use_print_prog = False
-    rs = RunState.with_pre_loop_setup(vulcan_cfg)
-    _, atm, _ = legacy_view(rs)
+    atm = hd189_state.atm
     network = net_mod.parse_network(str(resolve_data_path(vulcan_cfg.network)))
 
     T = np.asarray(atm.Tco, dtype=np.float64)
@@ -106,11 +101,6 @@ def main() -> int:
     assert bool(jnp.all(jnp.isfinite(dka))), (
         "non-finite jvp of rates_jax wrt Arrhenius a"
     )
-    return 0
-
-
-def test_main():
-    assert main() == 0
 
 
 @pytest.mark.parametrize(
