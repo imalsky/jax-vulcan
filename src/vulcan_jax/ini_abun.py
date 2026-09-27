@@ -64,6 +64,11 @@ def _abundance_path() -> Path:
     return resolve_data_path(str(_CFG.fastchem_solar_abundance_file))
 
 
+def _charged_species() -> list[str]:
+    """Species with a non-zero electron count, in network order."""
+    return [sp for sp in species if compo[compo_row.index(sp)]["e"] != 0]
+
+
 def _condensate_species() -> set[str]:
     """Species produced by a condensation reaction.
 
@@ -109,8 +114,7 @@ def _build_seed_setup() -> tuple[ChemicalSetup, np.ndarray, tuple[str, ...]]:
     """
     from exogibbs.thermo.models import ChemicalSetup
 
-    charged = {sp for sp in species if compo[compo_row.index(sp)]["e"] != 0}
-    excluded = _condensate_species() | charged
+    excluded = _condensate_species() | set(_charged_species())
     seed_idx = np.array(
         [i for i, sp in enumerate(species) if sp not in excluded], dtype=np.int64
     )
@@ -222,14 +226,12 @@ def eq_seed(Tco, p_bar, b):
     return _eq_seed_column(Tco, p_bar, b)
 
 
-@jax.custom_batching.custom_vmap
-def _eq_seed_column(Tco, p_bar, b):
-    """`eq_seed` on one column; under `vmap`, `_eq_seed_lanes`."""
+def _solve_profile(Tco, p_bar, b):
+    """ExoGibbs `solve_profile` on one column: `(result, per-layer diagnostics)`."""
     from exogibbs.api.gas import solve_profile
 
-    setup, seed_idx, _ = _seed()
-    res, diag = solve_profile(
-        setup,
+    return solve_profile(
+        _seed()[0],
         jnp.asarray(Tco, dtype=jnp.float64),
         jnp.asarray(p_bar, dtype=jnp.float64),
         jnp.asarray(b, dtype=jnp.float64),
@@ -237,6 +239,13 @@ def _eq_seed_column(Tco, p_bar, b):
         options=_seed_options(),
         return_diagnostics=True,
     )
+
+
+@jax.custom_batching.custom_vmap
+def _eq_seed_column(Tco, p_bar, b):
+    """`eq_seed` on one column; under `vmap`, `_eq_seed_lanes`."""
+    res, diag = _solve_profile(Tco, p_bar, b)
+    seed_idx = _seed()[1]
     ok = jnp.all(diag["converged"]) & jnp.all(jnp.isfinite(res.x))
     y = jnp.zeros((Tco.shape[0], chem_funs.ni), dtype=jnp.float64)
     return y.at[:, jnp.asarray(seed_idx)].set(jnp.where(ok, res.x, jnp.nan))
@@ -269,22 +278,6 @@ def _eq_seed_jvp(primals, tangents):
     del tangents
     primal = eq_seed(*primals)
     return primal, jnp.zeros_like(primal)
-
-
-def seed_diagnostics(Tco, p_bar, b) -> dict:
-    """Per-layer `converged` / `n_iter` / `final_residual` for one column."""
-    from exogibbs.api.gas import solve_profile
-
-    _, diag = solve_profile(
-        _seed()[0],
-        jnp.asarray(Tco, dtype=jnp.float64),
-        jnp.asarray(p_bar, dtype=jnp.float64),
-        jnp.asarray(b, dtype=jnp.float64),
-        Pref=1.0,
-        options=_seed_options(),
-        return_diagnostics=True,
-    )
-    return {k: np.asarray(v) for k, v in diag.items()}
 
 
 def read_abundances(path: Path) -> dict[str, float]:
@@ -397,14 +390,13 @@ def _abun_lowT_residual(x, O_H, C_H, He_H, N_H):
     return jnp.stack([f1, f2, f3, f4, f5])
 
 
-def _jax_newton(residual_fn, m0, args, max_iter=50, tol=1e-12):
+def _jax_newton(residual_fn, m0, args, max_iter, tol):
     """Small dense Newton via `lax.while_loop` on residual norm.
 
     Solves the 5-element `_abun_lowT_residual` system. The Jacobian is built with
     `jax.jacrev`; the linear solve is `jnp.linalg.solve` (5x5 dense). Production callers pass
     `max_iter` / `tol` from `_CFG.fastchem_newton_max_iter` and
-    `_CFG.fastchem_newton_tol`; the one test caller passes both too, so no
-    caller uses the defaults.
+    `_CFG.fastchem_newton_tol`.
     """
     jac_fn = jax.jacrev(residual_fn)
 
@@ -459,13 +451,6 @@ def column_atoms(y, dz, compo_arr=compo_array):
     return jnp.einsum("z,zi,ia->a", w, jnp.asarray(y, dtype=jnp.float64), compo_arr)
 
 
-def _build_charge_list_if_ion(charge_list: list[str]) -> None:
-    """Append every species with non-zero electron count to `charge_list`."""
-    for sp in species:
-        if compo[compo_row.index(sp)]["e"] != 0:
-            charge_list.append(sp)
-
-
 def eq_column(pco, Tco, M) -> np.ndarray:
     """Equilibrium column ``(nz, ni)`` in absolute number densities.
 
@@ -494,7 +479,7 @@ def eq_column(pco, Tco, M) -> np.ndarray:
         _seed_jit()(jnp.asarray(Tco), jnp.asarray(p_bar), jnp.asarray(b))
     )
     if not np.isfinite(ymix).all():
-        conv = seed_diagnostics(Tco, p_bar, b)["converged"]
+        conv = np.asarray(_solve_profile(Tco, p_bar, b)[1]["converged"])
         bad = np.flatnonzero(~conv)
         raise RuntimeError(
             f"the equilibrium seed did not converge in "
@@ -528,10 +513,7 @@ def _load_vulcan_ini_y(data_atm) -> tuple[np.ndarray, list[str]]:
             y[:, species.index(sp)] = prev_y[:, prev_species.index(sp)]
         else:
             logger.warning(sp + " not included in the previous run.")
-    charge_list: list[str] = []
-    if _CFG.use_ion is True:
-        _build_charge_list_if_ion(charge_list)
-    return y, charge_list
+    return y, (_charged_species() if _CFG.use_ion is True else [])
 
 
 def _load_table_y(data_atm) -> tuple[np.ndarray, list[str]]:
@@ -560,10 +542,7 @@ def _load_const_mix_y(data_atm) -> tuple[np.ndarray, list[str]]:
     gas_tot = np.asarray(data_atm.M)
     for sp in _CFG.const_mix.keys():
         y[:, species.index(sp)] = gas_tot * _CFG.const_mix[sp]
-    charge_list: list[str] = []
-    if _CFG.use_ion is True:
-        _build_charge_list_if_ion(charge_list)
-    return y, charge_list
+    return y, (_charged_species() if _CFG.use_ion is True else [])
 
 
 # Newton initial guess for the H2/H2O/CH4/He/NH3 system (build_atm.py:35).
@@ -711,15 +690,10 @@ def compute_initial_abundance(data_atm) -> IniAbunOutputs:
         if "e" in charge_list:
             charge_list = [c for c in charge_list if c != "e"]
 
-    atom_ini_arr = np.asarray(compute_atom_ini(jnp.asarray(y)))
-    n_atoms = atom_ini_arr.shape[0]
     return IniAbunOutputs(
         y=jnp.asarray(y),
         ymix=jnp.asarray(ymix),
         y_ini=jnp.asarray(y),
-        atom_ini=jnp.asarray(atom_ini_arr),
-        atom_loss=jnp.zeros(n_atoms, dtype=jnp.float64),
-        atom_conden=jnp.zeros(n_atoms, dtype=jnp.float64),
         charge_list=tuple(charge_list),
     )
 

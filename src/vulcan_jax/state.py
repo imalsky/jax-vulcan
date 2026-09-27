@@ -59,14 +59,11 @@ class RateInputs(NamedTuple):
 
 
 class IniAbunOutputs(NamedTuple):
-    """Initial-abundance solver output. nz layers, ni species, n_atoms elements."""
+    """Initial-abundance solver output. nz layers, ni species."""
 
     y: jnp.ndarray  # (nz, ni)    number density
     ymix: jnp.ndarray  # (nz, ni)    mixing ratio
     y_ini: jnp.ndarray  # (nz, ni)    initial-state snapshot
-    atom_ini: jnp.ndarray  # (n_atoms,)  sum of stoich * y per atom
-    atom_loss: jnp.ndarray  # (n_atoms,)  zeros at init
-    atom_conden: jnp.ndarray  # (n_atoms,)  zeros at init
     charge_list: tuple[str, ...]  # charged species (empty when use_ion=False)
 
 

@@ -13,6 +13,7 @@ default, read at the first ``import vulcan_jax``.
 from __future__ import annotations
 
 import copy
+import functools
 import os
 import re
 import types
@@ -145,34 +146,25 @@ _REMOVED_KEYS: dict[str, str] = {
     ),
 }
 
-_KNOWN_KEYS: frozenset[str] | None = None
 
-
+@functools.cache
 def _known_config_keys() -> frozenset[str]:
-    """Canonical set of accepted config keys (read once, cached).
+    """Canonical set of accepted config keys.
 
     Sourced from the *packaged* ``default.yaml`` (the maintained superset, since
     every shipped config is a subset of its keys) plus the derived keys that
     authored YAML omits but a resolved/dumped config carries. Read raw (not via
     ``load_config``) so building the schema cannot recurse through validation.
     """
-    global _KNOWN_KEYS
-    if _KNOWN_KEYS is None:
-        _KNOWN_KEYS = frozenset(_packaged_defaults()) | {name for name, _ in _DERIVED}
-    return _KNOWN_KEYS
+    return frozenset(_packaged_defaults()) | {name for name, _ in _DERIVED}
 
 
-_DEFAULTS: dict[str, Any] | None = None
-
-
+@functools.cache
 def _packaged_defaults() -> dict[str, Any]:
     """The packaged ``default.yaml``, read raw once: the value of every knob a
     config file omits."""
-    global _DEFAULTS
-    if _DEFAULTS is None:
-        pkg = resources.files("vulcan_jax").joinpath("configs", "default.yaml")
-        _DEFAULTS = yaml.load(pkg.read_text(), Loader=_StrictLoader)
-    return _DEFAULTS
+    pkg = resources.files("vulcan_jax").joinpath("configs", "default.yaml")
+    return yaml.load(pkg.read_text(), Loader=_StrictLoader)
 
 
 def _validate_keys(d: dict[str, Any], source: str) -> None:
@@ -297,9 +289,7 @@ def dump_config(cfg: Config, path: str | os.PathLike) -> None:
     )
 
 
-_DEFAULT: Config | None = None
-
-
+@functools.cache
 def default_config() -> Config:
     """The process-wide default Config (loaded once from ``configs/default.yaml``).
 
@@ -308,7 +298,4 @@ def default_config() -> Config:
     same object is returned every call, so ``state._cfg_overlay`` can identity-
     compare against it for its no-op fast path.
     """
-    global _DEFAULT
-    if _DEFAULT is None:
-        _DEFAULT = load_config("default")
-    return _DEFAULT
+    return load_config("default")

@@ -26,20 +26,6 @@ import jax.numpy as jnp
 
 from .phy_const import UNDERFLOW_DENOM, Navo, kb
 
-# Gas-phase condensates with a full runtime kinetics path (master's op.conden
-# branch set). H2S has saturation data only (atm_setup), no kinetics;
-# make_conden_spec raises on any other active condensate, where master leaves
-# its rate 0.
-SUPPORTED_CONDEN_KINETICS: tuple[str, ...] = (
-    "H2O",
-    "NH3",
-    "H2SO4",
-    "S2",
-    "S4",
-    "S8",
-    "C",
-)
-
 # Molar masses (g/mol) from op.conden (op.py:1109-1290). S2/S8 are 2x/8x
 # atomic S; upstream's 45.019/360.152 (op.py:1203, :1249) is a copy-paste
 # error.
@@ -61,6 +47,11 @@ GAS_TO_CONDENSATE: dict[str, str] = {
     "S8": "S8_l_s",
     "C": "C_s",
 }
+# Gas-phase condensates with a full runtime kinetics path (master's op.conden
+# branch set). H2S has saturation data only (atm_setup), no kinetics;
+# make_conden_spec raises on any other active condensate, where master leaves
+# its rate 0.
+SUPPORTED_CONDEN_KINETICS: tuple[str, ...] = tuple(GAS_MASS_G_PER_MOL)
 
 
 class CondenSpec(NamedTuple):
@@ -115,6 +106,14 @@ class CondenProfile(NamedTuple):
     fix_species_sat_mix: jnp.ndarray  # (n_fix, nz)
 
 
+def _m_over_rho_r2(atm, gas_sp: str) -> float:
+    """`m / (rho_p * r_p**2)` for `gas_sp` and its condensate, in cgs."""
+    c = GAS_TO_CONDENSATE[gas_sp]
+    return (GAS_MASS_G_PER_MOL[gas_sp] / Navo) / (
+        float(atm.rho_p[c]) * float(atm.r_p[c]) ** 2
+    )
+
+
 def make_conden_spec(cfg, var, atm, species_idx) -> CondenSpec:
     """Extract the static condensation metadata from a completed setup.
 
@@ -138,9 +137,7 @@ def make_conden_spec(cfg, var, atm, species_idx) -> CondenSpec:
             continue
         if gas_sp not in GAS_MASS_G_PER_MOL:
             raise NotImplementedError(f"conden formula {rf!r} not yet ported to JAX")
-        condensate = GAS_TO_CONDENSATE[gas_sp]
-        m = GAS_MASS_G_PER_MOL[gas_sp] / Navo
-        coeff = m / (float(atm.rho_p[condensate]) * float(atm.r_p[condensate]) ** 2)
+        coeff = _m_over_rho_r2(atm, gas_sp)
         # use_relax short-circuit exists only on upstream H2O/NH3
         # branches (op.py:1121-1123, 1153-1155). Other condensates,
         # including H2SO4, still use their condensation-rate rows.
@@ -151,27 +148,19 @@ def make_conden_spec(cfg, var, atm, species_idx) -> CondenSpec:
         sp_idx.append(int(species_idx[gas_sp]))
         coeffs.append(coeff)
 
-    h2o_active = "H2O" in relax_set and "H2O" in species_idx
-    if h2o_active:
-        h2o_idx = int(species_idx["H2O"])
-        h2o_l_s_idx = int(species_idx["H2O_l_s"])
-        h2o_m_over_rho_r2 = (GAS_MASS_G_PER_MOL["H2O"] / Navo) / (
-            float(atm.rho_p["H2O_l_s"]) * float(atm.r_p["H2O_l_s"]) ** 2
+    def _relax_block(sp: str) -> tuple[bool, int, int, float]:
+        # (active, gas index, condensate index, m/(rho_p r_p^2)).
+        if sp not in relax_set or sp not in species_idx:
+            return False, 0, 0, 0.0
+        return (
+            True,
+            int(species_idx[sp]),
+            int(species_idx[GAS_TO_CONDENSATE[sp]]),
+            _m_over_rho_r2(atm, sp),
         )
-    else:
-        h2o_idx = h2o_l_s_idx = 0
-        h2o_m_over_rho_r2 = 0.0
 
-    nh3_active = "NH3" in relax_set and "NH3" in species_idx
-    if nh3_active:
-        nh3_idx = int(species_idx["NH3"])
-        nh3_l_s_idx = int(species_idx["NH3_l_s"])
-        nh3_m_over_rho_r2 = (GAS_MASS_G_PER_MOL["NH3"] / Navo) / (
-            float(atm.rho_p["NH3_l_s"]) * float(atm.r_p["NH3_l_s"]) ** 2
-        )
-    else:
-        nh3_idx = nh3_l_s_idx = 0
-        nh3_m_over_rho_r2 = 0.0
+    h2o_active, h2o_idx, h2o_l_s_idx, h2o_m_over_rho_r2 = _relax_block("H2O")
+    nh3_active, nh3_idx, nh3_l_s_idx, nh3_m_over_rho_r2 = _relax_block("NH3")
 
     fix_names = tuple(cfg.fix_species)
     return CondenSpec(
@@ -343,53 +332,75 @@ def update_conden_rates(
     return k_arr_new.at[st.conden_re_idx + 1].set(k_neg)
 
 
-def apply_h2o_relax_jax(
-    y: jnp.ndarray, ymix: jnp.ndarray, dt: jnp.ndarray, st: CondenStatic
-) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """Implicit-Euler H2O cold-trap relaxation.
+def _relax(y, ymix, dt, st, idx, l_s, Dg, sat, m_over, conden_top=None):
+    """Implicit-Euler cold-trap relaxation of gas `idx` toward `sat`.
 
-    Condense where `tau > 0` (y > sat), evaporate where `tau < 0`. Mass
-    moves into / out of `H2O_l_s`. The final ymix -> y projection uses the
-    *pre-relax* gas-sum; no-op when `h2o_active=False`.
+    Condense where `tau > 0` (y > sat), evaporate where `tau < 0`; mass
+    moves into / out of the condensate `l_s`. With `conden_top`,
+    condensation is clamped to layers at or below it and `ymix[l_s]` is
+    clipped at 0. The final ymix -> y projection uses the *pre-relax*
+    gas-sum.
     """
-    if not st.h2o_active:
-        return y, ymix
-
-    h2o = st.h2o_idx
-    h2o_l_s = st.h2o_l_s_idx
-
-    # Tiny floor on the denominator avoids NaN in cells where y[H2O]==sat;
+    # Tiny floor on the denominator avoids NaN in cells where y[idx]==sat;
     # there tau becomes ~+1e300, so dt/tau ~ 0 makes y_conden ~ ymix and the
     # condensation delta is effectively zero.
-    denom = st.h2o_Dg * st.h2o_m_over_rho_r2 * (y[:, h2o] - st.h2o_sat)
+    denom = Dg * m_over * (y[:, idx] - sat)
     denom_safe = jnp.where(jnp.abs(denom) < UNDERFLOW_DENOM, UNDERFLOW_DENOM, denom)
     tau = 1.0 / denom_safe
 
-    sat_mix = st.h2o_sat / st.n_0
+    sat_mix = sat / st.n_0
 
-    y_conden = (ymix[:, h2o] + dt / tau * sat_mix) / (1.0 + dt / tau)
-    ice_loss = (y[:, h2o] - st.h2o_sat) * dt / tau
-    ice_loss = jnp.minimum(y[:, h2o_l_s], ice_loss)
+    y_conden = (ymix[:, idx] + dt / tau * sat_mix) / (1.0 + dt / tau)
+    ice_loss = (y[:, idx] - sat) * dt / tau
+    ice_loss = jnp.minimum(y[:, l_s], ice_loss)
 
     conden_mask = tau > 0
+    if conden_top is not None:
+        # Index 0 is the deepest layer, so this keeps everything at or below
+        # the cold-trap level; evaporation is unclamped.
+        layer_idx = jnp.arange(y.shape[0], dtype=jnp.int32)
+        conden_mask = conden_mask & (layer_idx <= jnp.int32(conden_top))
     evap_mask = tau < 0
 
-    delta_h2o_conden = jnp.where(conden_mask, ymix[:, h2o] - y_conden, 0.0)
-    delta_h2o_evap = jnp.where(evap_mask, ice_loss / st.n_0, 0.0)
+    delta_conden = jnp.where(conden_mask, ymix[:, idx] - y_conden, 0.0)
+    delta_evap = jnp.where(evap_mask, ice_loss / st.n_0, 0.0)
 
     ymix_new = (
-        ymix.at[:, h2o_l_s]
-        .add(delta_h2o_conden)
-        .at[:, h2o]
-        .add(-delta_h2o_conden)
-        .at[:, h2o]
-        .add(delta_h2o_evap)
-        .at[:, h2o_l_s]
-        .add(-delta_h2o_evap)
+        ymix.at[:, l_s]
+        .add(delta_conden)
+        .at[:, idx]
+        .add(-delta_conden)
+        .at[:, idx]
+        .add(delta_evap)
+        .at[:, l_s]
+        .add(-delta_evap)
     )
+
+    if conden_top is not None:
+        ymix_new = ymix_new.at[:, l_s].set(jnp.maximum(ymix_new[:, l_s], 0.0))
 
     ysum = jnp.sum(jnp.where(st.gas_indx_mask[None, :], y, 0.0), axis=1, keepdims=True)
     return ymix_new * ysum, ymix_new
+
+
+def apply_h2o_relax_jax(
+    y: jnp.ndarray, ymix: jnp.ndarray, dt: jnp.ndarray, st: CondenStatic
+) -> Tuple[jnp.ndarray, jnp.ndarray]:
+    """Implicit-Euler H2O cold-trap relaxation into / out of `H2O_l_s`;
+    no-op when `h2o_active=False`."""
+    if not st.h2o_active:
+        return y, ymix
+    return _relax(
+        y,
+        ymix,
+        dt,
+        st,
+        st.h2o_idx,
+        st.h2o_l_s_idx,
+        st.h2o_Dg,
+        st.h2o_sat,
+        st.h2o_m_over_rho_r2,
+    )
 
 
 def apply_nh3_relax_jax(
@@ -404,44 +415,15 @@ def apply_nh3_relax_jax(
     """
     if not st.nh3_active:
         return y, ymix
-
-    nh3 = st.nh3_idx
-    nh3_l_s = st.nh3_l_s_idx
-    nz = y.shape[0]
-
-    denom = st.nh3_Dg * st.nh3_m_over_rho_r2 * (y[:, nh3] - st.nh3_sat)
-    denom_safe = jnp.where(jnp.abs(denom) < UNDERFLOW_DENOM, UNDERFLOW_DENOM, denom)
-    tau = 1.0 / denom_safe
-
-    sat_mix = st.nh3_sat / st.n_0
-
-    y_conden = (ymix[:, nh3] + dt / tau * sat_mix) / (1.0 + dt / tau)
-    ice_loss = (y[:, nh3] - st.nh3_sat) * dt / tau
-    ice_loss = jnp.minimum(y[:, nh3_l_s], ice_loss)
-
-    # Condensation clamped to layer index <= conden_top (index 0 is the
-    # deepest layer, so this is everything at or below the cold-trap level);
-    # evaporation is unclamped.
-    layer_idx = jnp.arange(nz, dtype=jnp.int32)
-    at_or_below_top = layer_idx <= jnp.int32(st.nh3_conden_top)
-    conden_mask = (tau > 0) & at_or_below_top
-    evap_mask = tau < 0
-
-    delta_nh3_conden = jnp.where(conden_mask, ymix[:, nh3] - y_conden, 0.0)
-    delta_nh3_evap = jnp.where(evap_mask, ice_loss / st.n_0, 0.0)
-
-    ymix_new = (
-        ymix.at[:, nh3_l_s]
-        .add(delta_nh3_conden)
-        .at[:, nh3]
-        .add(-delta_nh3_conden)
-        .at[:, nh3]
-        .add(delta_nh3_evap)
-        .at[:, nh3_l_s]
-        .add(-delta_nh3_evap)
+    return _relax(
+        y,
+        ymix,
+        dt,
+        st,
+        st.nh3_idx,
+        st.nh3_l_s_idx,
+        st.nh3_Dg,
+        st.nh3_sat,
+        st.nh3_m_over_rho_r2,
+        conden_top=st.nh3_conden_top,
     )
-
-    ymix_new = ymix_new.at[:, nh3_l_s].set(jnp.maximum(ymix_new[:, nh3_l_s], 0.0))
-
-    ysum = jnp.sum(jnp.where(st.gas_indx_mask[None, :], y, 0.0), axis=1, keepdims=True)
-    return ymix_new * ysum, ymix_new
