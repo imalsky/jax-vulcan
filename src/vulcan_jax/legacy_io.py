@@ -264,7 +264,7 @@ def _synthesize_save_dicts(runstate, cfg):
     use_save_evo = bool(cfg.save_evolution)
     T_cross_sp = list(cfg.T_cross_sp)
 
-    # 1. Variable dict: mirrors the legacy var.var_save filter.
+    # 1. Variable dict: mirrors upstream's var.var_save filter (store.py:83-88).
     var_save = {"species": species, "nr": nr}
 
     # Rate dict from the dense (nr+1, nz) array.
@@ -377,7 +377,7 @@ def _synthesize_save_dicts(runstate, cfg):
         atm_save["fix_sp_indx"] = dict(md.fix_sp_indx)
     atm_save["conden_min_lev"] = {}
 
-    # 3. Parameter dict: mirrors `vars(data_para)` from state._Parameters.
+    # 3. Parameter dict: mirrors `vars(data_para)` of upstream store.Parameters (store.py:182).
     para_save = {}
     if runstate.params is not None:
         p = runstate.params

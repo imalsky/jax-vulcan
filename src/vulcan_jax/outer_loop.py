@@ -2752,7 +2752,7 @@ class OuterLoop:
         to consistently-shaped placeholders when condensation is off (the body
         never reads them in that case).
         """
-        var, atm, _ = _state_mod.legacy_view(rs, cfg=self._cfg)
+        var, atm, _ = _state_mod.legacy_view(rs)
         statics = self._build_statics(var, atm)
         refresh = self._build_refresh_static(atm)
         nz = int(atm.Tco.shape[0])
@@ -3157,7 +3157,7 @@ class OuterLoop:
         same setup, then the runner.
         """
         validate_runtime_config(self._cfg)
-        var, atm, _ = _state_mod.legacy_view(rs, cfg=self._cfg)
+        var, atm, _ = _state_mod.legacy_view(rs)
         # Wire a pre-built PhotoStaticInputs onto the solver so
         # _build_photo_static doesn't rebuild from the legacy_view shim
         # (which does not carry the var.cross* dict surface).

@@ -97,34 +97,12 @@ def test_runstate_output_parameter_schema(hd189_state):
     assert len(param["tableau20"]) == 20
 
 
-def test_load_stellar_flux_no_photo():
-    """`load_stellar_flux(cfg)` returns an empty payload when use_photo=False
-    so callers can call it unconditionally."""
-    from vulcan_jax.state import load_stellar_flux
-
-    class _Cfg:
-        use_photo = False
-
-    flux = load_stellar_flux(_Cfg())
-    assert flux.wavelength_nm.shape == (0,)
-    assert flux.flux.shape == (0,)
-    assert flux.def_bin_min == 0.0
-    assert flux.def_bin_max == 0.0
-
-
 def test_load_stellar_flux_hd189():
     """`load_stellar_flux(vulcan_cfg)` reads the HD189 stellar flux file
     and produces sane bin extents."""
     from vulcan_jax.state import load_stellar_flux
     from vulcan_jax.config import default_config
 
-    vulcan_cfg = default_config()
-
-    flux = load_stellar_flux(vulcan_cfg)
-    assert flux.wavelength_nm.shape[0] > 100, (
-        f"HD189 stellar flux file produced only "
-        f"{flux.wavelength_nm.shape[0]} wavelengths"
-    )
-    assert flux.flux.shape == flux.wavelength_nm.shape
-    assert 1.99 <= flux.def_bin_min <= 5.0  # max(lambda[0], 2.0)
-    assert 100.0 <= flux.def_bin_max <= 700.0  # min(lambda[-1], 700.0)
+    def_bin_min, def_bin_max = load_stellar_flux(default_config())
+    assert 1.99 <= def_bin_min <= 5.0  # max(lambda[0], 2.0)
+    assert 100.0 <= def_bin_max <= 700.0  # min(lambda[-1], 700.0)

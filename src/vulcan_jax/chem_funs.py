@@ -18,7 +18,7 @@ _NET_JAX = _chem.to_jax(_NETWORK)
 
 # The production RHS (the integrator binds it), built or reloaded from cache.
 # Memoised in `_make_chem_funs._BUILD_CACHE`, so the warmup call in
-# `state._build_pre_loop_runstate` returns the same `Callable`.
+# `RunState.with_pre_loop_setup` returns the same `Callable`.
 chem_rhs_codegen = _make_chem_funs.build_chem_rhs(_NETWORK)
 
 ni: int = _NETWORK.ni

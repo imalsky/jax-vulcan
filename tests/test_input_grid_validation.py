@@ -9,7 +9,6 @@ import pytest
 from vulcan_jax._paths import PACKAGE_ROOT
 from vulcan_jax.atm_setup import read_sflux_binned
 from vulcan_jax.photo_setup import _make_bins
-from vulcan_jax.state import load_stellar_flux
 
 _SFLUX_FILES = sorted(
     p.name for p in (PACKAGE_ROOT / "atm/stellar_flux").glob("sflux-*.txt")
@@ -18,11 +17,11 @@ _SFLUX_FILES = sorted(
 
 @pytest.mark.parametrize("name", _SFLUX_FILES)
 def test_every_vendored_stellar_spectrum_loads(name):
-    cfg = SimpleNamespace(
-        use_photo=True, sflux_file=f"atm/stellar_flux/{name}", dbin_12trans=240.0
+    sf = np.genfromtxt(
+        PACKAGE_ROOT / "atm/stellar_flux" / name,
+        dtype=float, skip_header=1, names=["lambda", "flux"],
     )
-    sf = load_stellar_flux(cfg)
-    assert np.all(np.diff(sf.wavelength_nm) >= 0.0) and np.all(np.isfinite(sf.flux))
+    assert np.all(np.diff(sf["lambda"]) >= 0.0) and np.all(np.isfinite(sf["flux"]))
 
 
 def _sflux(*rows):

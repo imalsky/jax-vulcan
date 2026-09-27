@@ -1,14 +1,15 @@
 """Typed pre-loop input pytrees and runner state.
 
 `RunState.with_pre_loop_setup(cfg)` runs the full pre-loop pipeline and
-returns a populated pytree. The private `_Variables` / `_AtmData` /
-`_Parameters` containers are scratch inside that constructor only.
+returns a populated pytree. The private `_Variables` / `_AtmData`
+containers are scratch inside that constructor only.
 """
 
 from __future__ import annotations
 
 import contextlib
 import copy
+import types
 import warnings
 from pathlib import Path
 from typing import NamedTuple, Optional
@@ -19,7 +20,6 @@ import numpy as np
 from . import chem_funs
 from .config import default_config
 from ._paths import resolve_data_path
-from .live_ui import master_tableau20
 from .make_chem_funs import network_signature
 
 
@@ -248,17 +248,20 @@ class RunState(NamedTuple):
         discarded; it only pre-compiles the codegen `chem_rhs`). Callers that
         build the RunState in one process but integrate in another can skip
         it; the returned RunState is otherwise identical.
+
+        Fails fast on network/com_file/atom_list import-lock mismatches and on
+        an invalid runtime configuration, then runs the pipeline with ``cfg``
+        overlaid onto the process default so ``make_config()`` overrides are
+        honored with zero leakage.
         """
-        return _build_pre_loop_runstate(cfg, skip_chem_warmup=skip_chem_warmup)
+        _assert_network_matches_import(cfg)
+        _assert_com_file_matches_import(cfg)
+        _assert_atom_list_matches_import(cfg)
+        from .runtime_validation import validate_runtime_config
 
-
-class StellarFlux(NamedTuple):
-    """Stellar-flux read result. Empty arrays + zero extents when use_photo=False."""
-
-    wavelength_nm: np.ndarray
-    flux: np.ndarray
-    def_bin_min: float
-    def_bin_max: float
+        validate_runtime_config(cfg)
+        with _cfg_overlay(cfg):
+            return _build_pre_loop_runstate_impl(cfg, skip_chem_warmup=skip_chem_warmup)
 
 
 # Photolysis wavelength window (nm): the stellar-flux bin range is clamped to
@@ -267,19 +270,15 @@ _SFLUX_BIN_MIN_NM = 2.0
 _SFLUX_BIN_MAX_NM = 700.0
 
 
-def load_stellar_flux(cfg) -> StellarFlux:
-    """Read the stellar flux file and compute the spectral-bin extents.
+def load_stellar_flux(cfg) -> tuple[float, float]:
+    """Read the stellar flux file and return the spectral-bin extents.
 
-    Bin range is clamped to [2, 700] nm. Returns an empty payload when
-    `cfg.use_photo` is False so callers can call unconditionally.
+    Returns `(def_bin_min, def_bin_max)`, clamped to [2, 700] nm, or
+    `(0.0, 0.0)` when `cfg.use_photo` is False so callers can call
+    unconditionally.
     """
     if not bool(cfg.use_photo):
-        return StellarFlux(
-            wavelength_nm=np.zeros((0,), dtype=np.float64),
-            flux=np.zeros((0,), dtype=np.float64),
-            def_bin_min=0.0,
-            def_bin_max=0.0,
-        )
+        return 0.0, 0.0
     sflux_data = np.genfromtxt(
         resolve_data_path(cfg.sflux_file),
         dtype=float,
@@ -287,14 +286,9 @@ def load_stellar_flux(cfg) -> StellarFlux:
         names=["lambda", "flux"],
     )
     wavelength = np.asarray(sflux_data["lambda"], dtype=np.float64)
-    flux = np.asarray(sflux_data["flux"], dtype=np.float64)
-    def_bin_min = float(max(wavelength[0], _SFLUX_BIN_MIN_NM))
-    def_bin_max = float(min(wavelength[-1], _SFLUX_BIN_MAX_NM))
-    return StellarFlux(
-        wavelength_nm=wavelength,
-        flux=flux,
-        def_bin_min=def_bin_min,
-        def_bin_max=def_bin_max,
+    return (
+        float(max(wavelength[0], _SFLUX_BIN_MIN_NM)),
+        float(min(wavelength[-1], _SFLUX_BIN_MAX_NM)),
     )
 
 
@@ -352,10 +346,6 @@ def pytree_from_store(var, atm) -> RunState:
     return RunState(atm=atm_inputs, rate=rate_inputs, photo=photo_inputs)
 
 
-def _atom_order_for(cfg) -> tuple:
-    return tuple(a for a in cfg.atom_list if a not in cfg.loss_ex)
-
-
 def _atom_dict_to_arr(d, atom_order) -> np.ndarray:
     return np.asarray(
         [float(d.get(a, 0.0)) for a in atom_order],
@@ -386,9 +376,7 @@ def runstate_from_store(var, atm, para) -> RunState:
     step = StepInputs(
         y=jnp.asarray(var.y, dtype=jnp.float64),
         y_prev=jnp.asarray(
-            getattr(var, "y_prev", var.y)
-            if getattr(var, "y_prev", None) is not None
-            else var.y,
+            var.y if getattr(var, "y_prev", None) is None else var.y_prev,
             dtype=jnp.float64,
         ),
         ymix=jnp.asarray(var.ymix, dtype=jnp.float64),
@@ -417,7 +405,7 @@ def runstate_from_store(var, atm, para) -> RunState:
         termination_reason=int(getattr(para, "termination_reason", 0)),
     )
 
-    atom_order = _atom_order_for(_cfg)
+    atom_order = tuple(a for a in _cfg.atom_list if a not in _cfg.loss_ex)
     atoms = AtomInputs(
         atom_order=atom_order,
         atom_ini=jnp.asarray(
@@ -522,15 +510,10 @@ def _runmetadata_from_legacy(var, atm, para) -> RunMetadata:
         ion_br_ratio=dict(getattr(var, "ion_br_ratio", {}) or {}),
         charge_list=tuple(getattr(var, "charge_list", []) or []),
         conden_re_list=tuple(getattr(var, "conden_re_list", []) or []),
-        start_time=float(getattr(para, "start_time", 0.0) if para is not None else 0.0),
+        start_time=float(getattr(para, "start_time", 0.0)),
         y_ini=y_ini_arr,
         **atm_meta,
     )
-
-
-def _network_path_for(cfg) -> str:
-    """Resolved absolute path of cfg's reaction network."""
-    return str(Path(resolve_data_path(cfg.network)).resolve())
 
 
 def _assert_network_matches_import(cfg) -> None:
@@ -542,7 +525,7 @@ def _assert_network_matches_import(cfg) -> None:
     driver). Compatibility means the same species names and reaction
     topology; a byte-identical copy at another path passes.
     """
-    want_path = _network_path_for(cfg)
+    want_path = str(Path(resolve_data_path(cfg.network)).resolve())
     import_net = chem_funs._NETWORK
     have_path = str(Path(import_net.network_path).resolve())
     if want_path == have_path:
@@ -693,24 +676,6 @@ def _cfg_overlay(cfg):
             delattr(base, name)
 
 
-def _build_pre_loop_runstate(cfg, *, skip_chem_warmup: bool = False) -> RunState:
-    """Run the full pre-loop pipeline and return a populated RunState.
-
-    Fails fast on network/com_file/atom_list import-lock mismatches and on an
-    invalid runtime configuration, then runs
-    the pipeline with ``cfg`` overlaid onto the process default so
-    ``make_config()`` overrides are honored with zero leakage.
-    """
-    _assert_network_matches_import(cfg)
-    _assert_com_file_matches_import(cfg)
-    _assert_atom_list_matches_import(cfg)
-    from .runtime_validation import validate_runtime_config
-
-    validate_runtime_config(cfg)
-    with _cfg_overlay(cfg):
-        return _build_pre_loop_runstate_impl(cfg, skip_chem_warmup=skip_chem_warmup)
-
-
 def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> RunState:
     """Run the full pre-loop pipeline and return a populated RunState."""
     import time
@@ -722,11 +687,9 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
     from . import rates_jax as _rates_mod
     from . import photo_setup as _photo_setup
 
-    stellar = load_stellar_flux(cfg)
-    var = _Variables(stellar_flux=stellar)
+    var = _Variables()
     atm = _AtmData()
-    para = _Parameters()
-    para.start_time = time.time()
+    para = types.SimpleNamespace(start_time=time.time())
 
     make_atm = Atm()
 
@@ -754,9 +717,8 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
 
     photo_static_pytree = None
     if bool(cfg.use_photo):
-        _photo_setup.populate_photo(var, atm)
+        photo_static_pytree = _photo_setup.populate_photo(var, atm)
         make_atm.read_sflux(var, atm)
-        photo_static_pytree = _photo_setup._build_photo_static_dense(var, atm)
         photo_static_pytree = photo_static_pytree.with_din12_indx(
             int(var.sflux_din12_indx)
         )
@@ -785,54 +747,17 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
     # Mirror VULCAN master's initial Integration.backup() so the first
     # reject/force-accept path can revert to the real pre-step state.
     var.y_prev = np.asarray(var.y, dtype=np.float64).copy()
-    var.dy_prev = np.copy(var.dy)
     var.atom_loss_prev = var.atom_loss.copy()
 
     rs = runstate_from_store(var, atm, para)
     return rs._replace(photo_static=photo_static_pytree)
 
 
-def _var_save_list(*, use_photo, t_cross_sp, use_ion) -> list[str]:
-    """The legacy `var_save` key list, mirroring upstream `store.py:83-88`.
-
-    Returns a fresh list per call, so the two callers never share one
-    object (upstream `op.py:3240` iterates this attribute). Takes resolved values because the two
-    callers hold different
-    configs (`legacy_view` the run's, `_Variables` the process default).
-    """
-    keys = [
-        "k", "y", "ymix", "y_ini", "t", "dt", "longdy", "longdydt",
-        "atom_ini", "atom_sum", "atom_loss", "atom_conden", "aflux_change", "Rf",
-    ]
-    if use_photo:
-        keys.extend([
-            "nbin", "bins", "dbin1", "dbin2", "tau", "sflux", "aflux",
-            "cross", "cross_scat", "cross_J", "J_sp", "n_branch",
-        ])
-        if t_cross_sp:
-            keys.extend(["cross_J", "cross_T"])
-        if use_ion:
-            keys.extend([
-                "charge_list", "ion_sp", "cross_Jion", "Jion_sp",
-                "ion_wavelen", "ion_branch", "ion_br_ratio",
-            ])
-    return keys
-
-
-
-def legacy_view(rs: RunState, cfg=None):
+def legacy_view(rs: RunState):
     """Return a `(var, atm, para)` SimpleNamespace shim built from `rs`.
 
     Mutations to the shim do not round-trip back to `rs`.
-
-    `cfg` must be the run's config whenever one is available: this runs at
-    integration time, after `_cfg_overlay` has restored the process default,
-    so falling back to `default_config()` silently reads default
-    `use_photo`/`use_ion`/`T_cross_sp` and builds the wrong `var_save` list.
-    `OuterLoop`, which holds a cfg, passes `self._cfg`.
     """
-    import types
-
     md = rs.metadata
     var = types.SimpleNamespace()
     atm = types.SimpleNamespace()
@@ -857,19 +782,6 @@ def legacy_view(rs: RunState, cfg=None):
     var.k = {}
     var.def_bin_min = float(rs.photo.def_bin_min)
     var.def_bin_max = float(rs.photo.def_bin_max)
-    _cfg = default_config() if cfg is None else cfg
-
-    var.var_save = _var_save_list(
-        use_photo=bool(_cfg.use_photo),
-        t_cross_sp=_cfg.T_cross_sp,
-        use_ion=bool(_cfg.use_ion),
-    )
-    var.var_evol_save = ["y_time", "t_time"]
-    var.y_time = []
-    var.t_time = []
-    var.dy_time = []
-    var.dydt_time = []
-    var.dt_time = []
     var.aflux_change = (
         float(rs.photo_runtime.aflux_change) if rs.photo_runtime is not None else 0.0
     )
@@ -913,7 +825,7 @@ def legacy_view(rs: RunState, cfg=None):
         var.dbin1 = float(rs.photo_static.dbin1)
         var.dbin2 = float(rs.photo_static.dbin2)
         var.J_sp = {}
-        if int(getattr(rs.photo_static, "cross_Jion", np.zeros(0)).shape[0]) > 0:
+        if int(rs.photo_static.cross_Jion.shape[0]) > 0:
             var.Jion_sp = {}
             var.ion_wavelen = {}
     if md is not None:
@@ -938,14 +850,12 @@ def legacy_view(rs: RunState, cfg=None):
         para.nega_y = float(rs.params.nega_y)
         para.end_case = int(rs.params.end_case)
         para.termination_reason = int(rs.params.termination_reason)
-        para.solver_str = "solver"
         para.switch_final_photo_frq = bool(rs.params.switch_final_photo_frq)
         para.pic_count = int(rs.params.pic_count)
         para.where_varies_most = np.asarray(
             rs.params.where_varies_most,
             dtype=np.float64,
         )
-        para.tableau20 = master_tableau20()
         para.fix_species_start = bool(rs.params.fix_species_start)
     if md is not None:
         para.start_time = float(md.start_time)
@@ -956,8 +866,8 @@ def legacy_view(rs: RunState, cfg=None):
 class _Variables(object):
     """Private mutable scratch container used by the pre-loop pipeline."""
 
-    def __init__(self, stellar_flux=None):
-        from .chem_funs import ni as _ni, spec_list as _spec_list  # noqa: F401
+    def __init__(self):
+        from .chem_funs import ni as _ni
 
         _nz = default_config().nz
         _vcfg = default_config()
@@ -970,19 +880,8 @@ class _Variables(object):
         self.y_ini = np.zeros((_nz, _ni))
         self.t = 0
         self.dt = _vcfg.dttry
-        self.dy = 1.0
-        self.dy_prev = 1.0
-        self.dydt = 1.0
         self.longdy = 1.0
         self.longdydt = 1.0
-
-        self.dy_time = []
-        self.dydt_time = []
-        self.atim_loss_time = []
-        self.ymix_time = []
-        self.y_time = []
-        self.t_time = []
-        self.dt_time = []
 
         self.atom_ini = {}
         self.atom_sum = {}
@@ -1004,7 +903,7 @@ class _Variables(object):
         self.kinf_fun = {}
         self.k_fun_new = {}
         self.photo_sp = set()
-        self.pho_rate_index, self.n_branch, self.wavelen = {}, {}, {}
+        self.pho_rate_index, self.n_branch = {}, {}
         self.ion_rate_index, self.ion_branch, self.ion_wavelen, self.ion_br_ratio = (
             {},
             {},
@@ -1015,20 +914,8 @@ class _Variables(object):
 
         self.aflux_change = 0.0
 
-        if stellar_flux is None:
-            stellar_flux = load_stellar_flux(_vcfg)
-        self.def_bin_min = stellar_flux.def_bin_min
-        self.def_bin_max = stellar_flux.def_bin_max
-
-        self.var_save = _var_save_list(
-            use_photo=_vcfg.use_photo,
-            t_cross_sp=_vcfg.T_cross_sp,
-            use_ion=_vcfg.use_ion,
-        )
-        self.var_evol_save = ["y_time", "t_time"]
+        self.def_bin_min, self.def_bin_max = load_stellar_flux(_vcfg)
         self.conden_re_list = []
-
-        self.v_ratio = np.ones(_nz)
 
 
 class _AtmData(object):
@@ -1096,29 +983,3 @@ class _AtmData(object):
                 self.r_p[sp] = _vcfg.r_p[sp]
             for sp in _vcfg.rho_p.keys():
                 self.rho_p[sp] = _vcfg.rho_p[sp]
-
-            self.conden_status = np.zeros(_nz, dtype=bool)
-
-
-class _Parameters(object):
-    """Private mutable scratch container for numerical-method counters and flags."""
-
-    def __init__(self):
-        _nz = default_config().nz
-        from .chem_funs import ni as _ni
-
-        self.nega_y = 0
-        self.small_y = 0
-        self.delta = 0
-        self.count = 0
-        self.nega_count = 0
-        self.loss_count = 0
-        self.delta_count = 0
-        self.end_case = 0
-        self.termination_reason = 0
-        self.solver_str = ""
-        self.switch_final_photo_frq = False
-        self.where_varies_most = np.zeros((_nz, _ni))
-        self.pic_count = 0
-        self.fix_species_start = False
-        self.tableau20 = master_tableau20()
