@@ -146,16 +146,33 @@ def test_load_TPK_kzz_modes(Kzz_prof):
     assert np.allclose(out["Kzz"], Kzz_ref, rtol=RTOL, atol=0.0)
 
 
-def test_load_TPK_use_kzz_off_zeroes_kzz():
-    """`use_Kzz=False` must zero the Kzz array regardless of Kzz_prof."""
-    from vulcan_jax.atm_setup import compute_pico, load_TPK
+def test_disabled_switches_give_zero_arrays():
+    """use_Kzz, use_moldiff, use_settling and the BC-flux flags off give
+    all-zero arrays of the right shape."""
+    from vulcan_jax.atm_setup import (
+        compute_mol_diff, compute_pico, compute_settling_velocity, load_TPK, read_bc_flux,
+    )
 
-    nz, P_b, P_t = 50, 1e6, 1e-2
-    pco = make_pco(P_b, P_t, nz)
-    pico = np.asarray(compute_pico(pco))
-    cfg = tpk_cfg(use_Kzz=False, Tiso=300.0, P_b=P_b)
-    out = load_TPK(cfg, pco, pico=pico)
-    assert np.all(out["Kzz"] == 0.0)
+    nz, sp = 10, ["H2", "He", "H2O"]
+    ni = len(sp)
+    pco = make_pco(1e6, 1e-2, nz)
+    off = SimpleNamespace(atm_base="H2", use_moldiff=False, use_vm_mol=False,
+                          use_settling=False, non_gas_sp=[], use_topflux=False,
+                          use_botflux=False, use_fix_sp_bot={})
+    T, g = np.full(nz, 300.0), np.full(nz, 980.0)
+    mol = compute_mol_diff(off, T, np.full(nz, 1e15), g, np.full(nz, 8e5),
+                           np.full(nz, 1e5), np.ones(ni), np.zeros(ni), sp)
+    arrays = {
+        "Kzz": (load_TPK(tpk_cfg(use_Kzz=False, P_b=1e6), pco,
+                         pico=np.asarray(compute_pico(pco)))["Kzz"], (nz - 1,)),
+        "vs": (compute_settling_velocity(off, T, g, sp, rho_p={}, r_p={}), (nz - 1, ni)),
+        "Dzz": (mol["Dzz"], (nz - 1, ni)),
+        "Dzz_cen": (mol["Dzz_cen"], (nz, ni)),
+        "vm": (mol["vm"], (nz - 1, ni)),
+        **{k: (v, (ni,)) for k, v in read_bc_flux(off, sp).items()},
+    }
+    for name, (arr, shape) in arrays.items():
+        assert arr.shape == shape and np.all(arr == 0.0), name
 
 
 # atm_base x mol_diff matrix
@@ -224,48 +241,7 @@ def test_compute_mol_diff_atm_base(atm_base):
     assert np.allclose(Dzz_cen, Dzz_cen_ref, rtol=RTOL, atol=0.0)
 
 
-def test_compute_mol_diff_use_moldiff_off_zeros():
-    """use_moldiff=False -> Dzz/Dzz_cen all zero."""
-    from vulcan_jax.atm_setup import compute_mol_diff
-
-    nz, ni = 10, 5
-    Tco = np.full(nz, 1500.0)
-    n_0 = np.full(nz, 1e15)
-    species_list = ["H2", "He", "H", "CH4", "H2O"]
-    cfg = SimpleNamespace(
-        atm_base="H2",
-        use_moldiff=False,
-        use_vm_mol=False,
-        use_condense=False,
-        non_gas_sp=[],
-    )
-    out = compute_mol_diff(
-        cfg,
-        Tco,
-        n_0,
-        g=np.full(nz, 980.0),
-        Hp=np.full(nz, 8e5),
-        dz=np.full(nz, 1e5),
-        ms_arr=np.ones(ni),
-        alpha_arr=np.zeros(ni),
-        species_list=species_list,
-    )
-    assert np.all(out["Dzz"] == 0.0)
-    assert np.all(out["Dzz_cen"] == 0.0)
-
-
 # BC_flux modes
-
-
-def test_read_bc_flux_default_zero():
-    """No use_topflux/use_botflux -> all-zero arrays of length ni."""
-    from vulcan_jax.atm_setup import read_bc_flux
-
-    species_list = ["A", "B", "C"]
-    cfg = SimpleNamespace(use_topflux=False, use_botflux=False, use_fix_sp_bot={})
-    out = read_bc_flux(cfg, species_list)
-    for k in ("top_flux", "bot_flux", "bot_vdep", "bot_fix_sp"):
-        assert out[k].shape == (3,) and np.all(out[k] == 0.0)
 
 
 def test_read_bc_flux_use_topflux(tmp_path):
@@ -356,82 +332,34 @@ def test_compute_pico_matches_master_formula():
 # f_mu_dz: height integration upward + downward
 
 
-def test_compute_mu_dz_g_rocky_anchor_at_surface():
-    """rocky=True forces pref_indx=0; only the upward scan runs."""
-    from vulcan_jax.atm_setup import compute_pico, compute_mu_dz_g, surface_gravity
+@pytest.mark.parametrize(
+    "rocky,Rp,g,P_b,P_t,nz,T_bot,T_top,mix,ms",
+    [
+        (True, R_EARTH_CM, 980.0, 1e6, 5e-2, 40, 273.0, 273.0,
+         [0.78, 0.21, 0.01], [28.014, 32.0, 39.948]),  # N2/O2/Ar
+        (False, HD189_RP_CM, 2140.0, 1e9, 1e-2, 60, 2500.0, 800.0, [1.0], [2.016]),  # H2
+    ],
+    ids=["rocky", "gas_giant"],
+)
+def test_compute_mu_dz_g_anchor(rocky, Rp, g, P_b, P_t, nz, T_bot, T_top, mix, ms):
+    """rocky=True anchors pref_indx at the surface (index 0); rocky=False with
+    P_b >= 1 bar anchors it at the layer nearest 1 bar. At the anchor zco = 0
+    and g is the surface gravity; zco increases upward."""
+    from vulcan_jax.atm_setup import compute_mu_dz_g, compute_pico, surface_gravity
 
-    nz = 40
-    pco = make_pco(1e6, 5e-2, nz)
-    pico = np.asarray(compute_pico(pco))
-    Tco = np.full(nz, 273.0)
-    ymix = np.zeros((nz, 3))
-    ymix[:, 0] = 0.78  # N2
-    ymix[:, 1] = 0.21  # O2
-    ymix[:, 2] = 0.01  # Ar
-    ms_arr = np.array([28.014, 32.0, 39.948])
-    cfg = SimpleNamespace(
-        Rp=R_EARTH_CM,
-        Mp=mass_for_gravity(980.0, R_EARTH_CM),
-        rocky=True,
-        P_b=1e6,
-        use_moldiff=False,
-        use_settling=False,
-    )
-    out = compute_mu_dz_g(cfg, ymix, ms_arr, pico, Tco)
-    assert out["pref_indx"] == 0
-    assert out["g"][0] == surface_gravity(cfg)
-    assert out["zco"][0] == 0.0
-    # zco strictly increases (pco strictly decreases).
-    z = np.asarray(out["zco"])
-    assert np.all(np.diff(z) > 0.0)
-
-
-def test_compute_mu_dz_g_gas_giant_anchor_at_1bar():
-    """rocky=False with P_b >= 1 bar anchors pref_indx at the layer nearest 1 bar."""
-    from vulcan_jax.atm_setup import compute_pico, compute_mu_dz_g, surface_gravity
-
-    nz = 60
-    pco = make_pco(1e9, 1e-2, nz)
-    pico = np.asarray(compute_pico(pco))
-    Tco = np.linspace(2500.0, 800.0, nz)
-    # Pure-H2 mixture so mean_mass = 2.016
-    ymix = np.zeros((nz, 1))
-    ymix[:, 0] = 1.0
-    ms_arr = np.array([2.016])
-    cfg = SimpleNamespace(
-        Rp=HD189_RP_CM,
-        Mp=mass_for_gravity(2140.0, HD189_RP_CM),
-        rocky=False,
-        P_b=1e9,
-        use_moldiff=False,
-        use_settling=False,
-    )
-    out = compute_mu_dz_g(cfg, ymix, ms_arr, pico, Tco)
+    pico = np.asarray(compute_pico(make_pco(P_b, P_t, nz)))
+    cfg = SimpleNamespace(Rp=Rp, Mp=mass_for_gravity(g, Rp), rocky=rocky, P_b=P_b,
+                          use_moldiff=False, use_settling=False)
+    out = compute_mu_dz_g(cfg, np.tile(mix, (nz, 1)), np.array(ms), pico,
+                          np.linspace(T_bot, T_top, nz))
     pref = out["pref_indx"]
-    assert pref > 0  # 1 bar lives somewhere in the column, not at index 0
+    assert (pref == 0) if rocky else (pref > 0)
     assert out["g"][pref] == surface_gravity(cfg)
     assert out["zco"][pref] == 0.0
-    # zco strictly increases.
-    z = np.asarray(out["zco"])
-    assert np.all(np.diff(z) > 0.0)
+    assert np.all(np.diff(np.asarray(out["zco"])) > 0.0)
 
 
 # Settling velocity
-
-
-def test_compute_settling_velocity_off_returns_zeros():
-    from vulcan_jax.atm_setup import compute_settling_velocity
-
-    cfg = SimpleNamespace(use_settling=False, atm_base="H2", non_gas_sp=[])
-    out = compute_settling_velocity(
-        cfg,
-        Tco=np.full(10, 300.0),
-        g=np.full(10, 980.0),
-        species_list=["H2", "H2O_l_s"],
-        rho_p={},
-        r_p={},
-    )
-    assert out.shape == (9, 2) and np.all(out == 0.0)
 
 
 def test_compute_settling_velocity_h2so4_negative():

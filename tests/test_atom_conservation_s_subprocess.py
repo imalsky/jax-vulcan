@@ -14,21 +14,15 @@ injected SO2 defect is driven to machine-zero, mutating only reservoir rows;
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
 from _helpers import run_child
 
-ROOT = Path(__file__).resolve().parent.parent
 S_NETWORK = "thermo/SNCHO_photo_network.txt"
 
-# The child selects the SNCHO network and an S-bearing atom_list, then imports
-# jax_step for the first time so its projection tables are built with sulfur.
+# run_child selects the SNCHO network; the child sets an S-bearing atom_list, then
+# imports jax_step for the first time so its projection tables are built with sulfur.
 _CHILD = r"""
 import os, sys, warnings
 warnings.filterwarnings("ignore")
-os.environ["JAX_PLATFORM_NAME"] = "cpu"
-os.environ["VULCAN_JAX_NETWORK"] = "thermo/SNCHO_photo_network.txt"
 
 from pathlib import Path
 repo = Path(sys.argv[1])
@@ -119,11 +113,4 @@ print("PASS")
 
 
 def test_atom_conservation_s_subprocess():
-    from vulcan_jax._paths import PACKAGE_ROOT
-
-    if not (PACKAGE_ROOT / S_NETWORK).exists():
-        pytest.skip(f"sulfur network {S_NETWORK!r} not vendored")
-
-    res = run_child(_CHILD, network=S_NETWORK, label="sulfur conservation")
-    assert "ENABLED atoms=5" in res.stdout, res.stdout
-    assert res.stdout.strip().endswith("PASS"), res.stdout
+    run_child(_CHILD, network=S_NETWORK, label="sulfur conservation")

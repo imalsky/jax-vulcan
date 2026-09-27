@@ -25,8 +25,8 @@ JAC_RTOL = 1e-12  # the same matrix by two summation orders
 SIGNIFICANT_FRAC = 1e-12  # entries below this fraction of the peak are cancellation noise
 
 
-def _check_jacobians(state) -> int:
-    """Compare chem_jac_analytical vs jacrev path on the given HD189 state."""
+def test_main(hd189_state):
+    """chem_jac_analytical vs the jacrev chem_jac on the HD189 state."""
     from _oracles import chem_jac
 
     import vulcan_jax.chem as chem_mod
@@ -36,7 +36,7 @@ def _check_jacobians(state) -> int:
 
     vulcan_cfg = default_config()
 
-    data_var, data_atm = state.var, state.atm
+    data_var, data_atm = hd189_state.var, hd189_state.atm
     y = jnp.asarray(data_var.y, dtype=jnp.float64)  # [nz, ni]
     M = jnp.asarray(data_atm.M, dtype=jnp.float64)  # [nz]
 
@@ -55,15 +55,4 @@ def _check_jacobians(state) -> int:
 
     rel_significant = np.where(np.abs(J_dense) > SIGNIFICANT_FRAC * abs_max_dense, relerr, 0.0)
     max_rel = float(rel_significant.max())
-
-    print(f"max rel err (significant cells): {max_rel:.3e}")
-
-    ok = max_rel < JAC_RTOL
-    print("PASS" if ok else "FAIL")
-    return 0 if ok else 1
-
-
-def test_main(hd189_state):
-    """Pytest entry. Uses the session-scoped HD189 fixture so the rate
-    parser / EQ seed / atmospheric build doesn't re-run per test."""
-    assert _check_jacobians(hd189_state) == 0
+    assert max_rel < JAC_RTOL, f"max rel err (significant cells): {max_rel:.3e}"

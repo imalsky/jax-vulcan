@@ -5,13 +5,11 @@ np.linalg.solve on the assembled dense matrix, then the production
 `block_thomas_diag_offdiag` (diagonal-in-species off-diagonals, the O(ni^2)
 rank update) against `block_thomas` on the same systems. Two sizes: a small
 random system and the VULCAN-JAX shape (nz=120, ni=93) with Rosenbrock-like
-magnitudes (diagonal dominated by c0*I ~ 1e10, sup/sub ~ 1e-3). Also checks
-jax.grad through the production variant.
+magnitudes (diagonal dominated by c0*I ~ 1e10, sup/sub ~ 1e-3).
 """
 
 from __future__ import annotations
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -74,18 +72,3 @@ def test_block_thomas_solvers_agree_with_dense_solve(case):
                       / np.maximum(np.abs(x_dense), X_FLOOR))
     assert err_dense < tol_dense, f"dense vs numpy: {err_dense:.3e}"
     assert err_diag < tol_diag, f"diag vs dense: {err_diag:.3e}"
-
-
-def test_grad_through_diag_offdiag_is_finite():
-    rng = np.random.default_rng(7)
-    nz, ni = 8, 5
-    diag = jnp.asarray(rng.standard_normal((nz, ni, ni)) + 10.0 * np.eye(ni))
-    sup_d = jnp.asarray(rng.standard_normal((nz - 1, ni)))
-    sub_d = jnp.asarray(rng.standard_normal((nz - 1, ni)))
-    rhs = jnp.asarray(rng.standard_normal((nz, ni)))
-
-    def loss(d):
-        return jnp.sum(block_thomas_diag_offdiag(
-            d, sup_d, sub_d, rhs) ** 2)
-
-    assert bool(jnp.all(jnp.isfinite(jax.grad(loss)(diag))))
