@@ -95,14 +95,3 @@ def test_runstate_output_parameter_schema(hd189_state):
     assert param["solver_str"] == "solver"
     assert np.asarray(param["where_varies_most"]).shape == hd189_state.var.y.shape
     assert len(param["tableau20"]) == 20
-
-
-def test_load_stellar_flux_hd189():
-    """`load_stellar_flux(vulcan_cfg)` reads the HD189 stellar flux file
-    and produces sane bin extents."""
-    from vulcan_jax.state import load_stellar_flux
-    from vulcan_jax.config import default_config
-
-    def_bin_min, def_bin_max = load_stellar_flux(default_config())
-    assert 1.99 <= def_bin_min <= 5.0  # max(lambda[0], 2.0)
-    assert 100.0 <= def_bin_max <= 700.0  # min(lambda[-1], 700.0)

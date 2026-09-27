@@ -18,7 +18,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from _helpers import run_child
+from _helpers import load_adj_state, run_child
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA = ROOT / "tests" / "data"
@@ -44,24 +44,9 @@ def stage_arrays(fixture: str, cfg_name: str, dt: float, frac: float):
     """(y, k1, k2) of one Ros2 step from a saved converged state, with the
     repair guard set to `frac`. Also imported by the SNCHO child below."""
     import jax.numpy as jnp
-    import vulcan_jax.chem as chem_mod
     import vulcan_jax.jax_step as jax_step
-    import vulcan_jax.network as net_mod
-    from vulcan_jax.config import load_config
 
-    d = np.load(DATA / fixture)
-    atm = jax_step.AtmStatic(
-        **{
-            f: (
-                bool(d[f"atmbool__{f}"])
-                if f"atmbool__{f}" in d
-                else jnp.asarray(d[f"atm__{f}"])
-            )
-            for f in jax_step.AtmStatic._fields
-        }
-    )
-    net = chem_mod.to_jax(net_mod.parse_network(load_config(cfg_name).network))
-    y, k_arr = jnp.asarray(d["y_star"]), jnp.asarray(d["k_arr"])
+    atm, net, y, k_arr = load_adj_state(fixture, cfg_name)
     saved, jax_step._REPAIR_MAX_CELL_FRAC = jax_step._REPAIR_MAX_CELL_FRAC, frac
     try:
         k1, k2, _, _ = jax_step._ros2_stages(y, k_arr, jnp.float64(dt), atm, net, None)

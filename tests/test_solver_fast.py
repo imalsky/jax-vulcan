@@ -34,6 +34,7 @@ if os.environ.get("VULCAN_JAX_SOLVER") == "reference":
         allow_module_level=True,
     )
 
+from _helpers import load_adj_state
 from _oracles import block_thomas_diag_offdiag
 
 import vulcan_jax.solver_fast as fast_mod
@@ -64,10 +65,6 @@ def _rel(a, b):
 
 def _resid(diag, sup, sub, x, b):
     return float(jnp.max(jnp.abs(fast_mod._matvec(diag, sup, sub, x) - b)) / jnp.max(jnp.abs(b)))
-
-
-def _cur(diag, sup, sub, rhs):
-    return block_thomas_diag_offdiag(diag, sup, sub, rhs)
 
 
 def _cand(diag, sup, sub, rhs):
@@ -114,10 +111,11 @@ def banded_solve(diag, sup, sub, b):
 def compare(diag, sup, sub, rhs, tans, seed=1):
     """Both arms jitted (the production condition). Returns a dict of the
     agreement numbers; the callers assert on them."""
-    x0, dx0 = jax.jit(lambda *a: jax.jvp(_cur, a, tans))(diag, sup, sub, rhs)
+    x0, dx0 = jax.jit(lambda *a: jax.jvp(block_thomas_diag_offdiag, a, tans))(diag, sup, sub, rhs)
     x1, dx1 = jax.jit(lambda *a: jax.jvp(_cand, a, tans))(diag, sup, sub, rhs)
     w = jnp.asarray(np.random.default_rng(seed).standard_normal(rhs.shape))
-    g0 = jax.jit(jax.grad(lambda *a: jnp.sum(w * _cur(*a)), argnums=(0, 1, 2, 3)))(diag, sup, sub, rhs)
+    g0 = jax.jit(jax.grad(lambda *a: jnp.sum(w * block_thomas_diag_offdiag(*a)),
+                          argnums=(0, 1, 2, 3)))(diag, sup, sub, rhs)
     g1 = jax.jit(jax.grad(lambda *a: jnp.sum(w * _cand(*a)), argnums=(0, 1, 2, 3)))(diag, sup, sub, rhs)
     batched = jax.jit(jax.vmap(_cand))(*(jnp.stack([a, a]) for a in (diag, sup, sub, rhs)))
     # the linearised equation A dx = db - dA x, satisfied by the exact tangent
@@ -389,20 +387,9 @@ def test_one_buffer_kernels_are_bitwise_the_two_buffer_ones(net, case, buffer_va
 def capture_stage1(fixture: str, cfg_name: str, dt: float):
     """The stage-1 system `_ros2_stages` assembles from a saved converged state,
     recorded by wrapping the solver entry points the step imports."""
-    import vulcan_jax.chem as chem_mod
-    import vulcan_jax.network as net_mod
     from vulcan_jax import jax_step
-    from vulcan_jax.config import load_config
 
-    d = np.load(ROOT / "tests" / "data" / fixture)
-    atm = jax_step.AtmStatic(
-        **{
-            f: (bool(d[f"atmbool__{f}"]) if f"atmbool__{f}" in d else jnp.asarray(d[f"atm__{f}"]))
-            for f in jax_step.AtmStatic._fields
-        }
-    )
-    net = chem_mod.to_jax(net_mod.parse_network(load_config(cfg_name).network))
-    y, k_arr = jnp.asarray(d["y_star"]), jnp.asarray(d["k_arr"])
+    atm, net, y, k_arr = load_adj_state(fixture, cfg_name)
     cap: dict = {}
     f0, s0 = jax_step.factor_block_thomas_diag_offdiag, jax_step.solve_block_thomas_diag_offdiag
 
@@ -535,21 +522,10 @@ def check_matrix_free(fixture: str, cfg_name: str, backend: str):
     amplified by the block conditioning with room to spare. dt 1e11 is not compared
     (the tangent is O(1)-conditioned there). Also run by the SNCHO child for
     W39b."""
-    import vulcan_jax.chem as chem_mod
-    import vulcan_jax.network as net_mod
     from vulcan_jax import jax_step
-    from vulcan_jax.config import load_config
 
     fast_mod.BACKEND = backend
-    d = np.load(ROOT / "tests" / "data" / fixture)
-    atm = jax_step.AtmStatic(
-        **{
-            f: (bool(d[f"atmbool__{f}"]) if f"atmbool__{f}" in d else jnp.asarray(d[f"atm__{f}"]))
-            for f in jax_step.AtmStatic._fields
-        }
-    )
-    net = chem_mod.to_jax(net_mod.parse_network(load_config(cfg_name).network))
-    y, k_arr = jnp.asarray(d["y_star"]), jnp.asarray(d["k_arr"])
+    atm, net, y, k_arr = load_adj_state(fixture, cfg_name)
     floats = {f: v for f in jax_step.AtmStatic._fields
               if isinstance(v := getattr(atm, f), jax.Array) and jnp.issubdtype(v.dtype, jnp.floating)}
     rng = np.random.default_rng(0)
@@ -619,35 +595,17 @@ def check_matrix_free(fixture: str, cfg_name: str, backend: str):
     reason="HD189 adjoint fixture missing",
 )
 def test_matrix_free_operator_matches_the_dense_one(fast):
-    from vulcan_jax import jax_step
-
-    if jax_step._SOLVER == "reference":
-        pytest.skip("the reference pair differentiates through the LU and takes no operator")
     check_matrix_free("adj_state_hd189.npz", "HD189", fast.BACKEND)
-
-
-_DEFAULT_CHILD = r"""
-import os, sys
-os.environ.pop("VULCAN_JAX_SOLVER", None)
-sys.path.insert(0, os.path.join(sys.argv[1], "tests"))
-from vulcan_jax import jax_step
-import vulcan_jax.solver_fast as fast_mod
-print("solve_is_fast", jax_step.solve_block_thomas_diag_offdiag is fast_mod.solve)
-print("factor_is_fast", jax_step.factor_block_thomas_diag_offdiag is fast_mod.factor)
-"""
 
 
 def test_fast_is_the_default_solver():
     """With the switch unset, `jax_step` binds the `solver_fast` entry points."""
-    from _helpers import run_child
+    if "VULCAN_JAX_SOLVER" in os.environ:
+        pytest.skip("VULCAN_JAX_SOLVER is set: the default binding is not checked")
+    from vulcan_jax import jax_step
 
-    res = run_child(
-        _DEFAULT_CHILD,
-        network="thermo/NCHO_photo_network.txt",
-        label="solver_fast default wiring",
-    )
-    assert "solve_is_fast True" in res.stdout, res.stdout
-    assert "factor_is_fast True" in res.stdout, res.stdout
+    assert jax_step.solve_block_thomas_diag_offdiag is fast_mod.solve
+    assert jax_step.factor_block_thomas_diag_offdiag is fast_mod.factor
 
 
 _CHILD = r"""

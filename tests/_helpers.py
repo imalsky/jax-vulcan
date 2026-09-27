@@ -1,4 +1,4 @@
-"""Shared test helpers: config pinning, partial configs and child processes.
+"""Shared test helpers: config pinning, partial configs, saved states and child processes.
 
 Neither belongs in `oracle.py`: nothing here touches the upstream checkout.
 """
@@ -134,6 +134,28 @@ def tpk_cfg(**overrides):
     )
     fields.update(overrides)
     return SimpleNamespace(**fields)
+
+
+def load_adj_state(fixture: str, cfg_name: str):
+    """`(atm, net, y, k_arr)` of a saved converged state in `tests/data`.
+
+    The vulcan_jax imports are local so a child can select its network and
+    atom list before the first import.
+    """
+    import jax.numpy as jnp
+
+    import vulcan_jax.chem as chem_mod
+    import vulcan_jax.network as net_mod
+    from vulcan_jax.config import load_config
+    from vulcan_jax.jax_step import AtmStatic
+
+    d = np.load(ROOT / "tests" / "data" / fixture)
+    atm = AtmStatic(**{
+        f: bool(d[f"atmbool__{f}"]) if f"atmbool__{f}" in d else jnp.asarray(d[f"atm__{f}"])
+        for f in AtmStatic._fields
+    })
+    net = chem_mod.to_jax(net_mod.parse_network(load_config(cfg_name).network))
+    return atm, net, jnp.asarray(d["y_star"]), jnp.asarray(d["k_arr"])
 
 
 def run_self(test_file, *args, network: str, atom_list: str, cwd) -> None:

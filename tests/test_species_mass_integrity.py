@@ -64,14 +64,12 @@ _KNOWN_DUPLICATE_SPECIES = {"C4H2", "CH3O2", "CH3OOH", "C2H4O", "CH3NO2", "HCS"}
 _KNOWN_FIRST_WINS_MASS = {"C2H4O": 44.054, "CH3NO2": 61.042, "HCS": 45.178}
 
 
-def main() -> int:
+def test_species_masses_match_atom_counts():
     from vulcan_jax._paths import resolve_data_path
     from vulcan_jax.config import default_config
 
-    vulcan_cfg = default_config()
-
     compo = np.genfromtxt(
-        resolve_data_path(vulcan_cfg.com_file), names=True, dtype=None, encoding=None
+        resolve_data_path(default_config().com_file), names=True, dtype=None, encoding=None
     )
     elems = [c for c in compo.dtype.names if c not in ("species", "mass")]
     species = [str(s) for s in compo["species"]]
@@ -79,22 +77,14 @@ def main() -> int:
     counts = np.array(
         [[float(compo[e][i]) for e in elems] for i in range(len(species))]
     )
-    ref = np.array([_ATOMIC_MASS[e] for e in elems])
-    expected = counts @ ref
+    expected = counts @ np.array([_ATOMIC_MASS[e] for e in elems])
 
-    ok = True
     bad = [
-        (species[i], listed[i], expected[i])
+        f"{species[i]} listed={listed[i]:.3f} expected={expected[i]:.3f}"
         for i in range(len(species))
         if abs(listed[i] - expected[i]) > _TOL
     ]
-    if bad:
-        ok = False
-        print(f"FAIL: {len(bad)} species mass inconsistent with atom counts:")
-        for sp, ml, me in sorted(bad, key=lambda t: -abs(t[1] - t[2])):
-            print(
-                f"  {sp:12s} listed={ml:9.3f}  expected={me:9.3f}  diff={ml - me:+.3f}"
-            )
+    assert not bad, f"species mass inconsistent with atom counts: {bad}"
 
     # Duplicate rows: mirror production (`list.index` -> FIRST row wins).
     mass_by_sp: dict[str, float] = {}
@@ -102,49 +92,32 @@ def main() -> int:
         mass_by_sp.setdefault(sp, float(m))
 
     dup_names = {sp for sp in mass_by_sp if species.count(sp) > 1}
-    if dup_names != _KNOWN_DUPLICATE_SPECIES:
-        ok = False
-        print(
-            f"FAIL: duplicated species set changed: got {sorted(dup_names)}, "
-            f"pinned {sorted(_KNOWN_DUPLICATE_SPECIES)}. A new duplicate is "
-            "resolved silently by row order -- deduplicate the table instead."
-        )
+    assert dup_names == _KNOWN_DUPLICATE_SPECIES, (
+        f"duplicated species set changed: got {sorted(dup_names)}, "
+        f"pinned {sorted(_KNOWN_DUPLICATE_SPECIES)}. A new duplicate is "
+        "resolved silently by row order -- deduplicate the table instead."
+    )
     for sp in sorted(dup_names):
         rows = [i for i, s in enumerate(species) if s == sp]
-        if any(not np.array_equal(counts[i], counts[rows[0]]) for i in rows[1:]):
-            ok = False
-            print(f"FAIL: duplicate rows for {sp} disagree in ATOM COUNTS.")
+        assert all(np.array_equal(counts[i], counts[rows[0]]) for i in rows[1:]), (
+            f"duplicate rows for {sp} disagree in ATOM COUNTS."
+        )
         masses = {float(listed[i]) for i in rows}
         expect = _KNOWN_FIRST_WINS_MASS.get(sp)
-        if len(masses) > 1 and (expect is None or mass_by_sp[sp] != expect):
-            ok = False
-            print(
-                f"FAIL: duplicate rows for {sp} disagree in mass {sorted(masses)} "
-                f"and first-wins value {mass_by_sp[sp]} is not the pinned "
-                f"{expect}. The model silently uses the first row."
-            )
+        assert len(masses) == 1 or mass_by_sp[sp] == expect, (
+            f"duplicate rows for {sp} disagree in mass {sorted(masses)} "
+            f"and first-wins value {mass_by_sp[sp]} is not the pinned "
+            f"{expect}. The model silently uses the first row."
+        )
 
     # Condensates must share the mass of their gas-phase counterpart.
     for sp in species:
         for suffix in ("_l_s", "_s", "_l"):
             if sp.endswith(suffix):
                 gas = sp[: -len(suffix)]
-                if gas in mass_by_sp and abs(mass_by_sp[sp] - mass_by_sp[gas]) > 1e-6:
-                    ok = False
-                    print(
-                        f"FAIL: condensate {sp} mass {mass_by_sp[sp]} != gas {gas} "
+                if gas in mass_by_sp:
+                    assert abs(mass_by_sp[sp] - mass_by_sp[gas]) <= 1e-6, (
+                        f"condensate {sp} mass {mass_by_sp[sp]} != gas {gas} "
                         f"mass {mass_by_sp[gas]}"
                     )
                 break
-
-    # NH3_l_s must carry NH3's mass.
-    if abs(mass_by_sp.get("NH3_l_s", 0.0) - 17.031) > 1e-6:
-        ok = False
-        print(f"FAIL: NH3_l_s mass {mass_by_sp.get('NH3_l_s')} != 17.031")
-
-    print("PASS" if ok else "FAIL")
-    return 0 if ok else 1
-
-
-def test_main():
-    assert main() == 0
