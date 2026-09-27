@@ -85,7 +85,8 @@ def _make_bins(
     """Two-resolution wavelength bin grid (nm).
 
     The transition must lie strictly inside the modeled interval. Upstream
-    (op.py:583-585) accepts the endpoints and falls back to a single dbin1-spaced grid outside them, with
+    (op.py:583-585) accepts the endpoints and falls back to a single dbin1-spaced grid outside
+    them, with
     `sflux_din12_indx = -1`, which its compute_J then slices as `bins[:-1]`;
     refused here instead.
     """

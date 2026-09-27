@@ -182,7 +182,8 @@ class PhotoRuntimeInputs(NamedTuple):
 
 
 class FixSpeciesInputs(NamedTuple):
-    """Fixed-species snapshot. `conden_min_lev` is read only when fix_species_from_coldtrap_lev=True."""
+    """Fixed-species snapshot. `conden_min_lev` is read only when
+    fix_species_from_coldtrap_lev=True."""
 
     fix_species: tuple  # static ordering of species names
     fix_y: jnp.ndarray  # (n_fix_sp, nz)
@@ -229,7 +230,8 @@ class RunState(NamedTuple):
     photo_runtime: Optional[PhotoRuntimeInputs] = None
     fix_species: Optional[FixSpeciesInputs] = None
     # Host-side static metadata + photo cross-section pytree. Both default
-    # to None for partial RunStates; `with_pre_loop_setup(cfg)` fills `metadata`, and `photo_static` when use_photo
+    # to None for partial RunStates; `with_pre_loop_setup(cfg)` fills `metadata`, and
+    # `photo_static` when use_photo
     # (`runstate_from_store` fills `metadata` only).
     metadata: Optional[RunMetadata] = None
     photo_static: Optional[PhotoStaticInputs] = None
@@ -819,7 +821,8 @@ def _var_save_list(*, use_photo, t_cross_sp, use_ion) -> list[str]:
     """The legacy `var_save` key list, mirroring upstream `store.py:83-88`.
 
     Returns a fresh list per call, so the two callers never share one
-    object (upstream `op.py:3240` iterates this attribute). Takes resolved values because the two callers hold different
+    object (upstream `op.py:3240` iterates this attribute). Takes resolved values because the two
+    callers hold different
     configs (`legacy_view` the run's, `_Variables` the process default).
     """
     keys = [

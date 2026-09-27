@@ -97,7 +97,8 @@ class ReadRate(object):
 def _synthesize_cross_dicts(static) -> dict:
     """Build the legacy `var.cross*` dict views from a `PhotoStaticInputs`.
 
-    The .vul writer publishes up to five of these six dicts (never `cross_J_T`), the keys the upstream
+    The .vul writer publishes up to five of these six dicts (never `cross_J_T`), the keys the
+    upstream
     `plot_py/` scripts index (`d['variable']['cross'][sp]`,
     `d['variable']['cross_J'][(sp,i)]`, etc.); the dicts are rebuilt from
     the dense pytree at pickle time. Every value is wrapped in

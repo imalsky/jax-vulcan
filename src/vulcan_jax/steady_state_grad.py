@@ -96,7 +96,8 @@ LGMRES_OUTER_K = 40
 # restarted-GMRES oscillation on this indefinite operator.
 
 LGMRES_MAXITER = 4
-# Outer LGMRES iterations (scipy `maxiter`, each up to `inner_m` inner steps) per warm-start cycle; the solve is chunked into cycles with
+# Outer LGMRES iterations (scipy `maxiter`, each up to `inner_m` inner steps) per warm-start cycle;
+# the solve is chunked into cycles with
 # per-cycle x0 warm-start (the validated configuration).
 
 LGMRES_CYCLES = 8
@@ -328,7 +329,8 @@ def _make_body_map(y_star, k_arr, atm, net, body_dt, photo_recompute_k, body_ter
     def step_fn(y, k_use, atm_use):
         # Reverse mode through the step: the dense stage operator
         # (`matrix_free=False`, jax_step._ros2_stages).
-        # fix_species regime: pin inside the step (pinned rows zeroed off the diagonal, RHS zeroed) then
+        # fix_species regime: pin inside the step (pinned rows zeroed off the diagonal, RHS zeroed)
+        # then
         # overwrite with the pinned values, so pinned rows are constants of
         # the map (identity rows of I - dG/dy), not singular pass-throughs.
         if t is not None and t.fix_mask is not None:

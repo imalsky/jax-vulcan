@@ -124,7 +124,8 @@ class JaxIntegState(NamedTuple):
 
     Shapes for the HD189 reference config: nz=150, ni=69, n_atoms=4,
     nbin=2588, n_br=48. Scalars are float64 unless noted; counts are
-    int32. When use_photo=False, tau/aflux/sflux/dflux_*/prev_aflux use placeholder shape (1, 1) and J_br/J_br_T/Jion_br shape (0, nz).
+    int32. When use_photo=False, tau/aflux/sflux/dflux_*/prev_aflux use placeholder shape (1, 1)
+    and J_br/J_br_T/Jion_br shape (0, nz).
     """
 
     y: jnp.ndarray  # (nz, ni)        current proposed state
@@ -1043,7 +1044,8 @@ def _make_runner(
         # runs never flip it, so this equals atm_static_.use_vm_mol bit-for-bit.
         atm_step = atm_step._replace(use_vm_mol=s.hybrid_use_vm)
         # vm depends on mu (via Hpi) and g, so it must be refreshed in-loop
-        # with the geometry (vm_branch@84d010d op.py:992, update_mu_dz); freezing it at setup biases a
+        # with the geometry (vm_branch@84d010d op.py:992, update_mu_dz); freezing it at setup
+        # biases a
         # mol-diff-dominated upper atmosphere. Its inputs change only at
         # refresh cadence, so per-step recompute reproduces upstream's cadence.
         if use_vm_mol_static and refresh_static is not None:

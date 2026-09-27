@@ -66,7 +66,8 @@ def _validate_network_assets(cfg, root: Path) -> list[str]:
 
     Checks three things that produce cryptic downstream errors if wrong:
     1. Every network species appears in the composition table (all_compose.txt).
-    2. Every photodissociation species has a cross-section file (`<cross_folder><sp>/<sp>_cross.csv`).
+    2. Every photodissociation species has a cross-section file
+    (`<cross_folder><sp>/<sp>_cross.csv`).
     3. cfg.atom_list entries are recognised column headers in all_compose.txt.
     """
     errors: list[str] = []
