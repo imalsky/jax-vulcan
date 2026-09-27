@@ -56,8 +56,6 @@ _CFG = default_config()
 # once, on first use (`_seed`); everything the config owns is read at call time, because
 # `state._cfg_overlay` rewrites `_CFG` per run.
 
-DEFAULT_ABUNDANCE_FILE = "thermo/solar_element_abundances.dat"
-
 
 def _abundance_path() -> Path:
     """The configured elemental-abundance preset file."""

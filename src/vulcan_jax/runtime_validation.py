@@ -35,14 +35,11 @@ def _validate_abundance_preset(cfg, root: Path) -> list[str]:
         return []
     from . import ini_abun
 
-    rel = getattr(
-        cfg, "fastchem_solar_abundance_file", ini_abun.DEFAULT_ABUNDANCE_FILE
-    )
-    path = root / rel
-    if not path.exists():
-        return []  # missing-file error captured by caller
+    rel = getattr(cfg, "fastchem_solar_abundance_file", None)
+    if not rel or not (root / rel).exists():
+        return []  # unset or missing is reported by the caller
     try:
-        ratios = ini_abun.read_abundances(path)
+        ratios = ini_abun.read_abundances(root / rel)
     except (OSError, ValueError) as exc:
         return [f"abundance preset {rel!r} does not parse: {exc}"]
     bad = [
@@ -428,6 +425,7 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
     """
     root = Path(__file__).resolve().parent if root is None else Path(root)
     errors: list[str] = []
+    species = set(chem_funs.spec_list)
 
     if bool(getattr(cfg, "use_ion", False)) and not bool(
         getattr(cfg, "use_photo", False)
@@ -442,20 +440,17 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
     if fix_sp:
         # Otherwise an entry absent from the import-locked network dies later
         # on a bare `.index()` ValueError naming neither species nor remedy.
-        net_species = list(getattr(chem_funs, "spec_list", []))
-        if net_species:
-            missing = [sp for sp in fix_sp if sp not in net_species]
-            if missing:
-                errors.append(
-                    f"fix_species entries not in the loaded network: {missing}. "
-                    f"The network is import-locked, so this cannot be fixed after "
-                    f"`import vulcan_jax`: either drop these entries or set "
-                    f"$VULCAN_JAX_NETWORK to a network containing them before the "
-                    f"first import."
-                )
+        missing = [sp for sp in fix_sp if sp not in species]
+        if missing:
+            errors.append(
+                f"fix_species entries not in the loaded network: {missing}. "
+                f"The network is import-locked, so this cannot be fixed after "
+                f"`import vulcan_jax`: either drop these entries or set "
+                f"$VULCAN_JAX_NETWORK to a network containing them before the "
+                f"first import."
+            )
 
     if bool(getattr(cfg, "use_fix_H2He", False)):
-        species = list(getattr(chem_funs, "spec_list", []))
         for sp in ("H2", "He"):
             if sp not in species:
                 errors.append(
@@ -464,7 +459,6 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
                 )
 
     if getattr(cfg, "ini_mix", None) == "const_mix":
-        species = list(getattr(chem_funs, "spec_list", []))
         for sp in getattr(cfg, "const_mix", {}):
             if sp not in species:
                 errors.append(
@@ -503,11 +497,7 @@ def validate_runtime_config(cfg, root: Path | None = None) -> None:
         required_paths.append(
             (
                 "fastchem_solar_abundance_file",
-                getattr(
-                    cfg,
-                    "fastchem_solar_abundance_file",
-                    "thermo/solar_element_abundances.dat",
-                ),
+                getattr(cfg, "fastchem_solar_abundance_file", None),
             )
         )
 
