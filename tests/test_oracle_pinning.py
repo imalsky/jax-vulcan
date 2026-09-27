@@ -147,19 +147,14 @@ def test_dirty_checkout_fails_and_says_why(fake_oracle, monkeypatch):
     """A dirty tree is often the residue of a test that mutated the oracle."""
     monkeypatch.setenv(orc.ENV_DIR, str(fake_oracle))
     monkeypatch.setenv(orc.ENV_REQUIRE, "1")
-    want = orc.oracle_spec("vulcan2_ncho")["commit"]
     monkeypatch.setitem(orc.manifest()["oracles"]["vulcan2_ncho"], "commit",
                         _git(fake_oracle, "rev-parse", "HEAD"))
-    try:
-        (fake_oracle / "thermo" / "NCHO_photo_network.txt").write_text("edited\n")
-        with pytest.raises(pytest.fail.Exception) as exc:
-            orc.require_oracle("vulcan2_ncho")
-        msg = str(exc.value)
-        assert "DIRTY" in msg
-        assert "make_chem_funs" in msg      # names the real mutation source
-    finally:
-        monkeypatch.setitem(orc.manifest()["oracles"]["vulcan2_ncho"],
-                            "commit", want)
+    (fake_oracle / "thermo" / "NCHO_photo_network.txt").write_text("edited\n")
+    with pytest.raises(pytest.fail.Exception) as exc:
+        orc.require_oracle("vulcan2_ncho")
+    msg = str(exc.value)
+    assert "DIRTY" in msg
+    assert "make_chem_funs" in msg      # names the real mutation source
     # ... and a plain directory (no .git) is refused too
     plain = fake_oracle.parent / "plain-copy"
     plain.mkdir()
@@ -176,50 +171,42 @@ def test_worktree_gives_a_copy_and_proves_the_original_is_untouched(
     """Upstream setup code rewrites files in place; it must only see the copy."""
     monkeypatch.setenv(orc.ENV_DIR, str(fake_oracle))
     monkeypatch.setenv(orc.ENV_REQUIRE, "1")
-    want = orc.oracle_spec("vulcan2_ncho")["commit"]
     monkeypatch.setitem(orc.manifest()["oracles"]["vulcan2_ncho"], "commit",
                         _git(fake_oracle, "rev-parse", "HEAD"))
     original = (fake_oracle / "thermo" / "NCHO_photo_network.txt").read_bytes()
     old, new, _tag = orc.ORACLE_CODE_DELTAS["op.py"][0]
-    try:
-        with orc.oracle_worktree("vulcan2_ncho") as work:
-            assert work != fake_oracle
-            # the declared delta landed on the copy ...
-            copy_op = (work / "op.py").read_text()
-            assert old not in copy_op and new in copy_op
-            # simulate make_chem_funs renumbering the network IN PLACE
-            (work / "thermo" / "NCHO_photo_network.txt").write_text("renumbered\n")
-        assert (fake_oracle / "thermo"
-                / "NCHO_photo_network.txt").read_bytes() == original
-        # ... and never on the original
-        assert old in (fake_oracle / "op.py").read_text()
-        # a re-pinned upstream whose block no longer matches fails loudly
-        repinned = fake_oracle.parent / "repinned"
-        repinned.mkdir()
-        (repinned / "op.py").write_text("nothing\n")
-        with pytest.raises(RuntimeError, match="ORACLE_CODE_DELTAS"):
-            orc.apply_code_deltas(repinned)
-        # ... and the before/after fingerprint actually catches a mutation
-        with pytest.raises(AssertionError, match="CHANGED during the test"):
-            with orc.oracle_worktree("vulcan2_ncho"):
-                (fake_oracle / "thermo" / "leak.txt").write_text("oops\n")
-    finally:
-        monkeypatch.setitem(orc.manifest()["oracles"]["vulcan2_ncho"],
-                            "commit", want)
+    with orc.oracle_worktree("vulcan2_ncho") as work:
+        assert work != fake_oracle
+        # the declared delta landed on the copy ...
+        copy_op = (work / "op.py").read_text()
+        assert old not in copy_op and new in copy_op
+        # simulate make_chem_funs renumbering the network IN PLACE
+        (work / "thermo" / "NCHO_photo_network.txt").write_text("renumbered\n")
+    assert (fake_oracle / "thermo"
+            / "NCHO_photo_network.txt").read_bytes() == original
+    # ... and never on the original
+    assert old in (fake_oracle / "op.py").read_text()
+    # a re-pinned upstream whose block no longer matches fails loudly
+    repinned = fake_oracle.parent / "repinned"
+    repinned.mkdir()
+    (repinned / "op.py").write_text("nothing\n")
+    with pytest.raises(RuntimeError, match="ORACLE_CODE_DELTAS"):
+        orc.apply_code_deltas(repinned)
+    # ... and the before/after fingerprint actually catches a mutation
+    with pytest.raises(AssertionError, match="CHANGED during the test"):
+        with orc.oracle_worktree("vulcan2_ncho"):
+            (fake_oracle / "thermo" / "leak.txt").write_text("oops\n")
 
 
 def test_the_oracle_workflow_matches_the_manifest():
     """oracle.yml pins the manifest's commits and selects only existing test
     files. It clones upstream itself, so drifted SHAs would compare against the
     wrong revision (reaction indices are positional)."""
-    import yaml as _yaml
-
     wf_path = ROOT / ".github" / "workflows" / "oracle.yml"
     assert wf_path.is_file(), f"missing {wf_path}"
-    wf = _yaml.safe_load(wf_path.read_text())
+    wf = yaml.safe_load(wf_path.read_text())
     include = wf["jobs"]["oracle"]["strategy"]["matrix"]["include"]
-    manifest = _yaml.safe_load(
-        (ROOT / "tests" / "science_sources.yaml").read_text())["oracles"]
+    manifest = yaml.safe_load(MANIFEST.read_text())["oracles"]
 
     covered = set()
     for entry in include:

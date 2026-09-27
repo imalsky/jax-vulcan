@@ -12,19 +12,14 @@ Jupiter example with an analytical Heng+14 T-P so no atm file is read.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from _helpers import run_child
 
-ROOT = Path(__file__).resolve().parent.parent
 CONDEN_NETWORK = "thermo/NCHO_photo_network_lowT_Jupiter.txt"
 
 _CHILD = r"""
 import os, sys, warnings
 warnings.filterwarnings("ignore")
-os.environ["JAX_PLATFORM_NAME"] = "cpu"
-os.environ["VULCAN_JAX_NETWORK"] = "thermo/NCHO_photo_network_lowT_Jupiter.txt"
 
 from pathlib import Path
 repo = Path(sys.argv[1])
@@ -32,7 +27,6 @@ sys.path.insert(0, str(repo / "src"))
 os.chdir(repo / "src" / "vulcan_jax")
 
 import numpy as np
-import vulcan_jax
 import vulcan_jax.composition as composition
 
 sl = list(composition.species)
@@ -148,10 +142,5 @@ print("PASS")
 
 @pytest.mark.slow
 def test_nh3_conden_batch_subprocess():
-    from vulcan_jax._paths import PACKAGE_ROOT
-
-    if not (PACKAGE_ROOT / CONDEN_NETWORK).exists():
-        pytest.skip(f"condensate network {CONDEN_NETWORK!r} not vendored")
-
     res = run_child(_CHILD, network=CONDEN_NETWORK, label="NH3 batched-conden", timeout=1800)
     assert "PASS" in res.stdout, res.stdout

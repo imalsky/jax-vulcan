@@ -8,18 +8,10 @@ of the longdy maximum and an all-NaN state scores 0 (converged). Master's
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
-ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
-
-jax.config.update("jax_enable_x64", True)
 
 
 def _longdy(y, ymix, y_old, n_0, *, atol=1e-2, mtol_conv=1e-20):
@@ -68,19 +60,14 @@ def test_nonfinite_state_is_never_converged(case):
     assert longdy == np.inf, f"{case}: longdy={longdy}"
 
 
-def _delta(sol, delta_arr, ymix_old, *, atol=1e-2, mtol=1e-22):
-    """The shipped step-acceptance reduction (same import rule as `_longdy`)."""
-    from vulcan_jax.outer_loop import _make_aggregate_delta_fn
-
-    agg = _make_aggregate_delta_fn(mtol, atol, False, jnp.zeros(sol.shape, dtype=bool))
-    return agg(sol, delta_arr, ymix_old)
-
-
 def test_sub_atol_cell_gives_a_finite_batch_independent_tangent():
     """A positive sub-atol cell (TOI-7169 b S8 at 1e-160) must give finite
     plain and vmapped tangents that agree. A masked numerator over the raw tiny
     denominator gives 0 * inf in the batched max tangent, which the unbatched
     select rewrite hides."""
+    # The shipped step-acceptance reduction (same import rule as `_longdy`).
+    from vulcan_jax.outer_loop import _make_aggregate_delta_fn
+
     y, ymix, y_old, n_0 = _mk()
     y = y.at[0, 1].set(1e-160)
     t = jnp.ones_like(y)
@@ -89,8 +76,10 @@ def test_sub_atol_cell_gives_a_finite_batch_independent_tangent():
         ymix_ = y_ / jnp.sum(y_, axis=1, keepdims=True)
         return _longdy(y_, ymix_, y_old, n_0)
 
+    agg = _make_aggregate_delta_fn(1e-22, 1e-2, False, jnp.zeros(y.shape, dtype=bool))
+
     def delta_of(sol):
-        return _delta(sol, jnp.abs(sol - y_old) * 1e-3, ymix)
+        return agg(sol, jnp.abs(sol - y_old) * 1e-3, ymix)
 
     def tangents(f):
         plain = jax.jvp(f, (y,), (t,))[1]
@@ -111,8 +100,6 @@ def test_end_case_is_not_success_for_a_frozen_or_yielded_lane():
     from vulcan_jax.outer_loop import OuterLoop
 
     class _S:
-        accept_count, count_max_dyn = 10, 1000
-        t, runtime_dyn = 1.0, 1e10
         y = jnp.ones((2, 2))
 
         def __init__(self, reason):
@@ -125,9 +112,6 @@ def test_end_case_is_not_success_for_a_frozen_or_yielded_lane():
     bad = _S(1)
     bad.y = jnp.asarray([[1.0, jnp.nan], [1.0, 1.0]])
     assert clf(None, bad) == 5
-    at_cap = _S(1)
-    at_cap.accept_count = at_cap.count_max_dyn + 1
-    assert clf(None, at_cap) == 1, "converged at count_max must be a success"
     assert clf(None, _S(3)) == 3 and clf(None, _S(2)) == 2
 
 

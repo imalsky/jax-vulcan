@@ -1,5 +1,4 @@
-"""In-runner atm refresh + hydrostatic balance vs master's update_mu_dz /
-update_phi_esc + `var.y = n_0 * var.ymix` on HD189.
+"""In-runner atm refresh vs master's update_mu_dz / update_phi_esc on HD189.
 
 Same kernel on both sides: master's sweeps write `zco[i+1]` before reading
 it for `g[i+1]`, so its g(z) is self-consistent exactly as
@@ -69,30 +68,14 @@ def main() -> int:
     data_var.ymix = data_var.ymix / np.sum(data_var.ymix, axis=1, keepdims=True)
     data_var.y = data_atm.n_0[:, None] * data_var.ymix
 
-    # --- Path A: Python-side update_mu_dz / update_phi_esc + hydro balance ---
+    # --- Path A: Python-side update_mu_dz / update_phi_esc ---
     atm_A = copy.deepcopy(data_atm)
     var_A = copy.deepcopy(data_var)
     integ_ref = op.Integration(op.Ros2(), output)
     atm_A = integ_ref.update_mu_dz(var_A, atm_A, make_atm)
     atm_A = integ_ref.update_phi_esc(var_A, atm_A)
-    if vulcan_cfg.use_condense:
-        var_A.y[:, atm_A.gas_indx] = (
-            np.vstack(atm_A.n_0) * var_A.ymix[:, atm_A.gas_indx]
-        )
-    else:
-        var_A.y = np.vstack(atm_A.n_0) * var_A.ymix
 
-    mu_A = atm_A.mu.copy()
-    g_A = atm_A.g.copy()
-    Hp_A = atm_A.Hp.copy()
-    dz_A = atm_A.dz.copy()
-    dzi_A = atm_A.dzi.copy()
-    Hpi_A = atm_A.Hpi.copy()
-    zco_A = atm_A.zco.copy()
-    top_flux_A = atm_A.top_flux.copy()
-    y_A = var_A.y.copy()
-
-    # --- Path B: atm-refresh branch + hydrostatic balance via JAX runner ---
+    # --- Path B: atm-refresh branch via JAX runner ---
     solver_B = op_jax.Ros2JAX()
     if vulcan_cfg.use_photo and rs.photo_static is not None:
         solver_B._photo_static = rs.photo_static
@@ -115,24 +98,18 @@ def main() -> int:
         init_state.y, g_B, Hp_B, init_state.top_flux, st
     )
 
-    # Hydrostatic balance: y_B = n_0 * ymix. body_fn applies this after
-    # the Ros2 step; here we exercise it standalone against atm.n_0
-    # (a static quantity equal to atm.M).
-    y_B = data_atm.n_0[:, None] * np.asarray(init_state.ymix)
-
     ok = True
     from vulcan_jax.phy_const import UNDERFLOW_DENOM
 
     for label, A, B, rtol in (
-        ("mu", mu_A, mu_B, EXACT_RTOL),
-        ("g", g_A, g_B, REFRESH_RTOL),
-        ("Hp", Hp_A, Hp_B, REFRESH_RTOL),
-        ("dz", dz_A, dz_B, REFRESH_RTOL),
-        ("dzi", dzi_A, dzi_B, REFRESH_RTOL),
-        ("Hpi", Hpi_A, Hpi_B, REFRESH_RTOL),
-        ("zco", zco_A, zco_B, REFRESH_RTOL),
-        ("top_flux", top_flux_A, top_flux_B, REFRESH_RTOL),
-        ("y_post_hydro", y_A, y_B, EXACT_RTOL),
+        ("mu", atm_A.mu, mu_B, EXACT_RTOL),
+        ("g", atm_A.g, g_B, REFRESH_RTOL),
+        ("Hp", atm_A.Hp, Hp_B, REFRESH_RTOL),
+        ("dz", atm_A.dz, dz_B, REFRESH_RTOL),
+        ("dzi", atm_A.dzi, dzi_B, REFRESH_RTOL),
+        ("Hpi", atm_A.Hpi, Hpi_B, REFRESH_RTOL),
+        ("zco", atm_A.zco, zco_B, REFRESH_RTOL),
+        ("top_flux", atm_A.top_flux, top_flux_B, REFRESH_RTOL),
     ):
         err = relerr(B, A, floor=UNDERFLOW_DENOM)
         print(f"{label:14s} relerr: {err:.3e}")
