@@ -767,7 +767,7 @@ def _build_pre_loop_runstate_impl(cfg, *, skip_chem_warmup: bool = False) -> Run
         solver.compute_J(var, atm)
         if bool(cfg.use_ion):
             solver.compute_Jion(var, atm)
-        _rates_mod.apply_photo_remove(cfg, var, network, atm)
+        _rates_mod.apply_photo_remove(cfg, var, network)
 
     # Warm up the codegen chem_rhs JIT so the first runner step doesn't stall
     # on compile. Result discarded;

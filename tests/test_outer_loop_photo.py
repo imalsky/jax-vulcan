@@ -79,7 +79,7 @@ def main() -> int:
     solver.compute_tau(data_var, data_atm)
     solver.compute_flux(data_var, data_atm)
     solver.compute_J(data_var, data_atm)
-    _rates_mod.apply_photo_remove(vulcan_cfg, data_var, _network, data_atm)
+    _rates_mod.apply_photo_remove(vulcan_cfg, data_var, _network)
 
     # Snapshot Path A outputs for comparison.
     tau_A = data_var.tau.copy()

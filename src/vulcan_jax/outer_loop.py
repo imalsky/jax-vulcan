@@ -2528,12 +2528,16 @@ class OuterLoop:
         else:
             photo_ion_data = None
 
-        (branch_re_idx, branch_active, branch_T_re_idx, branch_T_active) = (
-            _photo_mod.pack_J_to_k_index_map(photo_J_data, var, self._cfg)
+        remove_list = self._cfg.remove_list
+        branch_re_idx, branch_active = _photo_mod.pack_branch_to_k_index_map(
+            photo_J_data.branch_keys, var.pho_rate_index, remove_list
+        )
+        branch_T_re_idx, branch_T_active = _photo_mod.pack_branch_to_k_index_map(
+            photo_J_data.branch_T_keys, var.pho_rate_index, remove_list
         )
         if photo_ion_data is not None:
-            ion_branch_re_idx, ion_branch_active = _photo_mod.pack_Jion_to_k_index_map(
-                photo_ion_data, var, self._cfg
+            ion_branch_re_idx, ion_branch_active = _photo_mod.pack_branch_to_k_index_map(
+                photo_ion_data.branch_keys, var.ion_rate_index, remove_list
             )
             cross_Jion = photo_ion_data.cross_J
         else:

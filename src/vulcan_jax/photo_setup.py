@@ -161,13 +161,15 @@ def _bin_cross_and_branches(
     ratio_raw: np.ndarray,
     n_branch: int,
     bins: np.ndarray,
-) -> tuple[np.ndarray, dict[int, np.ndarray]]:
-    """Build `cross[bin]` and `cross_J[branch_i][bin]` for one photodissociation species."""
+) -> tuple[np.ndarray, dict[int, np.ndarray], dict[int, np.ndarray]]:
+    """Build `cross[bin]`, `cross_J[branch_i][bin]` and the binned branch
+    ratios `ratio[branch_i][bin]` for one photodissociation species."""
     lam = cross_raw["lambda"]
     cross_at_bins = _interp_zero_extrap(lam, cross_raw["cross"], bins)
     disso_at_bins = _interp_zero_extrap(lam, cross_raw["disso"], bins)
 
     branches: dict[int, np.ndarray] = {}
+    ratios: dict[int, np.ndarray] = {}
     for i in range(1, n_branch + 1):
         br_key = "br_ratio_" + str(i)
         try:
@@ -181,8 +183,9 @@ def _bin_cross_and_branches(
                 "The branches in the network file do not match the "
                 f"branching ratio file for {sp} ({br_key})"
             ) from e
+        ratios[i] = ratio_at_bins
         branches[i] = disso_at_bins * ratio_at_bins
-    return cross_at_bins, branches
+    return cross_at_bins, branches, ratios
 
 
 def _bin_T_dependent(
@@ -269,57 +272,25 @@ def _bin_T_dependent(
                         )
                         cross_J_T[i][lev, n] = val * inter_ratio_at_bins[i][n]
 
-        elif below.size == 0:
-            # Tz below the lowest tabulated T sample.
-            if min_T_sp == _ROOM_T_SAMPLE_K:
-                cross_T[lev] = cross_at_bins
-                for i in range(1, n_branch + 1):
-                    cross_J_T[i][lev] = cross_J_at_bins[i]
-            else:
-                raw_low = cross_T_raw[(sp, min_T_sp)]
-                ld_min = float(raw_low["lambda"][0])
-                ld_max = float(raw_low["lambda"][-1])
-                cross_low_at_bins = _interp_zero_extrap(
-                    raw_low["lambda"],
-                    raw_low["cross"],
-                    bins,
-                )
-                disso_low_at_bins = _interp_zero_extrap(
-                    raw_low["lambda"],
-                    raw_low["disso"],
-                    bins,
-                )
-                for n in range(nbin):
-                    ld = float(bins[n])
-                    if ld < ld_min or ld > ld_max:
-                        cross_T[lev, n] = cross_at_bins[n]
-                        for i in range(1, n_branch + 1):
-                            cross_J_T[i][lev, n] = cross_J_at_bins[i][n]
-                    else:
-                        cross_T[lev, n] = float(cross_low_at_bins[n])
-                        for i in range(1, n_branch + 1):
-                            cross_J_T[i][lev, n] = (
-                                float(disso_low_at_bins[n]) * inter_ratio_at_bins[i][n]
-                            )
-
         else:
-            # Tz at or above the highest tabulated T sample.
-            if max_T_sp == _ROOM_T_SAMPLE_K:
+            # Tz outside the tabulated range: use the nearest edge sample.
+            T_edge = min_T_sp if below.size == 0 else max_T_sp
+            if T_edge == _ROOM_T_SAMPLE_K:
                 cross_T[lev] = cross_at_bins
                 for i in range(1, n_branch + 1):
                     cross_J_T[i][lev] = cross_J_at_bins[i]
             else:
-                raw_high = cross_T_raw[(sp, max_T_sp)]
-                ld_min = float(raw_high["lambda"][0])
-                ld_max = float(raw_high["lambda"][-1])
-                cross_high_at_bins = _interp_zero_extrap(
-                    raw_high["lambda"],
-                    raw_high["cross"],
+                raw_edge = cross_T_raw[(sp, T_edge)]
+                ld_min = float(raw_edge["lambda"][0])
+                ld_max = float(raw_edge["lambda"][-1])
+                cross_edge_at_bins = _interp_zero_extrap(
+                    raw_edge["lambda"],
+                    raw_edge["cross"],
                     bins,
                 )
-                disso_high_at_bins = _interp_zero_extrap(
-                    raw_high["lambda"],
-                    raw_high["disso"],
+                disso_edge_at_bins = _interp_zero_extrap(
+                    raw_edge["lambda"],
+                    raw_edge["disso"],
                     bins,
                 )
                 for n in range(nbin):
@@ -329,10 +300,10 @@ def _bin_T_dependent(
                         for i in range(1, n_branch + 1):
                             cross_J_T[i][lev, n] = cross_J_at_bins[i][n]
                     else:
-                        cross_T[lev, n] = float(cross_high_at_bins[n])
+                        cross_T[lev, n] = float(cross_edge_at_bins[n])
                         for i in range(1, n_branch + 1):
                             cross_J_T[i][lev, n] = (
-                                float(disso_high_at_bins[n]) * inter_ratio_at_bins[i][n]
+                                float(disso_edge_at_bins[n]) * inter_ratio_at_bins[i][n]
                             )
 
     return cross_T, cross_J_T
@@ -364,13 +335,13 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
     cross_T_raw: dict[tuple[str, int], np.ndarray] = {}
     cross_T_sp_list_local: dict[str, list[int]] = {}
 
-    bin_min: float | None = None
-    bin_max: float | None = None
-    diss_max: float | None = None
+    lam_lo: list[float] = []
+    lam_hi: list[float] = []
+    diss: list[float] = []
 
     folder = _cross_folder()
     cross_cols = ["lambda", "cross", "disso"] + (["ion"] if use_ion else [])
-    for n_idx, sp in enumerate(absp_sp_list):
+    for sp in absp_sp_list:
         sp_path = folder + sp + "/" + sp
         cross_raw[sp] = _read_table(sp_path + "_cross.csv", cross_cols)
         if use_ion and sp in ion_sp:
@@ -390,23 +361,15 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
         if cross_raw[sp]["cross"][0] == 0 or cross_raw[sp]["cross"][-1] == 0:
             raise IOError("\n Please remove the zeros in the cross file of " + sp)
 
-        sp_min = float(cross_raw[sp]["lambda"][0])
-        sp_max = float(cross_raw[sp]["lambda"][-1])
         if sp not in threshold:
             raise KeyError(f"{sp} not in {folder}thresholds.txt")
-        sp_diss = float(threshold[sp])
-        if n_idx == 0:
-            bin_min, bin_max, diss_max = sp_min, sp_max, sp_diss
-        else:
-            if sp_min < bin_min:
-                bin_min = sp_min
-            if sp_max > bin_max:
-                bin_max = sp_max
-            if sp_diss > diss_max:
-                diss_max = sp_diss
+        lam_lo.append(float(cross_raw[sp]["lambda"][0]))
+        lam_hi.append(float(cross_raw[sp]["lambda"][-1]))
+        diss.append(float(threshold[sp]))
 
-    bin_min = max(bin_min, var.def_bin_min)
-    bin_max = min(bin_max, var.def_bin_max, diss_max)
+    diss_max = max(diss)
+    bin_min = max(min(lam_lo), var.def_bin_min)
+    bin_max = min(max(lam_hi), var.def_bin_max, diss_max)
     logger.info(
         "Input stellar spectrum from "
         + "{:.1f}".format(var.def_bin_min)
@@ -433,7 +396,7 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
     cross_J_T_per_key: dict[tuple[str, int], np.ndarray] = {}
 
     for sp in photo_sp:
-        cross_at_bins, cross_J_at_bins = _bin_cross_and_branches(
+        cross_at_bins, cross_J_at_bins, inter_ratio_at_bins = _bin_cross_and_branches(
             sp,
             cross_raw[sp],
             ratio_raw[sp],
@@ -445,14 +408,6 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
             cross_J_per_key[(sp, i)] = cross_J_at_bins[i].copy()
 
         if sp in T_cross_sp:
-            inter_ratio_at_bins = {
-                i: _interp_edge_extrap(
-                    ratio_raw[sp]["lambda"],
-                    ratio_raw[sp]["br_ratio_" + str(i)],
-                    bins,
-                )
-                for i in range(1, var.n_branch[sp] + 1)
-            }
             cross_T_arr, cross_J_T_per_branch = _bin_T_dependent(
                 sp,
                 var.n_branch[sp],
@@ -526,36 +481,16 @@ def _build_photo_static_dense(var, atm) -> PhotoStaticInputs:
     else:
         ion_branch_keys_ordered = ()
 
-    if absp_sp_ordered:
-        absp_cross = np.stack([cross_per_sp[sp] for sp in absp_sp_ordered], axis=0)
-    else:
-        absp_cross = np.zeros((0, nbin), dtype=np.float64)
-    if absp_T_sp_ordered:
-        absp_T_cross = np.stack(
-            [cross_T_per_sp[sp] for sp in absp_T_sp_ordered], axis=0
-        )
-    else:
-        absp_T_cross = np.zeros((0, nz, nbin), dtype=np.float64)
-    if scat_sp_ordered:
-        scat_cross = np.stack([cross_scat_per_sp[sp] for sp in scat_sp_ordered], axis=0)
-    else:
-        scat_cross = np.zeros((0, nbin), dtype=np.float64)
-    if branch_keys_ordered:
-        cross_J = np.stack([cross_J_per_key[k] for k in branch_keys_ordered], axis=0)
-    else:
-        cross_J = np.zeros((0, nbin), dtype=np.float64)
-    if branch_T_keys_ordered:
-        cross_J_T = np.stack(
-            [cross_J_T_per_key[k] for k in branch_T_keys_ordered], axis=0
-        )
-    else:
-        cross_J_T = np.zeros((0, nz, nbin), dtype=np.float64)
-    if ion_branch_keys_ordered:
-        cross_Jion = np.stack(
-            [cross_Jion_per_key[k] for k in ion_branch_keys_ordered], axis=0
-        )
-    else:
-        cross_Jion = np.zeros((0, nbin), dtype=np.float64)
+    # An empty row list gives shape (0,); the reshape restores the (0, ...) shape.
+    def _rows(rows, *shape):
+        return np.array(rows, dtype=np.float64).reshape(-1, *shape)
+
+    absp_cross = _rows([cross_per_sp[sp] for sp in absp_sp_ordered], nbin)
+    absp_T_cross = _rows([cross_T_per_sp[sp] for sp in absp_T_sp_ordered], nz, nbin)
+    scat_cross = _rows([cross_scat_per_sp[sp] for sp in scat_sp_ordered], nbin)
+    cross_J = _rows([cross_J_per_key[k] for k in branch_keys_ordered], nbin)
+    cross_J_T = _rows([cross_J_T_per_key[k] for k in branch_T_keys_ordered], nz, nbin)
+    cross_Jion = _rows([cross_Jion_per_key[k] for k in ion_branch_keys_ordered], nbin)
 
     return PhotoStaticInputs(
         bins=jnp.asarray(bins, dtype=jnp.float64),
@@ -590,7 +525,7 @@ def _alloc_runtime_buffers(var, nbin: int, nz: int) -> None:
 
 def populate_photo(var, atm) -> PhotoStaticInputs:
     """Build the dense `PhotoStaticInputs` pytree, write scalar grid metadata
-    + threshold table to `var`, and zero-allocate the runtime mutable buffers.
+    to `var`, and zero-allocate the runtime mutable buffers.
 
     After `read_sflux` populates `var.sflux_din12_indx`, re-attach via
     `static = static.with_din12_indx(int(var.sflux_din12_indx))`.
@@ -600,8 +535,5 @@ def populate_photo(var, atm) -> PhotoStaticInputs:
     var.nbin = int(static.nbin)
     var.dbin1 = float(static.dbin1)
     var.dbin2 = float(static.dbin2)
-    from . import chem_funs
-
-    var.threshold = _load_thresholds(chem_funs.spec_list)
     _alloc_runtime_buffers(var, int(static.nbin), int(atm.Tco.shape[0]))
     return static

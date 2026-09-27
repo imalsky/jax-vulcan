@@ -393,10 +393,9 @@ def setup_var_k(cfg, var, atm) -> Network:
     return network
 
 
-def apply_photo_remove(cfg, var, network: Network, atm) -> None:
+def apply_photo_remove(cfg, var, network: Network) -> None:
     """Re-apply `cfg.remove_list` after `compute_J`/`compute_Jion` has
     overwritten the photolysis rows of `var.k_arr`."""
-    del atm
     var.k_arr = np.array(
         apply_remove_list(network, var.k_arr, cfg.remove_list), dtype=np.float64
     )

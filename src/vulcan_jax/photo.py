@@ -313,22 +313,11 @@ def photo_J_data_from_static(static) -> PhotoJData:
 
 def photo_ion_data_from_static(static) -> PhotoJData:
     """Build the runtime photoionization `PhotoJData` from a `PhotoStaticInputs`."""
-    if int(static.din12_indx) < 0:
-        raise ValueError(
-            "PhotoStaticInputs.din12_indx is -1; call "
-            "static.with_din12_indx(int(var.sflux_din12_indx)) after "
-            "read_sflux."
-        )
-    nbin = int(static.nbin)
-    nz = int(static.absp_T_cross.shape[1]) if static.absp_T_cross.shape[0] > 0 else 0
-    return PhotoJData(
+    return photo_J_data_from_static(static)._replace(
         cross_J=static.cross_Jion,
-        cross_J_T=jnp.zeros((0, max(nz, 1), nbin), dtype=jnp.float64),
-        din12_indx=int(static.din12_indx),
-        dbin1=float(static.dbin1),
-        dbin2=float(static.dbin2),
+        cross_J_T=jnp.zeros((0, 1, int(static.nbin)), dtype=jnp.float64),
         branch_keys=tuple(static.ion_branch_keys),
-        branch_T_keys=tuple(),
+        branch_T_keys=(),
     )
 
 
@@ -425,8 +414,14 @@ def compute_J_jax(aflux: jnp.ndarray, photo_J: PhotoJData):
     return J_sp
 
 
-def _pack_branch_to_k_index_map(branch_keys, rate_index, remove_list):
-    """Build static branch -> k_arr row index tables for photo or ion updates."""
+def pack_branch_to_k_index_map(branch_keys, rate_index, remove_list):
+    """Build static branch -> k_arr row index tables for photo or ion updates.
+
+    Returns (n_br,) int64 reaction indices into k_arr (1..nr) and a (n_br,)
+    bool mask of the branches that write into k_arr. Inactive rows point at
+    slot 0 (unused, since reactions are 1-indexed) so the scatter shape
+    stays static.
+    """
     remove_set = set(remove_list or [])
     n_br = len(branch_keys)
     re_idx = np.zeros(n_br, dtype=np.int64)
@@ -437,40 +432,6 @@ def _pack_branch_to_k_index_map(branch_keys, rate_index, remove_list):
             re_idx[i] = int(idx)
             active[i] = True
     return jnp.asarray(re_idx), jnp.asarray(active)
-
-
-def pack_J_to_k_index_map(photo_J, var, cfg):
-    """Build static index arrays mapping each branch to its `var.k` reaction index.
-
-    Returns two (n_br,) arrays and their two (n_br_T,) T-branch counterparts:
-        branch_re_idx     int64: reaction index in k_arr (1..nr); 0 if inactive
-        branch_active     bool: True if this branch should write into k_arr
-        branch_T_re_idx   int64: same, for T-dep branches
-        branch_T_active   bool
-
-    Inactive entries point at index 0 (an unused slot, since reactions are
-    1-indexed) so the scatter shape stays static.
-    """
-    re_idx, active = _pack_branch_to_k_index_map(
-        photo_J.branch_keys,
-        var.pho_rate_index,
-        cfg.remove_list,
-    )
-    re_T_idx, active_T = _pack_branch_to_k_index_map(
-        photo_J.branch_T_keys,
-        var.pho_rate_index,
-        cfg.remove_list,
-    )
-    return re_idx, active, re_T_idx, active_T
-
-
-def pack_Jion_to_k_index_map(photo_ion, var, cfg):
-    """Build branch -> k_arr row index tables for photoionization updates."""
-    return _pack_branch_to_k_index_map(
-        photo_ion.branch_keys,
-        var.ion_rate_index,
-        cfg.remove_list,
-    )
 
 
 @jax.jit
