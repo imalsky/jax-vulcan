@@ -249,8 +249,6 @@ def test_hd189_reaction_sensitivity_regression():
         net,
         compo_array=compo,
         dz=dz,
-        lgmres_inner_m=250,
-        lgmres_cycles=8,
         return_info=True,
     )
     dLdlnk = np.asarray(dLdlnk)

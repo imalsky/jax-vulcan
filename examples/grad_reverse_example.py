@@ -88,8 +88,6 @@ def main() -> int:
         net,
         compo_array=compo,
         dz=dz,
-        lgmres_inner_m=250,
-        lgmres_cycles=8,
         return_info=True,
     )
     grad = np.asarray(dLdlnk)

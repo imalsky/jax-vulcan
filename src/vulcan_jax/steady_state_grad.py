@@ -12,8 +12,8 @@ Rules:
 
 * Only `ros2_step (+ renorm) (+ photo recompute)` and optional `body_terms`
   are linearized; run `audit_adjoint_scope(...)` on the converged run first.
-* `photo_recompute_k="auto"` carries dJ/dy and needs the finished runner's
-  context on photo-on columns.
+* On a photo-on column pass `photo_recompute_k=make_photo_recompute_k(...)`
+  so the operator carries dJ/dy; `"auto"` and None are photo-off only.
 * `body_dt` is an adjoint-only probe step: scan `BODY_MAP_DT_CANDIDATES`.
 * The gradient is a twin-ensemble mean; `info["ensemble_spread"]` is the
   magnitude error bar. With a large residual or spread read it as a ranking.
@@ -26,7 +26,7 @@ Recipe: `examples/grad_reverse_example.py`.
 from __future__ import annotations
 
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from typing import Literal, NamedTuple, Optional
 
 import numpy as np
@@ -53,7 +53,7 @@ SOLVER_MAP = "renorm"
 # point of it.
 
 PHOTO_RECOMPUTE_AUTO = "auto"
-PhotoRecomputeArg = Callable[[jnp.ndarray], jnp.ndarray] | Literal["auto"]
+PhotoRecomputeArg = Callable[[jnp.ndarray], jnp.ndarray] | Literal["auto"] | None
 
 BODY_MAP_DT = 1e7
 # Probe step (s) for the adjoint body map. Adjoint-only: never touches the
@@ -201,31 +201,17 @@ def _warn_poor_convergence(
 
 
 def _check_body_dt(body_dt: float) -> None:
-    """Refuse a body_dt outside the usable window (see _BODY_MAP_DT_MAX).
+    """Refuse body_dt outside (0, _BODY_MAP_DT_MAX].
 
-    body_dt=0 makes the implicit step the identity (NaN); body_dt<0 integrates
-    backwards and returns a finite, plausible-looking, WRONG sensitivity that
-    nothing downstream flags.
+    0 makes the implicit step the identity (NaN); < 0 integrates backwards and
+    returns a finite but wrong sensitivity; above the max the step goes
+    near-singular. NaN and inf fail the range test too.
     """
-    if not np.isfinite(body_dt):
+    if not 0.0 < body_dt <= _BODY_MAP_DT_MAX:
         raise ValueError(
-            f"body_dt={body_dt} is not finite; the adjoint body map needs a "
-            f"positive dt (default {BODY_MAP_DT:.0e})."
-        )
-    if body_dt <= 0.0:
-        raise ValueError(
-            f"body_dt={body_dt:.3e} must be > 0. At 0 the implicit step is the "
-            f"identity and the adjoint solve divides by zero; negative values "
-            f"integrate backwards and return a finite but WRONG sensitivity "
-            f"with no other symptom. Use 0 < body_dt <= {_BODY_MAP_DT_MAX:.0e} "
-            f"(default {BODY_MAP_DT:.0e})."
-        )
-    if body_dt > _BODY_MAP_DT_MAX:
-        raise ValueError(
-            f"body_dt={body_dt:.1e} is in the near-singular danger zone "
-            f"(> {_BODY_MAP_DT_MAX:.0e}); the implicit step goes singular and "
-            f"the adjoint diverges. Use body_dt <= {_BODY_MAP_DT_MAX:.0e} "
-            f"(default {BODY_MAP_DT:.0e})."
+            f"body_dt={body_dt!r} is outside (0, {_BODY_MAP_DT_MAX:.0e}]: <= 0 or "
+            "non-finite has no valid probe step; above the max is the "
+            f"near-singular danger zone. Default {BODY_MAP_DT:.0e}."
         )
 
 
@@ -425,16 +411,10 @@ def _conserved_null_basis(
 
 
 def _lgmres_solve(
-    matvec: Callable[[np.ndarray], np.ndarray],
-    bvec: np.ndarray,
-    *,
-    inner_m: int,
-    outer_k: int,
-    maxiter: int,
-    cycles: int,
-    rtol: float,
+    matvec: Callable[[np.ndarray], np.ndarray], bvec: np.ndarray
 ) -> np.ndarray:
-    """Solve A x = b with scipy LGMRES, chunked over warm-start cycles.
+    """Solve A x = b with scipy LGMRES (the LGMRES_* constants), chunked over
+    warm-start cycles.
 
     Host-side scipy because JAX exposes no LGMRES (its restarted `gmres`
     oscillates on this indefinite operator); each matvec is one host<->device
@@ -452,16 +432,16 @@ def _lgmres_solve(
     x_best = x
     r_best = np.inf
     bnorm = max(float(np.linalg.norm(bvec)), _UNDERFLOW_DENOM)
-    for _ in range(cycles):
+    for _ in range(LGMRES_CYCLES):
         x, info = spla.lgmres(
             A_op,
             bvec,
             x0=x,
-            rtol=rtol,
+            rtol=LGMRES_RTOL,
             atol=0.0,
-            inner_m=inner_m,
-            outer_k=outer_k,
-            maxiter=maxiter,
+            inner_m=LGMRES_INNER_M,
+            outer_k=LGMRES_OUTER_K,
+            maxiter=LGMRES_MAXITER,
         )
         if info < 0:
             raise RuntimeError(
@@ -520,50 +500,28 @@ def _active_photolysis_rows(k_arr, net) -> bool:
 
 
 def _resolve_photo_recompute_k(
-    photo_recompute_k: PhotoRecomputeArg,
-    k_arr,
-    net,
-    *,
-    runner_photo_static=None,
-    converged_state=None,
-    integ=None,
+    photo_recompute_k: PhotoRecomputeArg, k_arr, net
 ) -> Callable[[jnp.ndarray], jnp.ndarray] | None:
     """Resolve the public photo-feedback argument for sensitivity calls.
 
-    "auto" builds the recompute callable from the finished runner when
-    possible and resolves to None (no photolysis feedback) when `k_arr` has
-    no active photolysis rows; if active rows are present but the runner
-    context is missing, refuse rather than return a frozen-photolysis
-    adjoint.
+    A callable is used as given. "auto" and None both mean no photolysis
+    feedback, which is exact only when `k_arr` has no active photolysis rows;
+    with active rows, refuse rather than return a frozen-photolysis adjoint.
     """
     if callable(photo_recompute_k):
         return photo_recompute_k
-    if photo_recompute_k is None:
+    if photo_recompute_k is not None and photo_recompute_k != PHOTO_RECOMPUTE_AUTO:
         raise ValueError(
-            "photo_recompute_k=None (the frozen-photolysis adjoint) is not "
-            "offered: it omits dJ/dy (11% on W39b OH+H2). Pass "
-            f"{PHOTO_RECOMPUTE_AUTO!r} (the default; no photolysis feedback on "
-            "a photo-off column) or make_photo_recompute_k(...)."
+            f"photo_recompute_k must be a callable, {PHOTO_RECOMPUTE_AUTO!r} or "
+            f"None; got {photo_recompute_k!r}."
         )
-    if photo_recompute_k != PHOTO_RECOMPUTE_AUTO:
-        raise ValueError(
-            "photo_recompute_k must be a callable or "
-            f"{PHOTO_RECOMPUTE_AUTO!r}; got {photo_recompute_k!r}."
-        )
-
-    if runner_photo_static is None and integ is not None:
-        runner_photo_static = getattr(integ, "_photo_static", None)
-    if runner_photo_static is not None and converged_state is not None:
-        return make_photo_recompute_k(runner_photo_static, converged_state)
-
     if not _active_photolysis_rows(k_arr, net):
         return None
     raise ValueError(
-        "photo_recompute_k='auto' is the default on active photochemistry "
-        "columns, but it needs the finished runner's photolysis state. Pass "
-        "`runner_photo_static=integ._photo_static` and "
-        "`converged_state=final_state` (or `integ=integ, "
-        "converged_state=final_state`) so the adjoint carries dJ/dy."
+        f"photo_recompute_k={photo_recompute_k!r} on a column with active "
+        "photolysis rows would freeze J and omit dJ/dy (11% on W39b OH+H2). "
+        "Pass photo_recompute_k=make_photo_recompute_k(integ._photo_static, "
+        "final_state)."
     )
 
 
@@ -623,25 +581,34 @@ def _guard_unmodeled_processes(y_star, k_arr, net, body_terms):
 def _adjoint_solve_core(
     loss_fn: Callable[[jnp.ndarray], jnp.ndarray],
     y_star: jnp.ndarray,
-    body_map_raw: Callable[[jnp.ndarray], jnp.ndarray],
+    k_arr: jnp.ndarray,
+    atm: AtmStatic,
+    net: NetworkArrays,
+    *,
     compo_array: jnp.ndarray,
     dz: jnp.ndarray,
-    *,
-    lgmres_inner_m: int,
-    lgmres_outer_k: int,
-    lgmres_maxiter: int,
-    lgmres_cycles: int,
-    rtol: float,
+    body_dt: float,
+    photo_recompute_k: PhotoRecomputeArg,
+    body_terms: BodyTerms | None,
     n_solves: int,
 ):
-    """Shared deflated-LGMRES adjoint solve on the chosen body map.
+    """Shared deflated-LGMRES adjoint solve on the body map.
 
-    Returns `(lams, resids, fp_err, null_quality, n_matvec, n_null)`: per-twin
-    unscaled cotangents `lambda = z ./ y*` (contract against any parameter map
-    as `dL/dp = lambda^T dG/dp`), per-twin relative residuals, and shared
-    diagnostics. Both sensitivity entry points share this solve; only the
-    final contraction differs.
+    Resolves the photo feedback, refuses unmodeled processes, builds the body
+    map (`_make_body_map`) and solves. Returns
+    `(lams, info, (apply_post_map, body_map_k, step_fn))`: per-twin unscaled
+    cotangents `lambda = z ./ y*` (contract against any parameter map as
+    `dL/dp = lambda^T dG/dp`), the shared diagnostics dict, and the map pieces
+    for the final contraction, which is the only part the two sensitivity
+    entry points do differently.
     """
+    photo_recompute_k = _resolve_photo_recompute_k(photo_recompute_k, k_arr, net)
+    _guard_unmodeled_processes(y_star, k_arr, net, body_terms)
+    n_solves = max(1, int(n_solves))
+    apply_post, body_map_raw, body_map_k, step_fn = _make_body_map(
+        y_star, k_arr, atm, net, body_dt, photo_recompute_k, body_terms
+    )
+
     nz, ni = y_star.shape
     inv_y = _safe_inv_y(y_star)
     body_map = jax.jit(body_map_raw)
@@ -701,21 +668,13 @@ def _adjoint_solve_core(
     twin_rng = np.random.default_rng(0)
     lams = []
     resids = []
-    for i in range(max(1, int(n_solves))):
+    for i in range(n_solves):
         b_i = (
             bvec
             if i == 0
             else bvec * (1.0 + _TWIN_PERTURB * twin_rng.standard_normal(bvec.shape[0]))
         )
-        x = _lgmres_solve(
-            matvec,
-            b_i,
-            inner_m=lgmres_inner_m,
-            outer_k=lgmres_outer_k,
-            maxiter=lgmres_maxiter,
-            cycles=lgmres_cycles,
-            rtol=rtol,
-        )
+        x = _lgmres_solve(matvec, b_i)
         z = proj(jnp.asarray(x.reshape(nz, ni)))
         resids.append(
             float(
@@ -725,7 +684,20 @@ def _adjoint_solve_core(
         )
         lams.append(z * inv_y)  # unscaled cotangent lambda
 
-    return lams, resids, fp_err, null_quality, int(n_matvec[0]), int(Q.shape[1])
+    info = {
+        "fp_err": fp_err,
+        "null_quality": null_quality,
+        "resid": max(resids),
+        "resid_median": float(np.median(resids)),
+        "resids": resids,
+        "n_matvec": int(n_matvec[0]),
+        "n_null": int(Q.shape[1]),
+        "n_solves": n_solves,
+        "body_dt": float(body_dt),
+        "solver_map": SOLVER_MAP,
+        "photo_feedback": photo_recompute_k is not None,
+    }
+    return lams, info, (apply_post, body_map_k, step_fn)
 
 
 def steady_state_reaction_sensitivity(
@@ -739,15 +711,7 @@ def steady_state_reaction_sensitivity(
     dz: jnp.ndarray,
     body_dt: float = BODY_MAP_DT,
     photo_recompute_k: PhotoRecomputeArg = PHOTO_RECOMPUTE_AUTO,
-    runner_photo_static=None,
-    converged_state=None,
-    integ=None,
     body_terms: BodyTerms | None = None,
-    lgmres_inner_m: int = LGMRES_INNER_M,
-    lgmres_outer_k: int = LGMRES_OUTER_K,
-    lgmres_maxiter: int = LGMRES_MAXITER,
-    lgmres_cycles: int = LGMRES_CYCLES,
-    rtol: float = LGMRES_RTOL,
     n_solves: int = N_SOLVES_DEFAULT,
     return_info: bool = False,
 ):
@@ -796,23 +760,17 @@ def steady_state_reaction_sensitivity(
     body_dt
         Adjoint-only probe step in s (see `BODY_MAP_DT`); scan on a new column.
     photo_recompute_k
-        `"auto"` (default) builds a `k(y) -> k_arr` recompute from the runner
-        context on photo-on columns so the state operator carries `dJ/dy`
-        (WASP-39b OH+H2 11% -> 0.2%) and needs no context on photo-off
-        columns; a callable overrides the builder. `None` raises (no
-        frozen-photolysis adjoint). Costs an RT solve per Krylov matvec.
-    runner_photo_static, converged_state, integ
-        Context for `"auto"`: pass `runner_photo_static=integ._photo_static,
-        converged_state=final_state` or `integ=integ,
-        converged_state=final_state` (`converged_state` is the runner's
-        `JaxIntegState`; the recompute reuses the runner's photo branch).
+        On photo-on columns pass `make_photo_recompute_k(integ._photo_static,
+        final_state)`, a `k(y) -> k_arr` recompute so the state operator
+        carries `dJ/dy` (WASP-39b OH+H2 11% -> 0.2%); it costs an RT solve per
+        Krylov matvec. `"auto"` (default) and `None` mean no photolysis
+        feedback and raise on a column with active photolysis rows (no
+        frozen-photolysis adjoint).
     body_terms
         Optional `BodyTerms` (condensation composite, fix_species pins,
         layer-0 boundary pins). Required when the state converged with
         condensation active; build with `make_body_terms(integ,
         converged_state, atm_static)`, which also returns the spliced `atm`.
-    lgmres_inner_m, lgmres_outer_k, lgmres_maxiter, lgmres_cycles, rtol
-        LGMRES knobs (see the module constants).
     n_solves
         Twin-ensemble size (`_TWIN_PERTURB`, seeded); `n_solves=1` is one
         solve with no spread estimate. Each extra solve costs one LGMRES
@@ -835,16 +793,6 @@ def steady_state_reaction_sensitivity(
         `n_matvec`, `n_null`, `n_solves`, `body_dt`, and the mode flags.
     """
     _check_body_dt(body_dt)
-    photo_recompute_k = _resolve_photo_recompute_k(
-        photo_recompute_k,
-        k_arr,
-        net,
-        runner_photo_static=runner_photo_static,
-        converged_state=converged_state,
-        integ=integ,
-    )
-    _guard_unmodeled_processes(y_star, k_arr, net, body_terms)
-    n_solves = max(1, int(n_solves))
 
     # The body map holds the condensate reservoir and saturation tables
     # fixed. Rates do not move the saturation curve directly, so a
@@ -866,33 +814,26 @@ def steady_state_reaction_sensitivity(
             stacklevel=2,
         )
 
-
-    _, _body_map_raw, _body_map_k_raw, _ = _make_body_map(
-        y_star, k_arr, atm, net, body_dt, photo_recompute_k, body_terms
-    )
-
-    lams, resids, fp_err, null_quality, n_matvec, n_null = _adjoint_solve_core(
+    lams, info, (_, body_map_k, _) = _adjoint_solve_core(
         loss_fn,
         y_star,
-        _body_map_raw,
-        compo_array,
-        dz,
-        lgmres_inner_m=lgmres_inner_m,
-        lgmres_outer_k=lgmres_outer_k,
-        lgmres_maxiter=lgmres_maxiter,
-        lgmres_cycles=lgmres_cycles,
-        rtol=rtol,
+        k_arr,
+        atm,
+        net,
+        compo_array=compo_array,
+        dz=dz,
+        body_dt=body_dt,
+        photo_recompute_k=photo_recompute_k,
+        body_terms=body_terms,
         n_solves=n_solves,
     )
 
     # Reaction cotangent per twin: dL/d(ln k_r) = (k .* G_k^T lambda)_r.
-    _, vjp_Gk = jax.vjp(_body_map_k_raw, k_arr)
+    _, vjp_Gk = jax.vjp(body_map_k, k_arr)
     grads = [np.asarray((k_arr * vjp_Gk(lam)[0]).sum(axis=1)) for lam in lams]
 
     g_stack = np.stack(grads, axis=0)  # (n_solves, nr+1)
     dL_dlnk = jnp.asarray(g_stack.mean(axis=0))
-    resid = max(resids)
-    resid_median = float(np.median(resids))
 
     # Twin-to-twin disagreement on the reactions one would actually report.
     ensemble_spread = _topk_ensemble_spread(g_stack)
@@ -916,36 +857,24 @@ def steady_state_reaction_sensitivity(
         pair_antisym = max(pair_antisym, abs(g_mean_full[f] + g_mean_full[rev]) / denom)
 
     # Warn on the median twin residual; info["resid"] reports the max.
-    _warn_poor_convergence(resid_median, fp_err, ensemble_spread, null_quality)
+    _warn_poor_convergence(
+        info["resid_median"], info["fp_err"], ensemble_spread, info["null_quality"]
+    )
 
     if not bool(jnp.all(jnp.isfinite(dL_dlnk))):
         raise ValueError(
             "Reaction sensitivity is non-finite. Common causes: a body_dt in "
             "the danger zone, or a y_star that is not a fixed point of the body "
-            f"map (fp_err={fp_err:.2e})."
+            f"map (fp_err={info['fp_err']:.2e})."
         )
 
     if not return_info:
         return dL_dlnk
-    info = {
-        "fp_err": fp_err,
-        "null_quality": null_quality,
-        "resid": resid,
-        "resid_median": resid_median,
-        "resids": resids,
-        "ensemble_spread": ensemble_spread,
-        "pair_antisym": pair_antisym,
-        "n_matvec": n_matvec,
-        "n_null": n_null,
-        "n_solves": n_solves,
-        "body_dt": float(body_dt),
-        "solver_map": SOLVER_MAP,
-        "photo_feedback": photo_recompute_k is not None,
-        "body_terms": body_terms is not None,
-        "condensation_active": bool(_conden_pinned or _conden_in_window),
-        "conditional_on_fixed_reservoir": bool(_conden_pinned),
-        "includes_condensation_history": not bool(_conden_pinned or _conden_in_window),
-    }
+    info.update(
+        ensemble_spread=ensemble_spread,
+        pair_antisym=pair_antisym,
+        conditional_on_fixed_reservoir=bool(_conden_pinned),
+    )
     return dL_dlnk, info
 
 
@@ -962,18 +891,9 @@ def steady_state_input_sensitivity(
     dz: jnp.ndarray,
     body_dt: float = BODY_MAP_DT,
     photo_recompute_k: PhotoRecomputeArg = PHOTO_RECOMPUTE_AUTO,
-    runner_photo_static=None,
-    converged_state=None,
-    integ=None,
     body_terms: BodyTerms | None = None,
-    lgmres_inner_m: int = LGMRES_INNER_M,
-    lgmres_outer_k: int = LGMRES_OUTER_K,
-    lgmres_maxiter: int = LGMRES_MAXITER,
-    lgmres_cycles: int = LGMRES_CYCLES,
-    rtol: float = LGMRES_RTOL,
     n_solves: int = N_SOLVES_DEFAULT,
     return_info: bool = False,
-    allow_frozen_condensation_input_grad: bool = False,
 ):
     """Reverse-mode `dL/dp` at a converged steady state, for an arbitrary
     physical input pytree `p` (a (nz,) temperature profile, ln Kzz, ...).
@@ -1022,11 +942,9 @@ def steady_state_input_sensitivity(
     * Chemistry path only: `(dL/dy*) . (dy*/dp)`. A loss with a direct `p`
       dependence (e.g. T in the RT opacities of a spectrum chi-square) needs
       that term added separately (`jax.grad` w.r.t. p at fixed `y_star`).
-    * Condensation is refused by default: the saturation tables are frozen in
-      dG/dp and, post-pin, the captured reservoir is held fixed, so the result
-      is O(1)-unreliable vs FD. Opt in with
-      `allow_frozen_condensation_input_grad=True` only for the known
-      leading-order number.
+    * Condensation-active states are refused: the saturation tables are frozen
+      in dG/dp and, post-pin, the captured reservoir is held fixed, so the
+      result would be O(1)-unreliable vs FD.
     * Also frozen by design (p-derivative omitted): the photolysis
       T-cross-section interpolation and the atm-refresh geometry cascade
       (dz/Hp/g, second-order; rebuild what you need on-graph in `atm_p`).
@@ -1035,48 +953,25 @@ def steady_state_input_sensitivity(
       type against a forward-mode `jvp` in one or two directions before
       production use.
     """
-    # Condensation refused by default.
     _conden_in_window = body_terms is not None and body_terms.conden_static is not None
     _conden_pinned = body_terms is not None and body_terms.fix_mask is not None
     if _conden_in_window or _conden_pinned:
         _regime = "post-pin fix_species" if _conden_pinned else "in-window"
-        if not allow_frozen_condensation_input_grad:
-            raise ValueError(
-                "steady_state_input_sensitivity: condensation is active at this "
-                f"converged state ({_regime} regime); an input (T/Kzz/...) "
-                "gradient through condensation is NOT reliably differentiable. "
-                "The saturation tables are frozen in dG/dp (d(sat)/dT dropped) "
-                "and, once fix_species has pinned, the captured condensate "
-                "reservoir is held fixed, so the parameter's effect on what "
-                "condensed is entirely absent. The pinned-species tangent "
-                "disagrees with re-converged finite differences at O(1) (0.91 "
-                "relative; tests/test_condensation_guards.py) -- the same reason "
-                "Fisher / retrieval-inference through condensation is refused "
-                "project-wide (README.md, Limits). Use "
-                "forward-mode jvp on a single switch-free direction and validate "
-                "it against FD, or disable condensation. Set "
-                "allow_frozen_condensation_input_grad=True ONLY to obtain the "
-                "known leading-order-only number knowingly."
-            )
-        warnings.warn(
-            "steady_state_input_sensitivity: condensation is active "
-            f"({_regime}); allow_frozen_condensation_input_grad=True, so "
-            "returning the LEADING-ORDER-ONLY gradient (frozen saturation "
-            "tables and, post-pin, a frozen reservoir; O(1)-unreliable vs FD). "
-            "Forward-mode on a switch-free direction is the trusted route.",
-            stacklevel=2,
+        raise ValueError(
+            "steady_state_input_sensitivity: condensation is active at this "
+            f"converged state ({_regime} regime); an input (T/Kzz/...) "
+            "gradient through condensation is NOT reliably differentiable. "
+            "The saturation tables are frozen in dG/dp (d(sat)/dT dropped) "
+            "and, once fix_species has pinned, the captured condensate "
+            "reservoir is held fixed, so the parameter's effect on what "
+            "condensed is entirely absent. The pinned-species tangent "
+            "disagrees with re-converged finite differences at O(1) (0.91 "
+            "relative) -- the same reason Fisher / retrieval-inference "
+            "through condensation is refused project-wide (README.md, "
+            "Limits). Use forward-mode jvp on a single switch-free direction "
+            "and validate it against FD, or disable condensation."
         )
     _check_body_dt(body_dt)
-    photo_recompute_k = _resolve_photo_recompute_k(
-        photo_recompute_k,
-        k_arr,
-        net,
-        runner_photo_static=runner_photo_static,
-        converged_state=converged_state,
-        integ=integ,
-    )
-    _guard_unmodeled_processes(y_star, k_arr, net, body_terms)
-    n_solves = max(1, int(n_solves))
 
     # rebuild(p0) must reproduce the map the state converged under.
     k0, atm0 = rebuild(p0)
@@ -1114,39 +1009,24 @@ def steady_state_input_sensitivity(
             stacklevel=2,
         )
 
-    # conden_static feeds G_p's conden-row recompute; the refusal/warning at
-    # the top already covered both conden regimes.
-    conden_static = body_terms.conden_static if body_terms is not None else None
-
-    apply_post, body_map_raw, _, step_fn = _make_body_map(
-        y_star, k_arr, atm, net, body_dt, photo_recompute_k, body_terms
-    )
-
-    lams, resids, fp_err, null_quality, n_matvec, n_null = _adjoint_solve_core(
+    lams, info, (apply_post, _, step_fn) = _adjoint_solve_core(
         loss_fn,
         y_star,
-        body_map_raw,
-        compo_array,
-        dz,
-        lgmres_inner_m=lgmres_inner_m,
-        lgmres_outer_k=lgmres_outer_k,
-        lgmres_maxiter=lgmres_maxiter,
-        lgmres_cycles=lgmres_cycles,
-        rtol=rtol,
+        k_arr,
+        atm,
+        net,
+        compo_array=compo_array,
+        dz=dz,
+        body_dt=body_dt,
+        photo_recompute_k=photo_recompute_k,
+        body_terms=body_terms,
         n_solves=n_solves,
     )
 
-    # Parameter map at the fixed point: conden rows recomputed at y_star
-    # (y-part only; sat tables frozen), photolysis rows ride k(p) frozen.
+    # Parameter map at the fixed point; photolysis rows ride k(p) frozen.
     def G_p(p):
         k_p, atm_p = rebuild(p)
-        k_use = (
-            update_conden_rates(k_p, y_star, conden_static)
-            if conden_static is not None
-            else k_p
-        )
-        sol = step_fn(y_star, k_use, atm_p)
-        return apply_post(sol, M_col=atm_p.M[:, None])
+        return apply_post(step_fn(y_star, k_p, atm_p), M_col=atm_p.M[:, None])
 
     _, pullback = jax.vjp(G_p, p0)
     twin_grads = [pullback(lam)[0] for lam in lams]
@@ -1161,10 +1041,10 @@ def steady_state_input_sensitivity(
         for g in twin_grads
     ]
     ensemble_spread = _topk_ensemble_spread(np.stack(flat, axis=0))
-    resid = max(resids)
-    resid_median = float(np.median(resids))
 
-    _warn_poor_convergence(resid_median, fp_err, ensemble_spread, null_quality)
+    _warn_poor_convergence(
+        info["resid_median"], info["fp_err"], ensemble_spread, info["null_quality"]
+    )
 
     finite = all(
         bool(jnp.all(jnp.isfinite(leaf))) for leaf in jax.tree_util.tree_leaves(dL_dp)
@@ -1173,27 +1053,12 @@ def steady_state_input_sensitivity(
         raise ValueError(
             "Input sensitivity is non-finite. Common causes: a body_dt in "
             "the danger zone, a y_star that is not a fixed point of the body "
-            f"map (fp_err={fp_err:.2e}), or a non-differentiable rebuild."
+            f"map (fp_err={info['fp_err']:.2e}), or a non-differentiable rebuild."
         )
 
     if not return_info:
         return dL_dp
-    info = {
-        "fp_err": fp_err,
-        "null_quality": null_quality,
-        "resid": resid,
-        "resid_median": resid_median,
-        "resids": resids,
-        "ensemble_spread": ensemble_spread,
-        "n_matvec": n_matvec,
-        "n_null": n_null,
-        "n_solves": n_solves,
-        "body_dt": float(body_dt),
-        "solver_map": SOLVER_MAP,
-        "photo_feedback": photo_recompute_k is not None,
-        "body_terms": body_terms is not None,
-        "rebuild_consistency": consistency,
-    }
+    info.update(ensemble_spread=ensemble_spread, rebuild_consistency=consistency)
     return dL_dp, info
 
 
@@ -1624,9 +1489,6 @@ def audit_adjoint_scope(
     photo_recompute_k: Callable[[jnp.ndarray], jnp.ndarray] | None = None,
     body_terms: BodyTerms | None = None,
     body_dt: float = BODY_MAP_DT,
-    species: Sequence[str] | None = None,
-    min_ymix: float = _AUDIT_MIN_YMIX,
-    top_k: int = _TOP_K,
     print_report: bool = True,
 ):
     """Scan a run for physics the adjoint's body map drops, before trusting it.
@@ -1639,7 +1501,7 @@ def audit_adjoint_scope(
     1. Static config/state checks (`_adjoint_scope_findings`), classified
        error / warning / info.
     2. Per-cell fixed-point defect `|G(y*) - y*| / y*` on cells with
-       `ymix >= min_ymix`, built from the same `_make_body_map` the solver
+       `ymix >= _AUDIT_MIN_YMIX`, built from the same `_make_body_map` the solver
        uses -- any unmodeled active process shows up as a localized defect.
        This catches what the global max-norm `fp_err` cannot: a pinned bottom
        row is invisible next to the deep-column H2 density.
@@ -1657,9 +1519,7 @@ def audit_adjoint_scope(
     on a photo-on column, None on a photo-off one (None with `use_photo` is
     an error finding). `cfg` defaults to the process default config (pass the run's cfg for
     `make_config`-driven runs); `final_state` is the converged `JaxIntegState`
-    (sharpens the conden/pin checks, enables the stale-geometry check);
-    `species` labels the worst-cell table (defaults to the import-locked
-    network when the width matches).
+    (sharpens the conden/pin checks, enables the stale-geometry check).
 
     Returns a dict: `findings` ({code, severity, message} list),
     `max_rel_defect`, `worst_cells`, `fp_err_global`, `loss_footprint_defect`
@@ -1713,35 +1573,25 @@ def audit_adjoint_scope(
     )
     ymix = y_np / np.maximum(y_np.sum(axis=1, keepdims=True), _UNDERFLOW_DENOM)
 
-    # Exclude cells the zero-clip owns: they have no fixed point, and min_ymix
-    # (a mixing ratio) cannot catch the absolute cm^-3 clip window.
-    _pos_cut = float(cfg.pos_cut)
-    _nega_cut = float(cfg.nega_cut)
+    # Exclude cells the zero-clip owns: they have no fixed point, and
+    # _AUDIT_MIN_YMIX (a mixing ratio) cannot catch the absolute cm^-3 clip window.
     clip_dead = _clip_dead_mask(G_np, ymix, cfg)
-
-    mask = (y_np > 0.0) & (ymix >= min_ymix) & ~clip_dead
-    rel = np.where(mask, defect / np.maximum(y_np, _UNDERFLOW_DENOM), 0.0)
+    scanned = (y_np > 0.0) & (ymix >= _AUDIT_MIN_YMIX)
+    rel_full = np.where(scanned, defect / np.maximum(y_np, _UNDERFLOW_DENOM), 0.0)
+    rel = np.where(clip_dead, 0.0, rel_full)
     max_rel_defect = float(rel.max())
 
     # Skipped cells are not passed cells: report the exclusion instead of
     # silently shrinking the scan.
-    n_clip_dead = int((clip_dead & (y_np > 0.0) & (ymix >= min_ymix)).sum())
-    clip_dead_worst = 0.0
-    if n_clip_dead:
-        _rel_dead = np.where(
-            clip_dead & (y_np > 0.0) & (ymix >= min_ymix),
-            defect / np.maximum(y_np, _UNDERFLOW_DENOM),
-            0.0,
-        )
-        clip_dead_worst = float(_rel_dead.max())
+    dead_scanned = clip_dead & scanned
+    n_clip_dead = int(dead_scanned.sum())
+    clip_dead_worst = float(rel_full[dead_scanned].max()) if n_clip_dead else 0.0
 
-    if species is None:  # label with the import-locked network when the width matches
-        from . import chem_funs
+    from . import chem_funs  # label with the import-locked network when the width matches
 
-        if len(chem_funs.spec_list) == y_np.shape[1]:
-            species = list(chem_funs.spec_list)
+    species = chem_funs.spec_list if len(chem_funs.spec_list) == y_np.shape[1] else None
 
-    order = np.argsort(rel.ravel())[::-1][: max(0, int(top_k))]
+    order = np.argsort(rel.ravel())[::-1][:_TOP_K]
     worst_cells = []
     for flat_idx in order:
         z, i = np.unravel_index(int(flat_idx), rel.shape)
@@ -1798,8 +1648,8 @@ def audit_adjoint_scope(
                 "code": "clip_dead_cells_excluded",
                 "severity": "info",
                 "message": f"{n_clip_dead} cell(s) excluded from the per-cell "
-                f"defect scan: the runner's zero-clip ([{_nega_cut:g}, "
-                f"{_pos_cut:g}) cm^-3) fires there, so they have no fixed "
+                f"defect scan: the runner's zero-clip ([{float(cfg.nega_cut):g}, "
+                f"{float(cfg.pos_cut):g}) cm^-3) fires there, so they have no fixed "
                 f"point and their relative defect (up to "
                 f"{clip_dead_worst:.2e}) measures the clip rather than a "
                 "dropped process. They are solver noise -- densities far "
@@ -1836,15 +1686,7 @@ def audit_adjoint_scope(
         foot = np.isfinite(w) & (
             w > _AUDIT_LOSS_FOOTPRINT_FRAC * max(w_max, _UNDERFLOW_DENOM)
         )
-        # Clip-dead cells read a clean 0.0 in `rel`; the loss footprint is
-        # where that leniency is not allowed (the map linearizes those
-        # rows as identity while the runner zeroes them), so score the
-        # footprint on the UNMASKED defect.
-        rel_full = np.where(
-            (y_np > 0.0) & (ymix >= min_ymix),
-            defect / np.maximum(y_np, _UNDERFLOW_DENOM),
-            0.0,
-        )
+        # Score the footprint on the defect before the clip-dead exclusion.
         loss_footprint_defect = float(rel_full[foot].max()) if foot.any() else 0.0
         if foot.any() and (clip_dead & foot).any():
             findings.append(
