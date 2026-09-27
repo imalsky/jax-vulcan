@@ -256,8 +256,9 @@ intentional_divergences:
 
   controller_defaults:
     reason: >-
-      Solver tuning and vm_branch controller defaults differ from upstream; the
-      audit ignores them via INTENTIONAL_JAX_DELTAS / JAX_ONLY_DEFAULTS.
+      Solver tuning and vm_branch controller defaults differ from upstream. The
+      audit compares only keys both configs set; the shared keys that differ
+      on purpose are listed in INTENTIONAL_JAX_DELTAS.
     recorded_in: tools/audit_master_parity.py
 
 # ---------------------------------------------------------------------------

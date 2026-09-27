@@ -319,7 +319,7 @@ def test_audit_master_parity_against_pinned_oracle() -> None:
     from tools.audit_master_parity import audit
 
     master = require_oracle("vulcan2_ncho")
-    errors = audit(master, PACKAGE_ROOT, "vulcan2_ncho")
+    errors = audit(master, PACKAGE_ROOT)
     assert errors == []
 
 

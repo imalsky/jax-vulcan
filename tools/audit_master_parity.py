@@ -26,44 +26,10 @@ from typing import Any
 _GRAVITY_RTOL = 1e-9
 
 
-# Knobs master's HD189 example does not set (values in default.yaml or
-# config._DERIVED); the adapt-rtol schedule is vm_branch's (op.py:836-851),
-# with the controller off in every parity config.
-JAX_ONLY_KEYS: frozenset[str] = frozenset({
-    "fastchem_solar_abundance_file",
-    "use_ini_cold_trap",
-    "use_sat_surfaceH2O",
-    "rtol_min",
-    "rtol_max",
-    "adapt_rtol_dec_period",
-    "adapt_rtol_inc_period",
-    "adapt_rtol_dec",
-    "adapt_rtol_inc",
-    "adapt_rtol_loss_mul",
-    "adapt_rtol_inc_loss_thresh",
-    "batch_max_retries",
-    "step_size_safety",
-    "step_size_zero_delta_frac",
-    "photo_switch_longdy_thresh",
-    "photo_switch_longdydt_thresh",
-    "hycean_pin_time",
-    "loss_ex",
-    "fastchem_newton_tol",
-    "fastchem_newton_max_iter",
-    "use_fix_all_bot",
-    "use_fix_H2He",
-})
-
 # Shared keys where VULCAN-JAX intentionally differs from master:
-#   use_vm_mol    -- on in the VULCAN 3 preset, off in the VULCAN 2 parity configs.
-#   conver_ignore -- parity configs ship the pinned HD189 example's []; the V3
-#                    preset ships vm_branch's ['HC3N'] (same step count and
-#                    longdy on HD189/HD209).
 #   top/bot_BC_flux_file -- master's atm/BC_top.txt / BC_bot.txt ship in
 #                    neither tree; the flags are off, so JAX carries null.
 INTENTIONAL_JAX_DELTAS = {
-    "use_vm_mol",
-    "conver_ignore",
     "top_BC_flux_file",
     "bot_BC_flux_file",
     "dt_max",  # capped at config.DT_MAX_S = 1e15 s; master derives 1e17
@@ -89,6 +55,7 @@ KNOWN_THERMO_DIVERGENCES: dict[str, tuple[str, ...]] = {
 KNOWN_THERMO_RENUMBERED: frozenset[str] = frozenset(
     {"SNCHO_photo_network_2025.txt"}
 )
+_LEADING_INDEX = re.compile(r"^\s*\d+\s+")
 
 # eps Eri flux: master's sflux-epseri.txt is low by R_star^4 because the formula
 # at atm/make_spectra_in_nm.py:25 multiplies by R_star where it should divide; JAX
@@ -167,10 +134,10 @@ def _compare_cfgs(master_cfg: Path) -> list[str]:
         for key, value in vars(jax_cfg).items()
         if not key.startswith("_") and _is_data_value(value)
     }
-    ignored = UI_OUTPUT_KEYS | JAX_ONLY_KEYS | INTENTIONAL_JAX_DELTAS
+    ignored = UI_OUTPUT_KEYS | INTENTIONAL_JAX_DELTAS
 
-    # Shared keys (physics + numerics) must match, except UI, JAX-only knobs, and
-    # the documented intentional deltas.
+    # Shared keys (physics + numerics) must match, except UI and the documented
+    # intentional deltas.
     for key in sorted(set(master) & set(jax)):
         if key in ignored:
             continue
@@ -193,18 +160,29 @@ def _compare_cfgs(master_cfg: Path) -> list[str]:
                     f"jax G*Mp/Rp^2={jax_gs!r}"
                 )
 
-    # Master keys absent in JAX are drift, except gs (derived from Mp/Rp),
-    # the JAX-only abundance file and config._REMOVED_KEYS.
+    # Master keys absent in JAX are drift, except config._REMOVED_KEYS (gs
+    # among them: JAX derives it from Mp/Rp).
     from vulcan_jax.config import _REMOVED_KEYS
 
     missing_in_jax = sorted(
-        key
-        for key in set(master) - set(jax) - UI_OUTPUT_KEYS - set(_REMOVED_KEYS)
-        if key not in {"fastchem_solar_abundance_file", "gs"}
+        set(master) - set(jax) - UI_OUTPUT_KEYS - set(_REMOVED_KEYS)
     )
     if missing_in_jax:
         errors.append(f"JAX cfg missing master keys: {missing_in_jax}")
     return errors
+
+
+def _paired_lines(
+    master_path: Path, jax_path: Path
+) -> tuple[list[str], list[tuple[int, tuple[str, str]]]]:
+    """Return the line-count error, or no error and the numbered line pairs."""
+    master_lines = master_path.read_text().splitlines()
+    jax_lines = jax_path.read_text().splitlines()
+    if len(master_lines) != len(jax_lines):
+        return [
+            f"line-count drift ({len(master_lines)} master vs {len(jax_lines)} jax)"
+        ], []
+    return [], list(enumerate(zip(master_lines, jax_lines), start=1))
 
 
 def _known_divergence_only(
@@ -216,14 +194,8 @@ def _known_divergence_only(
     of reaction lines (e.g. a typo fix master applied unevenly). Every *other*
     differing line is real drift and is reported.
     """
-    master_lines = master_path.read_text().splitlines()
-    jax_lines = jax_path.read_text().splitlines()
-    if len(master_lines) != len(jax_lines):
-        return [
-            f"line-count drift ({len(master_lines)} master vs {len(jax_lines)} jax)"
-        ]
-    errors: list[str] = []
-    for lineno, (m_line, j_line) in enumerate(zip(master_lines, jax_lines), start=1):
+    errors, pairs = _paired_lines(master_path, jax_path)
+    for lineno, (m_line, j_line) in pairs:
         if m_line == j_line:
             continue
         if any(rx in m_line or rx in j_line for rx in reactions):
@@ -236,18 +208,12 @@ def _known_divergence_only(
 
 def _index_renumber_only(master_path: Path, jax_path: Path) -> list[str]:
     """Return errors for any drift beyond the leading reaction index."""
-    master_lines = master_path.read_text().splitlines()
-    jax_lines = jax_path.read_text().splitlines()
-    if len(master_lines) != len(jax_lines):
-        return [
-            f"line-count drift ({len(master_lines)} master vs {len(jax_lines)} jax)"
-        ]
-    errors: list[str] = []
-    for lineno, (m_line, j_line) in enumerate(zip(master_lines, jax_lines), start=1):
+    errors, pairs = _paired_lines(master_path, jax_path)
+    for lineno, (m_line, j_line) in pairs:
         if m_line == j_line:
             continue
-        strip = re.compile(r"^\s*\d+\s+")
-        if strip.sub("", m_line) == strip.sub("", j_line) and strip.match(m_line):
+        if (_LEADING_INDEX.sub("", m_line) == _LEADING_INDEX.sub("", j_line)
+                and _LEADING_INDEX.match(m_line)):
             continue  # leading reaction index only
         errors.append(
             f"unexpected drift at line {lineno}: master={m_line!r}, jax={j_line!r}"
@@ -264,14 +230,8 @@ def _known_sflux_rescale_only(
     match ``factor`` within the 3-significant-figure rounding of the file format
     (``_SFLUX_RATIO_RTOL``). Anything else is real drift and is reported.
     """
-    master_lines = master_path.read_text().splitlines()
-    jax_lines = jax_path.read_text().splitlines()
-    if len(master_lines) != len(jax_lines):
-        return [
-            f"line-count drift ({len(master_lines)} master vs {len(jax_lines)} jax)"
-        ]
-    errors: list[str] = []
-    for lineno, (m_line, j_line) in enumerate(zip(master_lines, jax_lines), start=1):
+    errors, pairs = _paired_lines(master_path, jax_path)
+    for lineno, (m_line, j_line) in pairs:
         if m_line.startswith("#") or j_line.startswith("#"):
             if m_line != j_line:
                 errors.append(f"header drift at line {lineno}")
@@ -290,15 +250,10 @@ def _known_sflux_rescale_only(
 
 
 def _load_supported_inputs() -> dict:
-    """The curated file list from tests/science_sources.yaml.
-
-    Returns {} when the manifest is absent so the tool still runs standalone.
-    """
+    """The curated file list from tests/science_sources.yaml (required)."""
     import yaml
 
     p = Path(__file__).resolve().parent.parent / "tests" / "science_sources.yaml"
-    if not p.is_file():
-        return {}
     return yaml.safe_load(p.read_text()).get("supported_inputs", {}) or {}
 
 
@@ -321,12 +276,8 @@ def _check_supported_inputs(jax_root: Path) -> list[str]:
     return errors
 
 
-def _compare_runtime_data(
-    master_root: Path,
-    jax_root: Path,
-    oracle_family: str = "vulcan2_ncho",
-) -> list[str]:
-    """Compare the vendored files in `supported_inputs` for this oracle family.
+def _compare_runtime_data(master_root: Path, jax_root: Path) -> list[str]:
+    """Compare the vendored files in `supported_inputs` pinned to vulcan2_ncho.
 
     KNOWN_THERMO_DIVERGENCES files may differ on their listed reactions,
     KNOWN_THERMO_RENUMBERED files on the leading index, KNOWN_SFLUX_RESCALES
@@ -334,45 +285,25 @@ def _compare_runtime_data(
     lacks is an error; a file only the oracle has is not.
     """
     errors: list[str] = []
-    supported = {
-        rel: spec
-        for rel, spec in _load_supported_inputs().items()
-        if spec.get("oracle") == oracle_family
-    }
-    if supported:
-        by_dir: dict[str, set[Path]] = {}
-        for rel in supported:
-            parts = Path(rel).parts
-            if parts[0] in ("atm", "thermo"):
-                by_dir.setdefault(parts[0], set()).add(Path(*parts[1:]))
-    else:
-        by_dir = {}
+    by_dir: dict[str, set[Path]] = {}
+    for rel, spec in _load_supported_inputs().items():
+        parts = Path(rel).parts
+        if spec.get("oracle") == "vulcan2_ncho" and parts[0] in ("atm", "thermo"):
+            by_dir.setdefault(parts[0], set()).add(Path(*parts[1:]))
 
     for rel_dir in ("atm", "thermo"):
         master_files = _runtime_files(master_root / rel_dir)
         jax_files = _runtime_files(jax_root / rel_dir)
-        master_keys = set(master_files)
-        jax_keys = set(jax_files)
-        if by_dir:
-            scope = by_dir.get(rel_dir, set())
-            master_keys &= scope
-            jax_keys &= scope
-            missing_from_oracle = scope - set(master_files)
-            if missing_from_oracle:
-                errors.append(
-                    f"{rel_dir}: the oracle does not carry supported input(s) "
-                    f"{sorted(str(p) for p in missing_from_oracle)} -- this "
-                    "port claims to carry them faithfully, so parity cannot be "
-                    "confirmed against this revision")
-        else:
-            # No manifest: whole-tree symmetric check.
-            only_master = master_keys - jax_keys
-            only_jax = jax_keys - master_keys
-            if only_master or only_jax:
-                errors.append(
-                    f"{rel_dir}: file set mismatch, only master={sorted(only_master)}, "
-                    f"only jax={sorted(only_jax)}"
-                )
+        scope = by_dir.get(rel_dir, set())
+        master_keys = set(master_files) & scope
+        jax_keys = set(jax_files) & scope
+        missing_from_oracle = scope - set(master_files)
+        if missing_from_oracle:
+            errors.append(
+                f"{rel_dir}: the oracle does not carry supported input(s) "
+                f"{sorted(str(p) for p in missing_from_oracle)} -- this "
+                "port claims to carry them faithfully, so parity cannot be "
+                "confirmed against this revision")
         for rel_path in sorted(master_keys & jax_keys):
             if master_files[rel_path] == jax_files[rel_path]:
                 continue
@@ -451,15 +382,11 @@ def _check_oracle_is_pristine(master_root: Path) -> list[str]:
     return errors
 
 
-def audit(
-    master_root: Path,
-    jax_root: Path,
-    oracle_family: str = "vulcan2_ncho",
-) -> list[str]:
-    """Return all HD189 parity errors for one pinned oracle family.
+def audit(master_root: Path, jax_root: Path) -> list[str]:
+    """Return all HD189 parity errors against the vulcan2_ncho oracle.
 
-    The manifest pins inputs to different upstream commits, so only this
-    family's inputs are compared.
+    The manifest pins inputs to different upstream commits, so only the
+    vulcan2_ncho inputs are compared.
     """
     # Vendored inputs must match the manifest; this needs no oracle.
     errors: list[str] = list(_check_supported_inputs(jax_root))
@@ -474,7 +401,7 @@ def audit(
         return errors + [f"missing master HD189 cfg: {master_cfg}"]
 
     errors.extend(_compare_cfgs(master_cfg))
-    errors.extend(_compare_runtime_data(master_root, jax_root, oracle_family))
+    errors.extend(_compare_runtime_data(master_root, jax_root))
     return errors
 
 
@@ -494,12 +421,6 @@ def main(argv: list[str] | None = None) -> int:
         "$VULCAN_MASTER_DIR (a clean pinned clone).",
     )
     parser.add_argument(
-        "--oracle-family",
-        default="vulcan2_ncho",
-        choices=("vulcan2_ncho",),
-        help="Pinned oracle family used for the HD189/runtime comparison.",
-    )
-    parser.add_argument(
         "--jax-root",
         type=Path,
         default=PACKAGE_ROOT,
@@ -517,11 +438,7 @@ def main(argv: list[str] | None = None) -> int:
             )
         master = Path(env_master)
 
-    errors = audit(
-        master.resolve(),
-        args.jax_root.resolve(),
-        args.oracle_family,
-    )
+    errors = audit(master.resolve(), args.jax_root.resolve())
     if errors:
         print("FAIL: HD189 parity audit found drift:")
         for error in errors:

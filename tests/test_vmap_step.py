@@ -3,74 +3,36 @@
 from __future__ import annotations
 
 import numpy as np
+from _helpers import relerr
 
 
-def main() -> int:
+def test_vmapped_step_matches_single_step(hd189_state):
     import jax
     import jax.numpy as jnp
 
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-
-    # HD189 pre-loop state; legacy_view gives var.y / var.k_arr / atm.*.
-    from vulcan_jax.state import RunState, legacy_view
-
-    rs = RunState.with_pre_loop_setup(vulcan_cfg)
-    data_var, data_atm, _ = legacy_view(rs)
-    data_var.dt = 1e-10
-
-    y0 = np.asarray(data_var.y, dtype=np.float64)
-    nz, ni = y0.shape
-
-    import vulcan_jax.network as net_mod
     import vulcan_jax.chem as chem_mod
     import vulcan_jax.jax_step as js_mod
+    import vulcan_jax.network as net_mod
+    from vulcan_jax.config import default_config
 
-    net = net_mod.parse_network(vulcan_cfg.network)
-    net_jax = chem_mod.to_jax(net)
-    atm_static = js_mod.make_atm_static(data_atm, ni, nz)
+    y0 = jnp.asarray(np.asarray(hd189_state.var.y, dtype=np.float64))
+    k_arr = jnp.asarray(np.asarray(hd189_state.var.k_arr, dtype=np.float64))
+    nz, ni = y0.shape
+    net_jax = chem_mod.to_jax(net_mod.parse_network(default_config().network))
+    atm_static = js_mod.make_atm_static(hd189_state.atm, ni, nz)
+    dt = 1e-10
 
-    k_arr = np.asarray(data_var.k_arr, dtype=np.float64)
+    single = js_mod.jax_ros2_step(y0, k_arr, dt, atm_static, net_jax)
 
-    sol_single, delta_single = js_mod.jax_ros2_step(
-        jnp.asarray(y0), jnp.asarray(k_arr), data_var.dt, atm_static, net_jax
+    # vmap over 4 replicas of y, k_arr; broadcast dt, atm_static, net_jax
+    batch = 4
+    vstep = jax.jit(jax.vmap(js_mod.jax_ros2_step, in_axes=(0, 0, None, None, None)))
+    batched = vstep(
+        jnp.stack([y0] * batch), jnp.stack([k_arr] * batch), dt, atm_static, net_jax
     )
 
-    # Vmap over batch of 4 (replicas of the same y for sanity)
-    BATCH = 4
-    y_batch = jnp.stack([jnp.asarray(y0)] * BATCH, axis=0)
-    k_batch = jnp.stack([jnp.asarray(k_arr)] * BATCH, axis=0)
-
-    # vmap over y, k_arr; broadcast atm_static, net_jax
-    vstep = jax.jit(
-        jax.vmap(
-            js_mod.jax_ros2_step,
-            in_axes=(0, 0, None, None, None),
-        )
-    )
-
-    sol_batch, delta_batch = vstep(y_batch, k_batch, data_var.dt, atm_static, net_jax)
-
-    # Verify all batch elements equal the single-step result: the solution
-    # and the truncation-error array the step controller reads.
-    relerr = 0.0
-    for batched, single in ((sol_batch, sol_single), (delta_batch, delta_single)):
-        single_np = np.asarray(single)
-        for b in range(BATCH):
-            e = np.max(
-                np.abs(np.asarray(batched)[b] - single_np)
-                / np.maximum(np.abs(single_np), 1e-30)
-            )
-            relerr = max(relerr, e)
-    print(f"\nVmap consistency (batch element vs single, sol and delta): "
-          f"max relerr = {relerr:.3e}")
-
-    ok = relerr < 1e-12
-    print("PASS" if ok else "FAIL")
-    return 0 if ok else 1
-
-
-def test_main():
-    """Pytest wrapper around main()."""
-    assert main() == 0
+    # The solution and the truncation-error array the step controller reads.
+    for name, got, ref in zip(("sol", "delta"), batched, single):
+        for b in range(batch):
+            err = relerr(np.asarray(got)[b], ref)
+            assert err < 1e-12, (name, b, err)

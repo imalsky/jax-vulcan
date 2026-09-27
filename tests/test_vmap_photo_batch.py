@@ -13,7 +13,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 from _helpers import fast_cfg
-from test_vmap_while_loop import _build_integ, _max_rel_diff
+from test_vmap_while_loop import _build_integ, _build_rs, _max_rel_diff
 
 COUNT_MAX = 30
 # Batched runs evaluate photolysis on the iteration tick (accepted states
@@ -44,11 +44,6 @@ def _pin_cfg(**extra):
         "T_cross_sp": ["H2O"],
         **extra,
     })
-def _build_rs(vulcan_cfg, *, Tiso):
-    from vulcan_jax.state import RunState
-
-    vulcan_cfg.Tiso = float(Tiso)
-    return RunState.with_pre_loop_setup(vulcan_cfg)
 
 
 def _peak_ratio(bat, sol):
@@ -62,11 +57,11 @@ def _scale_ratio(bat, sol, other):
     return float(np.max(np.abs(bat - sol))) / float(np.max(np.abs(sol - other)))
 
 
-def main() -> int:
+@pytest.mark.strict_isolation
+def test_photo_lane_matches_its_solo_run():
     import vulcan_jax.outer_loop as outer_loop
 
     vulcan_cfg = _pin_cfg()
-    ok = True
 
     rsA = _build_rs(vulcan_cfg, Tiso=900.0)
     integA = _build_integ()
@@ -80,24 +75,19 @@ def main() -> int:
     sB_own, atmB_own = integB.prepare_runstate(rsB)
 
     # --- vacuity: per-lane T-dep cross sections differ ------------------
+    n_absp_T = sA.pv.p_absp_T_cross.shape[0]
     tdiff = _max_rel_diff(sB.pv.p_absp_T_cross, sA.pv.p_absp_T_cross, floor=0.0)
     jdiff = _max_rel_diff(sB.pv.p_cross_J_T, sA.pv.p_cross_J_T, floor=0.0)
-    if sA.pv.p_absp_T_cross.shape[0] == 0 or tdiff == 0.0 or jdiff == 0.0:
-        print(
-            f"FAIL[vacuity] T-dep cross sections do not differ between lanes "
-            f"(n_absp_T={sA.pv.p_absp_T_cross.shape[0]}, tdiff={tdiff:.2e}, "
-            f"jdiff={jdiff:.2e})"
-        )
-        ok = False
+    assert n_absp_T != 0 and tdiff != 0.0 and jdiff != 0.0, (
+        "T-dep cross sections do not differ between lanes", n_absp_T, tdiff, jdiff)
 
     # --- solo runs --------------------------------------------------------
     soloA = integA._runner(sA, atmA)
     soloB = integB._runner(sB_own, atmB_own)
 
     # photo really fired: actinic flux nonzero, photo branch wrote k rows.
-    if not (np.any(np.asarray(soloA.aflux) > 0) and float(soloA.aflux_change) != 0.0):
-        print("FAIL[vacuity] photo branch never fired in soloA")
-        ok = False
+    assert np.any(np.asarray(soloA.aflux) > 0) and float(soloA.aflux_change) != 0.0, (
+        "photo branch never fired in soloA")
 
     # --- batch on A's runner ----------------------------------------------
     batched = integA.run_batch(
@@ -106,8 +96,7 @@ def main() -> int:
     )
     out = outer_loop.unstack_integ_states(batched, 2)
 
-    checks = ["ymix", "k_arr", "aflux", "tau"]
-    for name in checks:
+    for name in ("ymix", "k_arr", "aflux", "tau"):
         bat0, bat1 = getattr(out[0], name), getattr(out[1], name)
         refA, refB = getattr(soloA, name), getattr(soloB, name)
         if name == "ymix":
@@ -118,33 +107,15 @@ def main() -> int:
             relA = _peak_ratio(bat0, refA)
             relB = _peak_ratio(bat1, refB)
             tol = RTOL
-        if relA > tol or relB > tol:
-            print(
-                f"FAIL[solo-vs-batch] {name}: laneA rel={relA:.2e} laneB rel={relB:.2e}"
-            )
-            ok = False
+        assert relA <= tol and relB <= tol, ("solo-vs-batch", name, relA, relB)
 
     profiles_differ = _max_rel_diff(soloB.ymix, soloA.ymix)
-    if profiles_differ < 1e-6:
-        print(f"FAIL[vacuity] profiles identical ({profiles_differ:.2e})")
-        ok = False
+    assert profiles_differ >= 1e-6, ("profiles identical", profiles_differ)
 
     # --- same-star guard ----------------------------------------------------
     rsC = rsB._replace(photo=rsB.photo._replace(sflux_top=rsB.photo.sflux_top * 2.0))
-    try:
+    with pytest.raises(ValueError):
         integA.prepare_runstate(rsC)
-        print("FAIL[guard] mismatched-star profile was accepted")
-        ok = False
-    except ValueError:
-        pass
-
-    print("PASS" if ok else "FAIL")
-    return 0 if ok else 1
-
-
-@pytest.mark.strict_isolation
-def test_main():
-    assert main() == 0
 
 
 @pytest.mark.strict_isolation

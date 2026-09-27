@@ -98,12 +98,6 @@ t = p.read_text()
 t = re.sub(r"^network\s*=.*$", f"network = '{net}'", t, flags=re.M)
 for k in ("use_print_prog", "use_live_plot", "use_live_flux", "use_plot_end", "use_plot_evo"):
     t = re.sub(rf"^{k}\s*=.*$", f"{k} = False", t, flags=re.M)
-# wall_clock_max (a knob of the hand-patched sibling, not upstream) must not end the run.
-wall = "wall_clock_max = 1.e9"
-if re.search(r"^wall_clock_max\s*=", t, flags=re.M):
-    t = re.sub(r"^wall_clock_max\s*=.*$", wall, t, flags=re.M)
-else:
-    t += f"\n{wall}\n"
 p.write_text(t)
 PYEOF
   read -r m_real m_user m_sys < <(cd "$W" && timed "$W/run.log" "$PY" vulcan.py)
