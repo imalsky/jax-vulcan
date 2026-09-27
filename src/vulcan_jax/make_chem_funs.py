@@ -109,26 +109,14 @@ def emit_chem_rhs_source(net: Network) -> str:
     return "\n".join(lines)
 
 
-def chem_rhs_cache_key(net: Network) -> str:
-    """SHA-256 of the network and the generator, truncated to 16 hex chars.
+def network_signature(net: Network) -> bytes:
+    """SHA-256 of the reaction-topology arrays that fix the codegen RHS and
+    rate indexing: the stoichiometry tables, reaction-type masks, ni, nr.
 
-    Covers every input the emitted source depends on: the stoichiometry
-    tables, reaction-type masks, ni, nr -- and the emitter's own source, so a
-    codegen fix re-keys instead of being masked by a stale cache file. The
-    resolved path is hashed too, so the same network at another path gets its
-    own cache file; the arrays, not the path or mtime, pin the content.
+    The network path is not hashed, so a byte-identical copy elsewhere gives
+    the same signature; any reordered or edited reaction changes it.
     """
     h = hashlib.sha256()
-    try:
-        h.update(Path(net.network_path).resolve().as_posix().encode())
-    except (FileNotFoundError, OSError):
-        h.update(net.network_path.encode())
-    for fn in (emit_chem_rhs_source, _emit_rate_term):
-        try:
-            h.update(inspect.getsource(fn).encode())
-        except OSError:  # zipped/frozen install: bytecode still re-keys
-            h.update(fn.__code__.co_code)
-            h.update(repr(fn.__code__.co_consts).encode())
     for arr in (
         net.reactant_idx,
         net.product_idx,
@@ -140,16 +128,24 @@ def chem_rhs_cache_key(net: Network) -> str:
         h.update(arr.tobytes())
     h.update(int(net.ni).to_bytes(4, "little"))
     h.update(int(net.nr).to_bytes(4, "little"))
+    return h.digest()
+
+
+def chem_rhs_cache_key(net: Network) -> str:
+    """SHA-256 of the network signature and the generator, truncated to 16
+    hex chars.
+
+    The emitter's own source is hashed so a codegen fix re-keys instead of
+    being masked by a stale cache file.
+    """
+    h = hashlib.sha256(network_signature(net))
+    for fn in (emit_chem_rhs_source, _emit_rate_term):
+        try:
+            h.update(inspect.getsource(fn).encode())
+        except OSError:  # zipped/frozen install: bytecode still re-keys
+            h.update(fn.__code__.co_code)
+            h.update(repr(fn.__code__.co_consts).encode())
     return h.hexdigest()[:16]
-
-
-def cache_path_for(net: Network) -> Path:
-    """Return the inspection-cache path for `net` (does not create it)."""
-    return (
-        Path(__file__).resolve().parent
-        / "__pycache__"
-        / f"chem_rhs_codegen_{chem_rhs_cache_key(net)}.py"
-    )
 
 
 _BUILD_CACHE: dict[str, Callable] = {}
@@ -169,7 +165,7 @@ def build_chem_rhs(net: Network) -> Callable:
     cached = _BUILD_CACHE.get(key)
     if cached is not None:
         return cached
-    path = cache_path_for(net)
+    path = Path(__file__).resolve().parent / "__pycache__" / f"chem_rhs_codegen_{key}.py"
     if path.exists():
         src = path.read_text()
     else:

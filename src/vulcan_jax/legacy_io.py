@@ -97,8 +97,7 @@ class ReadRate(object):
 def _synthesize_cross_dicts(static) -> dict:
     """Build the legacy `var.cross*` dict views from a `PhotoStaticInputs`.
 
-    The .vul writer publishes up to five of these six dicts (never `cross_J_T`), the keys the
-    upstream
+    The .vul writer publishes up to these five dicts, the keys the upstream
     `plot_py/` scripts index (`d['variable']['cross'][sp]`,
     `d['variable']['cross_J'][(sp,i)]`, etc.); the dicts are rebuilt from
     the dense pytree at pickle time. Every value is wrapped in
@@ -117,10 +116,6 @@ def _synthesize_cross_dicts(static) -> dict:
         k: np.asarray(static.cross_J[i], dtype=np.float64)
         for i, k in enumerate(static.branch_keys)
     }
-    cross_J_T = {
-        k: np.asarray(static.cross_J_T[i], dtype=np.float64)
-        for i, k in enumerate(static.branch_T_keys)
-    }
     cross_scat = {
         sp: np.asarray(static.scat_cross[i], dtype=np.float64)
         for i, sp in enumerate(static.scat_sp)
@@ -133,7 +128,6 @@ def _synthesize_cross_dicts(static) -> dict:
         "cross": cross,
         "cross_T": cross_T,
         "cross_J": cross_J,
-        "cross_J_T": cross_J_T,
         "cross_scat": cross_scat,
         "cross_Jion": cross_Jion,
     }
@@ -257,16 +251,13 @@ def _synthesize_J_sp_dict(
     return out
 
 
-def _synthesize_save_dicts(runstate, cfg, photo_static=None):
+def _synthesize_save_dicts(runstate, cfg):
     """Build the three .vul top-level dicts from a `RunState`.
 
     Returns `(variable_dict, atm_dict, parameter_dict)` matching the
     legacy `(vars(data_var) filtered by var_save, vars(atm), vars(para))`
     public shape so `plot_py/` and downstream consumers see the same keys,
     shapes, and dtypes as upstream.
-
-    `photo_static` defaults to `runstate.photo_static`; pass an explicit
-    pytree only when the caller has a different cross-section override.
     """
     use_photo = bool(cfg.use_photo)
     use_ion = bool(cfg.use_ion)
@@ -314,7 +305,7 @@ def _synthesize_save_dicts(runstate, cfg, photo_static=None):
         var_save["aflux_change"] = float(pr.aflux_change)
 
     # Photo cross-section dicts.
-    static = photo_static if photo_static is not None else runstate.photo_static
+    static = runstate.photo_static
     if use_photo and static is not None:
         photo_dicts = _synthesize_cross_dicts(static)
         var_save["cross"] = photo_dicts["cross"]
@@ -397,38 +388,20 @@ def _synthesize_save_dicts(runstate, cfg, photo_static=None):
         para_save["delta"] = float(p.delta)
         para_save["small_y"] = float(p.small_y)
         para_save["nega_y"] = float(p.nega_y)
-        para_save["end_case"] = int(getattr(p, "end_case", 0))
+        para_save["end_case"] = int(p.end_case)
         # VULCAN-JAX addition: the runner's termination code, finer than
         # end_case (end_case 5 does not say why the run stopped).
-        para_save["termination_reason"] = int(getattr(p, "termination_reason", 0))
+        para_save["termination_reason"] = int(p.termination_reason)
         para_save["solver_str"] = "solver"
-        para_save["switch_final_photo_frq"] = bool(
-            getattr(p, "switch_final_photo_frq", False)
-        )
+        para_save["switch_final_photo_frq"] = bool(p.switch_final_photo_frq)
         para_save["where_varies_most"] = np.asarray(
-            getattr(
-                p,
-                "where_varies_most",
-                np.zeros_like(np.asarray(runstate.step.y, dtype=np.float64)),
-            ),
-            dtype=np.float64,
+            p.where_varies_most, dtype=np.float64
         )
-        para_save["pic_count"] = int(getattr(p, "pic_count", 0))
+        para_save["pic_count"] = int(p.pic_count)
         para_save["fix_species_start"] = bool(p.fix_species_start)
     # Plotting-only master field. Runtime values live in live_ui, but the
     # public .vul schema should still expose the same parameter key.
     para_save["tableau20"] = master_tableau20()
-    para_save.setdefault("end_case", 0)
-    para_save.setdefault("termination_reason", 0)
-    para_save.setdefault("solver_str", "solver")
-    para_save.setdefault("switch_final_photo_frq", False)
-    if runstate.step is not None:
-        para_save.setdefault(
-            "where_varies_most",
-            np.zeros_like(np.asarray(runstate.step.y, dtype=np.float64)),
-        )
-    para_save.setdefault("pic_count", 0)
-    para_save.setdefault("fix_species_start", False)
     if md is not None:
         para_save["start_time"] = float(md.start_time)
 
@@ -439,17 +412,15 @@ class Output(object):
     """Per-run output: cfg copy, .vul writer, progress report."""
 
     def __init__(self, cfg=None):
-        """Set up the `.vul` writer for one run: create the output dir and
-        warn if the target file already exists.
+        """Set up the `.vul` writer for one run: warn if the target file
+        already exists. save_cfg and save_out create their own directories.
         """
         # cfg defaults to the process default; load_config() users pass their
         # namespace so output honors the same cfg as setup and the runner.
-        # Pair with OuterLoop(cfg=cfg); save_out(..., cfg=...) overrides.
+        # Pair with OuterLoop(cfg=cfg).
         self._cfg = cfg if cfg is not None else default_config()
 
         output_dir, out_name = self._cfg.output_dir, self._cfg.out_name
-        os.makedirs(output_dir, exist_ok=True)
-
         if os.path.isfile(output_dir + out_name):
             warnings.warn(
                 "The output file: " + str(out_name) + " already exists.", stacklevel=2
@@ -505,18 +476,7 @@ class Output(object):
             + " and long dy/dt = "
             + f"{var.longdydt:.6e}"
         )
-
-        logger.info("total atom loss:")
-        for atom in self._cfg.atom_list:
-            if atom not in self._cfg.loss_ex:
-                logger.info(atom + ": " + f"{var.atom_loss[atom]:.4e}" + " ")
-
-        logger.info("negative solution counter:")
-        logger.info(str(para.nega_count))
-        logger.info("loss rejected counter:")
-        logger.info(str(para.loss_count))
-        logger.info("delta rejected counter:")
-        logger.info(str(para.delta_count))
+        self._log_losses(var, para)
         logger.info("------ Live long and prosper \\V/ ------")
 
     def print_unconverged_msg(self, var, para, case):
@@ -542,7 +502,11 @@ class Output(object):
         logger.warning(self._cfg.out_name[:-4] + " did not reach steady-state:")
         logger.info("long dy = " + str(var.longdy) + " and long dy/dt = " + str(var.longdydt))
         logger.warning("Integration stopped before converged...\n" + why)
+        self._log_losses(var, para)
 
+    def _log_losses(self, var, para):
+        """Log per-atom loss (skipping `cfg.loss_ex`) and the negative/loss/delta
+        rejection counters."""
         logger.info("total atom loss:")
         for atom in self._cfg.atom_list:
             if atom not in self._cfg.loss_ex:
@@ -576,14 +540,11 @@ class Output(object):
         with open(out_path, "w") as f:
             f.write("\n".join(lines) + "\n")
 
-    def save_out(self, runstate, dname, photo_static=None, cfg=None):
+    def save_out(self, runstate, dname):
         """Write the `.vul` pickle output; reads everything from `runstate`."""
-        cfg_mod = cfg if cfg is not None else self._cfg
-        var_save, atm_save, para_save = _synthesize_save_dicts(
-            runstate, cfg_mod, photo_static=photo_static
-        )
+        var_save, atm_save, para_save = _synthesize_save_dicts(runstate, self._cfg)
 
-        output_dir, out_name = cfg_mod.output_dir, cfg_mod.out_name
+        output_dir, out_name = self._cfg.output_dir, self._cfg.out_name
         target_dir = os.path.join(dname, output_dir)
         os.makedirs(target_dir, exist_ok=True)
         output_file = os.path.join(target_dir, out_name)

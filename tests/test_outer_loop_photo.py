@@ -126,9 +126,7 @@ def main() -> int:
     import vulcan_jax.legacy_io as _legacy_io
 
     rs_B = integ._unpack_state_to_runstate(final_state, rs_entry)
-    J_sp_B = _legacy_io._synthesize_save_dicts(
-        rs_B, vulcan_cfg, photo_static=rs.photo_static
-    )[0]["J_sp"]
+    J_sp_B = _legacy_io._synthesize_save_dicts(rs_B, vulcan_cfg)[0]["J_sp"]
 
     ok = True
 

@@ -20,6 +20,7 @@ from . import chem_funs
 from .config import default_config
 from ._paths import resolve_data_path
 from .live_ui import master_tableau20
+from .make_chem_funs import network_signature
 
 
 class AtmInputs(NamedTuple):
@@ -532,29 +533,6 @@ def _network_path_for(cfg) -> str:
     return str(Path(resolve_data_path(cfg.network)).resolve())
 
 
-def _network_topology_signature(net) -> bytes:
-    """Hash the reaction-topology arrays that fix the codegen RHS and rate
-    indexing (the arrays ``make_chem_funs.chem_rhs_cache_key`` consumes, minus
-    path/mtime, so a byte-identical vendored copy elsewhere compares equal).
-    Same signature = identical codegen RHS and compatible ``k_arr`` ordering;
-    any reordered/edited reaction differs."""
-    import hashlib
-
-    h = hashlib.sha256()
-    for arr in (
-        net.reactant_idx,
-        net.product_idx,
-        net.reactant_stoich,
-        net.product_stoich,
-        net.is_three_body,
-        net.is_forward,
-    ):
-        h.update(np.ascontiguousarray(arr).tobytes())
-    h.update(int(net.ni).to_bytes(4, "little"))
-    h.update(int(net.nr).to_bytes(4, "little"))
-    return h.digest()
-
-
 def _assert_network_matches_import(cfg) -> None:
     """Fail fast if cfg requests a different network than the import-locked one.
 
@@ -586,7 +564,7 @@ def _assert_network_matches_import(cfg) -> None:
             RuntimeWarning, stacklevel=2)
         return
     if list(want_net.species) == list(import_net.species) and (
-        _network_topology_signature(want_net) == _network_topology_signature(import_net)
+        network_signature(want_net) == network_signature(import_net)
     ):
         return  # same species AND topology -> codegen RHS + metadata compatible
 

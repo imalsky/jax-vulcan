@@ -70,9 +70,8 @@ def test_runstate_output_parameter_schema(hd189_state):
 
     rs = runstate_from_store(hd189_state.var, hd189_state.atm, hd189_state.para)
     _, _, param = legacy_io._synthesize_save_dicts(
-        rs,
+        rs._replace(photo_static=getattr(hd189_state.solver, "_photo_static", None)),
         vulcan_cfg,
-        photo_static=getattr(hd189_state.solver, "_photo_static", None),
     )
 
     expected = {
