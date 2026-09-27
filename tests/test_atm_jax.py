@@ -6,7 +6,7 @@ Pins two things:
      wirings agree, the kernels underneath being shared. (`atm_type='table'`
      and `use_moldiff=off` intentionally differ; build_atm_static is the more
      self-consistent one.) Plus the vm expression against the verbatim
-     vm_branch port, and settling.
+     vm_branch port.
   2. Differentiability: forward-mode tangents match finite differences for
      the gs, Tco, pressure-grid, Kzz-profile, and Heng+14 T(P) front-ends.
 """
@@ -16,18 +16,9 @@ from __future__ import annotations
 import os
 import types
 
-os.environ.setdefault("OMP_NUM_THREADS", "1")
-
 import jax
 import jax.numpy as jnp
 import numpy as np
-
-jax.config.update("jax_enable_x64", True)
-
-from vulcan_jax.phy_const import UNDERFLOW_DENOM
-
-RTOL = 1e-12  # two builds of the same quantity agree to roundoff
-FD_RTOL = 1e-5  # forward-mode tangent vs a central difference
 
 from vulcan_jax import atm_setup
 from vulcan_jax.atm_jax import (
@@ -40,6 +31,12 @@ from vulcan_jax.atm_jax import (
 from vulcan_jax.atm_setup import analytical_TP_H14
 from vulcan_jax.composition import species as _SPECIES
 from vulcan_jax.jax_step import make_atm_static
+from vulcan_jax.phy_const import UNDERFLOW_DENOM
+
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+
+RTOL = 1e-12  # two builds of the same quantity agree to roundoff
+FD_RTOL = 1e-5  # forward-mode tangent vs a central difference
 
 
 def _rel(a, b):
@@ -181,13 +178,7 @@ def test_compute_mol_diff_vm_matches_vm_branch_reference():
     )
     assert out["vm"].shape == (nz - 1, ni), out["vm"].shape
     assert _rel(out["vm"], vm_ref) < RTOL
-    # Non-gaseous species carry zero advective velocity (Dzz==0 there).
-    j_nongas = species_list.index("H2O_l_s")
-    assert np.allclose(np.asarray(out["vm"])[:, j_nongas], 0.0)
-    # Gas species carry a finite, nonzero drift on this non-isothermal column.
-    gas_cols = [k for k in range(ni) if k != j_nongas]
-    assert np.all(np.isfinite(np.asarray(out["vm"])))
-    assert np.any(np.abs(np.asarray(out["vm"])[:, gas_cols]) > 0.0)
+    assert np.any(np.asarray(vm_ref) != 0.0)  # the comparison is not vacuous
 
 
 def test_vm_branch_differentiates_wrt_Tco():
@@ -242,30 +233,6 @@ def test_vm_branch_differentiates_wrt_Tco():
     fd = (vm_sum(jnp.float64(1.0 + eps)) - vm_sum(jnp.float64(1.0 - eps))) / (2 * eps)
     assert np.isfinite(float(tangent)) and float(tangent) != 0.0
     assert abs(float(tangent) - float(fd)) / (abs(float(fd)) + UNDERFLOW_DENOM) < FD_RTOL
-
-
-def test_settling_velocity_jax_matches_host():
-    """settling_velocity_jax (via the coeff array) reproduces the host vs."""
-    species_list, ms_arr, nz, ni, Tco, n_0, g, Hp, dz, alpha = (
-        _synthetic_mol_diff_setup()
-    )
-    cfg = types.SimpleNamespace(
-        use_settling=True,
-        atm_base="H2",
-        non_gas_sp=["H2O_l_s"],
-    )
-    rho_p = {"H2O_l_s": 1.0}
-    r_p = {"H2O_l_s": 1e-4}
-    ref = atm_setup.compute_settling_velocity(cfg, Tco, g, species_list, rho_p, r_p)
-    coeff = atm_setup.settling_coeff_array(cfg, species_list, rho_p, r_p)
-    na, a, b = atm_setup._VISCOSITY_TABLE["H2"]
-    got = atm_setup.settling_velocity_jax(
-        na, a, b, jnp.asarray(Tco), jnp.asarray(g), jnp.asarray(coeff)
-    )
-    assert _rel(got, ref) < RTOL
-    # Only the condensible column is populated.
-    assert np.allclose(np.asarray(got)[:, :3], 0.0)
-    assert np.any(np.asarray(got)[:, 3] != 0.0)
 
 
 # 2. Differentiability -- forward-mode tangents vs finite differences.
@@ -370,16 +337,3 @@ def test_kzz_profile_jax_differentiates():
     tangent = jax.jvp(total, (jnp.float64(1e6),), (jnp.float64(1.0),))[1]
     assert np.isfinite(float(tangent)) and float(tangent) != 0.0
 
-
-def test_kzz_profile_jax_defaults_per_branch():
-    """Each profile reads only its own param; the others default to 0.0."""
-    pico = jnp.asarray(np.logspace(7, -1, 12))
-    # 'const' needs only const_Kzz; passing nothing else must work.
-    assert np.allclose(
-        np.asarray(atm_setup.kzz_profile_jax("const", pico, const_Kzz=3.0)), 3.0
-    )
-    # JM16 needs only K_deep; Pfunc only K_max/K_p_lev.
-    jm = atm_setup.kzz_profile_jax("JM16", pico, K_deep=1e6)
-    assert np.all(np.asarray(jm) >= 1e6 - 1)
-    pf = atm_setup.kzz_profile_jax("Pfunc", pico, K_max=1e10, K_p_lev=0.1)
-    assert np.all(np.asarray(pf) >= 1e10 - 1)

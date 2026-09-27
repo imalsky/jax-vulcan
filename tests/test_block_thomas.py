@@ -15,12 +15,9 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-
-jax.config.update("jax_enable_x64", True)
+from _oracles import block_thomas, block_thomas_diag_offdiag
 
 X_FLOOR = 1e-12  # denominator floor for near-zero solution entries
-
-from _oracles import block_thomas, block_thomas_diag_offdiag
 
 
 def _dense_from_blocks(diag, sup, sub):

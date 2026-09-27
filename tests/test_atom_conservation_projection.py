@@ -15,16 +15,7 @@ projection test skips on a fresh checkout). Pins:
 
 from __future__ import annotations
 
-import os
-import warnings
-from pathlib import Path
-
 import numpy as np
-
-ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
-warnings.filterwarnings("ignore")
-
 from _helpers import atom_count_matrix
 
 _ATOMS = ("H", "O", "C", "N")

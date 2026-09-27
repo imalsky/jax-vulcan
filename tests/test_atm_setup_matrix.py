@@ -10,9 +10,6 @@ one function.
 
 from __future__ import annotations
 
-import os
-import warnings
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -20,10 +17,6 @@ import pytest
 from _helpers import HD189_RP_CM, make_pco, mass_for_gravity, tpk_cfg
 from scipy import interpolate as scipy_interpolate
 from scipy.special import expn as scipy_expn
-
-ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
-warnings.filterwarnings("ignore")
 
 R_EARTH_CM = 6.378e8  # Earth radius (cm)
 RTOL = 1e-13  # machine agreement with the verbatim NumPy port

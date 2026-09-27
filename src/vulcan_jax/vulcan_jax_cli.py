@@ -13,9 +13,8 @@ import time
 import jax as _jax
 
 # Persistent XLA compile cache: the codegen RHS and the whole-loop while_loop
-# take seconds to compile cold and are reused verbatim across runs. The two
-# thresholds below equal JAX's defaults (cache a compile of >= 1 s; entry-size
-# floor left to JAX), so compiles faster than 1 s are not cached.
+# take seconds to compile cold and are reused verbatim across runs. JAX's
+# default thresholds apply, so compiles faster than 1 s are not cached.
 _jax.config.update(
     "jax_compilation_cache_dir",
     os.environ.get(
@@ -23,17 +22,13 @@ _jax.config.update(
         os.path.expanduser("~/.cache/jax_vulcan"),
     ),
 )
-_jax.config.update("jax_persistent_cache_min_compile_time_secs", 1.0)
-_jax.config.update("jax_persistent_cache_min_entry_size_bytes", 0)
-
-print("Using JAX-native chem_funs with SymPy-faithful chem_rhs codegen")
 
 import argparse
 import logging
 import sys
 
 from . import legacy_io as op
-from .config import default_config, dump_config, load_config
+from .config import _FROZEN_ENV, default_config, dump_config, load_config
 from . import op_jax
 from . import outer_loop
 from .runtime_validation import validate_runtime_config
@@ -43,14 +38,6 @@ from ._paths import PACKAGE_ROOT
 # Set on the re-executed process by `_relaunch_for_frozen_knobs` so a relaunch
 # that fails to resolve the mismatch raises instead of looping.
 _RELAUNCH_GUARD = "VULCAN_JAX_CLI_RELAUNCHED"
-
-# Import-frozen knob -> its environment override. Mirrors `config._FROZEN_ENV`;
-# the values are read once at the first `import vulcan_jax`.
-_FROZEN_KNOB_ENV = {
-    "network": "VULCAN_JAX_NETWORK",
-    "atom_list": "VULCAN_JAX_ATOM_LIST",
-    "com_file": "VULCAN_JAX_COM_FILE",
-}
 
 
 def _frozen_knob_mismatch(cfg):
@@ -63,7 +50,7 @@ def _frozen_knob_mismatch(cfg):
     """
     frozen = default_config()
     mismatch = {}
-    for knob, env in _FROZEN_KNOB_ENV.items():
+    for knob, env in _FROZEN_ENV.items():
         want = getattr(cfg, knob, None)
         have = getattr(frozen, knob, None)
         if knob == "atom_list":
