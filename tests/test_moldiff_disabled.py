@@ -1,4 +1,4 @@
-"""Disabled molecular diffusion (Dzz = 0, Hpi = 0) keeps the diffusion coefficients finite."""
+"""Disabled molecular diffusion (Dzz = 0, Hpi = 0) must not evaluate 0 * inf as NaN."""
 
 from __future__ import annotations
 

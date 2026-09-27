@@ -19,9 +19,7 @@ from pathlib import Path
 import numpy as np
 import jax
 
-# Enable float64 BEFORE importing jax.numpy or anything that touches JAX;
-# otherwise the kernels run in float32 and the agreement bound silently
-# loosens to ~1e-7.
+# KERNEL_RTOL = 1e-13 needs float64.
 jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp  # noqa: E402
 from _helpers import relerr  # noqa: E402

@@ -18,7 +18,7 @@ os.chdir(ROOT)
 
 from oracle import oracle_dir_or_skip  # noqa: E402
 
-# The parent verifies the pin and passes a temporary copy (oracle.oracle_dir_or_skip).
+
 VULCAN_MASTER = oracle_dir_or_skip("this diffusion comparison")
 
 warnings.filterwarnings("ignore")
@@ -88,9 +88,8 @@ def main() -> int:
     from vulcan_jax.config import default_config
 
     cfg_jax = default_config()
-    # Master oracle: op.diffdf is the CENTRAL scheme, so pin the vm_branch
-    # upwind default off for this comparison (the upwind kernel has its own
-    # tests in test_diffusion_variants.py).
+    # op.diffdf is the central scheme, so keep the upwind vm term off even if
+    # the default changes. test_diffusion_variants.py tests the upwind kernel.
     cfg_jax.use_vm_mol = False
     cfg_jax.use_hybrid_vm_mol = False
 
@@ -115,7 +114,7 @@ def main() -> int:
     r = 1.0 + 1.0 / np.sqrt(2.0)
     c0 = 1.0 / (r * data_var.dt)
     diff_jac_only = lhs_ref - chem_jac_ref
-    # Subtract c0 from the diagonal
+    
     np.fill_diagonal(diff_jac_only, np.diag(diff_jac_only) - c0)
 
     # diff_jac_only mapping:

@@ -22,7 +22,7 @@ os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
 
-# Small helpers shared across cases.
+
 
 
 def _run_full_state(count_max: int = 5):
@@ -112,7 +112,7 @@ def test_lowT_limit_rates_noop_on_HD189():
     np.testing.assert_array_equal(k_on[i_c2h5], k_off[i_c2h5])
 
 
-# Case 2: T_cross_sp non-empty (Earth-style T-dep cross-section path).
+
 
 
 def test_T_cross_sp_path_finite_positive():
@@ -145,7 +145,7 @@ def test_T_cross_sp_path_finite_positive():
     assert np.any(absp_T_cross > 0.0), "T-dep cross-sections all zero"
 
 
-# Case 3: use_vm_mol=True populates atm.vm.
+
 
 
 def test_use_vm_mol_populates_vm():
@@ -293,7 +293,7 @@ def test_fix_species_runtime_smoke():
     assert bool(rs_out.params.fix_species_start) is False
 
 
-# Case 8: use_fix_all_bot integration check.
+
 
 
 def test_use_fix_all_bot_keeps_bottom_at_eq_mix():

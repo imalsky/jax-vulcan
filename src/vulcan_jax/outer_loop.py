@@ -86,8 +86,8 @@ class ProfileVars(NamedTuple):
     ride this carry, never a runner closure (a closure would share lane-0's
     atmosphere across the batch). Constant during a run; the single-profile
     path seeds the same values the closures bake. `pref_indx` stays a closure
-    constant (it sizes a `jnp.arange`) and must be batch-constant; the
-    emulator buckets accordingly.
+    constant (it sizes a `jnp.arange`) and must be batch-constant
+    (prepare_runstate rejects a mismatch).
     """
 
     # from _Statics
@@ -228,19 +228,14 @@ class JaxIntegState(NamedTuple):
     # phase 1 also converged. Non-hybrid runs never flip (bit-identical trace).
     hybrid_use_vm: jnp.ndarray  # ()  float64
 
-    # Live termination budget (seeded from the static caps; the termination
-    # test reads these, not the closure constants). Only the hybrid phase flip
-    # mutates them, extending the budget the vm_branch op.py stop() way:
-    # count_min = count+100, count_max = count+2000 (convergence) or
-    # count+1000 (budget), runtime *= 1.1 (runtime). Non-hybrid runs never
-    # touch them.
+    # Live termination budget, seeded from the static caps; the termination
+    # test reads these, not the closure constants. Only the hybrid phase flip
+    # extends them (see _HYBRID_FLIP_*); non-hybrid runs never touch them.
     count_min_dyn: jnp.ndarray  # ()  int32
     count_max_dyn: jnp.ndarray  # ()  int32
     runtime_dyn: jnp.ndarray  # ()  float64
 
-    # Per-profile constants (see ProfileVars): must ride the carry so
-    # jax.vmap batches them per lane; the body splices them into the
-    # closure-baked statics.
+    # Per-profile constants (see ProfileVars).
     pv: ProfileVars
 
 
@@ -432,9 +427,7 @@ def _make_photo_branch(photo_static: _PhotoStatic):
     ag0_is_zero = photo_static.ag0_is_zero
 
     def photo_branch(s: JaxIntegState) -> JaxIntegState:
-        # Splice this lane's T-dependent cross sections from the carry into
-        # the closure-baked photo data so a vmapped batch uses each lane's
-        # atmosphere, not lane 0's (value-level no-op single-profile).
+        # This lane's T-dependent cross sections from the carry (see ProfileVars).
         pd = photo_data._replace(absp_T_cross=s.pv.p_absp_T_cross)
 
         # Optical depth (mirrors op.compute_tau via op_jax.Ros2JAX.compute_tau).
@@ -532,10 +525,10 @@ def _make_conden_branch(conden_static: _conden_mod.CondenStatic):
     """
 
     def conden_branch(s: JaxIntegState) -> JaxIntegState:
-        # Splice this lane's per-profile conden arrays from the carry into the
-        # closure-baked static (vmap batches the carry, not closures); the
-        # config/network-level fields stay baked and must be batch-constant.
-        # nh3_conden_top is a 0-d int32 only compared against jnp.arange.
+        # Splice this lane's per-profile conden arrays (see ProfileVars) into
+        # the baked static; its other fields stay baked and must be
+        # batch-constant. nh3_conden_top is a 0-d int32 only compared
+        # against jnp.arange.
         st = conden_static._replace(
             Dg_per_re=s.pv.c_Dg_per_re,
             sat_n_per_re=s.pv.c_sat_n_per_re,
@@ -917,10 +910,8 @@ def _make_runner(
     def _conv_jax(
         s: JaxIntegState, accept_count_after: jnp.ndarray
     ) -> "tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]":
-        """Compute longdy diagnostics against the ring-buffer lookback target.
+        """(longdy, longdydt, ratio) against the `_lookback_index` slot.
 
-        Looks up the ring entry closest in time to `t * st_factor`, but
-        excludes the most-recent slot to avoid comparing against itself.
         On the first iteration the ring is all-zero, which yields
         longdy ≈ |y/n_0| ~ O(1); the `ready` gate prevents acting on it.
         """
@@ -1403,10 +1394,8 @@ def _make_runner(
                 # Exclude finished lanes: a done lane always reads as a
                 # candidate and would pull the batch into the refresh.
                 refresh_due = refresh_due & jnp.logical_not(s.is_done)
-            # Splice this lane's per-profile atmosphere from the carry into
-            # the closure-baked refresh static (vmap batches the carry, not
-            # closures). `pref_indx` stays baked and must be batch-constant
-            # (prepare_runstate rejects a mismatch).
+            # Splice this lane's per-profile atmosphere into the refresh
+            # static (see ProfileVars).
             refresh_lane = refresh_static._replace(
                 Tco=s.pv.r_Tco,
                 pico=s.pv.r_pico,
@@ -1510,12 +1499,9 @@ def _make_runner(
             jnp.max(jnp.abs(budget_drift_next)) < jnp.float64(element_budget_tol)
         )
 
-        # Hybrid vm_mol phase flip: when phase 0 (upwind) ends -- convergence,
-        # runtime, or step-count -- switch to central difference, reset the
-        # convergence trackers, and extend the budget the vm_branch stop() way:
-        #   convergence -> count_min=count+100, count_max=count+2000
-        #   runtime     -> count_min=count+100, count_max=count+1000, runtime*=1.1
-        #   step-count  -> count_min=count+100, count_max=count+1000
+        # Hybrid vm_mol phase flip: when phase 0 (upwind) ends by convergence,
+        # runtime or step count, switch to central difference, reset the
+        # convergence trackers and extend the budget (_HYBRID_FLIP_*).
         # Dropped at trace time for non-hybrid runs.
         hybrid_use_vm_next = s.hybrid_use_vm
         count_min_dyn_next = s.count_min_dyn
@@ -1762,18 +1748,14 @@ def _make_runner(
         return jax.vmap(one_dir)(ds_next.y, ds_next.y_time_ring)
 
     def _make_jvp_step(active_state, active_atm):
-        """One `jax.jvp` of `body_fn`, the step of the forward-mode runner.
+        """One `jax.jvp` of `body_fn`, vmapped over a leading direction axis D.
 
-        `active_*` are tuples of bools over the flattened leaves of the state
-        and AtmStatic: True where the caller supplies a float tangent. Those
-        leaves go through the jvp; every other leaf (ints, bools, flags)
-        rides as `has_aux` output, so no float0 tangents exist inside the
-        loop.
-
-        Tangent leaves carry a leading direction axis and the jvp is vmapped
-        over it inside the body, with the primal and the `has_aux` leaves
-        unmapped (`out_axes=None`): the state, the block assembly and the
-        factorisation are integrated once for all D directions.
+        `active_*` flag, per flattened leaf of the state and AtmStatic, the
+        leaves with a float tangent; only those go through the jvp. Every
+        other leaf (ints, bools, flags) rides as `has_aux` output, so the loop
+        holds no float0 tangents. The primal and aux outputs are unmapped
+        (`out_axes=None`): the state, block assembly and factorisation are
+        computed once for all D directions.
         """
 
         def _merge(flat, leaves, active):
@@ -1941,24 +1923,16 @@ def _make_runner(
         return final_b
 
     def runner_queue(jobs, n_lanes, chunk, refill_every, init_fn, out_fn):
-        """Freeze-on-done loop over `n_lanes` lanes fed from a queue of jobs.
+        """The loop behind `OuterLoop.run_queue` (contract there).
 
-        A lane that has finished (is_done, still holding a job) is written out
-        with `out_fn` and refilled with the next pending job, in chunks,
-        inside the same while loop. The static atmosphere rides the carry so a
-        refill can swap a lane's, and wall time follows total work / n_lanes
-        instead of the slowest job.
-
-        Every lane starts on its own photolysis fields, applied exactly once
-        before its first chemistry step. A lane whose first tick is on its
-        photo cadence (`it % update_photo_frq == 0`, always true at tick 0)
-        gets them from `body_fn`'s gate inside that step, as in
-        `runner_batch`; a lane refilled off its cadence gets them at entry,
-        or it would step on the previous occupant's RT state.
-
-        With `n_lanes >= n_jobs` nothing is ever refilled and every lane runs
-        the ticks `runner_batch` would give it, so the result is bitwise
-        `runner_batch`'s.
+        Finished lanes are written out and refilled inside this one while
+        loop, so wall time follows total work / n_lanes, not the slowest job.
+        The static atmosphere rides the carry so a refill can swap a lane's.
+        Every lane takes its own photolysis fields exactly once before its
+        first chemistry step: on its photo cadence (`it % update_photo_frq ==
+        0`, always true at tick 0) from `body_fn`'s gate inside that step, as
+        in `runner_batch`; off its cadence at entry, or it would step on the
+        previous occupant's RT state.
         """
         sizes = {
             jnp.shape(x)[0]
@@ -2186,8 +2160,7 @@ def stack_integ_states(states: "list[JaxIntegState]") -> JaxIntegState:
     """Stack single-profile `JaxIntegState`s into one batched state.
 
     Every leaf gains a leading batch axis. All inputs must share identical
-    leaf shapes (same nz / ni / network), which the emulator guarantees by
-    bucketing on `nz` before calling.
+    leaf shapes (same nz / ni / network): bucket by `nz` before calling.
     """
     return jax.tree_util.tree_map(lambda *xs: jnp.stack(xs, axis=0), *states)
 
@@ -2334,9 +2307,8 @@ class OuterLoop:
         # same (nz, toggle-combo) closure as `_runner`.
         self._runner_batch = None
         self._vrunner = None
-        # Same closure again, with a job queue above the lanes (`run_queue`);
-        # its jit cache is keyed by (init_fn, out_fn, n_lanes, chunk,
-        # refill_every), all of which the traced program bakes in.
+        # Same closure with a job queue above the lanes (`run_queue`), and
+        # its jit cache, keyed in `run_queue`.
         self._runner_queue = None
         self._vrunner_queue = {}
         self._statics = None
@@ -2362,7 +2334,7 @@ class OuterLoop:
                 conver_ignore_np[_NETWORK.species_idx[sp]] = True
 
         # condense_zero_conv (op.py:1048-1049): when use_condense, the
-        # non_gas_sp columns are zeroed in longdy. HD189 has non_gas_sp=[].
+        # non_gas_sp columns are zeroed in longdy.
         nz = atm.Tco.shape[0]
         cond_zero_conv_np = np.zeros((nz, ni), dtype=bool)
         if self._cfg.use_condense:
@@ -2840,11 +2812,8 @@ class OuterLoop:
         )
 
     def _initial_photo_carry_from_runstate(self, rs) -> dict:
-        """Build the initial photo carry from a RunState slice.
-
-        `rs.rate.k` carries the dense reaction-rate table; `rs.photo_runtime.*`
-        carries `tau / aflux / sflux / dflux_*`; nbin is derived from
-        `tau.shape[1]`.
+        """Build the initial photo carry from `rs.rate.k` and
+        `rs.photo_runtime` (placeholders when photo is off).
         """
         nz = int(rs.atm.Tco.shape[0])
         nr = _NETWORK.nr
@@ -2901,10 +2870,7 @@ class OuterLoop:
         )
 
     def _initial_conv_carry_from_runstate(self, rs) -> dict:
-        """Build the initial conv-history carry from a RunState slice.
-
-        Pulls `longdy / longdydt` from `rs.step`.
-        """
+        """Build the initial conv-history carry from a RunState slice."""
         nz = int(rs.atm.Tco.shape[0])
         ni = _NETWORK.ni
         conv_step = int(self._cfg.conv_step)
@@ -3291,14 +3257,9 @@ class OuterLoop:
             self.output.print_unconverged_msg(var, para, end_case)
 
     def __call__(self, rs):
-        """Integrate a fresh `RunState` to convergence / runtime / count cap
-        and return a new `RunState`.
-
-        Host-side metadata (`Ti`, `gas_indx`, `pref_indx`, `gs`,
-        `charge_list`, `conden_re_list`, `Rf`, `n_branch`, `ion_branch`,
-        `photo_sp`, `ion_sp`, `start_time`) comes from `rs.metadata`; a
-        `legacy_view(rs)` shim drives the `_build_*_static` helpers and
-        `make_atm_static`.
+        """Integrate a fresh `RunState` (`params.count == 0`) to convergence
+        or the runtime / step-count cap and return a new `RunState`.
+        Raise `ValueError` if `rs` has already run.
         """
         count = int(rs.params.count)
         if count > 0:

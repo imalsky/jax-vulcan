@@ -95,7 +95,7 @@ def test_vulcan_ini_roundtrip(tmp_path):
         )
 
 
-# table mode: synthesize a tiny mixing-ratio table on tmp_path.
+
 
 
 def test_table_roundtrip(tmp_path):
@@ -139,7 +139,7 @@ def test_table_roundtrip(tmp_path):
             atol=0.0,
             err_msg=f"table mode mismatch for {sp}",
         )
-    # Species not in the populated dict should be zero.
+
     other_idx = [i for i, sp in enumerate(species_list) if sp not in populated]
     assert np.all(y[:, other_idx] == 0.0), (
         "table mode left non-zero residue in unspecified species"

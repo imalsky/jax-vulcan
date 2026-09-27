@@ -1,13 +1,13 @@
 """Unit tests for the on-graph condensation-profile builder.
 
 `conden.build_conden_profile` must reproduce, from a live (traced) T-P and
-structure, every T/structure-dependent quantity the legacy host packer froze
-at setup. The oracle is an independent NumPy re-typing of the upstream
-formulas (op.conden rate inputs, build_atm saturation, _apply_condense
-sat_mix), not a call back into the code under test. The host packer
-delegates to the same builder, so this file carries the numerical parity
-burden for both paths. Also covered: T sensitivity and the jit / vmap /
-forward-mode jvp contracts the retrieval's per-proposal rebuild relies on.
+structure, every T/structure-dependent condensation quantity. The oracle is an
+independent NumPy re-typing of the upstream formulas (op.conden rate inputs,
+build_atm saturation, _apply_condense sat_mix), not a call back into the code
+under test. The host packer delegates to the same builder, so this file carries
+the numerical parity burden for both paths. Also covered: T sensitivity and the
+jit / vmap / forward-mode jvp contracts the retrieval's per-proposal rebuild
+relies on.
 """
 
 from types import SimpleNamespace

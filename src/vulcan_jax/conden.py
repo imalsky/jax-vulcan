@@ -28,7 +28,8 @@ from .phy_const import UNDERFLOW_DENOM, Navo, kb
 
 # Gas-phase condensates with a full runtime kinetics path (master's op.conden
 # branch set). H2S has saturation data only (atm_setup), no kinetics;
-# an unknown condensate raises here where master silently leaves its rate 0.
+# make_conden_spec raises on any other active condensate, where master leaves
+# its rate 0.
 SUPPORTED_CONDEN_KINETICS: tuple[str, ...] = (
     "H2O",
     "NH3",

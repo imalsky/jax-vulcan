@@ -14,9 +14,7 @@ Five `ini_mix` modes:
 The EQ seed (`eq_seed`) is end-to-end JAX: it minimizes the Gibbs energy of
 the loaded network's own gas species using the same NASA-9 polynomials the
 reverse rates use, so the seed and the kinetics cannot disagree about
-thermochemistry. It jits and vmaps over columns, and a lane's seed is bitwise
-the solo seed at any batch width. `custom_jvp` gives it a zero tangent: the
-seed is an initial condition.
+thermochemistry. Its tangent is zero, and a batched lane equals the solo seed bitwise.
 """
 
 from __future__ import annotations
@@ -322,9 +320,9 @@ def _preset_vector() -> np.ndarray:
 def _base_vector() -> np.ndarray:
     """`b` (E,) with the config's `<X>_H` applied on top of the preset.
 
-    Precedence: an explicit `ratios` entry, then `cfg.<X>_H` for the elements
-    of `cfg.atom_list` other than H, then the preset file. Helium comes from
-    the file for every shipped atom list (`He_H` is a `const_lowT` knob).
+    Only elements of `cfg.atom_list` other than H that the network carries
+    are overridden. Helium comes from the file for every shipped atom list
+    (`He_H` is a `const_lowT` knob).
     """
     b = _preset_vector()
     elements = seed_elements()

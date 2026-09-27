@@ -21,8 +21,7 @@ from _helpers import run_child
 ROOT = Path(__file__).resolve().parent.parent
 CONDEN_NETWORK = "thermo/SNCHO_photo_network_2025.txt"
 
-# The child sets $VULCAN_JAX_NETWORK and imports vulcan_jax for the first time
-# inside this process, so the condensate network is the import-locked one.
+
 _CHILD = r"""
 import os, sys, time, warnings
 warnings.filterwarnings("ignore")

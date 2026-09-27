@@ -137,7 +137,8 @@ def main() -> int:
             max_jac_idx = j
     print(f"chem_jac max relerr: {max_jac_relerr:.3e} at layer {max_jac_idx}")
 
-    # The W39b benchmark species carry the converged-state comparison, so they get their own 1e-5 bar.
+    # Bulk species: bound every cell, including those below the significance
+    # floor, against the species' peak |dydt|.
     bulk_relerr = 0.0
     for sp in ("H2O", "CO2", "SO", "SO2", "H2", "CO", "S", "H2S"):
         if sp in net.species_idx:

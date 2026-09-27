@@ -2,7 +2,7 @@
 
 Tests validate the production JAX path (`jax_step._build_diff_coeffs_jax` /
 `_apply_diffusion_jax`) and op.diffdf against this explicit NumPy reference.
-Mirrors `op.py:diffdf` (lines 1499-1600) and `op.py:lhs_jac_tot` (1976-2045).
+Mirrors upstream `op.py:1496-1597` (`diffdf`) and `op.py:1973-2042` (`lhs_jac_tot`).
 
 The discretized operator at layer j is
     diff[j, :] = A_eff[j]*y[j] + B_eff[j]*y[j+1] + C_eff[j]*y[j-1]
@@ -401,11 +401,8 @@ def diffusion_block_diags(coeffs: DiffusionCoeffs, ni: int):
     Bi = coeffs.B_mol
     Ci = coeffs.C_mol
 
-    # Diagonal of the j-block: A[j] + Ai[j, :]
     diag_d = A[:, None] + Ai  # (nz, ni)
-    # Super-diagonal (j -> j+1): B[j] + Bi[j, :], but only for j in [0, nz-2]
     sup_d = B[:-1, None] + Bi[:-1]  # (nz-1, ni)
-    # Sub-diagonal (j -> j-1): C[j] + Ci[j, :], for j in [1, nz-1]
     sub_d = C[1:, None] + Ci[1:]  # (nz-1, ni)
 
     # Add deposition velocity to the surface diagonal

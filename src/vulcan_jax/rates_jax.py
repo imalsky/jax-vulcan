@@ -7,13 +7,10 @@ low-T caps, and the NASA-9 Gibbs reverse-rate path. Photo / conden
 / ion slots are zero here and filled at runtime; the 3-body [M] factor is
 applied in the chemistry RHS (it depends on the time-evolving sum(y)).
 
-Output is `k[nr+1, nz]` with 1-based reaction indexing (row 0 unused). The
-setup entry point is :func:`setup_var_k`, which freezes the result to NumPy on
-`var.k_arr`; a temperature / rate-coefficient / NASA-9 gradient calls
-:func:`build_rate_array` directly and keeps the tangent, since the Arrhenius
-coefficients (`compute_forward_k(..., a=, n=, E=, ...)` /
-`build_rate_array(..., rate_coeffs=)`) and the thermo table are differentiable
-inputs.
+Output is `k[nr+1, nz]` with 1-based reaction indexing (row 0 unused).
+:func:`setup_var_k` freezes it to NumPy on `var.k_arr`; a gradient calls
+:func:`build_rate_array` directly, where the Arrhenius coefficients
+(`rate_coeffs=`) and the NASA-9 table are differentiable inputs.
 """
 
 from __future__ import annotations
@@ -245,9 +242,7 @@ def K_eq_array(net: Network, gibbs_sp: jnp.ndarray, T: jnp.ndarray) -> jnp.ndarr
     prod = jnp.einsum("rs,rsz->rz", p_st, g_pad[p_idx])
     delta_n = (r_st.sum(axis=1) - p_st.sum(axis=1))[:, None]  # (nr+1, 1)
     Tg = jnp.asarray(T)[None, :]
-    # Clip the upper side of the exponent so exp() cannot overflow to +inf
-    # (would give a NaN forward-mode tangent in the reverse divide; see
-    # _EXP_ARG_MAX). No shipped column comes near the bound.
+    # Overflow guard; see _EXP_ARG_MAX.
     K_raw = jnp.exp(jnp.minimum(reac - prod, _EXP_ARG_MAX)) * (CORR * Tg) ** delta_n
 
     # Valid forward slots get a real K; everything else stays 1 (sentinel).
@@ -339,17 +334,14 @@ def build_rate_array(
 
 
 def _assert_reversible_thermo_present(net: Network, present: np.ndarray) -> None:
-    """Fail loudly if a species in a reversible reaction lacks NASA-9 thermo.
+    """Raise if a species in a reversible reaction lacks NASA-9 thermo.
 
-    A missing `thermo/NASA9/<sp>.txt` leaves that species' Gibbs coefficients
-    zero (`load_nasa9` returns `present[j] = False`), which silently corrupts
-    `K_eq` and every reverse rate the species participates in. VULCAN-master
-    raises `FileNotFoundError` here: its generated chem_funs.py:2985 loads
-    NASA-9 for every species at import, before `remove_list` is read
-    (op.py:300, :314); we mirror that instead of returning a
-    plausible-but-wrong rate array. Only species used in a *reversible* reaction
-    (index below `stop_rev_indx`) need thermo -- condensate/photo/ion-only
-    species legitimately have no NASA-9 file.
+    `load_nasa9` leaves a missing species' coefficients zero, which corrupts
+    `K_eq` and every reverse rate it enters. Master also raises
+    `FileNotFoundError`: its generated chem_funs.py:2985 loads NASA-9 for every
+    species at import, before `remove_list` is read (op.py:300, :314). Only
+    species in a reaction below `stop_rev_indx` need thermo; condensate-,
+    photo- and ion-only species may have no NASA-9 file.
     """
     needed: set[int] = set()
     last_rev = min(net.stop_rev_indx, net.nr + 1)

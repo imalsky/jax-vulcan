@@ -1,4 +1,4 @@
-"""Guards that refuse differentiation through condensation (F1, F3).
+"""Guards that refuse differentiation through condensation.
 
 The pinned condensation state is not differentiable: it is a transient
 snapshot with discrete phase switches (pinned-species jvp vs FD ~0.91
@@ -30,7 +30,7 @@ def _cfg(**overrides):
     return SimpleNamespace(**base)
 
 
-# --- forward-config hardening (F3) ------------------------------------------
+# --- forward-config hardening -----------------------------------------------
 
 
 @pytest.mark.parametrize("overrides,expect", [
@@ -53,7 +53,7 @@ def test_validate_condensation(overrides, expect):
         assert any(expect in e for e in errs), errs
 
 
-# --- input-sensitivity refusal (F1) -----------------------------------------
+# --- input-sensitivity refusal ---------------------------------------------
 
 
 def _dummy_input_sensitivity(body_terms, **kw):

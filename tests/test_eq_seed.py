@@ -31,8 +31,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 from oracle import oracle_dir_or_sentinel
 
-# The parent verifies the pin and passes a temporary copy; the per-test
-# is_dir() skip below handles an unset oracle.
+
 VULCAN_MASTER = oracle_dir_or_sentinel()
 
 from vulcan_jax._paths import PACKAGE_ROOT

@@ -44,10 +44,10 @@ constexpr int64_t kMaxGridX = std::numeric_limits<int32_t>::max();  // CUDA grid
 constexpr int kMaxNb = 4;
 // Minimum resident blocks per SM in the NB solve kernel's __launch_bounds__
 // (its maximum is 2 NB warps, the most threads bt_threads gives that NB). They
-// hold the kernels near the shared-memory solve's 72-76 registers: 68-80 on
-// sm_89 and sm_90 for NB 1-3, without spills, so the NB 3 class (ni 65-96)
-// keeps the 3 blocks per SM shared memory allows at ni 89 on sm_90. NB 4 takes
-// 116-125, which still allows the 2 blocks shared memory allows at ni 97.
+// hold NB 1-3 at 68-80 registers on sm_89 and sm_90 without spills, so the NB 3
+// class (ni 65-96) keeps the 3 blocks per SM shared memory allows at ni 89 on
+// sm_90. NB 4 takes 116-125, which still allows the 2 blocks shared memory
+// allows at ni 97.
 constexpr int kSolveMinBlocks[kMaxNb + 1] = {0, 12, 6, 4, 2};
 
 // Sum over q0 <= q < q1 of arow[q] * mcol[q * ms], in four independent
@@ -77,8 +77,7 @@ __device__ inline double bt_dot4(const double* arow, const double* mcol, int ms,
 // __shfl_sync broadcast of each finished x_i (uniform outer loops, no early
 // return). No block barrier: the other warps prefetch meanwhile. The forward
 // substitution applies the CPU lu_solve's subtractions in its order, the back
-// substitution in reverse order, each row's in the same order and with the
-// same operations as a shared-memory tmp would take them.
+// substitution in reverse order.
 template <int NB>
 __device__ void bt_lu_solve_warp0(const double* lu, int ni, const double* tmp, double* x,
                                   int lane) {

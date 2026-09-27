@@ -114,11 +114,7 @@ IMPORT_ATOM_LIST = tuple(_CFG.atom_list)
 
 
 def _project_chem_rhs(rhs: jnp.ndarray) -> jnp.ndarray:
-    """Project chemistry RHS onto per-atom conservation via abundant reservoirs.
-
-    Atoms and reservoirs are whichever the active network supports
-    (H/O/C/N for C--H--N--O networks; H/O/C/N/S via H2S for SNCHO).
-    """
+    """Project chemistry RHS onto per-atom conservation via abundant reservoirs."""
     if not _CHEM_PROJECTION_ENABLED:
         return rhs
     residual = rhs @ _CHEM_ATOM_COUNTS  # shape: (nz, n_atoms)
@@ -685,8 +681,8 @@ def _ros2_stages(y, k_arr, dt, atm: AtmStatic, net: NetworkArrays, fix_mask,
     eye = jnp.eye(ni)
     on_diag = eye[None] != 0.0  # (1, ni, ni), the block diagonal
     # Diagonal and pins go in the elementwise build; a `.at` scatter makes XLA
-    # copy the whole (nz, ni, ni) block. Per element the arithmetic is
-    # unchanged (`x + (-diag_d)` is `x - diag_d` in IEEE).
+    # copy the whole (nz, ni, ni) block. The result is bitwise equal to the
+    # scatter.
     diag = c0 * eye[None] - chem_J
     diag = jnp.where(on_diag, diag - diag_d[:, :, None], diag)
     sup_neg = -sup_d  # (nz-1, ni)

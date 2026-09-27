@@ -2,10 +2,8 @@
 
 Script-style test files keep a `main()` entry plus a thin
 `test_main(): assert main() == 0` wrapper so pytest collects them.
-The upstream oracle is optional: oracle tests run master comparisons in
-fresh subprocesses and skip cleanly when it is absent. The `hd189_state`
-fixture hands out a per-test deep copy of the session-built HD189
-pre-loop state so tests avoid re-running rates / the EQ seed / photo setup.
+The `hd189_state` fixture hands out a per-test deep copy of the session-built
+HD189 pre-loop state so tests avoid re-running rates / the EQ seed / photo setup.
 """
 
 from __future__ import annotations
@@ -55,7 +53,7 @@ _assert_testing_repo_checkout()
 
 
 def _clear_jax_caches() -> None:
-    """Clear JAX compilation caches when strict test isolation requests it."""
+    """Clear JAX compilation caches if jax is imported."""
     jax_mod = sys.modules.get("jax")
     clear = getattr(jax_mod, "clear_caches", None)
     if clear is not None:

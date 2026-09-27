@@ -112,14 +112,11 @@ _ADJOINT_RESID_WARN = 0.2
 
 _FP_ERR_WARN = 1e-2
 # Warn above this body-map fixed-point error: y_star is off the steady-state
-# manifold of the chosen map. pair_antisym is not warning-gated: it reads ~1
-# on accurate pair sums (module docstring).
+# manifold of the chosen map.
 
 _NULL_BASIS_RANK_TOL = 1e-10
-# Rank guard for the deflation basis: after column normalization, |R_jj| from
-# the unpivoted QR measures column independence; below this the Q column is an
-# arbitrary direction outside span(C), and deflating it would silently project
-# a needed direction out of the solve, so fail fast.
+# Minimum |R_jj| of the unit-column QR in _conserved_null_basis; below it the
+# atom columns are (near-)dependent and the basis is refused.
 
 _AUDIT_MIN_YMIX = 1e-16
 # audit_adjoint_scope ignores cells below this mixing ratio in the per-cell
@@ -160,8 +157,7 @@ def _warn_poor_convergence(
     resid: float, fp_err: float, spread: float = 0.0, null_quality: float = 0.0
 ) -> None:
     """Warn (even when the caller ignores `info`) on an under-converged solve,
-    a loose fixed point, twin disagreement, or a non-null deflation basis.
-    `pair_antisym` is not gated (see `_FP_ERR_WARN`)."""
+    a loose fixed point, twin disagreement, or a non-null deflation basis."""
     if null_quality > _NULL_QUALITY_WARN:
         warnings.warn(
             f"steady_state_reaction_sensitivity: null_quality {null_quality:.2e} "
@@ -266,13 +262,9 @@ def _clip_dead_mask(G, ymix_old, cfg) -> np.ndarray:
         y < pos_cut and y >= nega_cut          -> 0     (small/negative cut)
         ymix_old < mtol and y < 0              -> 0     (trace-negative cut)
 
-    Narrower than `outer_loop._make_clip_fn`, whose second rule zeroes every
-    negative cell regardless of `ymix_old`. Widening this to match
-    would exclude more cells from the audit's defect scan; under-reporting is
-    the safe direction, since an excluded cell is one the audit stops checking.
-
-    The clip is outside the body map, so where it fires the cell has no fixed
-    point and its relative defect measures the clip.
+    Narrower than the runner's clip (`outer_loop._clip_prologue` zeroes every
+    negative cell), so fewer cells leave the defect scan. An excluded cell is
+    one the audit stops checking, so excluding fewer is the safe side.
     """
     G = np.asarray(G)
     pos_cut = float(cfg.pos_cut)
@@ -446,10 +438,9 @@ def _lgmres_solve(
     oscillates on this indefinite operator); each matvec is one host<->device
     round trip, run once post-convergence, off the hot path.
 
-    info == 0 stops early; info > 0 continues into the next warm-start cycle;
-    info < 0 (breakdown/illegal input) raises. Returns the best-residual
-    iterate across cycles, not the last: the warm-restart trajectory is not
-    monotone on this operator (costs one extra matvec per cycle).
+    Returns the best-residual iterate across cycles, not the last: the
+    warm-restart trajectory is not monotone on this operator (one extra
+    matvec per cycle).
     """
     import scipy.sparse.linalg as spla
 
@@ -677,10 +668,9 @@ def _adjoint_solve_core(
     def deflated(z):
         return proj(a_eta_j(proj(z)))
 
-    # How null the deflated directions actually are: max_e ||A_eta^T q_e||
-    # (unit-norm columns) relative to the operator's action on a fixed-seed
-    # random unit direction. O(1) means a deflated direction is not null
-    # (e.g. open boundary fluxes) and the deflation is corrupting the solve.
+    # How null the deflated directions are: max_e ||A_eta^T q_e|| (unit-norm
+    # columns) relative to the operator's action on a fixed-seed random unit
+    # direction (threshold: _NULL_QUALITY_WARN).
     null_defect = max(
         float(jnp.linalg.norm(a_eta_j(Q[:, e].reshape(nz, ni))))
         for e in range(Q.shape[1])
@@ -854,11 +844,9 @@ def steady_state_reaction_sensitivity(
     _guard_unmodeled_processes(y_star, k_arr, net, body_terms)
     n_solves = max(1, int(n_solves))
 
-    # Condensation active: the reaction gradient is conditional -- the body
-    # map holds the captured reservoir / saturation tables fixed, so this is
-    # dL/d ln k AT the frozen reservoir, excluding how the rate set it. Rates
-    # do not move the saturation curve directly, so label it, do not forbid
-    # it.
+    # The body map holds the condensate reservoir and saturation tables
+    # fixed. Rates do not move the saturation curve directly, so a
+    # condensation-active gradient is labeled conditional, not refused.
     _conden_pinned = body_terms is not None and body_terms.fix_mask is not None
     _conden_in_window = body_terms is not None and body_terms.conden_static is not None
     if _conden_pinned or _conden_in_window:
@@ -876,9 +864,7 @@ def steady_state_reaction_sensitivity(
             stacklevel=2,
         )
 
-    # One-step body map and its y-VJP (the transposed solver-map operator);
-    # dJ/dy rides through photo_recompute_k, the conden/relax/pin/balance
-    # terms through body_terms.
+
     _, _body_map_raw, _body_map_k_raw, _ = _make_body_map(
         y_star, k_arr, atm, net, body_dt, photo_recompute_k, body_terms
     )
@@ -927,9 +913,7 @@ def steady_state_reaction_sensitivity(
         denom = max(abs(g_mean_full[f]), abs(g_mean_full[rev]), _UNDERFLOW_DENOM)
         pair_antisym = max(pair_antisym, abs(g_mean_full[f] + g_mean_full[rev]) / denom)
 
-    # Default-on diagnostics: a poorly-converged solve still returns a
-    # finite-looking gradient. Warn on the ensemble median residual (robust to
-    # one wandering twin); info["resid"] still reports the max.
+    # Warn on the median twin residual; info["resid"] reports the max.
     _warn_poor_convergence(resid_median, fp_err, ensemble_spread, null_quality)
 
     if not bool(jnp.all(jnp.isfinite(dL_dlnk))):
@@ -1737,8 +1721,8 @@ def audit_adjoint_scope(
     rel = np.where(mask, defect / np.maximum(y_np, _UNDERFLOW_DENOM), 0.0)
     max_rel_defect = float(rel.max())
 
-    # skipped != passed: report the exclusion instead of silently shrinking
-    # the scan (fail-fast/announce rule).
+    # Skipped cells are not passed cells: report the exclusion instead of
+    # silently shrinking the scan.
     n_clip_dead = int((clip_dead & (y_np > 0.0) & (ymix >= min_ymix)).sum())
     clip_dead_worst = 0.0
     if n_clip_dead:

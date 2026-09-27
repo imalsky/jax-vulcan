@@ -52,7 +52,7 @@ def _check_jacobians(state) -> int:
     diff = np.abs(J_anal - J_dense)
     abs_max_dense = max(np.abs(J_dense).max(), 1e-300)
     relerr = diff / np.maximum(np.abs(J_dense), 1e-30)
-    # Use a sane absolute floor for cells near zero (cancellation noise).
+
     rel_significant = np.where(np.abs(J_dense) > SIGNIFICANT_FRAC * abs_max_dense, relerr, 0.0)
     max_rel = float(rel_significant.max())
 

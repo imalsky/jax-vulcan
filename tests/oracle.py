@@ -117,9 +117,7 @@ def run_oracle_subprocess(test_file, family: str,
     """Run `test_file`'s `main()` in a fresh process against an oracle COPY.
 
     The master/JAX module-table swap only works from a cold Python start, so
-    every upstream-comparison test re-execs itself. This is the shared body of
-    those wrappers: verify + copy the oracle, point the child at the copy, and
-    surface the child's output on failure.
+    every upstream-comparison test re-execs itself.
     """
     with oracle_worktree(family, config_rel,
                          fastchem_abundance=fastchem_abundance) as master:

@@ -19,7 +19,7 @@ os.chdir(ROOT)
 
 from oracle import oracle_dir_or_skip  # noqa: E402
 
-# The parent verifies the pin and passes a temporary copy (oracle.oracle_dir_or_skip).
+
 VULCAN_MASTER = oracle_dir_or_skip("this diffusion-variant comparison")
 warnings.filterwarnings("ignore")
 

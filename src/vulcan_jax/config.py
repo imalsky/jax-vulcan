@@ -5,15 +5,9 @@ package (``vulcan_jax/configs/*.yaml``) and are overridable by a ``./configs/``
 directory in the current working directory (CWD-first), so a run can be tuned
 locally without editing packaged files.
 
-``load_config(name_or_path, **overrides)`` reads a YAML file over the packaged
-``default.yaml`` (a knob the file omits takes that value), folds the
-import-frozen environment overrides, applies caller overrides, resolves the
-handful of values that are functions of other knobs, and returns a ``Config``
-namespace whose attribute surface is what the runtime reads
-(``cfg.nz``, ``cfg.network``, ...). ``default_config()`` is the process-wide
-default, loaded once from ``configs/default.yaml`` at first ``import
-vulcan_jax``; it resolves the import-frozen knobs (``network`` / ``atom_list``
-/ ``com_file``), honoring the ``$VULCAN_JAX_*`` overrides, once per process.
+``load_config(name_or_path, **overrides)`` returns a ``Config`` read over the
+packaged ``default.yaml``; ``default_config()`` is the cached process-wide
+default, read at the first ``import vulcan_jax``.
 """
 
 from __future__ import annotations

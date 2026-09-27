@@ -3,10 +3,10 @@
 VULCAN's `make_chem_funs.py` renumbers a network file in place the first time it
 runs, so a file that upstream has run through has `file_id == parser_position` on
 every row. A file that has been fetched from a remote, hand-edited, or simply
-never run does not. Five of the eleven networks vendored here are in that state.
+never run does not.
 
-Every index into k_arr (parser, legacy_io.ReadRate, rates.build_rate_array,
-apply_remove_list) is positional; keying photolysis by the id column puts a
+Every index into k_arr (parser, legacy_io.ReadRate, rates_jax.build_rate_array,
+rates_jax.apply_remove_list) is positional; keying photolysis by the id column puts a
 rate in the wrong slot or out of range.
 """
 

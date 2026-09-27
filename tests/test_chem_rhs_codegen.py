@@ -181,11 +181,8 @@ def _hd209_repeated_final_layer_fixture() -> tuple[
     if not saved.exists():
         saved = ROOT / "output" / "HD209.vul"
     if not saved.exists():
-        # This oracle is a converged run, not a checked-in .npz: it lives in the
-        # sibling jax_paper checkout or in local output/, so a bare clone (CI)
-        # cannot have it. Honour the suite's own reduced-coverage switch instead
-        # of failing every machine that has not run HD209 -- but only that
-        # switch, so an unset environment still fails rather than skips.
+        # A converged run, not a checked-in fixture, so a bare clone (CI) lacks
+        # it: skip only under the missing-fixture switch, fail otherwise.
         _missing = (
             "HD209 steady-state oracle absent; run "
             "`python -m vulcan_jax.vulcan_jax_cli --config HD209`"
@@ -291,10 +288,9 @@ def test_hd209_jacobian_projection_uses_same_reservoir_rows() -> None:
 
 
 def test_codegen_matches_numpy_oracle(hd189_state):
-    """Codegen RHS matches chem_rhs_numpy at 1e-5 with a per-species floor. The
-    floor (1e-12 of each species' peak |dydt|) absorbs cancellation on trace
-    species; 1e-5 absorbs XLA FMA fusion. The column is scaled by exp(U(-1,1))
-    off equilibrium: at the EQ seed the net RHS is a small difference of large
+    """Codegen RHS matches chem_rhs_numpy; the per-species floor absorbs
+    cancellation on trace species. The column is scaled by exp(U(-1,1)) off
+    equilibrium: at the EQ seed the net RHS is a small difference of large
     terms, where a per-cell relative comparison is ill-posed."""
     import vulcan_jax.network as net_mod
     from vulcan_jax.config import default_config

@@ -1,9 +1,8 @@
 """Matched-step, whole-model parity checks against VULCAN-master.
 
 The default HD189 config for 20 and 200 steps, plus the condensing column that
-pins the `fix_species` reservoir. Every test stages VULCAN-master only
-inside subprocesses and restores any changed config/FastChem files before
-returning.
+pins the `fix_species` reservoir. Every test runs VULCAN-master in a
+subprocess on a disposable oracle copy.
 
 The matched-step cases run the JAX side FROM MASTER'S OWN initial column
 (`_JAX_SCRIPT` swaps the `EQ` loader): the two codes seed from
@@ -27,8 +26,7 @@ ROOT = Path(__file__).resolve().parent.parent
 from _helpers import relerr
 from oracle import oracle_dir_or_sentinel
 
-# The parent verifies the pin and passes a temporary copy; the per-test
-# is_dir() skips below handle an unset oracle.
+
 VULCAN_MASTER = oracle_dir_or_sentinel()
 
 from vulcan_jax._paths import PACKAGE_ROOT
@@ -439,8 +437,7 @@ def test_default_hd189_preloop_and_matched_steps_match_master(
 
         assert list(jax["species"]) == list(master["species"])
         assert int(jax["nr"]) == int(master["nr"])
-        # Exact because the JAX run was seeded from this very array; the two
-        # SEEDS are compared, with their measured bar, in tests/test_eq_seed.py.
+        # Exact: the JAX run was seeded from this array.
         np.testing.assert_array_equal(jax["y_ini"], master["y_ini"])
         np.testing.assert_array_equal(jax["pco"], master["pco"])
         np.testing.assert_array_equal(jax["Tco"], master["Tco"])
@@ -519,11 +516,8 @@ CONDEN_KNOBS = {
     "use_print_prog": False,
     "save_evolution": False,
 }
-# Master-only knobs: `use_print_delta` and the plotter / live-UI switches,
-# which JAX's default.yaml does not carry, set off so master's plotter stays
-# quiet. The vm knobs are the same PRE-FLIP baseline as the HD189 cases above:
-# the pinned VULCAN 2 oracle has no refreshed-interface vm, and the hybrid
-# phase flip breaks the matched-count contract.
+# Master-only knobs (not in JAX's default.yaml) are off so master stays quiet.
+# The JAX-only vm knobs below use the pre-flip baseline of the HD189 cases above.
 CONDEN_MASTER_ONLY = {
     "use_print_delta": False,
     "use_live_plot": False,

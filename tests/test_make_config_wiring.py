@@ -1,14 +1,6 @@
-"""make_config() is a real public API: overrides reach setup AND the runner.
-
-With a make_config() namespace distinct from the global, this file pins:
-    1. grid overrides (nz / P_b / P_t) reach the pre-loop setup,
-    2. runner overrides (count_max) reach OuterLoop's static config,
-    3. nothing leaks onto the global vulcan_cfg module afterward,
-    4. an import-locked-network override fails fast with a clear message,
-    5. the clip normalization stays finite on a degenerate all-zero layer,
-    6. an OuterLoop refuses a RunState that has already run, and a second
-       fresh RunState's result reports its own atoms.
-"""
+"""make_config() overrides reach setup, the runner and the output writer
+without leaking onto the global config; import-locked overrides fail fast.
+Also covers RunState reuse and the clip on a degenerate layer."""
 
 from __future__ import annotations
 
@@ -45,7 +37,7 @@ def test_grid_and_runner_overrides_reach_setup_and_runner_without_leakage():
     global_pb_before = vulcan_cfg.P_b
     global_cmax_before = int(vulcan_cfg.count_max)
 
-    # A namespace distinct from the global module, with non-default grid + runner knobs.
+
     cfg = vulcan_jax.make_config(
         nz=12, P_b=1e5, P_t=1e-2, count_max=37, use_photo=False
     )
