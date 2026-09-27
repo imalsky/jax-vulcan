@@ -91,7 +91,7 @@ def test_returned_atm_carries_refreshed_zmco_and_vm():
 
     vc = _pin_cfg()
     vc.use_vm_mol, vc.use_hybrid_vm_mol = True, False
-    vc.count_max, vc.use_atm_refresh, vc.update_frq = 40, True, 5
+    vc.count_max, vc.update_frq = 40, 5
     rs = RunState.with_pre_loop_setup(vc)
     a0 = rs.atm
     a = outer_loop.OuterLoop(op_jax.Ros2JAX(), op.Output())(rs).atm

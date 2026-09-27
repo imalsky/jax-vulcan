@@ -1326,7 +1326,7 @@ def make_body_terms(integ, converged_state, atm_static):
     fix_mask = None
     fix_y = None
     cs = integ._conden_static
-    if bool(st.use_conden) and cs is not None:
+    if cs is not None:
         if started:
             # Post-window: species pinned via fix_mask inside the step;
             # conden no longer fires.

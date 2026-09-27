@@ -34,6 +34,7 @@ from test_vmap_while_loop import (
     _max_rel_diff,
     _pin_cfg,
 )
+from vulcan_jax.outer_loop import _ATM_ARRAY_FIELDS
 
 # The bound test_vmap_while_loop holds batched-vs-solo to; a refilled lane
 # differs from the plain batch for the same reason (cadence, not fixed point).
@@ -43,23 +44,13 @@ REL_MAX = RTOL
 TISO = (900.0, 1000.0, 1100.0, 1200.0, 1300.0)
 
 
-def _atm_array_fields():
-    """AtmStatic fields that carry the batch axis (the four toggle flags are
-    Python scalars and must never be indexed)."""
-    from vulcan_jax.jax_step import AtmStatic
-    from vulcan_jax.outer_loop import _ATM_STATIC_BATCH_AXES
-
-    return tuple(
-        f for f in AtmStatic._fields if getattr(_ATM_STATIC_BATCH_AXES, f) == 0
-    )
-
-
 def _take_jobs(jobs, sl):
-    """Slice a (state, atm) job pair on the job axis."""
+    """Slice a (state, atm) job pair on the job axis (the AtmStatic toggle
+    flags are Python scalars and must never be indexed)."""
     st, atm = jobs
     return (
         jax.tree_util.tree_map(lambda x: x[sl], st),
-        atm._replace(**{f: getattr(atm, f)[sl] for f in _atm_array_fields()}),
+        atm._replace(**{f: getattr(atm, f)[sl] for f in _ATM_ARRAY_FIELDS}),
     )
 
 
@@ -72,7 +63,7 @@ def _cat_jobs(a, b):
         a[1]._replace(
             **{
                 f: jnp.concatenate([getattr(a[1], f), getattr(b[1], f)], axis=0)
-                for f in _atm_array_fields()
+                for f in _ATM_ARRAY_FIELDS
             }
         ),
     )
