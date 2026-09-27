@@ -12,26 +12,16 @@ def _check_gradient():
     import jax.numpy as jnp
     import numpy as np
     from vulcan_jax.config import load_config
-    from vulcan_jax.state import RunState, legacy_view
-    from vulcan_jax.jax_step import make_atm_static
+    from vulcan_jax.state import RunState
     from vulcan_jax.op_jax import Ros2JAX
     from vulcan_jax.outer_loop import OuterLoop
     from vulcan_jax.legacy_io import Output
-    from vulcan_jax.network import parse_network
 
     jax.config.update("jax_enable_x64", True)
     cfg = load_config("default", use_photo=False, use_print_prog=False,
                       yconv_cri=1e-3, yconv_min=1e-3)
-    rs = RunState.with_pre_loop_setup(cfg)
-    _, atm, para = legacy_view(rs)
-    net = parse_network(cfg.network)
-    solver = Ros2JAX()
-    integ = OuterLoop(solver, Output(), cfg=cfg)
-    solver.naming_solver(para)
-    result = integ(rs)  # builds the compiled runner; rs remains the cold state
-    assert result.params.end_case == 1
-    state0 = integ._pack_state_from_runstate(rs)
-    static = make_atm_static(atm, net.ni, len(atm.Tco), cfg=integ._cfg)
+    integ = OuterLoop(Ros2JAX(), Output(), cfg=cfg)
+    state0, static = integ.prepare_runstate(RunState.with_pre_loop_setup(cfg))
 
     def run(kzz):
         final = integ._runner(state0, static._replace(Kzz=kzz))

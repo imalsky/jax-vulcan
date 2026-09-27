@@ -28,7 +28,6 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
 
 
 def _parse_quietly(net_rel_path: str):

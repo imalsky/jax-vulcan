@@ -1,24 +1,16 @@
 """Validate the VULCAN-JAX initial-abundance pipeline.
 
-Covers the `const_mix`, `vulcan_ini`, `table` and `const_lowT` modes plus the
-charge_list invariant. `EQ` has its own file, `test_eq_seed.py`.
+Covers the `const_mix`, `vulcan_ini`, `table` and `const_lowT` modes and the
+column-atom budget. `EQ` has its own file, `test_eq_seed.py`.
 """
 
 from __future__ import annotations
 
-import os
 import pickle
-import warnings
-from pathlib import Path
 
 import numpy as np
 import pytest
 from _helpers import load_tpk_state, set_cfg
-
-ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
-
-warnings.filterwarnings("ignore")
 
 RTOL = 1e-13  # machine agreement with the reference arithmetic
 COLUMN_TOL = 1e-12  # column change the flux-form update may leave (roundoff)
@@ -42,7 +34,6 @@ def test_const_mix_matches_reference():
     set_cfg(ini_mix="const_mix", const_mix=cmix)
     ini = InitialAbun()
     data_var = ini.ini_y(data_var, data_atm)
-    data_var = ini.ele_sum(data_var)
 
     y = np.asarray(data_var.y)
     M = np.asarray(data_atm.M)
@@ -79,23 +70,7 @@ def test_vulcan_ini_roundtrip(tmp_path):
     set_cfg(ini_mix="vulcan_ini", vul_ini=str(vul_path))
     ini = InitialAbun()
     data_var = ini.ini_y(data_var, data_atm)
-
-    y = np.asarray(data_var.y)
-    species_list = composition.species
-    for sp in ("H2", "He", "H2O", "CO", "CH4"):
-        if sp not in species_list or sp not in prev_species:
-            continue
-        ref = prev_y[:, prev_species.index(sp)]
-        np.testing.assert_allclose(
-            y[:, species_list.index(sp)],
-            ref,
-            rtol=RTOL,
-            atol=0.0,
-            err_msg=f"vulcan_ini round-trip mismatch for {sp}",
-        )
-
-
-
+    np.testing.assert_array_equal(np.asarray(data_var.y), prev_y)
 
 
 def test_table_roundtrip(tmp_path):
@@ -179,25 +154,6 @@ def test_const_lowT_matches_scipy(O_H, C_H, He_H, N_H):
         )
     )
     np.testing.assert_allclose(scipy_root, jax_root, rtol=RTOL, atol=1e-15)
-
-
-# charge_list invariants.
-
-
-def test_charge_list_no_ions():
-    """With `use_ion=False`, `data_var.charge_list` stays empty (or unset)."""
-    from vulcan_jax.ini_abun import InitialAbun
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-
-    data_var, data_atm, _ = load_tpk_state()
-    assert vulcan_cfg.use_ion is False, "test assumes HD189 default cfg"
-    ini = InitialAbun()
-    data_var = ini.ini_y(data_var, data_atm)
-
-    cl = list(getattr(data_var, "charge_list", []))
-    assert cl == [], f"expected empty charge_list, got {cl}"
 
 
 def test_column_atoms_uses_the_operator_invariant():

@@ -21,7 +21,6 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
 
 # The id column is optional (upstream never reads it); a blank id is a
 # real reaction row and occupies a position like any other.

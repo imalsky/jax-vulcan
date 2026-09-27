@@ -78,18 +78,14 @@ jobs:
       # The full tier: the `slow` tests only (the normal tier is tests.yml),
       # among them the CLI step-count gates HD189 1495 / HD209 1211 / W39b
       # 1202. HD189_vulcan3's count is arm64-only and is not run here.
-      # test_forward_jvp_physical is deselected: its one-step FD probe swings
-      # with CPU/XLA past the 30% bound on this runner
-      # (test_forward_jvp_integration is the FD gate). One worker: the
-      # W39b tangent certificate peaks at 12.6 GB, the W39b solver child at
-      # 10.7 GB.
+      # One worker: the W39b tangent certificate peaks at 12.6 GB, the W39b
+      # solver child at 10.7 GB.
       - name: Full tier
         if: matrix.family == 'vulcan2_ncho'
         env:
           VULCAN_JAX_RUN_SLOW: "1"
         run: >-
           python -m pytest tests -m slow -q --tb=short -ra --durations=15
-          --deselect tests/test_forward_jvp_physical.py
 
       # The oracle must come back byte-clean: upstream setup rewrites files in
       # place (make_chem_funs renumbers a network file, its FastChem build

@@ -20,29 +20,16 @@ os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
 
-def _pin_cfg():
-    """Pin vulcan_cfg for a fast, photo-off pre-loop setup.
-
-    This hook is orthogonal to the initial-abundance solver, so use the
-    5-mol `const_lowT` Newton solve instead of the full equilibrium seed to
-    keep the unit test fast and quiet.
-    """
-    return fast_cfg(count_max=40, Tiso=1000.0, ini_mix="const_lowT")
-
-
-def _build_rs(vulcan_cfg, *, skip_chem_warmup=False):
-    from vulcan_jax.state import RunState
-
-    return RunState.with_pre_loop_setup(vulcan_cfg, skip_chem_warmup=skip_chem_warmup)
-
-
 def test_skip_chem_warmup_runstate_identical():
     """skip_chem_warmup leaves every RunState array leaf byte-identical."""
     import jax
+    from vulcan_jax.state import RunState
 
-    cfg = _pin_cfg()
-    rs_warm = _build_rs(cfg, skip_chem_warmup=False)
-    rs_skip = _build_rs(cfg, skip_chem_warmup=True)
+    # The hook does not depend on the initial abundances, so the 5-mol
+    # const_lowT solve stands in for the slower equilibrium seed.
+    cfg = fast_cfg(count_max=40, Tiso=1000.0, ini_mix="const_lowT")
+    rs_warm = RunState.with_pre_loop_setup(cfg, skip_chem_warmup=False)
+    rs_skip = RunState.with_pre_loop_setup(cfg, skip_chem_warmup=True)
 
     # Drop `metadata` (its `start_time` leaf is a wall-clock time.time() that
     # differs per build) and `photo_static` (None here). The warmup touches
