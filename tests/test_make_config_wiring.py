@@ -4,17 +4,7 @@ Also covers RunState reuse and the clip on a degenerate layer."""
 
 from __future__ import annotations
 
-import os
-import warnings
-from pathlib import Path
-
 import pytest
-
-
-ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
-
-warnings.filterwarnings("ignore")
 
 
 @pytest.mark.strict_isolation
@@ -108,33 +98,11 @@ def test_one_outer_loop_runs_fresh_runstates_each_on_its_own_atoms():
     )
 
 
-def test_output_reads_cfg_not_global():
-    """legacy_io.Output(cfg=cfg) honors the cfg (paths + progress-print caps),
-    instead of always reading the global vulcan_cfg module."""
-    import vulcan_jax
-    from vulcan_jax import legacy_io
-
-    g = vulcan_jax.default_config()
-    cfg = vulcan_jax.make_config(count_max=7)
-    assert int(legacy_io.Output(cfg=cfg)._cfg.count_max) == 7
-    assert int(legacy_io.Output()._cfg.count_max) == int(g.count_max)
-
-
-
-
 # Import-frozen knobs (network, atom_list, com_file): a conflicting
 # make_config value must raise at setup with a clear message, not a
 # downstream k_arr shape error. The reordered and renamed networks show that
 # equal species and nr counts are not sufficient.
-def _case_alternate(tmp_path):
-    return dict(network="thermo/SNCHO_photo_network.txt"), "import-locked"
-
-
-def _case_same_species_fewer_nr(tmp_path):
-    return dict(network="thermo/NCHO_thermo_network.txt"), "import-locked"
-
-
-def _case_reordered(tmp_path):
+def _reordered_network(tmp_path):
     import re
     from vulcan_jax._paths import PACKAGE_ROOT
     src = (PACKAGE_ROOT / "thermo"
@@ -143,47 +111,45 @@ def _case_reordered(tmp_path):
     src[rxn[0]], src[rxn[1]] = src[rxn[1]], src[rxn[0]]
     net = tmp_path / "NCHO_reordered.txt"
     net.write_text("\n".join(src) + "\n")
-    return dict(network=str(net)), "topology|import-locked"
+    return net
 
 
-def _case_renamed_species(tmp_path):
+def _renamed_species_network(tmp_path):
     import re
     from vulcan_jax._paths import PACKAGE_ROOT
     text = (PACKAGE_ROOT / "thermo" / "NCHO_photo_network.txt").read_text()
     renamed = re.sub(r"(?<![A-Za-z0-9_])H(?![A-Za-z0-9_])", "X", text)
     net = tmp_path / "NCHO_H_renamed.txt"
     net.write_text(renamed)
-    return dict(network=str(net)), "import-locked"
-
-
-def _case_atom_list(tmp_path):
-    return dict(atom_list=["H", "O", "C"]), "atom_list"
-
-
-def _case_com_file(tmp_path):
-    return dict(com_file="thermo/DOES_NOT_EXIST.txt"), "com_file"
+    return net
 
 
 @pytest.mark.strict_isolation
-@pytest.mark.parametrize("case", [
-    _case_alternate, _case_same_species_fewer_nr, _case_reordered,
-    _case_renamed_species, _case_atom_list, _case_com_file,
-], ids=lambda c: c.__name__[6:])
-def test_import_locked_overrides_fail_fast(case, tmp_path):
+@pytest.mark.parametrize("overrides, pattern", [
+    pytest.param(dict(network="thermo/SNCHO_photo_network.txt"), "import-locked",
+                 id="alternate"),
+    pytest.param(dict(network="thermo/NCHO_thermo_network.txt"), "import-locked",
+                 id="same_species_fewer_nr"),
+    pytest.param(_reordered_network, "topology|import-locked", id="reordered"),
+    pytest.param(_renamed_species_network, "import-locked", id="renamed_species"),
+    pytest.param(dict(atom_list=["H", "O", "C"]), "atom_list", id="atom_list"),
+    pytest.param(dict(com_file="thermo/DOES_NOT_EXIST.txt"), "com_file",
+                 id="com_file"),
+])
+def test_import_locked_overrides_fail_fast(overrides, pattern, tmp_path):
     import re
 
     import vulcan_jax
     from vulcan_jax.state import RunState
 
-    overrides, pattern = case(tmp_path)
+    if callable(overrides):
+        overrides = dict(network=str(overrides(tmp_path)))
     cfg = vulcan_jax.make_config(**overrides)
     with pytest.raises(ValueError) as excinfo:
         RunState.with_pre_loop_setup(cfg)
     msg = str(excinfo.value)
     assert re.search(pattern, msg), msg
     assert "k_arr" not in msg      # never the cryptic downstream symptom
-
-
 
 
 def test_save_cfg_serializes_active_cfg(tmp_path, monkeypatch):

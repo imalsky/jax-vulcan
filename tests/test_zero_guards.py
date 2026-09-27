@@ -1,4 +1,5 @@
-"""A layer with ysum = 0 (diffusion coefficients) or mu = 0 (atm refresh) must give finite outputs."""
+"""A layer with ysum = 0 or disabled molecular diffusion (diffusion coefficients),
+or mu = 0 (atm refresh), must give finite outputs."""
 
 from __future__ import annotations
 
@@ -16,7 +17,8 @@ jax.config.update("jax_enable_x64", True)
 
 
 def test_diffusion_ysum_zero_layer():
-    """Diffusion coefficients must be finite even when a layer has ysum=0."""
+    """Diffusion terms must be finite when a layer has ysum=0 and when
+    molecular diffusion is off (Dzz=0, Hpi=0), where 0 * inf would give NaN."""
     from vulcan_jax.jax_step import AtmStatic, _build_diff_coeffs_jax, compute_diff_grav
 
     nz, ni = 8, 4
@@ -32,7 +34,7 @@ def test_diffusion_ysum_zero_layer():
         Dzz=jnp.zeros((nz - 1, ni)),
         dzi=jnp.full(nz - 1, 1e5),
         vz=jnp.zeros(nz - 1),
-        Hpi=jnp.full(nz - 1, 1e7),
+        Hpi=jnp.zeros(nz - 1),
         Ti=jnp.full(nz - 1, 1500.0),
         Tco=jnp.full(nz, 1500.0),
         g=jnp.full(nz, 1e3),
@@ -53,13 +55,10 @@ def test_diffusion_ysum_zero_layer():
     )
 
     grav = compute_diff_grav(atm)
-    A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, ysum = _build_diff_coeffs_jax(
-        y, atm, grav
-    )
+    coeffs = _build_diff_coeffs_jax(y, atm, grav)
 
-    assert jnp.all(jnp.isfinite(A_eddy)), "A_eddy contains NaN/Inf"
-    assert jnp.all(jnp.isfinite(B_eddy)), "B_eddy contains NaN/Inf"
-    assert jnp.all(jnp.isfinite(C_eddy)), "C_eddy contains NaN/Inf"
+    for array in (*grav, *coeffs):
+        assert jnp.all(jnp.isfinite(array))
 
 
 def test_atm_refresh_mu_zero_layer():

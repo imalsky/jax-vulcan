@@ -1,4 +1,5 @@
-"""Network-file integrity: no silent duplicates, pinned T-range exposure.
+"""Network-file integrity: no silent duplicates, positional photo indices,
+pinned T-range exposure.
 
 The parser is positional and appends every reaction row, so a reaction
 duplicated within one section is double-counted in both directions with no
@@ -12,12 +13,18 @@ range. Nothing enforces it at runtime (matching VULCAN-master), so
 `runtime_validation.report_rate_temp_ranges` reports the exposure once per
 run. The pinned counts are for the shipped atm-file profiles and move only
 with the network files or the range parser.
+
+Photolysis rates are indexed by parser position, never by the id column.
+VULCAN's `make_chem_funs.py` renumbers a network file in place the first time
+it runs, but a fetched, hand-edited or never-run file keeps stale ids, and
+keying photolysis by them puts a rate in the wrong k_arr slot or out of range.
 """
 
 from __future__ import annotations
 
 import glob
 import os
+import re
 import subprocess
 import sys
 import warnings
@@ -50,9 +57,12 @@ def _configured_networks() -> list[str]:
 
 @pytest.mark.parametrize("net_rel", _configured_networks(), ids=os.path.basename)
 def test_configured_networks_have_no_duplicate_reactions(net_rel):
-    """No network a shipped config selects may contain a double-counted row."""
-    _net, dup_msgs = _parse_quietly(net_rel)
+    """No network a shipped config selects may contain a double-counted row
+    or a stale photo/ion id column. Stale ids do not change the parse, but a
+    cfg.remove_list entry read off the file would select the wrong reaction."""
+    net, dup_msgs = _parse_quietly(net_rel)
     assert not dup_msgs, dup_msgs
+    assert not net.stale_ids, net.stale_ids
 
 
 _SHIPPED_NETWORKS = sorted(glob.glob("src/vulcan_jax/thermo/*network*.txt"))
@@ -72,6 +82,84 @@ def test_no_reaction_row_is_dropped(net_path):
         )
     net, _ = _parse_quietly(net_path)
     assert net.nr == 2 * rows, f"{net.nr // 2} rows parsed, {rows} in the file"
+
+
+# The id column is optional (upstream never reads it); a blank id is a
+# real reaction row and occupies a position like any other.
+_SECTION_RE = re.compile(r"^(\d*)\s*\[")
+
+
+def _file_ids_by_position(path: str) -> list[tuple[int, int, str]]:
+    """Return (position, written_id, section) for every reaction row in `path`.
+
+    Mirrors the section tracking in `network.parse_network` independently:
+    forward reactions occupy the odd positions 1, 3, 5, ... and each row
+    consumes two slots (forward + reverse).
+    """
+    out: list[tuple[int, int, str]] = []
+    section = "thermal"
+    pos = 1
+    for line in open(path, errors="replace"):
+        s = line.strip()
+        if s.startswith("#"):
+            low = s.lower()
+            if "photo disscoiation" in low or "photo dissociation" in low:
+                section = "photo"
+            elif "ionization" in low or "ionisation" in low:
+                section = "ion"
+            continue
+        m = _SECTION_RE.match(s)
+        if not m:
+            continue
+        out.append((pos, int(m.group(1) or 0), section))
+        pos += 2
+    return out
+
+
+@pytest.mark.parametrize("net_path", _SHIPPED_NETWORKS, ids=os.path.basename)
+def test_photo_rate_index_is_positional_and_in_range(net_path):
+    """The photo/ion indices must be exactly the parser positions of the
+    photo/ion rows, each an in-range odd (forward) slot of k_arr.
+
+    `k_arr` has `nr + 1` rows with row 0 unused, so a valid forward slot is
+    odd and `<= nr`.
+    """
+    # duplicates_ok: the positional-index invariant holds regardless of
+    # duplicated rows (TiSNCHO carries three;
+    # test_duplicate_reactions_refuse_naming_the_equations pins the refusal).
+    net, _ = _parse_quietly(net_path)
+    indices = list(net.pho_rate_index.values()) + list(net.ion_rate_index.values())
+
+    for idx in indices:
+        assert 1 <= idx <= net.nr, (
+            f"{os.path.basename(net_path)}: photo/ion index {idx} outside "
+            f"[1, nr={net.nr}] -- this is the IndexError into k_arr"
+        )
+        assert idx % 2 == 1, (
+            f"{os.path.basename(net_path)}: photo/ion index {idx} is even, so it "
+            "names a REVERSE slot; photolysis has no reverse"
+        )
+
+    positions = sorted(
+        pos
+        for pos, _fid, sec in _file_ids_by_position(net_path)
+        if sec in ("photo", "ion")
+    )
+    assert sorted(indices) == positions, (
+        f"{os.path.basename(net_path)}: photo/ion indices are not parser positions. "
+        "They must come from the position, not the file's id column."
+    )
+
+
+def test_stale_id_warning_fires_only_on_stale_rows():
+    """A stale file must announce itself; a renumbered one must stay quiet."""
+    from vulcan_jax.legacy_io import _warn_stale_reaction_ids
+
+    with pytest.warns(RuntimeWarning, match="remove_list"):
+        _warn_stale_reaction_ids("net.txt", [(781, 783, "H2O -> H + OH")])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        _warn_stale_reaction_ids("net.txt", [])
 
 
 def test_a_radiative_section_is_refused(tmp_path):
