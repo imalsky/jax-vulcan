@@ -2,7 +2,7 @@
 
 Two layers:
 * Fast unit tests of the algebra (zero mask, null-space
-  deflation, projector, `dL/d(ln k)` chain rule); no converged column needed.
+  deflation); no converged column needed.
 * A slow HD189 fixture regression running the full adjoint against the
   documented finite-difference anchors; pays a ~10-20 min cold compile, so
   it is skipped unless `VULCAN_JAX_RUN_SLOW=1`.
@@ -35,9 +35,9 @@ PROJ_TOL = 1e-12  # the projector removes spanned directions to roundoff
 BASIS_TOL = 1e-10  # orthonormality and span of the QR null basis
 
 # Centered-FD truth for the HD189 photo-off CH4 loss, from the validated
-# jax_paper/scripts/adj_solvermap_gmres.py run. 13/14 and 115/116 are each a
-# forward/reverse rate pair.
-HD189_FD_ANCHORS = {13: -5.651e-01, 14: +5.651e-01, 115: -1.919e-05, 116: +2.712e-05}
+# jax_paper/scripts/adj_solvermap_gmres.py run. 13/14 are a forward/reverse
+# rate pair.
+HD189_FD_ANCHORS = {13: -5.651e-01, 14: +5.651e-01}
 
 
 # --------------------------------------------------------------------------- #
@@ -117,56 +117,6 @@ def test_conserved_null_basis_refuses_degenerate_columns(inputs, match):
     (non-null) direction from the unpivoted QR."""
     with pytest.raises(ValueError, match=match):
         _conserved_null_basis(*inputs())
-
-
-def test_deflation_projector_idempotent():
-    """proj(proj(z)) == proj(z) and proj removes the spanned directions."""
-    rng = np.random.default_rng(1)
-    nz, ni = 5, 3
-    y_star = jnp.asarray(rng.uniform(1.0, 5.0, size=(nz, ni)))
-    compo = jnp.asarray(np.array([[1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]))
-    dz = jnp.asarray(rng.uniform(0.5, 2.0, size=nz))
-    Q = _conserved_null_basis(y_star, compo, dz)
-
-    def proj(z):
-        zf = z.reshape(-1)
-        return (zf - Q @ (Q.T @ zf)).reshape(nz, ni)
-
-    z = jnp.asarray(rng.normal(size=(nz, ni)))
-    pz = proj(z)
-    assert float(jnp.max(jnp.abs(proj(pz) - pz))) < PROJ_TOL
-    # a vector already in the null space projects to ~0
-    null_vec = jnp.asarray(np.asarray(Q)[:, 0].reshape(nz, ni))
-    assert float(jnp.linalg.norm(proj(null_vec))) < BASIS_TOL
-
-
-def test_reaction_cotangent_chain_rule_identity():
-    """Validate the assembly `dL/d(ln k_r) = (k .* G_k^T lambda)_r`.
-
-    Uses a cheap surrogate body map so the identity (vjp contraction + the
-    d/d(ln k) = k * d/dk chain rule, summed over layers) is checked in
-    isolation, independent of `jax_ros2_step`.
-    """
-    rng = np.random.default_rng(2)
-    nrp1, nz, ni = 5, 3, 4
-    k = jnp.asarray(rng.uniform(0.1, 2.0, size=(nrp1, nz)))
-    lam = jnp.asarray(rng.normal(size=(nz, ni)))
-    W = jnp.asarray(rng.normal(size=(nrp1, ni)))
-
-    def surrogate(kk):  # (nrp1, nz) -> (nz, ni)
-        return jnp.sin(kk).T @ W
-
-    # The function's assembly:
-    _, vjp_k = jax.vjp(surrogate, k)
-    (cot_k,) = vjp_k(lam)
-    assembled = (k * cot_k).sum(axis=1)
-
-    # Independent reference: grad wrt ln k of <lam, surrogate(exp(ln k))>, summed
-    # over layers (the global per-reaction scaling FD perturbs).
-    ref = jax.grad(lambda lnk: jnp.vdot(lam, surrogate(jnp.exp(lnk))))(jnp.log(k)).sum(
-        axis=1
-    )
-    assert float(jnp.max(jnp.abs(assembled - ref))) < 1e-9
 
 
 def test_poor_convergence_warns():

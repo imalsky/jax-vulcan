@@ -10,18 +10,10 @@ lanes' cross sections, photo firing and results differ; (3)
 
 from __future__ import annotations
 
-import os
-import warnings
-from pathlib import Path
-
 import numpy as np
 import pytest
 from _helpers import fast_cfg
 from test_vmap_while_loop import _build_integ, _max_rel_diff
-
-ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
-warnings.filterwarnings("ignore")
 
 COUNT_MAX = 30
 # Batched runs evaluate photolysis on the iteration tick (accepted states

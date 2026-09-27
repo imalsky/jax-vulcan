@@ -8,16 +8,7 @@ a field.
 
 from __future__ import annotations
 
-import os
-import warnings
-from pathlib import Path
-
 import numpy as np
-
-ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
-
-warnings.filterwarnings("ignore")
 
 
 def test_roundtrip_field_set_complete(hd189_state):

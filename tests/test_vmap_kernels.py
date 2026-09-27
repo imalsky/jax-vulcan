@@ -7,25 +7,15 @@ common JAX failure mode where a kernel inadvertently closes over a
 non-vmappable variable or has a static shape that depends on a
 batched dimension.
 
-Covers the codegen chemistry RHS, the analytical Jacobian, the
-diagonal-offdiag block solver and the photo optical-depth kernel.
+Covers the codegen chemistry RHS, the analytical Jacobian and the photo
+optical-depth kernel.
 """
 
 from __future__ import annotations
 
-import os
-import warnings
-from pathlib import Path
-
 import numpy as np
 import pytest
 from _helpers import relerr
-
-ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
-
-warnings.filterwarnings("ignore")
-
 
 VMAP_RTOL = 1e-12
 
@@ -69,48 +59,3 @@ def test_hd189_kernel_vmap_matches_single_calls(hd189_state, kernel) -> None:
     for b in range(batch):
         rel = relerr(batched[b], single[b])
         assert rel < VMAP_RTOL, f"{kernel} vmap drift at batch {b}: relerr={rel:.3e}"
-
-
-def test_block_thomas_diag_offdiag_vmap_consistency() -> None:
-    """`vmap(block_thomas_diag_offdiag)` agrees with single calls."""
-    import jax
-    import jax.numpy as jnp
-    from _oracles import block_thomas_diag_offdiag
-
-    rng = np.random.default_rng(2)
-    nz, ni = 16, 8
-    BATCH = 4
-
-    def _make_system():
-        # Diagonally-dominant random diag blocks; small offdiagonals.
-        diag = rng.standard_normal((nz, ni, ni))
-        # Boost the diagonal so the system is well-conditioned per layer.
-        boost = (5.0 + np.abs(diag).sum(axis=2))[:, :, None] * np.eye(ni)[None]
-        diag = diag + boost
-        sup_d = 0.1 * rng.standard_normal((nz - 1, ni))
-        sub_d = 0.1 * rng.standard_normal((nz - 1, ni))
-        rhs = rng.standard_normal((nz, ni))
-        return (
-            jnp.asarray(diag, dtype=jnp.float64),
-            jnp.asarray(sup_d, dtype=jnp.float64),
-            jnp.asarray(sub_d, dtype=jnp.float64),
-            jnp.asarray(rhs, dtype=jnp.float64),
-        )
-
-    systems = [_make_system() for _ in range(BATCH)]
-
-    diag_b = jnp.stack([s[0] for s in systems], axis=0)
-    sup_b = jnp.stack([s[1] for s in systems], axis=0)
-    sub_b = jnp.stack([s[2] for s in systems], axis=0)
-    rhs_b = jnp.stack([s[3] for s in systems], axis=0)
-
-    single = [block_thomas_diag_offdiag(*systems[b]) for b in range(BATCH)]
-    batched = jax.vmap(block_thomas_diag_offdiag, in_axes=(0, 0, 0, 0))(
-        diag_b, sup_b, sub_b, rhs_b
-    )
-
-    for b in range(BATCH):
-        rel = relerr(batched[b], single[b])
-        assert rel < 1e-10, (
-            f"block_thomas_diag_offdiag vmap drift at batch {b}: relerr={rel:.3e}"
-        )

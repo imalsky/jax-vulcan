@@ -8,18 +8,13 @@ master's y_time/t_time keys (plot_py/plot_evolution.py).
 
 from __future__ import annotations
 
-import os
 import pickle
-import warnings
 from pathlib import Path
 
 import numpy as np
 from _helpers import set_cfg
 
 ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
-
-warnings.filterwarnings("ignore")
 
 
 def test_save_evolution_snapshots_and_vul_round_trip():

@@ -3,15 +3,9 @@ or mu = 0 (atm refresh), must give finite outputs."""
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import jax
 import jax.numpy as jnp
 import numpy as np
-
-ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
 
 jax.config.update("jax_enable_x64", True)
 

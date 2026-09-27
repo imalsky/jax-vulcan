@@ -20,15 +20,7 @@ Pure data check: no EQ seed, no VULCAN-master, no integration.
 
 from __future__ import annotations
 
-import os
-import warnings
-from pathlib import Path
-
 import numpy as np
-
-ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
-warnings.filterwarnings("ignore")
 
 # IUPAC standard atomic weights (amu); 'e' is the electron mass. The table uses
 # slightly rounded conventions (e.g. O = 16.0), so a 0.12 amu tolerance absorbs

@@ -10,13 +10,7 @@ H2S alone (saturation capping, no kinetics) is master-legal and must pass.
 
 from __future__ import annotations
 
-import os
-from pathlib import Path
-
 import pytest
-
-ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
 
 
 @pytest.mark.parametrize(

@@ -16,17 +16,9 @@ again (~30 s on one core).
 
 from __future__ import annotations
 
-import os
-import warnings
-from pathlib import Path
-
 import numpy as np
 import pytest
 from _helpers import fast_cfg
-
-ROOT = Path(__file__).resolve().parent.parent
-os.chdir(ROOT)
-warnings.filterwarnings("ignore")
 
 # Termination via count_max for speed -> reason 3 ("too_many"). Kept small so
 # the whole batch integrates in a few seconds including JIT compile.
