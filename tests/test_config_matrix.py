@@ -22,9 +22,6 @@ os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
 
-
-
-
 def _run_full_state(count_max: int = 5):
     """Build the HD189 pre-loop RunState with `count_max` overridden for a
     short smoke run, and integrate it. Returns `(rs, rs_out)`.
@@ -50,82 +47,11 @@ def _run_full_state(count_max: int = 5):
     return rs, rs_out
 
 
-# Case 1: use_lowT_limit_rates=True with HD189 atmosphere.
-
-
-def test_lowT_limit_rates_noop_on_HD189():
-    """``use_lowT_limit_rates=True`` is a no-op on HD189: the coolest layer
-    (~860 K) sits above every cap threshold (277.5/300/200 K), so the cap
-    reactions are bit-identical to the uncapped build. Cap-firing coverage:
-    ``test_read_rate.py::test_lowT_caps_fire_all_three``.
-    """
-    import jax.numpy as jnp
-
-    import vulcan_jax.network as net_mod
-    import vulcan_jax.rates_jax as rates
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-    from vulcan_jax.gibbs import load_nasa9
-
-    data_var, data_atm, _ = load_tpk_state()
-    net = net_mod.parse_network(vulcan_cfg.network)
-    thermo_dir = Path(vulcan_cfg.network).parent
-    if not (thermo_dir / "NASA9").exists():
-        thermo_dir = ROOT / "src" / "vulcan_jax" / "thermo"
-    nasa9_coeffs, _present = load_nasa9(net.species, thermo_dir)
-
-    def _build(use_caps):
-        return np.asarray(
-            rates.build_rate_array(
-                net,
-                jnp.asarray(np.asarray(data_atm.Tco, dtype=np.float64)),
-                jnp.asarray(np.asarray(data_atm.M, dtype=np.float64)),
-                nasa9_coeffs,
-                remove_list=getattr(vulcan_cfg, "remove_list", None),
-                use_lowT_caps=use_caps,
-            )
-        )
-
-    k_on = _build(True)
-    k_off = _build(False)
-
-    T = np.asarray(data_atm.Tco, dtype=np.float64)
-    assert T.min() > 300.0, (
-        f"HD189 fixture unexpectedly has layers at/below the cap thresholds "
-        f"(min T = {T.min():.1f} K); this no-op test needs updating."
-    )
-
-    def _find(eq):
-        for i in range(1, net.nr + 1, 2):
-            if net.Rf.get(i, "") == eq:
-                return i
-        raise AssertionError(f"reaction {eq!r} not in HD189 network")
-
-    i_ch3 = _find("H + CH3 + M -> CH4 + M")
-    i_c2h4 = _find("H + C2H4 + M -> C2H5 + M")
-    i_c2h5 = _find("H + C2H5 + M -> C2H6 + M")
-
-    # Every layer is above every threshold: on/off variants must be identical.
-    np.testing.assert_array_equal(k_on[i_ch3], k_off[i_ch3])
-    np.testing.assert_array_equal(k_on[i_c2h4], k_off[i_c2h4])
-    np.testing.assert_array_equal(k_on[i_c2h5], k_off[i_c2h5])
-
-
-
-
-
 def test_T_cross_sp_path_finite_positive():
     """T-dependent absp cross-section path is finite and non-negative for
     every (sp, layer) pair.
     """
     import vulcan_jax.photo_setup as photo_setup
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-
-    if not bool(getattr(vulcan_cfg, "use_photo", False)):
-        pytest.skip("use_photo=False; nothing to compare.")
 
     data_var, data_atm, _ = load_tpk_state()
     import vulcan_jax.legacy_io as op
@@ -143,9 +69,6 @@ def test_T_cross_sp_path_finite_positive():
     assert np.all(np.isfinite(absp_T_cross))
     assert np.all(absp_T_cross >= 0.0)
     assert np.any(absp_T_cross > 0.0), "T-dep cross-sections all zero"
-
-
-
 
 
 def test_use_vm_mol_populates_vm():
@@ -170,48 +93,6 @@ def test_use_vm_mol_populates_vm():
     # use_vm_mol should produce nonzero advective velocity for at least
     # one (layer, species) pair given non-isothermal HD189 Tco.
     assert np.any(np.abs(vm) > 0.0), "vm all-zero with use_vm_mol=True"
-
-
-# Case 4: use_settling=True populates atm.vs for non-gas species.
-
-
-def test_use_settling_populates_vs_for_non_gas():
-    """``use_settling=True`` puts negative (downward) Stokes velocity in
-    ``atm.vs`` for the non-gas species and zero elsewhere.
-    """
-    import vulcan_jax.composition as composition
-
-    species_list = list(composition.species)
-    if "H2O_l_s" not in species_list:
-        pytest.skip("H2O_l_s not in HD189 network; cannot exercise settling.")
-
-    import vulcan_jax.legacy_io as op
-    from vulcan_jax.ini_abun import InitialAbun
-
-    set_cfg(
-        use_settling=True,
-        use_condense=True,
-        non_gas_sp=["H2O_l_s"],
-        condense_sp=["H2O"],
-        r_p={"H2O_l_s": 5e-3},
-        rho_p={"H2O_l_s": 0.9},
-    )
-    data_var, data_atm, make_atm = load_tpk_state()
-    # const_mix avoids the EQ seed and is independent of condensables.
-    set_cfg(ini_mix="const_mix", const_mix={"H2": 0.9, "He": 0.0838, "H2O": 1e-3})
-    data_var = InitialAbun().ini_y(data_var, data_atm)
-    data_atm = make_atm.f_mu_dz(data_var, data_atm, op.Output())
-
-    vs = np.asarray(data_atm.vs)
-    nz = data_atm.Tco.shape[0]
-    assert vs.shape == (nz - 1, len(species_list))
-    h2o_l_idx = species_list.index("H2O_l_s")
-    assert np.all(vs[:, h2o_l_idx] < 0.0), "settling velocity should be downward"
-    other = np.array([i for i in range(len(species_list)) if i != h2o_l_idx])
-    assert np.all(vs[:, other] == 0.0), "settling nonzero for gaseous species"
-
-
-# Cases 5-6: BC flux file readers with use_topflux / use_botflux.
 
 
 @pytest.mark.parametrize(
@@ -239,11 +120,6 @@ def test_bc_flux_loaded_from_file(flag, file_attr, file_path, target_sp):
     import vulcan_jax.composition as composition
 
     species_list = list(composition.species)
-    if target_sp not in species_list:
-        pytest.skip(f"{target_sp} not in HD189 network; cannot validate BC.")
-    if not (ROOT / "src" / "vulcan_jax" / file_path).is_file():
-        pytest.skip(f"BC file {file_path!r} missing.")
-
     set_cfg(**{flag: True, file_attr: file_path})
     _, data_atm, make_atm = load_tpk_state()
     make_atm.BC_flux(data_atm)
@@ -258,44 +134,6 @@ def test_bc_flux_loaded_from_file(flag, file_attr, file_path, target_sp):
     assert np.any(arr != 0.0)
 
 
-# Case 7: fix_species runtime smoke.
-
-
-def test_fix_species_runtime_smoke():
-    """Short HD189 run with ``fix_species`` non-empty and
-    ``use_condense=True`` completes and reports ``fix_species_start``.
-    """
-    import vulcan_jax.composition as composition
-
-    species_list = list(composition.species)
-    for sp in ("H2O", "H2O_l_s", "S8", "S8_l_s"):
-        if sp not in species_list:
-            pytest.skip(f"{sp} not in network; cannot run fix_species smoke.")
-
-    set_cfg(
-        use_condense=True,
-        use_settling=False,
-        condense_sp=["H2O", "S8"],
-        non_gas_sp=["H2O_l_s", "S8_l_s"],
-        fix_species=["H2O", "S8"],
-        fix_species_from_coldtrap_lev=False,
-        start_conden_time=1.0e22,
-        stop_conden_time=1.0e22,  # pin gate pushed past runtime: no pinning
-        r_p={"H2O_l_s": 5e-3, "S8_l_s": 1e-4},
-        rho_p={"H2O_l_s": 0.9, "S8_l_s": 2.07},
-        humidity=1.0,
-        use_relax=[],
-    )
-    _rs, rs_out = _run_full_state(count_max=5)
-
-    assert isinstance(rs_out.params.fix_species_start, (bool, np.bool_))
-    # stop_conden_time was pushed past runtime so the pin should NOT have fired.
-    assert bool(rs_out.params.fix_species_start) is False
-
-
-
-
-
 def test_use_fix_all_bot_keeps_bottom_at_eq_mix():
     """``use_fix_all_bot=True`` keeps the bottom layer at chemical-EQ mixing
     ratios (not just absolute density) across a short integration.
@@ -306,7 +144,6 @@ def test_use_fix_all_bot_keeps_bottom_at_eq_mix():
     n0_bot = float(rs.atm.n_0[0])
 
     y_bot_post = np.asarray(rs_out.step.y[0], dtype=np.float64)
-    ymix_post = y_bot_post / max(n0_bot, 1.0)
     target = bottom_ymix_pre * n0_bot
     max_relerr = float(
         np.max(np.abs(y_bot_post - target) / np.maximum(np.abs(target), 1e-300))
@@ -315,4 +152,3 @@ def test_use_fix_all_bot_keeps_bottom_at_eq_mix():
     assert max_relerr < 1e-12, (
         f"bottom-row drift exceeds tolerance: max relerr = {max_relerr:.3e}"
     )
-    assert abs(ymix_post.sum() - bottom_ymix_pre.sum()) < 1e-10

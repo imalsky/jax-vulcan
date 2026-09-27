@@ -270,11 +270,13 @@ def test_build_rate_array_with_lowT_caps(hd189_state):
     k_off = _build(False)
     k_on = _build(True)
 
-    i_c2h4 = _find_rxn_idx(net, "H + C2H4 + M -> C2H5 + M")
     T = np.asarray(hd189_state.atm.Tco)
 
     assert T.min() > 300.0, (
         f"HD189 fixture unexpectedly has layers at/below the cap threshold "
         f"(min T = {T.min():.1f} K); this no-op test needs updating."
     )
-    np.testing.assert_array_equal(k_on[i_c2h4], k_off[i_c2h4])
+    for eq in ("H + CH3 + M -> CH4 + M", "H + C2H4 + M -> C2H5 + M",
+               "H + C2H5 + M -> C2H6 + M"):
+        i = _find_rxn_idx(net, eq)
+        np.testing.assert_array_equal(k_on[i], k_off[i])

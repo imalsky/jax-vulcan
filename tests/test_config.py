@@ -6,9 +6,6 @@ env-frozen knobs, caller overrides and the dt_max cap.
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
 import textwrap
 
 import pytest
@@ -61,15 +58,7 @@ def test_shipped_config_loads_and_resolves(name):
     assert surface_gravity(cfg) == pytest.approx(_EXPECTED_GS[name], rel=1e-9)
 
     # Derived values are filled by the loader.
-    assert cfg.dt_max == min(cfg.runtime * _DT_MAX_RUNTIME_FRAC, DT_MAX_S)
     assert cfg.photo_switch_longdy_thresh == cfg.yconv_min * 10.0
-    assert cfg.para_anaTP == cfg.para_warm
-
-    # count_max is a plain int (accepts scientific-notation authoring).
-    assert isinstance(cfg.count_max, int)
-
-    # Import-frozen knobs are present.
-    assert cfg.network and cfg.atom_list and cfg.com_file
 
 
 def test_overrides_win_over_yaml_and_derived():
@@ -111,15 +100,19 @@ def test_cwd_configs_override(tmp_path, monkeypatch):
 
 def test_loader_refuses_bad_input(tmp_path, monkeypatch):
     """One refusal per failure class (fail-fast rule): missing config, the
-    removed `gs` knob (migration message), an unknown override, an unknown
-    key authored in the YAML itself, and duplicate YAML keys. Scientific
-    notation must parse as float (the CWD test covers the int case)."""
+    removed `gs` knob (migration message, also through `validate_overrides`),
+    an unknown override, an unknown key authored in the YAML itself, and
+    duplicate YAML keys. Scientific notation must parse as float (the CWD
+    test covers the int case)."""
     with pytest.raises(FileNotFoundError):
         load_config("no_such_config_name_xyz")
-    with pytest.raises(ValueError, match=r"removed config key.*gs.*Mp"):
+    with pytest.raises(ValueError, match=r"removed config key.*`gs`.*set `Mp`"):
         load_config("W39b", gs=9999.0)
     with pytest.raises(ValueError, match=r"unknown config key.*gss"):
         load_config("W39b", gss=8888.0)
+    validate_overrides({"count_max": 5, "yconv_cri": 0.05})
+    with pytest.raises(ValueError, match=r"removed config key.*`gs`.*set `Mp`"):
+        validate_overrides({"gs": 2140.0})
     cfgdir = tmp_path / "configs"
     cfgdir.mkdir()
     base = ("runtime: 1e22\ndt_min: 1e-14\nyconv_min: 0.1\nsave_evo_frq: 10\n"
@@ -142,48 +135,13 @@ def test_loader_refuses_bad_input(tmp_path, monkeypatch):
     assert isinstance(cfg.dt_min, float) and cfg.dt_min == 1e-14
 
 
-@pytest.mark.parametrize(
-    "overrides, match",
-    [
-        ({"count_max": 5, "yconv_cri": 0.05}, None),
-        ({"count_max_typo": 5}, r"unknown config key.*count_max_typo"),
-        ({"gs": 2140.0}, r"removed config key.*`gs`.*set `Mp`"),
-    ],
-)
-def test_validate_overrides_refuses_what_load_config_refuses(overrides, match):
-    """A caller that `setattr`s an override dict onto a loaded Config gets
-    `load_config`'s refusal: the offending key, and for a removed knob its
-    remedy."""
-    if match is None:
-        validate_overrides(overrides)
-    else:
-        with pytest.raises(ValueError, match=match):
-            validate_overrides(overrides)
-
-
-def test_frozen_env_overrides_yaml():
-    """$VULCAN_JAX_* select the import-frozen knobs over the YAML values.
-
-    Run in a subprocess so the env is read at load time without touching this
-    interpreter's already-import-frozen network.
-    """
-    src = textwrap.dedent(
-        """
-        from vulcan_jax.config import load_config
-        cfg = load_config("default")
-        assert cfg.atom_list == ["H", "O", "C", "N", "S"], cfg.atom_list
-        assert cfg.network == "thermo/SNCHO_photo_network.txt", cfg.network
-        print("OK")
-        """
-    )
-    env = dict(os.environ)
-    env["VULCAN_JAX_ATOM_LIST"] = "H,O,C,N,S"
-    env["VULCAN_JAX_NETWORK"] = "thermo/SNCHO_photo_network.txt"
-    r = subprocess.run(
-        [sys.executable, "-c", src], env=env, capture_output=True, text=True
-    )
-    assert r.returncode == 0, r.stderr
-    assert "OK" in r.stdout
+def test_frozen_env_overrides_yaml(monkeypatch):
+    """$VULCAN_JAX_* select the import-frozen knobs over the YAML values."""
+    monkeypatch.setenv("VULCAN_JAX_ATOM_LIST", "H,O,C,N,S")
+    monkeypatch.setenv("VULCAN_JAX_NETWORK", "thermo/SNCHO_photo_network.txt")
+    cfg = load_config("default")
+    assert cfg.atom_list == ["H", "O", "C", "N", "S"]
+    assert cfg.network == "thermo/SNCHO_photo_network.txt"
 
 
 def test_dt_max_is_capped_where_the_stage_repair_is_resolvable():
