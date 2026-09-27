@@ -7,15 +7,11 @@ compares against. The fixtures are gitignored; `tests/gen_fixtures.py --all`
 drives this script.
 
 Run from VULCAN-JAX/:
-    python tests/_gen_photo_baseline.py [--out DIR]
-
-`--out DIR` writes elsewhere (e.g. to validate the generator against an
-existing capture without overwriting it).
+    python tests/_gen_photo_baseline.py
 """
 
 from __future__ import annotations
 
-import argparse
 import os
 from pathlib import Path
 
@@ -28,23 +24,14 @@ FIXTURE_DIR = ROOT / "tests" / "data"
 
 
 def build_state_through_read_rate():
-    """Run the pre-photo VULCAN setup and return (var, atm).
-
-    The legacy mutable containers are needed because
-    `photo_setup._build_photo_static_dense` reads dict attrs that
-    `legacy_io.ReadRate.read_rate` writes onto `var`.
-    """
+    """Return (var, atm) after the pre-photo setup and ReadRate, in the legacy
+    containers: `photo_setup._build_photo_static_dense` reads dict attrs that
+    `legacy_io.ReadRate.read_rate` writes onto `var`."""
     import vulcan_jax.legacy_io as op
-    from vulcan_jax.atm_setup import Atm
-    from vulcan_jax.state import _AtmData, _Variables
+    from _helpers import load_tpk_state
 
-    data_var = _Variables()
-    data_atm = _AtmData()
-    make_atm = Atm()
-    data_atm = make_atm.f_pico(data_atm)
-    data_atm = make_atm.load_TPK(data_atm)
-    data_var = op.ReadRate().read_rate(data_var, data_atm)
-    return data_var, data_atm
+    var, atm, _ = load_tpk_state()
+    return op.ReadRate().read_rate(var, atm), atm
 
 
 def _static_to_npz_dict(static) -> dict:
@@ -70,7 +57,7 @@ def _static_to_npz_dict(static) -> dict:
     return out
 
 
-def main(out_dir: Path = FIXTURE_DIR) -> int:
+def main() -> int:
     import vulcan_jax.photo_setup as photo_setup
     from vulcan_jax.config import default_config
 
@@ -81,11 +68,11 @@ def main(out_dir: Path = FIXTURE_DIR) -> int:
             "use_photo=False in vulcan_cfg; the fixtures need the photo path on."
         )
 
-    out_dir.mkdir(parents=True, exist_ok=True)
+    FIXTURE_DIR.mkdir(parents=True, exist_ok=True)
 
     var, atm = build_state_through_read_rate()
     static = photo_setup._build_photo_static_dense(var, atm)
-    path = out_dir / "photo_setup_hd189_baseline.npz"
+    path = FIXTURE_DIR / "photo_setup_hd189_baseline.npz"
     np.savez(path, **_static_to_npz_dict(static))
     print(f"wrote {path}")
 
@@ -94,7 +81,7 @@ def main(out_dir: Path = FIXTURE_DIR) -> int:
         vulcan_cfg.T_cross_sp = ["CO2", "H2O", "NH3"]
         var, atm = build_state_through_read_rate()
         static = photo_setup._build_photo_static_dense(var, atm)
-        path = out_dir / "photo_setup_hd189_T_dep.npz"
+        path = FIXTURE_DIR / "photo_setup_hd189_T_dep.npz"
         np.savez(path, **_static_to_npz_dict(static))
         print(f"wrote {path}")
     finally:
@@ -103,7 +90,4 @@ def main(out_dir: Path = FIXTURE_DIR) -> int:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--out", type=Path, default=FIXTURE_DIR)
-    args = parser.parse_args()
-    raise SystemExit(main(args.out))
+    raise SystemExit(main())

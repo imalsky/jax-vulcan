@@ -106,7 +106,7 @@ def main() -> int:
         diag_prod[0] = diag_prod[0] - np.asarray(data_atm.bot_vdep) / float(
             data_atm.dzi[0]
         )
-    diag_ref, sup_ref, sub_ref = diff_ref.diffusion_block_diags(coeffs, ni)
+    diag_ref, sup_ref, sub_ref = diff_ref.diffusion_block_diags(coeffs)
     for label, p, r in (
         ("diag", diag_prod, diag_ref),
         ("sup", sup_prod, sup_ref),
@@ -213,7 +213,7 @@ def test_vm_mode_kernel_matches_reference():
         diag_prod[0] = diag_prod[0] - np.asarray(data_atm.bot_vdep) / float(
             data_atm.dzi[0]
         )
-    diag_ref, sup_ref, sub_ref = diff_ref.diffusion_block_diags(coeffs, ni)
+    diag_ref, sup_ref, sub_ref = diff_ref.diffusion_block_diags(coeffs)
     for label, p, r in (
         ("diag", diag_prod, diag_ref),
         ("sup", sup_prod, sup_ref),

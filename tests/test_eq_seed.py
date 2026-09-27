@@ -263,7 +263,6 @@ def _master_cfg(master_root: Path, config_name: str, scratch: Path) -> Path:
     return cfg_path
 
 
-@pytest.mark.master_serial
 @pytest.mark.parametrize(
     "config_name, abundance", [c[1:] for c in CASES], ids=[c[0] for c in CASES]
 )

@@ -10,8 +10,8 @@ process; each case runs in its own process (`tests/gen_fixtures.py` handles
 the fan-out; running this module directly builds exactly one case).
 
 Run from VULCAN-JAX/:
-    python tests/_gen_adj_state.py hd189 [--out DIR]
-    python tests/_gen_adj_state.py w39b  [--out DIR]
+    python tests/_gen_adj_state.py hd189
+    python tests/_gen_adj_state.py w39b
 
 Prefer `python tests/gen_fixtures.py --all`, which drives both plus the two
 photo fixtures and writes the provenance manifest.
@@ -91,7 +91,7 @@ def build_hd189(out_dir: Path) -> Path:
     solver = op_jax.Ros2JAX()
     integ = outer_loop.OuterLoop(solver, op.Output(cfg=cfg), cfg=cfg)
     solver.naming_solver(para)
-    _ = integ(rs)
+    integ.prepare_runstate(rs)  # builds the runner without running it
     atm_static = make_atm_static(atm_d, ni, nz, cfg=integ._cfg)
     state0 = integ._pack_state_from_runstate(rs)
     final = integ._runner(state0, atm_static)
@@ -191,7 +191,7 @@ def build_w39b(out_dir: Path) -> Path:
         solver._photo_static = rs.photo_static
     integ = outer_loop.OuterLoop(solver, op.Output(cfg=cfg), cfg=cfg)
     solver.naming_solver(para)
-    _ = integ(rs)
+    integ.prepare_runstate(rs)  # builds the runner without running it
     atm_static = make_atm_static(atm, ni, nz, cfg=cfg)
     state0 = integ._pack_state_from_runstate(rs)
     final = integ._runner(state0, atm_static)
@@ -226,9 +226,8 @@ def main(argv=None) -> int:
     ap.add_argument("case", choices=sorted(BUILDERS),
                     help="which adjoint state to build (one per process: the "
                          "reaction network is import-locked)")
-    ap.add_argument("--out", type=Path, default=FIXTURE_DIR)
     args = ap.parse_args(argv)
-    BUILDERS[args.case](args.out)
+    BUILDERS[args.case](FIXTURE_DIR)
     return 0
 
 

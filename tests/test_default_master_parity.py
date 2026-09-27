@@ -343,7 +343,6 @@ def _atom_dict(data: np.lib.npyio.NpzFile) -> dict[str, float]:
     }
 
 
-@pytest.mark.master_serial
 def test_audit_refuses_a_contaminated_oracle() -> None:
     """The audit refuses an oracle checkout carrying VULCAN-JAX's own code (auditing against it is circular)."""
     from tools.audit_master_parity import _check_oracle_is_pristine
@@ -361,7 +360,6 @@ def test_audit_refuses_a_contaminated_oracle() -> None:
     assert any("no .git" in e for e in errors)
 
 
-@pytest.mark.master_serial
 def test_audit_master_parity_against_pinned_oracle() -> None:
     """The static HD189 audit is clean against its exact, pristine oracle."""
     from oracle import require_oracle
@@ -372,7 +370,6 @@ def test_audit_master_parity_against_pinned_oracle() -> None:
     assert errors == []
 
 
-@pytest.mark.master_serial
 @pytest.mark.parametrize(
     "count_max, update_frq, diff_esc, rtol, ymix_min", MATCHED_CASES
 )
@@ -680,7 +677,6 @@ print("JAX_OK")
 '''
 
 
-@pytest.mark.master_serial
 def test_conden_fix_species_pin_matches_master() -> None:
     """The `fix_species` pin freezes the reservoir master freezes.
 

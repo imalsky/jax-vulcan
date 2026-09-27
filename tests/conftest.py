@@ -9,7 +9,6 @@ HD189 pre-loop state so tests avoid re-running rates / the EQ seed / photo setup
 from __future__ import annotations
 
 import copy
-import fcntl as _fcntl
 import os
 import sys
 import warnings
@@ -60,22 +59,6 @@ def _clear_jax_caches() -> None:
         clear()
 
 
-def _snapshot_cfg_attrs(cfg_module) -> dict:
-    """Deep-copy every public attribute of `cfg_module` for later restore."""
-    snap = {}
-    for name in dir(cfg_module):
-        if name.startswith("_"):
-            continue
-        val = getattr(cfg_module, name)
-        if isinstance(val, type) or hasattr(val, "__loader__"):
-            continue
-        try:
-            snap[name] = copy.deepcopy(val)
-        except (TypeError, copy.Error):
-            pass  # an uncopyable attribute is not snapshotted
-    return snap
-
-
 @pytest.fixture(scope="session", autouse=True)
 def _cfg_snapshot_session():
     """Snapshot the process default config (a single object that
@@ -84,28 +67,17 @@ def _cfg_snapshot_session():
     from vulcan_jax.config import default_config
 
     canonical = default_config()
-    snap = {"cfg": canonical, "attrs": _snapshot_cfg_attrs(canonical)}
+    snap = {"cfg": canonical, "attrs": copy.deepcopy(vars(canonical))}
     yield snap
     _restore_cfg(snap)
 
 
 def _restore_cfg(snap: dict) -> None:
-    """Restore every snapshotted attribute on the process default config and
+    """Restore the process default config in place (keeping its identity) and
     drop any attribute a test added."""
-    canonical = snap["cfg"]
-    snap_attrs = snap["attrs"]
-    for name, val in snap_attrs.items():
-        try:
-            setattr(canonical, name, copy.deepcopy(val))
-        except (TypeError, copy.Error):
-            setattr(canonical, name, val)
-    for name in list(vars(canonical).keys()):
-        if name.startswith("_") or name in snap_attrs:
-            continue
-        try:
-            delattr(canonical, name)
-        except AttributeError:
-            pass
+    attrs = vars(snap["cfg"])
+    attrs.clear()
+    attrs.update(copy.deepcopy(snap["attrs"]))
 
 
 @pytest.fixture(autouse=True)
@@ -129,39 +101,6 @@ def _release_jax_caches_per_module():
     caches do not exhaust runner memory."""
     yield
     _clear_jax_caches()
-
-
-# Cross-process serialisation for master-touching tests.
-
-_MASTER_LOCK = ROOT / "tests" / ".master_lock"
-
-
-@pytest.fixture(autouse=True)
-def _master_lock(request):
-    """Serialise master-touching tests via cross-process flock."""
-    if request.node.get_closest_marker("master_serial") is None:
-        yield
-        return
-    _MASTER_LOCK.touch(exist_ok=True)
-    with open(_MASTER_LOCK, "r") as lock_f:
-        _fcntl.flock(lock_f, _fcntl.LOCK_EX)
-        try:
-            yield
-        finally:
-            _fcntl.flock(lock_f, _fcntl.LOCK_UN)
-
-
-def pytest_configure(config):
-    config.addinivalue_line(
-        "markers",
-        "master_serial: serialize across pytest-xdist workers via "
-        "tests/.master_lock for tests that read or write VULCAN-master.",
-    )
-    config.addinivalue_line(
-        "markers",
-        "strict_isolation: restore the default config and clear JAX caches "
-        "before and after the test.",
-    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -222,22 +161,18 @@ def hd189_state(_hd189_pristine: HD189State) -> HD189State:
 # --- numerical-oracle fixture guard -----------------------------------------
 # Untracked .npz oracles (~36 MB; `python tests/gen_fixtures.py --all`). A
 # missing one would make its tests skip and the suite pass, so collection
-# fails instead. path -> the generator that writes it.
-_EXPECTED_FIXTURES = {
-    "tests/data/adj_state_hd189.npz": "tests/_gen_adj_state.py hd189",
-    "tests/data/adj_state_w39b.npz": "tests/_gen_adj_state.py w39b",
-    "tests/data/photo_setup_hd189_baseline.npz": "tests/_gen_photo_baseline.py",
-    "tests/data/photo_setup_hd189_T_dep.npz": "tests/_gen_photo_baseline.py",
-}
+# fails instead.
 
 
 def pytest_collection_finish():
     """Fail loudly when a numerical oracle is missing (skipped != passed)."""
-    root = Path(__file__).resolve().parents[1]
+    from gen_fixtures import FIXTURE_DIR, GENERATORS
+
     missing = {
-        rel: how
-        for rel, how in _EXPECTED_FIXTURES.items()
-        if not (root / rel).is_file()
+        f"tests/data/{name}": " ".join(g["argv"][1:])
+        for g in GENERATORS.values()
+        for name in g["writes"]
+        if not (FIXTURE_DIR / name).is_file()
     }
     if not missing:
         return

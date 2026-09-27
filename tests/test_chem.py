@@ -11,7 +11,6 @@ import warnings
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -155,7 +154,6 @@ def main() -> int:
     return 0 if ok else 1
 
 
-@pytest.mark.master_serial
 def test_main():
     """Runs main() in a fresh subprocess: the master/JAX module-table swap
     only works from a cold Python start."""

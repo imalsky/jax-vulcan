@@ -336,7 +336,6 @@ def test_codegen_matches_numpy_oracle(hd189_state):
         assert r < CODEGEN_RTOL, f"bulk species {sp} relerr={r:.3e} > {CODEGEN_RTOL:g}"
 
 
-@pytest.mark.master_serial
 def test_codegen_matches_master_chemdf():
     """Codegen RHS matches VULCAN-master's `chemdf` at rtol=1e-5 on the
     whitelisted bulk species (measured worst cell ~2e-13; the loose threshold

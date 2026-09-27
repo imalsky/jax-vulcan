@@ -11,7 +11,6 @@ import warnings
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -108,7 +107,7 @@ def main() -> int:
         print(f"  jax={diff_jax[max_idx]:.4e} ref={diff_ref[max_idx]:.4e}")
 
     # === Compare Jacobian blocks ===
-    diag_d, sup_d, sub_d = diff_mod.diffusion_block_diags(coeffs, ni)
+    diag_d, sup_d, sub_d = diff_mod.diffusion_block_diags(coeffs)
 
     # Isolate the diffusion blocks as (lhs_ref - c0*I - chem_jac_ref).
     r = 1.0 + 1.0 / np.sqrt(2.0)
@@ -177,7 +176,6 @@ def main() -> int:
     return 0 if ok else 1
 
 
-@pytest.mark.master_serial
 def test_main():
     """Runs main() in a fresh subprocess: the master/JAX module-table swap
     only works from a cold Python start."""

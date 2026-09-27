@@ -380,7 +380,7 @@ def apply_diffusion(y: np.ndarray, coeffs: DiffusionCoeffs) -> np.ndarray:
     return diff
 
 
-def diffusion_block_diags(coeffs: DiffusionCoeffs, ni: int):
+def diffusion_block_diags(coeffs: DiffusionCoeffs):
     """Return per-layer block-Jacobian DIAGONALS for the diffusion operator.
 
     Diffusion is diagonal in species, so each block is an ni-vector:

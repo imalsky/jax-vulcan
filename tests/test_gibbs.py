@@ -15,7 +15,6 @@ import warnings
 from pathlib import Path
 
 import numpy as np
-import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -113,7 +112,6 @@ def main() -> int:
     return 0 if ok else 1
 
 
-@pytest.mark.master_serial
 def test_main():
     """Run the master comparison in a fresh Python process."""
     from oracle import run_oracle_subprocess

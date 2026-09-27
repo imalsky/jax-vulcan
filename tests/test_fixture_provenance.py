@@ -27,23 +27,15 @@ def _gen_module():
 
 
 def test_fixture_generators_live_in_repo():
-    """conftest's required set and gen_fixtures' produced set must agree; no
-    generator may point outside this repository or hardcode an absolute user
-    path. String literals are checked in the AST, so docstring prose does not
-    trip it."""
-    import conftest
-
+    """No generator may point outside this repository or hardcode an absolute
+    user path. String literals are checked in the AST, so docstring prose does
+    not trip it."""
     gen = _gen_module()
-    expected = {Path(q).name for q in conftest._EXPECTED_FIXTURES}
-    produced = set(gen.ALL_FIXTURES)
-    assert expected == produced, (
-        f"conftest requires {sorted(expected)} but gen_fixtures produces "
-        f"{sorted(produced)}; a fixture with no generator cannot be rebuilt")
-    for rel, how in conftest._EXPECTED_FIXTURES.items():
-        script = how.split()[0]
+    for key, spec in gen.GENERATORS.items():
+        script = spec["argv"][1]
         assert not script.startswith(".."), (
-            f"{rel} is regenerated from {script}, outside this repository")
-        assert (ROOT / script).is_file(), f"{rel}: missing generator {script}"
+            f"{key} is regenerated from {script}, outside this repository")
+        assert (ROOT / script).is_file(), f"{key}: missing generator {script}"
     for script in ("tests/_gen_adj_state.py", "tests/_gen_photo_baseline.py",
                    "tests/gen_fixtures.py"):
         tree = ast.parse((ROOT / script).read_text(), script)
