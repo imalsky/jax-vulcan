@@ -89,8 +89,7 @@ def test_atm_refresh_mu_zero_layer():
     st = AtmRefreshStatic(
         Tco=jnp.full(nz, 1500.0),
         pico=pico,
-        mol_mass=mol_mass,
-        ms=mol_mass / 6.022e23,
+        ms=mol_mass,
         Dzz_top=jnp.zeros(ni),
         diff_esc_idx=jnp.array([], dtype=jnp.int32),
         pref_indx=0,
@@ -101,7 +100,6 @@ def test_atm_refresh_mu_zero_layer():
         Navo=6.022e23,
         max_flux=1e13,
         nz=nz,
-        ni=ni,
     )
 
     mu, g, Hp, dz, zco, dzi, Hpi = update_mu_dz_jax(ymix, st)

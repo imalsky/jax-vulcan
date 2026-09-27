@@ -2736,12 +2736,7 @@ class OuterLoop:
         from . import composition as _ba
 
         species = _ba.species
-        ni = _NETWORK.ni
         nz = atm.Tco.shape[0]
-        mol_mass_arr = np.array(
-            [_ba.compo["mass"][_ba.compo_row.index(sp)] for sp in species],
-            dtype=np.float64,
-        )
         diff_esc_idx = np.array(
             [species.index(sp) for sp in self._cfg.diff_esc],
             dtype=np.int32,
@@ -2749,7 +2744,6 @@ class OuterLoop:
         return _atm_refresh_mod.AtmRefreshStatic(
             Tco=jnp.asarray(atm.Tco, dtype=jnp.float64),
             pico=jnp.asarray(atm.pico, dtype=jnp.float64),
-            mol_mass=jnp.asarray(mol_mass_arr),
             ms=jnp.asarray(atm.ms, dtype=jnp.float64),
             Dzz_top=jnp.asarray(atm.Dzz[-1], dtype=jnp.float64),
             diff_esc_idx=jnp.asarray(diff_esc_idx),
@@ -2761,7 +2755,6 @@ class OuterLoop:
             Navo=float(_phy_const.Navo),
             max_flux=float(self._cfg.max_flux),
             nz=int(nz),
-            ni=int(ni),
         )
 
     def _build_conden_static(

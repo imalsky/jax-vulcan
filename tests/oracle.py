@@ -82,8 +82,7 @@ def oracle_dir_or_skip(what: str) -> Path:
     the child can only check existence. Fails instead under
     `VULCAN_JAX_REQUIRE_ORACLE=1`.
     """
-    raw = os.environ.get(ENV_DIR)
-    path = Path(raw).expanduser().resolve() if raw else None
+    path = oracle_dir()
     if path is not None and path.is_dir():
         return path
     msg = (
@@ -111,21 +110,18 @@ def oracle_dir_or_sentinel() -> Path:
 
 
 def run_oracle_subprocess(test_file, family: str,
-                          config_rel: str | None = None, *,
-                          fastchem_abundance: str | None = None,
-                          timeout: float | None = None) -> None:
+                          config_rel: str | None = None) -> None:
     """Run `test_file`'s `main()` in a fresh process against an oracle COPY.
 
     The master/JAX module-table swap only works from a cold Python start, so
     every upstream-comparison test re-execs itself.
     """
-    with oracle_worktree(family, config_rel,
-                         fastchem_abundance=fastchem_abundance) as master:
+    with oracle_worktree(family, config_rel) as master:
         env = os.environ.copy()
         env["VULCAN_MASTER_DIR"] = str(master)
         result = subprocess.run(
             [sys.executable, str(Path(test_file).resolve())],
-            capture_output=True, text=True, env=env, timeout=timeout)
+            capture_output=True, text=True, env=env)
     assert result.returncode == 0, (
         f"subprocess exited {result.returncode}\n"
         f"--- stdout ---\n{result.stdout}\n"

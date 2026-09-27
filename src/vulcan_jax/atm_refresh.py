@@ -35,7 +35,6 @@ class AtmRefreshStatic(NamedTuple):
 
     Tco: jnp.ndarray  # (nz,)        layer-center temperature (K)
     pico: jnp.ndarray  # (nz+1,)      interface pressure (dyne/cm^2)
-    mol_mass: jnp.ndarray  # (ni,)        molar mass per species (g/mol)
     ms: jnp.ndarray  # (ni,)        molar mass per species (g/mol; /Navo in formulas)
     Dzz_top: jnp.ndarray  # (ni,)        molecular diffusion at the top interface
     diff_esc_idx: (
@@ -49,7 +48,6 @@ class AtmRefreshStatic(NamedTuple):
     Navo: float
     max_flux: float  # floor on the escape flux: top_flux >= -max_flux (cfg.max_flux)
     nz: int  # static
-    ni: int  # static
 
 
 def update_mu_dz_jax(ymix: jnp.ndarray, st: AtmRefreshStatic):
@@ -61,7 +59,6 @@ def update_mu_dz_jax(ymix: jnp.ndarray, st: AtmRefreshStatic):
     """
     Tco = st.Tco
     pico = st.pico
-    mol_mass = st.mol_mass
     pref_indx = st.pref_indx
     gs = st.gs
     Rp = st.Rp
@@ -70,7 +67,7 @@ def update_mu_dz_jax(ymix: jnp.ndarray, st: AtmRefreshStatic):
     nz = st.nz
     zco_pref = jnp.float64(st.zco_pref)
 
-    mu = jnp.einsum("zi,i->z", ymix, mol_mass)
+    mu = jnp.einsum("zi,i->z", ymix, st.ms)
 
     # Forward scan upward from `pref_indx` to nz-1.
     def fwd_step(zco_i, i):

@@ -92,7 +92,7 @@ def main() -> int:
     # for any stale/previous-cycle gravity that ignores the height it just built).
     Tco = np.asarray(st.Tco, dtype=np.float64)
     pico = np.asarray(st.pico, dtype=np.float64)
-    mol_mass = np.asarray(st.mol_mass, dtype=np.float64)
+    mol_mass = np.asarray(st.ms, dtype=np.float64)
     Navo = float(st.Navo)
     kb = float(st.kb)
     ymix = np.asarray(data_var.ymix, dtype=np.float64)

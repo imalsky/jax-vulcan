@@ -127,22 +127,6 @@ def pco_from_endpoints(P_b, P_t, nz: int) -> jnp.ndarray:
     return 10.0 ** (jnp.log10(P_b) + frac * (jnp.log10(P_t) - jnp.log10(P_b)))
 
 
-def _mu_dz_g(phys: PhysicalInputs, spec: AtmSpec):
-    """Mean mass plus the hydrostatic cascade, with no host `np.asarray`.
-
-    The height integration is `atm_setup.mu_dz_g_jax`, the same body the host
-    setup path runs; only the inputs differ (`pico` is recomputed from the
-    differentiable `pco`, and the discrete `pref_indx` anchor comes from
-    `spec` and is held fixed). Returns (mu, g, Hp, dz, dzi, Ti, Hpi).
-    """
-    pico = compute_pico(phys.pco)
-    mu = compute_mean_mass(phys.ymix, spec.ms)
-    gz, Hp, dz, _zco, _zmco, dzi, Ti, Hpi = mu_dz_g_jax(
-        spec.pref_indx, phys.gs, phys.Rp, phys.Tco, mu, pico, spec.nz
-    )
-    return mu, gz, Hp, dz, dzi, Ti, Hpi
-
-
 def _mol_diff(phys: PhysicalInputs, spec: AtmSpec, n_0, gz, Hp, dz):
     """Molecular diffusion for `build_atm_static`: (Dzz, Dzz_cen, vm).
 
@@ -187,7 +171,13 @@ def build_atm_static(phys: PhysicalInputs, spec: AtmSpec) -> AtmStatic:
     # integration, molecular diffusion and settling.
     M = phys.pco / (kb * phys.Tco)
     n_0 = M
-    _mu, gz, Hp, dz, dzi, Ti, Hpi = _mu_dz_g(phys, spec)
+    # The height integration is `atm_setup.mu_dz_g_jax`, the same body the
+    # host setup path runs; `pico` is recomputed from the differentiable `pco`
+    # and the discrete `pref_indx` anchor is held fixed.
+    mu = compute_mean_mass(phys.ymix, spec.ms)
+    gz, Hp, dz, _zco, _zmco, dzi, Ti, Hpi = mu_dz_g_jax(
+        spec.pref_indx, phys.gs, phys.Rp, phys.Tco, mu, compute_pico(phys.pco), nz
+    )
     Dzz, _Dzz_cen, vm = _mol_diff(phys, spec, n_0, gz, Hp, dz)
 
     use_vm = bool(spec.use_vm_mol and spec.use_moldiff)
@@ -198,12 +188,6 @@ def build_atm_static(phys: PhysicalInputs, spec: AtmSpec) -> AtmStatic:
         vs = settling_velocity_jax(na, a, b, phys.Tco, gz, spec.settle_coeff)
     else:
         vs = jnp.zeros((nz - 1, ni), dtype=jnp.float64)
-
-    # Mirror make_atm_static's final toggle gating.
-    if not use_vm:
-        vm = jnp.zeros((nz - 1, ni), dtype=jnp.float64)
-    if not spec.use_moldiff:
-        Dzz = jnp.zeros((nz - 1, ni), dtype=jnp.float64)
 
     return AtmStatic(
         Kzz=phys.Kzz,

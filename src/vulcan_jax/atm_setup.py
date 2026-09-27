@@ -446,9 +446,9 @@ def mu_dz_g_jax(pref_indx: int, gs, Rp, Tco, mu, pico, nz: int):
     """Hydrostatic height integration on the JAX graph, anchored at `pref_indx`.
 
     Shared by the host setup path (:func:`compute_mu_dz_g`) and the
-    differentiable builder (`atm_jax._mu_dz_g`), so no reassociation can move
-    float64 bits between them. `pref_indx` is a discrete
-    host-side choice and is passed in.
+    differentiable builder (`atm_jax.build_atm_static`), so no reassociation
+    can move float64 bits between them. `pref_indx` is a discrete host-side
+    choice and is passed in.
 
     Returns (g, Hp, dz, zco, zmco, dzi, Ti, Hpi) as jnp arrays.
     """
