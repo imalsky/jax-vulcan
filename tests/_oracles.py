@@ -203,7 +203,7 @@ def stage_defects(y, k_arr, dt, atm, net):
     n_tot = jnp.sum(y, axis=1, keepdims=True)
 
     def parts(k, b):
-        return jax_step._stage_defect(k, b, c0, diag_d, sup_d, sub_d)
+        return jax_step._stage_defect(k, b, c0, diag_d, sup_d, sub_d, with_scale=True)
 
     d1, s1 = parts(k1, b1)
     d2, s2 = parts(k2, b2)
