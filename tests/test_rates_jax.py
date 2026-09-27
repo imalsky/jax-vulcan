@@ -30,10 +30,7 @@ def test_rate_build_tangents_are_finite(hd189_state):
 
     T = np.asarray(atm.Tco, dtype=np.float64)
     M = np.asarray(atm.M, dtype=np.float64)
-    thermo_dir = resolve_data_path(vulcan_cfg.network).parent
-    if not (thermo_dir / "NASA9").exists():
-        thermo_dir = resolve_data_path("thermo")
-    nasa9, _ = load_nasa9(network.species, thermo_dir)
+    nasa9, _ = load_nasa9(network.species, rates_jax._thermo_dir(vulcan_cfg.network))
     remove_list = getattr(vulcan_cfg, "remove_list", None)
 
     # Forward-mode AD w.r.t. a uniform T shift must be finite (this is the whole

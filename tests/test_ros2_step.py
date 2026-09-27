@@ -73,27 +73,6 @@ def main() -> int:
         sys.path.remove(str(VULCAN_MASTER))
     os.chdir(ROOT)
 
-    from vulcan_jax.config import default_config
-
-    cfg_jax = default_config()
-
-    # Pin JAX modules to the exact network and transport flags used by the
-    # master-side state captured above. `jax_step` imports
-    # `chem_funs.chem_rhs_codegen` at module import time, so this must happen
-    # before importing `chem_funs` or `jax_step`.
-    from vulcan_jax._paths import resolve_data_path
-
-    cfg_jax.network = str(resolve_data_path(cfg_v.network))
-    for name in (
-        "use_moldiff",
-        "use_vm_mol",
-        "use_settling",
-        "use_topflux",
-        "use_botflux",
-    ):
-        if hasattr(cfg_v, name):
-            setattr(cfg_jax, name, getattr(cfg_v, name))
-
     import vulcan_jax.chem_funs as chem_funs
     import jax.numpy as jnp
     from vulcan_jax.jax_step import jax_ros2_step, make_atm_static

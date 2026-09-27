@@ -25,26 +25,6 @@ def _find_rxn_idx(net, eq: str) -> int:
     raise AssertionError(f"reaction {eq!r} not found in network")
 
 
-def _load_nasa9_local(net):
-    """Load NASA-9 coefficients fresh via `gibbs.load_nasa9`.
-
-    Avoids the module-level `nasa9_coeffs`: tests that pop
-    `chem_funs` from `sys.modules` can re-resolve it to upstream's SymPy
-    module, which lacks the JAX-side private attribute.
-    """
-    import vulcan_jax.gibbs as gibbs
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-    from pathlib import Path
-
-    thermo_dir = Path(vulcan_cfg.network).parent
-    if not (thermo_dir / "NASA9").exists():
-        thermo_dir = Path("thermo")
-    coeffs, _present = gibbs.load_nasa9(net.species, thermo_dir)
-    return coeffs
-
-
 # apply_lowT_caps
 
 
@@ -103,28 +83,10 @@ def test_lowT_caps_fire_all_three():
     assert k_out[i_c2h5, 2] == pytest.approx(7.77e-12)
     assert k_out[i_c2h5, 3] == pytest.approx(7.77e-12)
 
-    # Other forward rows untouched.
-    other_idx = [j for j in range(1, net.nr + 1, 2) if j not in (i_ch3, i_c2h4, i_c2h5)]
-    for j in other_idx[:5]:
-        assert np.array_equal(k_out[j], k_in[j])
-
-
-def test_lowT_caps_no_op_when_T_above_thresholds():
-    """If T > 300 K everywhere, no cap fires and k is unchanged."""
-    import vulcan_jax.network as net_mod
-    import vulcan_jax.rates_jax as rates
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-
-    net = net_mod.parse_network(vulcan_cfg.network)
-    nz = 5
-    T = np.full(nz, 1500.0, dtype=np.float64)  # HD189-like
-    M = np.full(nz, 1e15, dtype=np.float64)
-
-    k_in = np.random.RandomState(0).uniform(1e-15, 1e-10, size=(net.nr + 1, nz))
-    k_out = np.asarray(rates.apply_lowT_caps(net, jnp.asarray(k_in), T, M))
-    assert np.array_equal(k_out, k_in)
+    # Every other row untouched.
+    mask = np.ones(net.nr + 1, dtype=bool)
+    mask[[i_ch3, i_c2h4, i_c2h5]] = False
+    assert np.array_equal(k_out[mask], k_in[mask])
 
 
 # apply_remove_list
@@ -156,17 +118,7 @@ def test_remove_list_zeros_only_listed_indices():
     assert np.array_equal(k_out[2], k_in[2])
     assert np.array_equal(k_out[5], k_in[5])
     assert np.array_equal(k_out[7], k_in[7])
-
-
-def test_remove_list_none_or_empty_is_noop():
-    import vulcan_jax.network as net_mod
-    import vulcan_jax.rates_jax as rates
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-
-    net = net_mod.parse_network(vulcan_cfg.network)
-    k_in = np.ones((net.nr + 1, 3), dtype=np.float64)
+    # None or an empty list is a no-op.
     assert np.array_equal(rates.apply_remove_list(net, k_in, None), k_in)
     assert np.array_equal(rates.apply_remove_list(net, k_in, []), k_in)
 
@@ -183,6 +135,7 @@ def test_build_rate_array_matches_legacy_hd189(hd189_state):
     compute_J overwrites those slots and `build_rate_array` is the chemistry
     half only.
     """
+    import vulcan_jax.gibbs as gibbs
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates_jax as rates
     from vulcan_jax.config import default_config
@@ -190,7 +143,7 @@ def test_build_rate_array_matches_legacy_hd189(hd189_state):
     vulcan_cfg = default_config()
 
     net = net_mod.parse_network(vulcan_cfg.network)
-    nasa9_coeffs = _load_nasa9_local(net)
+    nasa9_coeffs, _ = gibbs.load_nasa9(net.species, rates._thermo_dir(vulcan_cfg.network))
     k_jax = np.asarray(
         rates.build_rate_array(
             net,
@@ -237,6 +190,7 @@ def test_build_rate_array_with_lowT_caps(hd189_state):
     """Pins that `use_lowT_limit_rates=True` is a no-op on HD189 (coolest
     layer ~860 K is above every cap threshold). Cap-firing coverage lives in
     `test_lowT_caps_fire_all_three`."""
+    import vulcan_jax.gibbs as gibbs
     import vulcan_jax.network as net_mod
     import vulcan_jax.rates_jax as rates
     from vulcan_jax.config import default_config
@@ -244,7 +198,7 @@ def test_build_rate_array_with_lowT_caps(hd189_state):
     vulcan_cfg = default_config()
 
     net = net_mod.parse_network(vulcan_cfg.network)
-    nasa9_coeffs = _load_nasa9_local(net)
+    nasa9_coeffs, _ = gibbs.load_nasa9(net.species, rates._thermo_dir(vulcan_cfg.network))
 
     def _build(use_caps):
         return np.asarray(
@@ -267,7 +221,4 @@ def test_build_rate_array_with_lowT_caps(hd189_state):
         f"HD189 fixture unexpectedly has layers at/below the cap threshold "
         f"(min T = {T.min():.1f} K); this no-op test needs updating."
     )
-    for eq in ("H + CH3 + M -> CH4 + M", "H + C2H4 + M -> C2H5 + M",
-               "H + C2H5 + M -> C2H6 + M"):
-        i = _find_rxn_idx(net, eq)
-        np.testing.assert_array_equal(k_on[i], k_off[i])
+    np.testing.assert_array_equal(k_on, k_off)
