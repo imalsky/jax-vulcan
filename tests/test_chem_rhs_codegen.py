@@ -1,9 +1,7 @@
-"""Validate the SymPy-faithful chem_rhs codegen against two oracles.
-
-1. `chem_rhs_numpy` (master-faithful term order, NumPy float64), always run:
-   rtol=1e-5 on significant cells. The threshold absorbs XLA FMA fusion vs
-   NumPy `*`-chains; actual worst-cell agreement is ~2e-13.
-2. VULCAN-master's `chemdf` via subprocess; skipped when the oracle is absent.
+"""Validate the SymPy-faithful chem_rhs codegen against `chem_rhs_numpy`
+(master-faithful term order, NumPy float64): rtol=1e-5 on significant cells.
+The threshold absorbs XLA FMA fusion vs NumPy `*`-chains; actual worst-cell
+agreement is ~2e-13. The comparison with master's `chemdf` is test_chem.py.
 
 The (y, M, k) state is captured fresh from `RunState.with_pre_loop_setup`.
 """
@@ -12,7 +10,6 @@ from __future__ import annotations
 
 import os
 import pickle
-import sys
 import warnings
 from pathlib import Path
 
@@ -24,11 +21,7 @@ os.chdir(ROOT)
 warnings.filterwarnings("ignore")
 
 from _helpers import atom_count_matrix
-from oracle import oracle_dir_or_sentinel
 
-# The parent verifies the pin and passes a temporary copy; the per-test
-# is_dir() skips below handle an unset oracle.
-VULCAN_MASTER = oracle_dir_or_sentinel()
 PROJECT_ROOT = ROOT.parent
 
 # Roundoff allowance for an atom residual, as a fraction of the summed
@@ -314,147 +307,8 @@ def test_codegen_matches_numpy_oracle(hd189_state):
     max_rel = float(relerr.max())
     idx = np.unravel_index(int(relerr.argmax()), relerr.shape)
 
-    # Bulk-species check restricts to cells where |dydt| > 1e-6 of the
-    # species's peak, so cancellation residue at near-zero cells is not
-    # penalized (e.g. HD189 CO2 cancels ~1e9 -> ~1e3 at depth).
-    bulk_relerr = {}
-    for sp in ("H2O", "CO2", "SO", "SO2", "H2", "CO", "S", "H2S"):
-        if sp in net.species_idx:
-            j = net.species_idx[sp]
-            peak = max(float(np.abs(out_numpy[:, j]).max()), 1e-30)
-            cell_floor = 1e-6 * peak
-            denom = np.maximum(np.abs(out_numpy[:, j]), cell_floor)
-            r = np.abs(out_codegen[:, j] - out_numpy[:, j]) / denom
-            bulk_relerr[sp] = (float(r.max()), peak)
-
     assert max_rel < CODEGEN_RTOL, (
         f"codegen vs numpy oracle disagreement: max relerr={max_rel:.3e} "
         f"at layer {idx[0]} species {net.species[idx[1]]} (threshold {CODEGEN_RTOL:g})"
     )
-    for sp, (r, _peak) in bulk_relerr.items():
-        assert r < CODEGEN_RTOL, f"bulk species {sp} relerr={r:.3e} > {CODEGEN_RTOL:g}"
 
-
-def test_codegen_matches_master_chemdf():
-    """Codegen RHS matches VULCAN-master's `chemdf` at rtol=1e-5 on the
-    whitelisted bulk species (measured worst cell ~2e-13; the loose threshold
-    absorbs catastrophic cancellation in near-equilibrium cells).
-    Runs in a subprocess; skips cleanly when the oracle is absent.
-    """
-    import subprocess
-    from oracle import oracle_worktree
-
-    with oracle_worktree("vulcan2_ncho") as master_copy:
-        env = os.environ.copy()
-        env["VULCAN_MASTER_DIR"] = str(master_copy)
-        result = subprocess.run(
-            [sys.executable, "-c", _MASTER_VS_CODEGEN_DRIVER],
-            capture_output=True,
-            text=True,
-            cwd=str(ROOT),
-            env=env,
-        )
-    assert result.returncode == 0, (
-        f"subprocess exited {result.returncode}\n--- stdout ---\n{result.stdout}"
-        f"\n--- stderr ---\n{result.stderr}"
-    )
-
-
-_MASTER_VS_CODEGEN_DRIVER = """
-import os, sys, warnings
-from pathlib import Path
-import numpy as np
-
-ROOT = Path.cwd()                               # set by test caller; = VULCAN-JAX
-# The parent verifies the pinned oracle (tests/oracle.py) and passes the copy's path.
-raw_oracle = os.environ.get("VULCAN_MASTER_DIR")
-if not raw_oracle:
-    raise RuntimeError("VULCAN_MASTER_DIR is required by the master driver")
-VULCAN_MASTER = Path(raw_oracle).expanduser().resolve()
-warnings.filterwarnings("ignore")
-
-# === 1. Run master pipeline FROM master cwd so its relative paths resolve
-#        against VULCAN-master/ (atm, FastChem output, thermo). Capture
-#        (y, M, k_dict) and chemdf reference, then chdir back. ===
-os.chdir(VULCAN_MASTER)
-sys.path.insert(0, str(VULCAN_MASTER))
-import vulcan_cfg as cfg_v
-import store as st_v
-import build_atm as ba_v
-import op as op_v
-import chem_funs as cf_v
-
-data_var = st_v.Variables()
-data_atm = st_v.AtmData()
-make_atm = ba_v.Atm()
-data_atm = make_atm.f_pico(data_atm)
-data_atm = make_atm.load_TPK(data_atm)
-if cfg_v.use_condense:
-    make_atm.sp_sat(data_atm)
-rate = op_v.ReadRate()
-data_var = rate.read_rate(data_var, data_atm)
-data_var = rate.rev_rate(data_var, data_atm)
-ini = ba_v.InitialAbun()
-data_var = ini.ini_y(data_var, data_atm)
-
-T = np.asarray(data_atm.Tco, dtype=np.float64).copy()
-M = np.asarray(data_atm.M, dtype=np.float64).copy()
-y = np.asarray(data_var.y, dtype=np.float64).copy()
-k_dict = {i: np.asarray(v, dtype=np.float64).copy() for i, v in data_var.k.items()}
-
-dydt_master = np.asarray(cf_v.chemdf(y, M, k_dict)).copy()
-nz, ni = y.shape
-
-# === 2. Switch to JAX modules; chdir back to VULCAN-JAX root. ===
-for mod_name in ("vulcan_cfg", "store", "build_atm", "op", "chem_funs",
-                 "network", "rates", "gibbs", "chem", "make_chem_funs"):
-    sys.modules.pop(mod_name, None)
-while str(VULCAN_MASTER) in sys.path:
-    sys.path.remove(str(VULCAN_MASTER))
-os.chdir(ROOT)
-
-import jax.numpy as jnp
-import vulcan_jax.network as net_mod
-import vulcan_jax.make_chem_funs as mcf
-from vulcan_jax._paths import resolve_data_path
-
-# Reparse the master-side network through the JAX parser; build codegen
-# against this same network so the species/reaction indexing matches the
-# k_dict captured from master.
-net = net_mod.parse_network(resolve_data_path(cfg_v.network))
-fn = mcf.build_chem_rhs(net)
-
-k_full = np.zeros((net.nr + 1, nz), dtype=np.float64)
-for i, vec in k_dict.items():
-    k_full[i] = vec
-
-out_codegen = np.asarray(fn(jnp.asarray(y), jnp.asarray(M), jnp.asarray(k_full)))
-
-# Bulk species only: trace radicals cancel to residues where XLA FMA fusion
-# and NumPy `*` chains legitimately differ; test_default_master_parity
-# validates the end-to-end state.
-bulk_species = ("H2O", "CO2", "SO", "SO2", "H2", "CO", "S", "H2S")
-bulk_ok = True
-worst_bulk = 0.0
-for sp in bulk_species:
-    if sp in net.species_idx:
-        j = net.species_idx[sp]
-        peak = max(float(np.abs(dydt_master[:, j]).max()), 1e-30)
-        # Per-cell significance filter: only check cells with |dydt| above
-        # 1e-6 of species peak. Trace species in this network (e.g., CO2 in
-        # HD189) cancel from ~1e15 down to ~1 at deep layers; the small
-        # residue is XLA-fusion-vs-NumPy-`*` noise, not a real disagreement.
-        cell_floor = 1e-6 * peak
-        denom = np.maximum(np.abs(dydt_master[:, j]), cell_floor)
-        r = np.abs(out_codegen[:, j] - dydt_master[:, j]) / denom
-        max_r = float(r.max())
-        print(f"  bulk {sp:>5}: max relerr={max_r:.3e}, max |dydt|={peak:.3e}")
-        if max_r > 1e-5:
-            bulk_ok = False
-        worst_bulk = max(worst_bulk, max_r)
-
-print(f"worst bulk-species relerr: {worst_bulk:.3e}")
-ok = bulk_ok
-print("PASS" if ok else "FAIL")
-sys.exit(0 if ok else 1)
-"""

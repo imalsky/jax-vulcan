@@ -13,20 +13,14 @@ actually moves mass into `H2O_l_s` (full runner conden path).
 
 from __future__ import annotations
 
-from pathlib import Path
-
-import pytest
 from _helpers import run_child
 
-ROOT = Path(__file__).resolve().parent.parent
 CONDEN_NETWORK = "thermo/SNCHO_photo_network_2025.txt"
 
 
 _CHILD = r"""
 import os, sys, time, warnings
 warnings.filterwarnings("ignore")
-os.environ["JAX_PLATFORM_NAME"] = "cpu"
-os.environ["VULCAN_JAX_NETWORK"] = "thermo/SNCHO_photo_network_2025.txt"
 
 from pathlib import Path
 repo = Path(sys.argv[1])
@@ -82,7 +76,6 @@ assert np.all(vs[:, gas] == 0.0), "settling velocity nonzero on a gas species"
 print("SETTLING_OK")
 
 # ---- Check 2: short H2O-relax run forms condensate ----
-cfg.use_settling = True
 cfg.condense_sp = ["H2O"]; cfg.non_gas_sp = ["H2O_l_s"]
 cfg.r_p = {"H2O_l_s": 0.01}; cfg.rho_p = {"H2O_l_s": 0.9}
 cfg.use_relax = ["H2O"]; cfg.humidity = 1.0
@@ -108,11 +101,6 @@ print("PASS")
 
 
 def test_condensation_runtime_subprocess():
-    from vulcan_jax._paths import PACKAGE_ROOT
-
-    if not (PACKAGE_ROOT / CONDEN_NETWORK).exists():
-        pytest.skip(f"condensate network {CONDEN_NETWORK!r} not vendored")
-
     res = run_child(_CHILD, network=CONDEN_NETWORK, label="condensation")
     assert "SETTLING_OK" in res.stdout, res.stdout
     assert "CONDEN_OK" in res.stdout, res.stdout

@@ -185,9 +185,7 @@ def test_temperature_moves_saturation_and_boundaries(spec):
     assert (sup_cold != sup_warm).any(), "boundary must move with T"
     # Cold-trap index: mid-column T minimum vs a monotonically colder top.
     T_mono = np.linspace(260.0, 160.0, NZ)
-    top_slope = int(
-        conden.build_conden_profile(spec, T_slope, pco, n_0, Dzz).nh3_conden_top
-    )
+    top_slope = int(p_cold.nh3_conden_top)
     top_mono = int(
         conden.build_conden_profile(spec, T_mono, pco, n_0, Dzz).nh3_conden_top
     )

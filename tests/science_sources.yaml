@@ -33,7 +33,6 @@ oracles:
     used_by:
       - tests/test_gibbs.py
       - tests/test_chem.py
-      - tests/test_chem_rhs_codegen.py
       - tests/test_ros2_step.py
       - tests/test_photo.py
       - tests/test_diffusion.py

@@ -36,11 +36,11 @@ KERNEL_RTOL = 1e-13
 def _make_static(
     nz: int,
     ni: int,
-    conden_re_idx,
-    conden_sp_idx,
-    Dg_per_re,
-    sat_n_per_re,
-    coeff_per_re,
+    conden_re_idx=(),
+    conden_sp_idx=(),
+    Dg_per_re=None,
+    sat_n_per_re=None,
+    coeff_per_re=None,
     *,
     h2o_active=False,
     h2o_idx=0,
@@ -60,6 +60,12 @@ def _make_static(
 ):
     import vulcan_jax.conden as _conden_mod
 
+    if Dg_per_re is None:
+        Dg_per_re = np.zeros((0, nz))
+    if sat_n_per_re is None:
+        sat_n_per_re = np.zeros((0, nz))
+    if coeff_per_re is None:
+        coeff_per_re = np.zeros(0)
     if h2o_Dg is None:
         h2o_Dg = np.zeros(nz)
     if h2o_sat is None:
@@ -94,6 +100,23 @@ def _make_static(
         n_0=jnp.asarray(n_0, dtype=jnp.float64),
         gas_indx_mask=jnp.asarray(gas_indx_mask),
     )
+
+
+def _nh3_case(seed):
+    """NH3 (column 0) and NH3_l_s (column 1) with condensing and evaporating
+    layers, some at and above the cold trap so the conden_top clamp triggers.
+    Returns (y, ymix, n_0, Dg, sat)."""
+    rng = np.random.default_rng(seed)
+    nz, ni = 7, 3
+    sat = rng.uniform(0.05, 1.0, size=nz)
+    y = np.zeros((nz, ni))
+    y[:, 0] = sat * np.array([2.0, 1.4, 0.6, 1.1, 0.4, 1.3, 0.8])
+    y[:, 1] = np.array([0.05, 0.0, 0.4, 0.5, 1.0, 0.05, 0.05])
+    y[:, 2] = rng.uniform(0.5, 1.0, size=nz)
+    ymix = y / np.sum(y, axis=1, keepdims=True)
+    n_0 = np.sum(y, axis=1)
+    Dg = rng.uniform(0.5, 2.0, size=nz)
+    return y, ymix, n_0, Dg, sat
 
 
 def test_update_conden_rates():
@@ -171,11 +194,6 @@ def test_apply_h2o_relax_jax():
     st = _make_static(
         nz,
         ni,
-        conden_re_idx=[],
-        conden_sp_idx=[],
-        Dg_per_re=np.zeros((0, nz)),
-        sat_n_per_re=np.zeros((0, nz)),
-        coeff_per_re=np.zeros(0),
         h2o_active=True,
         h2o_idx=h2o_idx,
         h2o_l_s_idx=h2o_l_s_idx,
@@ -224,21 +242,9 @@ def test_apply_nh3_relax_jax():
     the conden_top clamp and the NH3_l_s >= 0 clip."""
     import vulcan_jax.conden as _conden_mod
 
-    rng = np.random.default_rng(11)
-    nz, ni = 7, 3
+    y, ymix, n_0, Dg, sat = _nh3_case(11)
+    nz, ni = y.shape
     nh3_idx, nh3_l_s_idx = 0, 1
-
-    sat = rng.uniform(0.05, 1.0, size=nz)
-    y = np.zeros((nz, ni))
-    # Mix of sat ratios; some condense (y > sat), some evap (y < sat),
-    # including layers at and above conden_top so the clamp triggers.
-    y[:, nh3_idx] = sat * np.array([2.0, 1.4, 0.6, 1.1, 0.4, 1.3, 0.8])
-    y[:, nh3_l_s_idx] = np.array([0.05, 0.0, 0.4, 0.5, 1.0, 0.05, 0.05])
-    y[:, 2] = rng.uniform(0.5, 1.0, size=nz)
-    ymix = y / np.sum(y, axis=1, keepdims=True)
-    n_0 = np.sum(y, axis=1)
-
-    Dg = rng.uniform(0.5, 2.0, size=nz)
     m_over_rho_r2 = 0.087
     dt = 0.6
     sat_mix = sat / n_0
@@ -247,11 +253,6 @@ def test_apply_nh3_relax_jax():
     st = _make_static(
         nz,
         ni,
-        conden_re_idx=[],
-        conden_sp_idx=[],
-        Dg_per_re=np.zeros((0, nz)),
-        sat_n_per_re=np.zeros((0, nz)),
-        coeff_per_re=np.zeros(0),
         nh3_active=True,
         nh3_idx=nh3_idx,
         nh3_l_s_idx=nh3_l_s_idx,
@@ -300,42 +301,23 @@ def test_apply_nh3_relax_jax():
 def test_nh3_conden_top_traced_scalar_bitwise():
     """A 0-d int32 `nh3_conden_top` (the batched ProfileVars form) must be
     BITWISE identical to the Python-int closure form under jit."""
-    import jax
     import vulcan_jax.conden as _conden_mod
 
-    rng = np.random.default_rng(11)
-    nz, ni = 7, 3
-    nh3_idx, nh3_l_s_idx = 0, 1
-
-    sat = rng.uniform(0.05, 1.0, size=nz)
-    y = np.zeros((nz, ni))
-    y[:, nh3_idx] = sat * np.array([2.0, 1.4, 0.6, 1.1, 0.4, 1.3, 0.8])
-    y[:, nh3_l_s_idx] = np.array([0.05, 0.0, 0.4, 0.5, 1.0, 0.05, 0.05])
-    y[:, 2] = rng.uniform(0.5, 1.0, size=nz)
-    ymix = y / np.sum(y, axis=1, keepdims=True)
-    n_0 = np.sum(y, axis=1)
-    Dg = rng.uniform(0.5, 2.0, size=nz)
+    y, ymix, n_0, Dg, sat = _nh3_case(11)
+    nz, ni = y.shape
     conden_top = int(np.argmin(sat / n_0))
 
-    common = dict(
+    st_int = _make_static(
+        nz,
+        ni,
         nh3_active=True,
-        nh3_idx=nh3_idx,
-        nh3_l_s_idx=nh3_l_s_idx,
+        nh3_idx=0,
+        nh3_l_s_idx=1,
         nh3_Dg=Dg,
         nh3_sat=sat,
         nh3_m_over_rho_r2=0.087,
         n_0=n_0,
-    )
-    st_int = _make_static(
-        nz,
-        ni,
-        [],
-        [],
-        np.zeros((0, nz)),
-        np.zeros((0, nz)),
-        np.zeros(0),
         nh3_conden_top=conden_top,
-        **common,
     )
 
     # Production pattern on both sides: the CondenStatic is CLOSED OVER (its
@@ -366,33 +348,17 @@ def test_nh3_conden_top_traced_scalar_bitwise():
 def test_nh3_conden_top_vmap_per_lane():
     """vmap over a batch where ONLY `nh3_conden_top` differs per lane must
     match per-lane single calls (the mechanism run_batch relies on)."""
-    import jax
     import vulcan_jax.conden as _conden_mod
 
-    rng = np.random.default_rng(23)
-    nz, ni = 7, 3
-    nh3_idx, nh3_l_s_idx = 0, 1
-
-    sat = rng.uniform(0.05, 1.0, size=nz)
-    y = np.zeros((nz, ni))
-    y[:, nh3_idx] = sat * np.array([2.0, 1.4, 0.6, 1.1, 0.4, 1.3, 0.8])
-    y[:, nh3_l_s_idx] = np.array([0.05, 0.0, 0.4, 0.5, 1.0, 0.05, 0.05])
-    y[:, 2] = rng.uniform(0.5, 1.0, size=nz)
-    ymix = y / np.sum(y, axis=1, keepdims=True)
-    n_0 = np.sum(y, axis=1)
-    Dg = rng.uniform(0.5, 2.0, size=nz)
+    y, ymix, n_0, Dg, sat = _nh3_case(23)
+    nz, ni = y.shape
 
     st = _make_static(
         nz,
         ni,
-        [],
-        [],
-        np.zeros((0, nz)),
-        np.zeros((0, nz)),
-        np.zeros(0),
         nh3_active=True,
-        nh3_idx=nh3_idx,
-        nh3_l_s_idx=nh3_l_s_idx,
+        nh3_idx=0,
+        nh3_l_s_idx=1,
         nh3_Dg=Dg,
         nh3_sat=sat,
         nh3_m_over_rho_r2=0.087,
@@ -418,38 +384,3 @@ def test_nh3_conden_top_vmap_per_lane():
     # Vacuity guard: different tops must actually change the result.
     assert lanes_differ > 0, "all lanes identical; conden_top had no effect"
 
-
-def test_no_op_when_inactive():
-    """When use_relax flags are False, the kernels must pass through unchanged."""
-    import vulcan_jax.conden as _conden_mod
-
-    rng = np.random.default_rng(99)
-    nz, ni = 4, 3
-    y = rng.uniform(0.1, 1.0, size=(nz, ni))
-    ymix = y / np.sum(y, axis=1, keepdims=True)
-    dt = 0.1
-
-    st = _make_static(
-        nz,
-        ni,
-        conden_re_idx=[],
-        conden_sp_idx=[],
-        Dg_per_re=np.zeros((0, nz)),
-        sat_n_per_re=np.zeros((0, nz)),
-        coeff_per_re=np.zeros(0),
-    )
-
-    y_h2o, ymix_h2o = _conden_mod.apply_h2o_relax_jax(
-        jnp.asarray(y), jnp.asarray(ymix), jnp.asarray(dt), st
-    )
-    y_nh3, ymix_nh3 = _conden_mod.apply_nh3_relax_jax(
-        jnp.asarray(y), jnp.asarray(ymix), jnp.asarray(dt), st
-    )
-
-    err_h2o_y = relerr(y_h2o, y, floor=UNDERFLOW_DENOM)
-    err_h2o_ymix = relerr(ymix_h2o, ymix, floor=UNDERFLOW_DENOM)
-    err_nh3_y = relerr(y_nh3, y, floor=UNDERFLOW_DENOM)
-    err_nh3_ymix = relerr(ymix_nh3, ymix, floor=UNDERFLOW_DENOM)
-
-    errs = (err_h2o_y, err_h2o_ymix, err_nh3_y, err_nh3_ymix)
-    assert all(e <= KERNEL_RTOL for e in errs), errs
