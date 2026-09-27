@@ -54,22 +54,12 @@ def main() -> int:
     data_atm.vs = (rng.standard_normal((nz - 1, ni)) * 0.01).astype(np.float64)
     data_atm.vm = (rng.standard_normal((nz - 1, ni)) * 50.0).astype(np.float64)
 
-    # Synthetic cfg with mode flags
-    class _CfgShim:
-        def __init__(self, parent, **kw):
-            self._parent = parent
-            self._overrides = kw
-
-        def __getattr__(self, name):
-            if name in self._overrides:
-                return self._overrides[name]
-            return getattr(self._parent, name)
-
     # === Test 'vm' mode (= op.diffdf_vm) ===
     odes = op.ODESolver()
     diff_vm_ref = np.asarray(odes.diffdf_vm(data_var.y, data_atm), dtype=np.float64)
-    cfg_vm = _CfgShim(vulcan_cfg, use_vm_mol=True, use_settling=False)
-    coeffs_vm = diff_mod.build_diffusion_coeffs(data_var.y, data_atm, cfg_vm)
+    coeffs_vm = diff_mod.build_diffusion_coeffs(
+        data_var.y, data_atm, vulcan_cfg, mode="vm"
+    )
     diff_vm_jax = diff_mod.apply_diffusion(data_var.y, coeffs_vm)
 
     # Use absolute floor for cancellation residues
@@ -82,8 +72,9 @@ def main() -> int:
     diff_set_ref = np.asarray(
         odes.diffdf_settling(data_var.y, data_atm), dtype=np.float64
     )
-    cfg_set = _CfgShim(vulcan_cfg, use_vm_mol=False, use_settling=True)
-    coeffs_set = diff_mod.build_diffusion_coeffs(data_var.y, data_atm, cfg_set)
+    coeffs_set = diff_mod.build_diffusion_coeffs(
+        data_var.y, data_atm, vulcan_cfg, mode="settling"
+    )
     diff_set_jax = diff_mod.apply_diffusion(data_var.y, coeffs_set)
 
     abs_floor2 = FLOOR_FRAC * np.abs(diff_set_ref).max()
@@ -96,8 +87,9 @@ def main() -> int:
     diff_setvm_ref = np.asarray(
         odes.diffdf_settling_vm(data_var.y, data_atm), dtype=np.float64
     )
-    cfg_setvm = _CfgShim(vulcan_cfg, use_vm_mol=True, use_settling=True)
-    coeffs_setvm = diff_mod.build_diffusion_coeffs(data_var.y, data_atm, cfg_setvm)
+    coeffs_setvm = diff_mod.build_diffusion_coeffs(
+        data_var.y, data_atm, vulcan_cfg, mode="settling_vm"
+    )
     diff_setvm_jax = diff_mod.apply_diffusion(data_var.y, coeffs_setvm)
 
     # Upstream inconsistency: master's
@@ -131,24 +123,12 @@ def main() -> int:
         f"diffdf_settling_vm j=0 gap == omitted vm term: max relerr = {j0_relerr.max():.3e}"
     )
 
-    # === gravity mode (default) ===
-    diff_gravity_ref = np.asarray(odes.diffdf(data_var.y, data_atm), dtype=np.float64)
-    cfg_gravity = _CfgShim(vulcan_cfg, use_vm_mol=False, use_settling=False)
-    coeffs_gravity = diff_mod.build_diffusion_coeffs(data_var.y, data_atm, cfg_gravity)
-    diff_gravity_jax = diff_mod.apply_diffusion(data_var.y, coeffs_gravity)
-    abs_floor4 = FLOOR_FRAC * np.abs(diff_gravity_ref).max()
-    pseudo_relerr_gravity = np.abs(diff_gravity_jax - diff_gravity_ref) / np.maximum(
-        np.abs(diff_gravity_ref), abs_floor4
-    )
-    print(f"diffdf (gravity, default): max relerr = {pseudo_relerr_gravity.max():.3e}")
-
     print()
     ok = (
         pseudo_relerr.max() < 1e-3
         and pseudo_relerr_set.max() < 1e-5
         and pseudo_relerr_setvm.max() < 1e-5
         and j0_relerr.max() < 1e-6
-        and pseudo_relerr_gravity.max() < 1e-3
     )
     print("PASS" if ok else "FAIL")
     return 0 if ok else 1

@@ -123,44 +123,18 @@ def main() -> int:
 
     # Floor for jac comparisons: typical entries are ~1e-4; below that the
     # extraction from the c0 + chem cancellation is FP noise, not physics.
+    # An entry passes if its abs diff is below the floor OR its rel diff is small.
     jac_abs_tol = 1e-4
-    max_diag_err = 0.0
-    max_sup_err = 0.0
-    max_sub_err = 0.0
-    for j in range(nz):
-        for i in range(ni):
-            ref_val = diff_jac_only[j * ni + i, j * ni + i]
-            jax_val = -diag_d[j, i]
-            # Pass if abs diff is below the floor OR rel diff is small.
-            abs_diff = abs(ref_val - jax_val)
-            if abs_diff < jac_abs_tol:
-                err = 0.0
-            else:
-                err = abs_diff / max(abs(ref_val), jac_abs_tol)
-            if err > max_diag_err:
-                max_diag_err = err
-        if j < nz - 1:
-            for i in range(ni):
-                ref_val = diff_jac_only[j * ni + i, (j + 1) * ni + i]
-                jax_val = -sup_d[j, i]
-                abs_diff = abs(ref_val - jax_val)
-                if abs_diff < jac_abs_tol:
-                    err = 0.0
-                else:
-                    err = abs_diff / max(abs(ref_val), jac_abs_tol)
-                if err > max_sup_err:
-                    max_sup_err = err
-        if j > 0:
-            for i in range(ni):
-                ref_val = diff_jac_only[j * ni + i, (j - 1) * ni + i]
-                jax_val = -sub_d[j - 1, i]
-                abs_diff = abs(ref_val - jax_val)
-                if abs_diff < jac_abs_tol:
-                    err = 0.0
-                else:
-                    err = abs_diff / max(abs(ref_val), jac_abs_tol)
-                if err > max_sub_err:
-                    max_sub_err = err
+    idx = np.arange(nz * ni).reshape(nz, ni)
+
+    def _err(ref, val):
+        d = np.abs(ref - val)
+        return float(np.max(np.where(
+            d < jac_abs_tol, 0.0, d / np.maximum(np.abs(ref), jac_abs_tol))))
+
+    max_diag_err = _err(diff_jac_only[idx, idx], -diag_d)
+    max_sup_err = _err(diff_jac_only[idx[:-1], idx[1:]], -sup_d)
+    max_sub_err = _err(diff_jac_only[idx[1:], idx[:-1]], -sub_d)
 
     print(f"jac diag block max relerr:  {max_diag_err:.3e}")
     print(f"jac super block max relerr: {max_sup_err:.3e}")

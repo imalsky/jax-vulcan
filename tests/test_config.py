@@ -59,6 +59,8 @@ def test_shipped_config_loads_and_resolves(name):
 
     # Derived values are filled by the loader.
     assert cfg.photo_switch_longdy_thresh == cfg.yconv_min * 10.0
+    # No shipped config loosens the column element-budget certificate.
+    assert cfg.element_budget_tol <= 1e-2
 
 
 def test_overrides_win_over_yaml_and_derived():

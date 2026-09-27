@@ -22,13 +22,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
 from _helpers import relerr
-from oracle import oracle_dir_or_sentinel
-
-
-VULCAN_MASTER = oracle_dir_or_sentinel()
-
 from vulcan_jax._paths import PACKAGE_ROOT
 
 # (count_max, update_frq, diff_esc, rtol, ymix_min). Case 1: default HD189
@@ -47,7 +41,6 @@ _MASTER_SCRIPT = r"""
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -57,181 +50,141 @@ import numpy as np
 
 master_root = Path(sys.argv[1])
 out_npz = Path(sys.argv[2])
-backup_dir = Path(sys.argv[3])
-count_max = int(sys.argv[4])
-update_frq = int(sys.argv[5])
-diff_esc = [sp for sp in sys.argv[6].split(",") if sp]
-
-TRACKED_FILES = [
-    Path("vulcan_cfg.py"),
-    Path("chem_funs.py"),
-    Path("fastchem_vulcan/input/element_abundances_vulcan.dat"),
-    Path("fastchem_vulcan/input/parameters.dat"),
-    Path("fastchem_vulcan/input/vulcan_TP/vulcan_TP.dat"),
-    Path("fastchem_vulcan/output/vulcan_EQ.dat"),
-    Path("fastchem_vulcan/output/chem_species.dat"),
-    Path("fastchem_vulcan/output/monitor_output.dat"),
-]
-
-
-def backup_files() -> set[Path]:
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    existed = set()
-    for rel in TRACKED_FILES:
-        src = master_root / rel
-        if src.exists():
-            dst = backup_dir / rel
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-            existed.add(rel)
-    return existed
-
-
-def restore_files(existed: set[Path]) -> None:
-    for rel in TRACKED_FILES:
-        dst = master_root / rel
-        src = backup_dir / rel
-        if rel in existed:
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
-        elif dst.exists():
-            dst.unlink()
+count_max = int(sys.argv[3])
+update_frq = int(sys.argv[4])
+diff_esc = [sp for sp in sys.argv[5].split(",") if sp]
 
 
 def run() -> None:
-    existed = backup_files()
-    try:
-        cfg_src = master_root / "cfg_examples" / "vulcan_cfg_HD189.py"
-        cfg_text = cfg_src.read_text()
-        overrides = (
-            "\n# === default parity test overrides ===\n"
-            f"count_max = {count_max}\n"
-            f"count_min = {count_max + 1}\n"
-            "trun_min = 1e22\n"
-            "use_print_prog = False\n"
-            "use_print_delta = False\n"
-            "use_live_plot = False\n"
-            "use_live_flux = False\n"
-            "use_plot_end = False\n"
-            "use_plot_evo = False\n"
-            "use_save_movie = False\n"
-            "use_flux_movie = False\n"
-            "save_evolution = False\n"
-            "plot_TP = False\n"
-            "use_adapt_rtol = False\n"
-            f"update_frq = {update_frq}\n"
-            f"diff_esc = {diff_esc!r}\n"
-        )
-        (master_root / "vulcan_cfg.py").write_text(cfg_text + overrides)
+    cfg_src = master_root / "cfg_examples" / "vulcan_cfg_HD189.py"
+    cfg_text = cfg_src.read_text()
+    overrides = (
+        "\n# === default parity test overrides ===\n"
+        f"count_max = {count_max}\n"
+        f"count_min = {count_max + 1}\n"
+        "trun_min = 1e22\n"
+        "use_print_prog = False\n"
+        "use_print_delta = False\n"
+        "use_live_plot = False\n"
+        "use_live_flux = False\n"
+        "use_plot_end = False\n"
+        "use_plot_evo = False\n"
+        "use_save_movie = False\n"
+        "use_flux_movie = False\n"
+        "save_evolution = False\n"
+        "plot_TP = False\n"
+        "use_adapt_rtol = False\n"
+        f"update_frq = {update_frq}\n"
+        f"diff_esc = {diff_esc!r}\n"
+    )
+    (master_root / "vulcan_cfg.py").write_text(cfg_text + overrides)
 
-        res = subprocess.run(
-            [sys.executable, "make_chem_funs.py"],
+    res = subprocess.run(
+        [sys.executable, "make_chem_funs.py"],
+        cwd=str(master_root),
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    # make_chem_funs.py writes chem_funs.py before its check_conserv(), which
+    # raises under numpy>=1.24; master's vulcan.py ignores that exit code, so
+    # only the module's importability matters.
+    if res.returncode != 0:
+        probe = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import chem_funs as c; "
+                "assert getattr(c, 'ni', 0) > 0 and getattr(c, 'nr', 0) > 0",
+            ],
             cwd=str(master_root),
             capture_output=True,
             text=True,
-            timeout=600,
+            timeout=120,
         )
-        # make_chem_funs.py writes chem_funs.py before its check_conserv(), which
-        # raises under numpy>=1.24; master's vulcan.py ignores that exit code, so
-        # only the module's importability matters.
-        if res.returncode != 0:
-            probe = subprocess.run(
-                [
-                    sys.executable,
-                    "-c",
-                    "import chem_funs as c; "
-                    "assert getattr(c, 'ni', 0) > 0 and getattr(c, 'nr', 0) > 0",
-                ],
-                cwd=str(master_root),
-                capture_output=True,
-                text=True,
-                timeout=120,
-            )
-            if probe.returncode != 0:
-                print(res.stdout[-2000:])
-                print(res.stderr[-2000:])
-                sys.exit(res.returncode)
+        if probe.returncode != 0:
+            print(res.stdout[-2000:])
+            print(res.stderr[-2000:])
+            sys.exit(res.returncode)
 
-        os.chdir(master_root)
-        sys.path.insert(0, str(master_root))
+    os.chdir(master_root)
+    sys.path.insert(0, str(master_root))
 
-        # Master's OWN codegen and the cfg this script just wrote: importing
-        # the port here would make the saved species list and the pre-loop
-        # branches below read the side under test.
-        import build_atm
-        import chem_funs
-        import op
-        import store
-        import vulcan_cfg
+    # Master's OWN codegen and the cfg this script just wrote: importing
+    # the port here would make the saved species list and the pre-loop
+    # branches below read the side under test.
+    import build_atm
+    import chem_funs
+    import op
+    import store
+    import vulcan_cfg
 
-        data_var = store.Variables()
-        data_atm = store.AtmData()
-        data_para = store.Parameters()
-        data_para.start_time = time.time()
-        make_atm = build_atm.Atm()
-        output = op.Output()
+    data_var = store.Variables()
+    data_atm = store.AtmData()
+    data_para = store.Parameters()
+    data_para.start_time = time.time()
+    make_atm = build_atm.Atm()
+    output = op.Output()
 
-        data_atm = make_atm.f_pico(data_atm)
-        data_atm = make_atm.load_TPK(data_atm)
-        if vulcan_cfg.use_condense:
-            make_atm.sp_sat(data_atm)
+    data_atm = make_atm.f_pico(data_atm)
+    data_atm = make_atm.load_TPK(data_atm)
+    if vulcan_cfg.use_condense:
+        make_atm.sp_sat(data_atm)
 
-        rate = op.ReadRate()
-        data_var = rate.read_rate(data_var, data_atm)
-        if vulcan_cfg.use_lowT_limit_rates:
-            data_var = rate.lim_lowT_rates(data_var, data_atm)
-        data_var = rate.rev_rate(data_var, data_atm)
+    rate = op.ReadRate()
+    data_var = rate.read_rate(data_var, data_atm)
+    if vulcan_cfg.use_lowT_limit_rates:
+        data_var = rate.lim_lowT_rates(data_var, data_atm)
+    data_var = rate.rev_rate(data_var, data_atm)
+    data_var = rate.remove_rate(data_var)
+
+    ini_abun = build_atm.InitialAbun()
+    data_var = ini_abun.ini_y(data_var, data_atm)
+    data_var = ini_abun.ele_sum(data_var)
+
+    y_ini = np.asarray(data_var.y_ini, dtype=np.float64).copy()
+    pco = np.asarray(data_atm.pco, dtype=np.float64).copy()
+    Tco = np.asarray(data_atm.Tco, dtype=np.float64).copy()
+    Kzz = np.asarray(data_atm.Kzz, dtype=np.float64).copy()
+
+    data_atm = make_atm.f_mu_dz(data_var, data_atm, output)
+    make_atm.mol_diff(data_atm)
+    make_atm.BC_flux(data_atm)
+
+    solver = op.Ros2()
+    if vulcan_cfg.use_photo:
+        rate.make_bins_read_cross(data_var, data_atm)
+        make_atm.read_sflux(data_var, data_atm)
+        solver.compute_tau(data_var, data_atm)
+        solver.compute_flux(data_var, data_atm)
+        solver.compute_J(data_var, data_atm)
         data_var = rate.remove_rate(data_var)
 
-        ini_abun = build_atm.InitialAbun()
-        data_var = ini_abun.ini_y(data_var, data_atm)
-        data_var = ini_abun.ele_sum(data_var)
+    integ = op.Integration(solver, output)
+    solver.naming_solver(data_para)
+    integ(data_var, data_atm, data_para, make_atm)
 
-        y_ini = np.asarray(data_var.y_ini, dtype=np.float64).copy()
-        pco = np.asarray(data_atm.pco, dtype=np.float64).copy()
-        Tco = np.asarray(data_atm.Tco, dtype=np.float64).copy()
-        Kzz = np.asarray(data_atm.Kzz, dtype=np.float64).copy()
-
-        data_atm = make_atm.f_mu_dz(data_var, data_atm, output)
-        make_atm.mol_diff(data_atm)
-        make_atm.BC_flux(data_atm)
-
-        solver = op.Ros2()
-        if vulcan_cfg.use_photo:
-            rate.make_bins_read_cross(data_var, data_atm)
-            make_atm.read_sflux(data_var, data_atm)
-            solver.compute_tau(data_var, data_atm)
-            solver.compute_flux(data_var, data_atm)
-            solver.compute_J(data_var, data_atm)
-            data_var = rate.remove_rate(data_var)
-
-        integ = op.Integration(solver, output)
-        solver.naming_solver(data_para)
-        integ(data_var, data_atm, data_para, make_atm)
-
-        np.savez_compressed(
-            out_npz,
-            species=np.array(list(chem_funs.spec_list), dtype=object),
-            nr=np.int64(chem_funs.nr),
-            y_ini=y_ini,
-            pco=pco,
-            Tco=Tco,
-            Kzz=Kzz,
-            y=np.asarray(data_var.y, dtype=np.float64),
-            ymix=np.asarray(data_var.ymix, dtype=np.float64),
-            t=np.float64(data_var.t),
-            dt=np.float64(data_var.dt),
-            longdy=np.float64(data_var.longdy),
-            count=np.int64(data_para.count),
-            atom_loss_keys=np.array(list(data_var.atom_loss.keys()), dtype=object),
-            atom_loss_vals=np.array(
-                [float(v) for v in data_var.atom_loss.values()],
-                dtype=np.float64,
-            ),
-        )
-        print("MASTER_OK")
-    finally:
-        restore_files(existed)
+    np.savez_compressed(
+        out_npz,
+        species=np.array(list(chem_funs.spec_list), dtype=object),
+        nr=np.int64(chem_funs.nr),
+        y_ini=y_ini,
+        pco=pco,
+        Tco=Tco,
+        Kzz=Kzz,
+        y=np.asarray(data_var.y, dtype=np.float64),
+        ymix=np.asarray(data_var.ymix, dtype=np.float64),
+        t=np.float64(data_var.t),
+        dt=np.float64(data_var.dt),
+        longdy=np.float64(data_var.longdy),
+        count=np.int64(data_para.count),
+        atom_loss_keys=np.array(list(data_var.atom_loss.keys()), dtype=object),
+        atom_loss_vals=np.array(
+            [float(v) for v in data_var.atom_loss.values()],
+            dtype=np.float64,
+        ),
+    )
+    print("MASTER_OK")
 
 
 run()
@@ -389,14 +342,12 @@ def test_default_hd189_preloop_and_matched_steps_match_master(
         tmp_path = Path(tmp)
         master_npz = tmp_path / "master_hd189.npz"
         jax_npz = tmp_path / "jax_hd189.npz"
-        master_backup = tmp_path / "master_backup"
 
         master_res = _run_script(
             _MASTER_SCRIPT,
             [
                 master_root,
                 master_npz,
-                master_backup,
                 count_max,
                 update_frq,
                 ",".join(diff_esc),

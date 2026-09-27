@@ -28,12 +28,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-ROOT = Path(__file__).resolve().parent.parent
-from oracle import oracle_dir_or_sentinel
-
-
-VULCAN_MASTER = oracle_dir_or_sentinel()
-
 from vulcan_jax._paths import PACKAGE_ROOT
 
 # 3x the worst max |log10(y_jax/y_master)| over cells with master ymix >

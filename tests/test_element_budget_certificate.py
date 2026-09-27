@@ -16,14 +16,12 @@ kept its elements.
 
 from __future__ import annotations
 
-import glob
 import os
 import warnings
 from pathlib import Path
 
 import jax.numpy as jnp
 import pytest
-import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -45,6 +43,25 @@ def _cfg():
     c.yconv_cri = 1.0e3
     c.slope_cri = 1.0e3
     return c
+
+
+def _candidate(state, c, **extra):
+    """Seed the carry past `count_min`, so the next accepted step is a
+    certificate candidate; `extra` sets the fields a test varies."""
+    t0 = 10.0 * float(c.trun_min)
+    return state._replace(
+        t=jnp.float64(t0),
+        accept_count=jnp.int32(int(c.count_min) + 5),
+        count_min_dyn=jnp.int32(int(c.count_min)),
+        count_max_dyn=jnp.int32(int(c.count_min) + 10),
+        runtime_dyn=jnp.float64(float(c.runtime)),
+        # A lookback the step actually spans (the ring is zero-filled at t=0).
+        t_time_ring=jnp.full((int(c.conv_step),), float(c.st_factor) * t0),
+        aflux_change=jnp.float64(0.0),
+        geom_ok=jnp.bool_(False),
+        budget_ok=jnp.bool_(False),
+        **extra,
+    )
 
 
 @pytest.mark.parametrize(
@@ -75,25 +92,12 @@ def test_certificate_requires_the_column_element_budget(drain, scale, reason, wh
     c = _cfg()
     integ = outer_loop.OuterLoop(op_jax.Ros2JAX(), op.Output(cfg=c), cfg=c)
     state, atm_static = integ.prepare_runstate(RunState.with_pre_loop_setup(c))
-    t0 = 10.0 * float(c.trun_min)
     ch4 = outer_loop._NETWORK.species_idx["CH4"]
     started_from = column_atoms(
         (state.y * scale).at[:, ch4].multiply(drain), state.dz, integ._compo_arr
     )
     now = column_atoms(state.y, state.dz, integ._compo_arr)
-    seeded = state._replace(
-        t=jnp.float64(t0),
-        accept_count=jnp.int32(int(c.count_min) + 5),
-        count_min_dyn=jnp.int32(int(c.count_min)),
-        count_max_dyn=jnp.int32(int(c.count_min) + 10),
-        runtime_dyn=jnp.float64(float(c.runtime)),
-        # A lookback the step actually spans (the ring is zero-filled at t=0).
-        t_time_ring=jnp.full((int(c.conv_step),), float(c.st_factor) * t0),
-        aflux_change=jnp.float64(0.0),
-        geom_ok=jnp.bool_(False),
-        budget_ok=jnp.bool_(False),
-        budget_err=now / started_from - 1.0,
-    )
+    seeded = _candidate(state, c, budget_err=now / started_from - 1.0)
     final = integ._runner(seeded, atm_static)
     assert int(final.termination_reason) == reason, (
         f"{why}; got reason {int(final.termination_reason)}, budget_ok "
@@ -140,21 +144,8 @@ def test_a_geometry_refresh_alone_never_moves_the_budget(err_c, reason, why):
     budget_err = jnp.zeros((integ._compo_arr.shape[1],)).at[ci].set(err_c)
     col_seed = column_atoms(state.y, dz_seed, integ._compo_arr)
     budget_ref = col_seed.at[ci].divide(1.0 + err_c)
-
-    t0 = 10.0 * float(c.trun_min)
-    seeded = state._replace(
-        t=jnp.float64(t0),
-        accept_count=jnp.int32(int(c.count_min) + 5),
-        count_min_dyn=jnp.int32(int(c.count_min)),
-        count_max_dyn=jnp.int32(int(c.count_min) + 10),
-        runtime_dyn=jnp.float64(float(c.runtime)),
-        t_time_ring=jnp.full((int(c.conv_step),), float(c.st_factor) * t0),
-        aflux_change=jnp.float64(0.0),
-        geom_ok=jnp.bool_(False),
-        budget_ok=jnp.bool_(False),
-        dz=dz_seed,
-        budget_ref=budget_ref,
-        budget_err=budget_err,
+    seeded = _candidate(
+        state, c, dz=dz_seed, budget_ref=budget_ref, budget_err=budget_err
     )
     final = integ._runner(seeded, atm_static)
     assert int(final.termination_reason) == reason and bool(final.budget_ok) is (
@@ -170,15 +161,3 @@ def test_a_geometry_refresh_alone_never_moves_the_budget(err_c, reason, why):
     err = np.asarray(final.budget_err)
     rel = (1.0 + err) / (1.0 + err[h]) - 1.0
     assert np.allclose(rel, np.asarray(final.budget_drift), rtol=0, atol=1e-12)
-
-
-def test_shipped_configs_declare_the_budget_tolerance():
-    """Every shipped config declares `element_budget_tol` (the runner has no default) and none exceeds 1e-2."""
-    undeclared, loose = [], []
-    for path in sorted(glob.glob("src/vulcan_jax/configs/*.yaml")):
-        raw = yaml.safe_load(Path(path).read_text())
-        if "element_budget_tol" not in raw:
-            undeclared.append(os.path.basename(path))
-        elif float(raw["element_budget_tol"]) > 1e-2:
-            loose.append(os.path.basename(path))
-    assert not undeclared and not loose, (undeclared, loose)

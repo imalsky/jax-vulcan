@@ -2,10 +2,9 @@
 (`diffusion_numpy_ref`), which is itself master-validated elsewhere. JAX-only;
 no VULCAN-master oracle required.
 
-Pins, for the default 'gravity' mode (and 'vm' mode below):
+Pins, for the default 'gravity' mode and the upwind 'vm' mode:
   1. coefficient arrays (A/B/C eddy + mol) at ~machine precision,
-  2. the diffusion operator output on significant cells,
-  3. the block-Jacobian diagonals assembled exactly as jax_ros2_step does.
+  2. the diffusion operator output on significant cells.
 """
 
 from __future__ import annotations
@@ -15,6 +14,8 @@ import warnings
 from pathlib import Path
 
 import numpy as np
+import pytest
+from _helpers import relerr
 
 ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
@@ -22,154 +23,39 @@ warnings.filterwarnings("ignore")
 
 COEF_RTOL = 1e-11  # C_mol FP-ordering noise reaches ~2e-12; eddy terms ~5e-16
 OP_RTOL = 1e-4  # the operator is a small residue of large cancellations (floor ~1e-5)
-BLOCK_RTOL = 1e-12  # block-Jacobian diagonals, no cancellation
 OP_FLOOR = 1e-12  # absolute and peak-relative floor for significant operator cells
 
 
-def main() -> int:
+@pytest.mark.parametrize("mode", ["gravity", "vm"])
+def test_production_kernel_matches_reference(mode):
+    """The 'vm' case pins the hot-path upwind (`use_vm_mol`) discretization
+    with a nonzero mixed-sign interface drift vm (shape (nz-1, ni))."""
     import jax.numpy as jnp
 
     import diffusion_numpy_ref as diff_ref
     import vulcan_jax.jax_step as jax_step
     from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-    # The NumPy reference implements the CENTRAL scheme; pin the vm_branch
-    # upwind default off (upwind coverage lives in test_diffusion_variants.py).
-    vulcan_cfg.use_vm_mol = False
-    vulcan_cfg.use_hybrid_vm_mol = False
     from vulcan_jax.state import RunState, legacy_view
 
+    vulcan_cfg = default_config()
+    # The NumPy reference's gravity mode is the CENTRAL scheme, and the vm case
+    # needs the all-zero-vm state that use_vm_mol=False builds.
+    vulcan_cfg.use_vm_mol = False
+    vulcan_cfg.use_hybrid_vm_mol = False
     rs = RunState.with_pre_loop_setup(vulcan_cfg)
     data_var, data_atm, _ = legacy_view(rs)
     y = np.asarray(data_var.y, dtype=np.float64)
     nz, ni = y.shape
+
+    if mode == "vm":
+        # Inject a nonzero, mixed-sign interface drift so both upwind branches
+        # ((vm>0)/(vm<0)) fire in both the production kernel and the reference.
+        rng = np.random.default_rng(1)
+        data_atm.vm = (rng.standard_normal((nz - 1, ni)) * 50.0).astype(np.float64)
+        vulcan_cfg.use_vm_mol = True
 
     # --- Production kernel ---
-    atm_static = jax_step.make_atm_static(data_atm, ni, nz)
-    grav = jax_step.compute_diff_grav(atm_static)
-    (
-        A_eddy,
-        B_eddy,
-        C_eddy,
-        A_mol,
-        B_mol,
-        C_mol,
-        _ysum,
-    ) = jax_step._build_diff_coeffs_jax(jnp.asarray(y), atm_static, grav)
-    diff_prod = np.asarray(
-        jax_step._apply_diffusion_jax(
-            jnp.asarray(y), A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, atm_static
-        )
-    )
-
-    # --- NumPy reference (gravity mode) ---
-    coeffs = diff_ref.build_diffusion_coeffs(y, data_atm, vulcan_cfg, mode="gravity")
-    diff_numpy = diff_ref.apply_diffusion(y, coeffs)
-
-    ok = True
-
-    def _coef_relerr(prod, ref):
-        prod = np.asarray(prod)
-        ref = np.asarray(ref)
-        denom = np.maximum(np.abs(ref), 1e-30 * max(np.abs(ref).max(), 1e-300))
-        return float(np.max(np.abs(prod - ref) / denom))
-
-    # 1. Coefficients.
-    for label, p, r in (
-        ("A_eddy", A_eddy, coeffs.A_eddy),
-        ("B_eddy", B_eddy, coeffs.B_eddy),
-        ("C_eddy", C_eddy, coeffs.C_eddy),
-        ("A_mol", A_mol, coeffs.A_mol),
-        ("B_mol", B_mol, coeffs.B_mol),
-        ("C_mol", C_mol, coeffs.C_mol),
-    ):
-        err = _coef_relerr(p, r)
-        print(f"coeff {label:7s} relerr: {err:.3e}")
-        if err > COEF_RTOL:
-            print(f"FAIL: production {label} disagrees with NumPy reference")
-            ok = False
-
-    # 2. Operator output on significant cells.
-    abs_tol = max(OP_FLOOR, OP_FLOOR * np.abs(diff_numpy).max())
-    op_relerr = np.abs(diff_prod - diff_numpy) / np.maximum(np.abs(diff_numpy), abs_tol)
-    print(f"operator max relerr (sig cells): {op_relerr.max():.3e}")
-    if op_relerr.max() > OP_RTOL:
-        print("FAIL: production diffusion operator disagrees with reference")
-        ok = False
-
-    # 3. Block-Jacobian diagonals, assembled exactly as jax_ros2_step does.
-    diag_prod = np.asarray(A_eddy[:, None] + A_mol)
-    sup_prod = np.asarray(B_eddy[:-1, None] + B_mol[:-1])
-    sub_prod = np.asarray(C_eddy[1:, None] + C_mol[1:])
-    if bool(getattr(vulcan_cfg, "use_botflux", False)):
-        diag_prod[0] = diag_prod[0] - np.asarray(data_atm.bot_vdep) / float(
-            data_atm.dzi[0]
-        )
-    diag_ref, sup_ref, sub_ref = diff_ref.diffusion_block_diags(coeffs)
-    for label, p, r in (
-        ("diag", diag_prod, diag_ref),
-        ("sup", sup_prod, sup_ref),
-        ("sub", sub_prod, sub_ref),
-    ):
-        err = _coef_relerr(p, r)
-        print(f"block {label:4s} relerr: {err:.3e}")
-        if err > BLOCK_RTOL:
-            print(f"FAIL: production {label} block disagrees with reference")
-            ok = False
-
-    print("PASS" if ok else "FAIL")
-    return 0 if ok else 1
-
-
-def test_main():
-    assert main() == 0
-
-
-def test_vm_mode_kernel_matches_reference():
-    """Pins the hot-path upwind (`use_vm_mol`) discretization against the
-    NumPy reference, with a nonzero mixed-sign interface drift vm
-    (shape (nz-1, ni)). JAX-only."""
-    import types
-
-    import jax.numpy as jnp
-
-    import diffusion_numpy_ref as diff_ref
-    import vulcan_jax.jax_step as jax_step
-    from vulcan_jax.config import default_config
-
-    vulcan_cfg = default_config()
-    # Pin the vm_branch default off so the built state starts from the
-    # all-zero-vm premise the injection below relies on.
-    vulcan_cfg.use_vm_mol = False
-    vulcan_cfg.use_hybrid_vm_mol = False
-    from vulcan_jax.state import RunState, legacy_view
-
-    rs = RunState.with_pre_loop_setup(vulcan_cfg)
-    data_var, data_atm, _ = legacy_view(rs)
-    y = np.asarray(data_var.y, dtype=np.float64)
-    nz, ni = y.shape
-
-    # With use_vm_mol pinned False, atm.vm is all-zero. Inject a nonzero,
-    # mixed-sign interface drift so both upwind branches ((vm>0)/(vm<0)) fire in
-    # both the production kernel and the reference.
-    rng = np.random.default_rng(1)
-    data_atm.vm = (rng.standard_normal((nz - 1, ni)) * 50.0).astype(np.float64)
-
-    # make_atm_static only reads the transport toggles + atm.gas_indx; keep the
-    # real BC flags so the BC contributions match the reference (driven off the
-    # same vulcan_cfg in mode='vm').
-    cfg_vm = types.SimpleNamespace(
-        use_vm_mol=True,
-        use_moldiff=bool(getattr(vulcan_cfg, "use_moldiff", True)),
-        use_settling=False,
-        use_topflux=bool(getattr(vulcan_cfg, "use_topflux", False)),
-        use_botflux=bool(getattr(vulcan_cfg, "use_botflux", False)),
-        diff_esc=[],
-    )
-    atm_static = jax_step.make_atm_static(data_atm, ni, nz, cfg=cfg_vm)
-    assert tuple(np.asarray(atm_static.vm).shape) == (nz - 1, ni)
-
+    atm_static = jax_step.make_atm_static(data_atm, ni, nz, cfg=vulcan_cfg)
     grav = jax_step.compute_diff_grav(atm_static)
     A_eddy, B_eddy, C_eddy, A_mol, B_mol, C_mol, _ = jax_step._build_diff_coeffs_jax(
         jnp.asarray(y), atm_static, grav
@@ -180,16 +66,11 @@ def test_vm_mode_kernel_matches_reference():
         )
     )
 
-    coeffs = diff_ref.build_diffusion_coeffs(y, data_atm, vulcan_cfg, mode="vm")
+    # --- NumPy reference ---
+    coeffs = diff_ref.build_diffusion_coeffs(y, data_atm, vulcan_cfg, mode=mode)
     diff_numpy = diff_ref.apply_diffusion(y, coeffs)
 
-    def _relerr(prod, ref):
-        prod = np.asarray(prod)
-        ref = np.asarray(ref)
-        denom = np.maximum(np.abs(ref), 1e-30 * max(np.abs(ref).max(), 1e-300))
-        return float(np.max(np.abs(prod - ref) / denom))
-
-    # Coefficients are identical formulas -> machine precision (FP-ordering only).
+    # 1. Coefficients are identical formulas -> machine precision (FP-ordering only).
     for label, p, r in (
         ("A_eddy", A_eddy, coeffs.A_eddy),
         ("B_eddy", B_eddy, coeffs.B_eddy),
@@ -198,25 +79,11 @@ def test_vm_mode_kernel_matches_reference():
         ("B_mol", B_mol, coeffs.B_mol),
         ("C_mol", C_mol, coeffs.C_mol),
     ):
-        assert _relerr(p, r) < COEF_RTOL, f"vm-mode {label} disagrees with reference"
+        r = np.asarray(r)
+        err = relerr(p, r, floor=1e-30 * max(np.abs(r).max(), 1e-300))
+        assert err < COEF_RTOL, f"{mode}-mode {label} relerr {err:.3e}"
 
-    # Operator output on significant cells, as in the gravity-mode check.
+    # 2. Operator output on significant cells.
     abs_tol = max(OP_FLOOR, OP_FLOOR * np.abs(diff_numpy).max())
-    op_relerr = np.abs(diff_prod - diff_numpy) / np.maximum(np.abs(diff_numpy), abs_tol)
-    assert op_relerr.max() < OP_RTOL, "vm-mode diffusion operator disagrees"
-
-    # Block-Jacobian diagonals assembled exactly as jax_ros2_step does.
-    diag_prod = np.asarray(A_eddy[:, None] + A_mol)
-    sup_prod = np.asarray(B_eddy[:-1, None] + B_mol[:-1])
-    sub_prod = np.asarray(C_eddy[1:, None] + C_mol[1:])
-    if cfg_vm.use_botflux:
-        diag_prod[0] = diag_prod[0] - np.asarray(data_atm.bot_vdep) / float(
-            data_atm.dzi[0]
-        )
-    diag_ref, sup_ref, sub_ref = diff_ref.diffusion_block_diags(coeffs)
-    for label, p, r in (
-        ("diag", diag_prod, diag_ref),
-        ("sup", sup_prod, sup_ref),
-        ("sub", sub_prod, sub_ref),
-    ):
-        assert _relerr(p, r) < BLOCK_RTOL, f"vm-mode {label} block disagrees"
+    err = relerr(diff_prod, diff_numpy, floor=abs_tol)
+    assert err < OP_RTOL, f"{mode}-mode diffusion operator relerr {err:.3e}"

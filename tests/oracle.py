@@ -95,20 +95,6 @@ def oracle_dir_or_skip(what: str) -> Path:
     pytest.skip(msg, allow_module_level=True)
 
 
-UNSET_SENTINEL = Path("/nonexistent/VULCAN-oracle-unset")
-
-
-def oracle_dir_or_sentinel() -> Path:
-    """Oracle path for a re-exec'd child, or a path that cannot exist.
-
-    Same parent-verifies / child-reads split as `oracle_dir_or_skip` (see its
-    docstring), but for the files that skip PER TEST instead of at module
-    scope, because they also hold tests needing no oracle. The sentinel keeps
-    every `if not VULCAN_MASTER.is_dir(): skip` site free of a None branch.
-    """
-    return oracle_dir() or UNSET_SENTINEL
-
-
 def run_oracle_subprocess(test_file, family: str,
                           config_rel: str | None = None) -> None:
     """Run `test_file`'s `main()` in a fresh process against an oracle COPY.
