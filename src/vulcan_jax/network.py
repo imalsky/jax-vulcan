@@ -59,7 +59,7 @@ class Network:
     nr: int  # number of reaction slots (forward + reverse)
 
     # Stoichiometry, padded with `ni` (no-op slot pointing to y[ni]=1.0).
-    # Shape [nr+1, max(max_reac, max_prod)]. Row 0 is unused (1-based indexing).
+    # Shape [nr+1, max_terms]. Row 0 is unused (1-based indexing).
     reactant_idx: np.ndarray  # int64
     product_idx: np.ndarray  # int64
     reactant_stoich: np.ndarray  # float64
@@ -86,7 +86,6 @@ class Network:
     # Section delimiters (parser-i values; 1-based)
     stop_rev_indx: int  # reverse slots filled for even i in 2..stop_rev_indx-1
     conden_indx: int  # parser-i of first condensation reaction
-    photo_indx: int  # parser-i of first photo reaction
 
     # Photo metadata
     photo_sp: tuple[str, ...]  # species that photodissociate
@@ -218,7 +217,7 @@ def _parse_eq(eq: str) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
     return reactants, products
 
 
-def _detect_section(line: str, _current: str) -> str | None:
+def _detect_section(line: str) -> str | None:
     """Return a new section name if `line` is a section marker, else None.
 
     Order matters: '# 3-body reactions without high-pressure rates' must
@@ -289,7 +288,7 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
                 continue
 
             # Section markers must be checked before the # reverse-stops marker.
-            new_sec = _detect_section(line, section)
+            new_sec = _detect_section(line)
             if new_sec is not None:
                 section = new_sec
                 if section == _SECTION_CONDEN and conden_indx is None:
@@ -351,7 +350,6 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
             # typo, kept at parity.
             has_M_reac = any(sp == "M" for _, sp in reactants)
             has_M_prod = any(sp == "M" for _, sp in products)
-            has_M = has_M_reac or has_M_prod
 
             # Parse the numeric prefix of `tail` (Arrhenius / aux); the
             # rest of `tail` is reference / temperature commentary.
@@ -365,12 +363,10 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
 
             rec = {
                 "parser_i": parser_i,
-                "file_id": file_id,
                 "section": section,
                 "Rf": eq,
                 "reactants_collapsed": r_collapsed,
                 "products_collapsed": p_collapsed,
-                "has_M": has_M,
                 "has_M_reac": has_M_reac,
                 "has_M_prod": has_M_prod,
                 "num_cols": num_cols,
@@ -388,27 +384,20 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
             if section in _THERMAL_SECTIONS:
                 temp_ranges[parser_i] = _parse_temp_ranges(cols[len(num_cols):])
 
-            if section in (_SECTION_PHOTO, _SECTION_ION) and file_id != parser_i:
-                stale_ids.append((parser_i, file_id, eq))
-
-            if section == _SECTION_PHOTO:
+            if section in (_SECTION_PHOTO, _SECTION_ION):
+                if file_id != parser_i:
+                    stale_ids.append((parser_i, file_id, eq))
+                sp_list, rate_index, n_br = (
+                    (photo_sp, pho_rate_index, n_branch)
+                    if section == _SECTION_PHOTO
+                    else (ion_sp, ion_rate_index, ion_branch)
+                )
                 target_sp = cols[0] if cols else eq.split()[0]
-                if target_sp not in photo_sp:
-                    photo_sp.append(target_sp)
+                if target_sp not in sp_list:
+                    sp_list.append(target_sp)
                 if rec["photo_meta"] is not None:
-                    pho_rate_index[rec["photo_meta"]] = parser_i
-                    n_branch[target_sp] = max(
-                        n_branch.get(target_sp, 0), rec["photo_meta"][1]
-                    )
-            elif section == _SECTION_ION:
-                target_sp = cols[0] if cols else eq.split()[0]
-                if target_sp not in ion_sp:
-                    ion_sp.append(target_sp)
-                if rec["photo_meta"] is not None:
-                    ion_rate_index[rec["photo_meta"]] = parser_i
-                    ion_branch[target_sp] = max(
-                        ion_branch.get(target_sp, 0), rec["photo_meta"][1]
-                    )
+                    rate_index[rec["photo_meta"]] = parser_i
+                    n_br[target_sp] = max(n_br.get(target_sp, 0), rec["photo_meta"][1])
 
             parser_i += 2
 
@@ -440,25 +429,18 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
         stop_rev_indx = photo_indx if photo_indx is not None else nr + 1
     if conden_indx is None:
         conden_indx = nr + 1
-    if photo_indx is None:
-        photo_indx = nr + 1
-
-    max_reac = max(
-        (len(rec["reactants_collapsed"]) for rec in forward_records),
-        default=1,
-    )
-    max_prod = max(
-        (len(rec["products_collapsed"]) for rec in forward_records),
-        default=1,
-    )
-    max_reac = max(max_reac, 1)
-    max_prod = max(max_prod, 1)
 
     PAD = ni  # pad -> y[ni]=1, a no-op multiplier; RHS codegen and Jacobian tables skip it.
 
     # Reverse reactions store the forward's products in their reactant slot,
     # so both directions need to fit in the same `max_terms` width.
-    max_terms = max(max_reac, max_prod)
+    max_terms = max(
+        [1]
+        + [
+            max(len(r["reactants_collapsed"]), len(r["products_collapsed"]))
+            for r in forward_records
+        ]
+    )
     reactant_idx = np.full((nr + 1, max_terms), PAD, dtype=np.int64)
     product_idx = np.full((nr + 1, max_terms), PAD, dtype=np.int64)
     reactant_stoich = np.zeros((nr + 1, max_terms), dtype=np.float64)
@@ -518,11 +500,7 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
             is_ion[i] = True
 
         cols = rec["num_cols"]
-        if sec in (
-            _SECTION_TWO_BODY,
-            _SECTION_THREE_BODY_KINF,
-            _SECTION_THREE_BODY_NO_KINF,
-        ):
+        if sec in _THERMAL_SECTIONS:
             if len(cols) >= 3:
                 a[i], n[i], E[i] = cols[0], cols[1], cols[2]
             if sec == _SECTION_THREE_BODY_KINF and len(cols) >= 6:
@@ -553,7 +531,6 @@ def parse_network(network_path: str | Path, *, duplicates_ok: bool = False) -> N
         is_ion=is_ion,
         stop_rev_indx=stop_rev_indx,
         conden_indx=conden_indx,
-        photo_indx=photo_indx,
         photo_sp=tuple(photo_sp),
         pho_rate_index=dict(pho_rate_index),
         n_branch=dict(n_branch),

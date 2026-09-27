@@ -104,7 +104,6 @@ def _toy_network_for_codegen(tmp_path: Path):
         is_ion=bools.copy(),
         stop_rev_indx=nr + 1,
         conden_indx=nr + 1,
-        photo_indx=nr + 1,
         photo_sp=(),
         pho_rate_index={},
         n_branch={},

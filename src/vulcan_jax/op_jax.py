@@ -87,47 +87,37 @@ class Ros2JAX:
         else:
             var.aflux_change = 0.0
 
+    @staticmethod
+    def _fill_J(var, jdata, sp_list, n_branch, rate_index):
+        """Return the (species, branch) J dict (branch 0 = total) and write var.k_arr."""
+        J_jax = _photo_mod.compute_J_jax(jnp.asarray(var.aflux), jdata)
+        nz_ = var.aflux.shape[0]
+        J = {(sp, bn): np.zeros(nz_) for sp in sp_list for bn in range(n_branch[sp] + 1)}
+        for (sp, nbr), Jrow in J_jax.items():
+            J[(sp, nbr)] = np.asarray(Jrow, dtype=np.float64)
+            J[(sp, 0)] = J[(sp, 0)] + J[(sp, nbr)]
+            ridx = rate_index.get((sp, nbr))
+            if ridx is not None and ridx not in _CFG.remove_list:
+                var.k_arr[ridx, :] = J[(sp, nbr)] * _CFG.f_diurnal
+        return J
+
     def compute_J(self, var, atm):
         """Photolysis rates per (species, branch). Writes to var.J_sp + var.k_arr."""
         if self._photo_J_data is None:
             static = self._ensure_photo_static(var, atm)
             self._photo_J_data = _photo_mod.photo_J_data_from_static(static)
-
-        J_sp_jax = _photo_mod.compute_J_jax(jnp.asarray(var.aflux), self._photo_J_data)
-        nz_ = var.aflux.shape[0]
-        var.J_sp = {
-            (sp, bn): np.zeros(nz_)
-            for sp in var.photo_sp
-            for bn in range(var.n_branch[sp] + 1)
-        }
-        for (sp, nbr), Jrow in J_sp_jax.items():
-            var.J_sp[(sp, nbr)] = np.asarray(Jrow, dtype=np.float64)
-            var.J_sp[(sp, 0)] = var.J_sp[(sp, 0)] + var.J_sp[(sp, nbr)]
-            ridx = var.pho_rate_index.get((sp, nbr))
-            if ridx is not None and ridx not in _CFG.remove_list:
-                var.k_arr[ridx, :] = var.J_sp[(sp, nbr)] * _CFG.f_diurnal
+        var.J_sp = self._fill_J(
+            var, self._photo_J_data, var.photo_sp, var.n_branch, var.pho_rate_index
+        )
 
     def compute_Jion(self, var, atm):
         """Photo-ionisation rates per (species, branch). Writes to var.Jion_sp + var.k_arr."""
         if self._photo_ion_data is None:
             static = self._ensure_photo_static(var, atm)
             self._photo_ion_data = _photo_mod.photo_ion_data_from_static(static)
-
-        Jion_sp_jax = _photo_mod.compute_J_jax(
-            jnp.asarray(var.aflux), self._photo_ion_data
+        var.Jion_sp = self._fill_J(
+            var, self._photo_ion_data, var.ion_sp, var.ion_branch, var.ion_rate_index
         )
-        nz_ = var.aflux.shape[0]
-        var.Jion_sp = {
-            (sp, bn): np.zeros(nz_)
-            for sp in var.ion_sp
-            for bn in range(var.ion_branch[sp] + 1)
-        }
-        for (sp, nbr), Jrow in Jion_sp_jax.items():
-            var.Jion_sp[(sp, nbr)] = np.asarray(Jrow, dtype=np.float64)
-            var.Jion_sp[(sp, 0)] = var.Jion_sp[(sp, 0)] + var.Jion_sp[(sp, nbr)]
-            ridx = var.ion_rate_index.get((sp, nbr))
-            if ridx is not None and ridx not in _CFG.remove_list:
-                var.k_arr[ridx, :] = var.Jion_sp[(sp, nbr)] * _CFG.f_diurnal
 
     def naming_solver(self, para):
         """Log transport / BC summary lines and stamp `para.solver_str`."""
