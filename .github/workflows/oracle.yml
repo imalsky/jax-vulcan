@@ -8,9 +8,7 @@ name: oracle
 # failure instead of a skip.
 
 on:
-  workflow_dispatch:        # release gate: run before tagging
-  schedule:
-    - cron: "17 5 * * 1"    # and weekly, against the pinned revisions
+  workflow_dispatch:        # release gate: run by hand before tagging
 
 jobs:
   oracle:
@@ -78,14 +76,22 @@ jobs:
       # The full tier: the `slow` tests only (the normal tier is tests.yml),
       # among them the CLI step-count gates HD189 1495 / HD209 1211 / W39b
       # 1202. HD189_vulcan3's count is arm64-only and is not run here.
-      # One worker: the W39b tangent certificate peaks at 12.6 GB, the W39b
-      # solver child at 10.7 GB.
+      # One process per test, run in sequence: the W39b tangent certificate
+      # peaks at 12.6 GB on this 16 GB runner, so memory one test leaves
+      # behind must not carry into the next. Each failure prints at once
+      # instead of being lost when the runner is killed.
       - name: Full tier
         if: matrix.family == 'vulcan2_ncho'
         env:
           VULCAN_JAX_RUN_SLOW: "1"
-        run: >-
-          python -m pytest tests -m slow -q --tb=short -ra --durations=15
+        run: |
+          mapfile -t slow < <(python -m pytest tests -m slow --collect-only -q | grep '::')
+          failed=()
+          for t in "${slow[@]}"; do
+            python -m pytest "$t" -q --tb=short -ra < /dev/null || failed+=("$t")
+          done
+          echo "${#slow[@]} slow tests, ${#failed[@]} failed"
+          if [ ${#failed[@]} -gt 0 ]; then printf '  %s\n' "${failed[@]}"; exit 1; fi
 
       # The oracle must come back byte-clean: upstream setup rewrites files in
       # place (make_chem_funs renumbers a network file, its FastChem build

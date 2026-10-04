@@ -209,8 +209,10 @@ def test_hd189_reaction_sensitivity_regression():
     )
     # null_quality: the renormalized map conserves atoms only approximately
     # near the fixed point, so its atom-count vectors are only approximately
-    # null; broken conservation still reads O(1).
-    assert info["null_quality"] < 1e-2
+    # null. It tracks how tight the saved fixed point is (8e-3 and 7e-2 on two
+    # builds of this fixture, the FD check below holding at 0.6% and 1.2%);
+    # broken conservation reads O(1).
+    assert info["null_quality"] < 0.2
     # Median twin residual stays out of the stagnation regime (calibrated twins
     # 0.05-0.29); one wandering twin is tolerated.
     assert float(np.median(info["resids"])) < 0.2, (

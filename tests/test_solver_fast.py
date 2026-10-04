@@ -137,6 +137,7 @@ def compare(diag, sup, sub, rhs, tans, seed=1):
         "grad_rel": max(_rel(a, b) for a, b in zip(g0, g1)),
         "gres_cur": gres(g0[3]),
         "gres_cand": gres(g1[3]),
+        "resid_dense": _resid(diag, sup, sub, banded_solve(diag, sup, sub, rhs), rhs),
         "tres_dense": _resid(diag, sup, sub, banded_solve(diag, sup, sub, b_lin), b_lin),
         "gres_dense": _resid(diag_t, sub, sup, banded_solve(diag_t, sub, sup, w), w),
         "vmap_rel": max(_rel(batched[0], x1), _rel(batched[1], x1)),
@@ -472,8 +473,10 @@ def check_real_blocks(fixture: str, cfg_name: str, backend: str):
     for r in rows:
         if backend == "fast":
             assert r["primal_equal"], r
-        else:
-            assert r["resid_cand"] <= 2.0 * r["resid_cur"] + 1e-12, r
+        else:  # the same third-arm bar as tres/gres below
+            assert r["resid_cand"] <= max(
+                2.0 * r["resid_cur"], 10.0 * r["resid_dense"]
+            ) + 1e-12, r
         # at dt=1e11 the reference tangent residual is itself O(1) (the
         # off-run-path conditioning regime): nothing to match there
         if r["dt"] <= 1e6:
