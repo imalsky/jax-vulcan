@@ -55,7 +55,7 @@ the packaged file.
 The reaction network is fixed when Python first imports the package. Set
 `VULCAN_JAX_NETWORK` before the first import if you need another network.
 See [`examples/quickstart.ipynb`](examples/quickstart.ipynb) for the Python
-interface and the derivative examples.
+interface.
 
 ## Example
 
@@ -93,8 +93,8 @@ plt.show()
 
 ![HD 189733 b converged abundances](assets/hd189_quickstart.png)
 
-The scripts in [`examples/`](examples/) apply `jax.vmap` and forward- and
-reverse-mode derivatives to the same model.
+The scripts in [`examples/`](examples/) apply forward- and reverse-mode
+derivatives to the same model.
 
 ## Limits
 

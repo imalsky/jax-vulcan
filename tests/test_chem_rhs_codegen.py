@@ -22,8 +22,6 @@ warnings.filterwarnings("ignore")
 
 from _helpers import atom_count_matrix
 
-PROJECT_ROOT = ROOT.parent
-
 # Roundoff allowance for an atom residual, as a fraction of the summed
 # magnitude of the terms it cancels: a few thousand ulps over hundreds of
 # terms.
@@ -169,9 +167,7 @@ def _hd209_repeated_final_layer_fixture() -> tuple[
     vulcan_cfg = default_config()
     import vulcan_jax.network as net_mod
 
-    saved = PROJECT_ROOT / "jax_paper" / "data" / "jax_HD209.vul"
-    if not saved.exists():
-        saved = ROOT / "output" / "HD209.vul"
+    saved = ROOT / "output" / "HD209.vul"
     if not saved.exists():
         # A converged run, not a checked-in fixture, so a bare clone (CI) lacks
         # it: skip only under the missing-fixture switch, fail otherwise.

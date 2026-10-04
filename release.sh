@@ -31,7 +31,7 @@ find . -name "*.egg-info" -prune -exec rm -rf {} +
 find . -name ".DS_Store" -delete
 
 # 1b) Refuse to release from a dirty tree (untracked files such as the
-# gitignored fixtures' manifest are fine): the release commit below must carry
+# gitignored .npz fixtures are fine): the release commit below must carry
 # the version bump and nothing else. Test BEFORE the bump so a red suite
 # leaves the tree clean.
 test -z "$(git status --porcelain --untracked-files=no)" || { echo "dirty tree"; exit 1; }
